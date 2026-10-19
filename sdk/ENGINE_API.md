@@ -146,6 +146,10 @@ retail `hudcentral` movie where a ped's taze shows "ZAP!". `text` is a language 
 of that movie (`ID_CHASE_TAZER_1`) or plain text (1 to 64 characters). It plays the
 movie's own intro, sound and outro; nothing to clean up.
 
+`sdk.ui.chase_alerts(enabled)` shows (`true`, the default) or hides the alerts
+over peds that warn or chase the player (retail's yellow and red arrows). A hide
+is released when the mod stops.
+
 ## Mod menus
 
 `sdk.ui.menu(key, {title=..., items=...})` registers or replaces a mod-owned menu
