@@ -935,3 +935,37 @@ keyed by the NPC skater's stable id.
   (retail's recovery, before it never got there), #3 is the same as before, #6 on the path, #2 (twice) and #8 bail
   after tricks fired 1 to 6 m off the path (landings our sim misses; retail fires the same tricks). Watch in play.
 - **Tests:** skate-game 806 pass.
+
+## Walk-back hand-back: the line reset clears the air and trick state (2026-10-19)
+
+- **Problem:** stall run stall-9 (DownTown 150 s): NPC #2 was handed back from its walk-back at line node 48, popped a
+  nollie at node 56 one tick after leaving its path, and bailed; the STUCK lines show negative signed speed (-3.1,
+  -6.0, -9.6 m/s) while the node index rises (research `.local/research/b290-offpath-bails.md`).
+- **Retail [code, research `.local/research/b291-handback-facing.md`, Ghidra of `824689C0` / `82468AC8`]:** the
+  hand-back sets no facing, heading or stance; controller B lines the skater up before it reports "Arrived" (node
+  step direction within pi/8, `82467C90` / `82467E48`; ours `controller_b.rs:397-400`), and the re-board is the
+  player's get-on. A's activate runs the path reset `82468AC8`, which also zeroes the takeoff flip latch (`pc+927` /
+  `+928`), the trick slot (`+832`, `+844 = -1`, `+904`) and the board yaw fields (`+856`, `+860`, `+930`, `+931`);
+  only `pc+528..580` is saved and restored around it.
+- **Change:** our hand-back now calls `clear_line_state` (the same reset as a line switch and the stage-2 re-snap),
+  so a walk-back no longer carries the old line's air and trick state. No facing rule (retail has none).
+- **Note:** `NPC_SKATER_BACKWARDS` measures the recording (`replay.cursor.sample`), not the simulated body; node 48 is
+  recorded fakie. The body's backwards travel is in the signed speed of the STUCK lines.
+- **Verification:** skate-game suite. Not play-tested; the next stall run shows #2 at node 48 / 56.
+- **Open:** why our deck can point backwards after the re-board (get-on direction, not read); `B+112` (`82467718`).
+
+## The path projection reads the effective deck (2026-10-19)
+
+- **Problem:** the STUCK lines' negative signed speed (NPC #2 in stall-9, before and after its walk-back, and after
+  an earlier respawn) could mean real fakie travel or a rider standing backwards on its board.
+- **Root cause [code, research `.local/research/b292-reboard-deck-direction.md`, main-checked]:** on board,
+  `projected_point` (`npc_sim.rs`) returned the raw deck column 2, while retail's path projection `sub_8246BCF8` reads
+  the solved effective deck (`sub_82592A00`, `GetEffectiveTransform` 82C01BF8: columns 0 and 2 negated while
+  Processed+2468 bit 20 is set; ours `board_motion_output.rs:31-34`). Our steer already used the effective forward.
+  The signed speed feeds the projection's tick and the stuck / lost checks.
+- **Change:** one helper `effective_deck_forward` for the steer and the projection. No retail facing rule at the
+  re-board (b291 / b292: none exists; the board keeps its yaw, the stance comes from the mount clip's
+  `animboardbackward` event).
+- **Verification:** skate-game suite; the next stall run compares STUCK / LOST / BAIL with stall-9.
+- **Open:** which mount clip sets `animboardbackward` for a hand-carried board; the off-board heading (`[Skeleton+0]`
+  vs our `root[2]`, open since b116).

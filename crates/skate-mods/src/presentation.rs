@@ -159,11 +159,16 @@ pub struct WaterLookPatch {
     /// Scroll clock that never visibly restarts (default on; false gives the
     /// ported routine's restart every 10 s).
     pub seamless_clock: Option<bool>,
+    /// The look on flowing water too (`water.flowing`: University's fountains; retail off).
+    pub flowing_water: Option<bool>,
+    /// Ripple texture scale multiplier on flowing water (retail 1).
+    pub flowing_ripple_scale: Option<f32>,
 }
 impl WaterLookPatch {
     pub fn validate(&self) -> bool {
         let ok = |v: Option<f32>, lo: f32, hi: f32| v.is_none_or(|v| range(v, lo, hi));
         ok(self.ripple_scale, 0.1, 16.0)
+            && ok(self.flowing_ripple_scale, 0.1, 16.0)
             && ok(self.reflection_blur, 0.0, 8.0)
             && self.reflection_tint.is_none_or(|t| t.iter().all(|&c| range(c, 0.0, 4.0)))
             && ok(self.wave_rate, 0.0, 4.0)

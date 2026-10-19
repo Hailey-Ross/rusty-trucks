@@ -190,10 +190,13 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         // Water look layer (water_look.rs, project choices); retail values
         // (1, 0, 0, 0 and tint 1) leave the retail program unchanged.
         let look=select(vec4<f32>(1.0,0.0,0.0,0.0),frame_state.water_look,fam==33u);
+        // Flowing water (family 30, University's fountains) gets the look's ripple scale (water_tint.w), blur and
+        // tint when it is on; 0 = the retail flowingwater_defaultPS.
+        let flow=fam==30u && frame_state.water_tint.w>0.0;
         // Convert to original UVs for scale/scroll, then back to flipped rows.
         let raw_uv=vec2<f32>(i.uv.x,1.0-i.uv.y);
         // water_defaultPS 11..13: c20 * c21.x, times the look's ripple scale.
-        let uv_scale=select(1.0,p.water[3].x*look.x,fam==33u);
+        let uv_scale=select(select(1.0,frame_state.water_tint.w,flow),p.water[3].x*look.x,fam==33u);
         let uv1=raw_uv*p.water[2].xy*uv_scale+p.water[1].xy*t;
         let uv2=raw_uv*p.water[2].zw*uv_scale+p.water[1].zw*t;
         // The double V flip cancels, so per-axis scaling is all that carries over.
@@ -289,9 +292,9 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             // mip bias or color multiplier; the water look adds both (family
             // 33: an even steel-blue reflection as in the Aletown canal
             // footage, where the sharp cube read grey with bright/dark bands).
-            let blur=select(0.0,frame_state.water_look.y,fam==33u);
+            let blur=select(0.0,frame_state.water_look.y,fam==33u || flow);
             let cube=bindings::sample_environment(slot,vec3<f32>(-rv.x,-rv.y,rv.z),log2(frame::view.viewport.w/640.0)+blur).rgb;
-            let tint=select(vec3<f32>(1.0),frame_state.water_tint.rgb,fam==33u);
+            let tint=select(vec3<f32>(1.0),frame_state.water_tint.rgb,fam==33u || flow);
             let lum=0.3*saturate(4.0*wm.y-2.6);
             spec+=cube*tint*(lml.g+lum*(1.0-lml.g))*wm.y*1.5;
         }

@@ -1102,3 +1102,23 @@ measurable; the transparent pass stays at 0.034-0.038 ms. Scaled by pixels to th
 Change: `FrameStateData::encode` fills a fixed array instead of a new Vec every frame (byte-identical, test). Not
 done (no measurable gain): a separate water pipeline, sharing the third wave's texture page switch.
 Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes in game.
+
+## Better Water on flowing fountains (University), 2026-10-19
+
+- **Ask:** laptop session 2026-10-18 22:01: "apply better water to small fountains as well"; asked which ones, the
+  user (2026-10-19): "im talking about ones like the fountains near the pcu library spawn".
+- **Why they had none [code, research `.local/research/b287-better-water-fountains-swells.md`, main checked
+  `retail_world.wgsl:192` / `:255`]:** University's fountains are `water.flowing` (family 30,
+  `flowingwater_defaultPS`, see "University water looks darker" above); every Better Water gate was `fam==33u`.
+- **Change (opt-in only):** `WaterLook::flowing_water` (Better Water: on; retail: off) and `flowing_ripple_scale`
+  (2.0, a starting value for the user's eyes; retail 1). The scale rides in `FrameState.water_tint.w`, which no shader
+  read before (`flowing_lane`, 0 = off); family 30 then gets that ripple scale and the look's reflection blur and
+  tint. It has no PCA waves, so the third wave, swells and body calming stay family 33 only. Mod patch keys
+  `flowing_water`, `flowing_ripple_scale` (0.1..16). With Better Water off `effective()` is `RETAIL`, the lane is 0
+  and family 30 renders exactly as before.
+- **Caveat:** University's flowing water has a near-black base texture and reflection cube (data), so the visible
+  change is mostly the finer ripples; if it still looks flat, a brighter reflection for flowing water is the next
+  step (the user's call).
+- **Verification:** `water_look` tests (off = lane 0, on = 2.0), the world shader naga validation
+  (`retail_shader_tests`). Not play-tested.
+- **Open:** ocean swells around the boats (b287 part 2: normal-only, boat positions not known yet).

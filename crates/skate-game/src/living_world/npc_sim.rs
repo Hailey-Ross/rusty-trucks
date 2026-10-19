@@ -238,9 +238,18 @@ fn projected_point(sim: &NpcSim, state: PhysicalStateId) -> ([f32; 3], [f32; 3])
         ([root[3][0], root[3][1], root[3][2]], [root[2][0], root[2][1], root[2][2]])
     } else {
         let deck = GamePhysics::context_deck(&sim.context);
-        let c = deck.basis.columns[2];
-        ([deck.translation.x, deck.translation.y, deck.translation.z], [c[0], c[1], c[2]])
+        ([deck.translation.x, deck.translation.y, deck.translation.z], effective_deck_forward(sim))
     }
+}
+
+/// The effective deck forward (`GetEffectiveTransform` 82C01BF8: deck column 2, negated while the board is flipped
+/// under the rider, Processed+2468 bit 20): what the steer, the facing gates and the path projection's signed speed
+/// (`sub_8246BCF8` through `sub_82592A00`, b116 / b292) read. The raw deck made a rider standing backwards on its
+/// board look like it travelled backwards.
+fn effective_deck_forward(sim: &NpcSim) -> [f32; 3] {
+    let c = GamePhysics::context_deck(&sim.context).basis.columns[2];
+    let sign = if sim.body.runtime.player_input.processed.flags_2468 & 0x0010_0000 != 0 { -1.0 } else { 1.0 };
+    [c[0] * sign, c[1] * sign, c[2] * sign]
 }
 
 /// A loaded skater (runtime, controls, camera): about 220 ms to load from disk (session 2026-10-13: 35 of 39
@@ -916,13 +925,10 @@ pub(crate) fn simulate(
                     sim.respawn_in = Some(left - 1);
                 }
                 let deck = GamePhysics::context_deck(&sim.context);
-                // The effective deck forward (`GetEffectiveTransform` 82C01BF8 into PhysOut +64, what the AI record, the
-                // steer and the facing gates read; b200): negated while the board is flipped under the rider
-                // (Processed+2468 bit 20). The raw deck pointed backwards after a flip trick, so the steer turned the
-                // wrong end toward the line and the skater rolled away from it (b199 #7, #8).
-                let flipped = sim.body.runtime.player_input.processed.flags_2468 & 0x0010_0000 != 0;
-                let sign = if flipped { -1.0 } else { 1.0 };
-                let forward = [deck.basis.columns[2][0] * sign, deck.basis.columns[2][1] * sign, deck.basis.columns[2][2] * sign];
+                // The effective deck forward (PhysOut +64, what the AI record, the steer and the facing gates read;
+                // b200). The raw deck pointed backwards after a flip trick, so the steer turned the wrong end toward
+                // the line and the skater rolled away from it (b199 #7, #8).
+                let forward = effective_deck_forward(sim);
                 let direct = skate_core::living_world::controller_b::DirectPath;
                 let on_navmesh = peds.as_deref().and_then(|p| p.nav.as_deref()).is_some();
                 let paths: &dyn skate_core::living_world::controller_b::PathService = match peds.as_deref().and_then(|p| p.nav.as_deref()) {
@@ -1021,6 +1027,11 @@ pub(crate) fn simulate(
                             info!("NPC_WALK_BACK #{} {} hand back ({reason:?}) at line node {node} (walked to {})", npc.id.serial, npc.character, w.node);
                             events.write(super::npc_skaters::NpcSkaterEvent::WalkBack { id: npc.id, node: w.node, started: false });
                             sim.walker = None;
+                            // The activate's reset (`82468AC8`) also clears the takeoff flip latch (`pc+927` / `+928`),
+                            // the trick slot and the board yaw; none of them is in the saved `pc+528..580` block, so a
+                            // walk-back no longer carries the old line's air / trick state onto the new one (b291).
+                            // Retail sets no facing here: controller B lined the skater up before "Arrived".
+                            clear_line_state(sim);
                         }
                     }
                 }

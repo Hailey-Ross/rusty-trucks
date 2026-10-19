@@ -255,7 +255,7 @@ pub(crate) struct FrameStateData {
     /// Water look layer (water_look.rs): x ripple scale, y reflection blur
     /// (mips), z third wave (0 / 1), w body calming (0 / 1).
     pub water_look: Vec4,
-    /// Water look reflection tint (rgb).
+    /// Water look reflection tint (rgb); w the flowing water's ripple scale, 0 = the look stays off family 30.
     pub water_tint: Vec4,
     /// Retail world constant `g_ViewDotLight`, shared by every draw (bound by
     /// name hash 0xE552F1C3 in `sub_826DD6B8` to `*(0x83083C60)+0x44370`),
@@ -1763,7 +1763,7 @@ fn advance_frame_state(
         f32::from(u8::from(look.third_wave)),
         f32::from(u8::from(look.body_calming)),
     );
-    state.water_tint = Vec3::from_array(look.reflection_tint).extend(1.);
+    state.water_tint = Vec3::from_array(look.reflection_tint).extend(look.flowing_lane());
 }
 
 /// The PCA frame at `rate` x the retail 30 Hz, blended linearly between

@@ -43,6 +43,11 @@ pub(crate) struct WaterLook {
     /// scroll with `g_fAnimationTime`, which sub_82791628 accumulates without
     /// a reset; the 5-unit loop never reaches a shader (doc 09).
     pub seamless_clock: bool,
+    /// The look on flowing water too (family 30 `water.flowing`, `flowingwater_defaultPS`: University's
+    /// fountains; user 2026-10-19: "the fountains near the pcu library spawn"): its ripple scale, the reflection
+    /// blur and tint. It has no PCA waves, so the third wave, swells and calming stay family 33 only.
+    pub flowing_water: bool,
+    pub flowing_ripple_scale: f32,
 }
 
 impl WaterLook {
@@ -56,6 +61,8 @@ impl WaterLook {
         wave_rate: 1.,
         scroll_rate: 1.,
         seamless_clock: true,
+        flowing_water: false,
+        flowing_ripple_scale: 1.,
     };
 
     fn apply(&mut self, patch: &WaterLookPatch) {
@@ -68,6 +75,13 @@ impl WaterLook {
         if let Some(v) = patch.wave_rate { self.wave_rate = v; }
         if let Some(v) = patch.scroll_rate { self.scroll_rate = v; }
         if let Some(v) = patch.seamless_clock { self.seamless_clock = v; }
+        if let Some(v) = patch.flowing_water { self.flowing_water = v; }
+        if let Some(v) = patch.flowing_ripple_scale { self.flowing_ripple_scale = v; }
+    }
+
+    /// `FrameState.water_tint.w`: the flowing water's ripple scale, 0 = the look stays off flowing water.
+    pub fn flowing_lane(&self) -> f32 {
+        if self.flowing_water { self.flowing_ripple_scale.max(0.1) } else { 0. }
     }
 
     /// What the shader and clock use: retail values for every piece when the
@@ -89,6 +103,8 @@ impl Default for WaterLook {
             wave_rate: 0.75,
             scroll_rate: 0.5,
             seamless_clock: true,
+            flowing_water: true,
+            flowing_ripple_scale: 2.,
         }
     }
 }
@@ -194,6 +210,8 @@ mod tests {
         assert_eq!(s.selected.wave_rate, WaterLook::default().wave_rate);
         // Off means every piece at its retail value.
         assert_eq!(s.active().effective(), WaterLook::RETAIL);
+        assert_eq!(WaterLook::RETAIL.flowing_lane(), 0., "off: flowing water keeps the retail program");
+        assert_eq!(WaterLook { enabled: true, ..WaterLook::default() }.effective().flowing_lane(), 2.);
         std::fs::write(WaterLookSettings::path(&assets), br#"{"ripples":2}"#).unwrap();
         assert_eq!(WaterLookSettings::load(&assets).selected, WaterLook::default());
         std::fs::remove_dir_all(root).unwrap();

@@ -2044,8 +2044,18 @@ pub(crate) fn think_peds(
                     cached
                 } else {
                     let world = physics.as_ref().map(|p| p.world());
-                    let wet = world.is_some_and(|w| seats_in_water(prop, &pp.settings, |p, above, depth| w.water_surface_at(skate_core::math::Vector3::new(p[0], p[1], p[2]), above, depth)));
-                    pp.in_water.insert(prop.id, wet);
+                    let at = |p: [f32; 3]| skate_core::math::Vector3::new(p[0], p[1], p[2]);
+                    let wet = world.is_some_and(|w| seats_in_water(prop, &pp.settings, |p, above, depth| w.water_surface_at(at(p), above, depth)));
+                    // PED_PLUGIN_WATER (laptop 2026-10-19: benches pushed into the water left no line): each change of
+                    // a moved prop's water state, with its lowest seat and any water surface up to 2 m above it, so a
+                    // bench standing in shallow water with dry seats shows too.
+                    if pp.in_water.insert(prop.id, wet) != Some(wet) && pp.settings.water_disables_seats {
+                        let low = prop.waypoints.iter().map(|w| w.position).min_by(|a, b| a[1].total_cmp(&b[1]));
+                        let surface = low.zip(world).and_then(|(p, w)| w.water_surface_at(at(p), 2.0, pp.settings.water_max_depth));
+                        let occupants = prop.waypoints.iter().filter(|w| w.occupant.is_some()).count();
+                        info!("PED_PLUGIN_WATER {} {:016X} wet={wet} lowest_seat={:?} surface={surface:?} occupants={occupants} tick={tick}",
+                            prop.class, prop.id, low.map(|p| [(p[0] * 100.0).round() / 100.0, (p[1] * 100.0).round() / 100.0, (p[2] * 100.0).round() / 100.0]));
+                    }
                     wet
                 };
                 let off = tipped || wet;

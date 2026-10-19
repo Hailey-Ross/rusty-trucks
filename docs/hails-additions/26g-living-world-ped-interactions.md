@@ -2085,5 +2085,10 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   (`PluginProp` is host-owned), by stable prop id.
 - **Verification:** tests `a_seat_in_water_switches_the_bench_off` (skate-core) and the `ped_brain` patch checks
   (skate-mods). Not play-tested.
+- **First play (laptop 2026-10-19 00:19, build 0e2bb7d):** the user: "I pushed a bunch of benches in the water but I
+  never saw a ped try to path to them." The log had no line about the rule, so it could not show whether the seats
+  counted as wet (the benches may stand in shallow water with dry seats, or not be seat props). Added
+  `PED_PLUGIN_WATER <class> <id> wet lowest_seat surface occupants` on every change of a moved seat prop's water
+  state (the first check after a move always logs), with any water surface up to 2 m above the lowest seat.
 - **Open:** a seated ped's exit through the drop path uses the same path as the tipped bench (not re-checked); the
   other PluginSettings values are not in the mod patch yet.
