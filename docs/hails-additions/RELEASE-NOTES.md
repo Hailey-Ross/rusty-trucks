@@ -12,6 +12,20 @@ Each extracted copy runs its own setup. Keep the `data` folder next to the exe.
 
 Every start checks your converted game files (a fraction of a second, in the background; the log says `ASSET_CHECK`). If an update needs newer ones, the Guide / F1 / Esc menu says **GAME FILES OUT OF DATE**: open **Extras > Refresh Game Files** and the game restarts into setup, converts only what changed and starts again. This also catches copies an earlier build updated without converting the new menu files (there, Start opened the old menu instead of Skate 3's pause menu).
 
+## Which download is for you?
+
+There are three ways to get this build. Most players want the first one.
+
+| | Game package `skate3rust-windows-x64.zip` | Standalone launcher `skate-launcher-windows.zip` | Full repository (git clone) |
+|---|---|---|---|
+| What it is | This branch, built and ready to play | The Steam / couch launcher on its own: no game build, no copy of the repository | All the source, with the launcher in `tools\steam-launcher` |
+| Versions | One: `hails-additions`, updated in game (Esc > EXTRAS > Updates) | The ones you pick (by default `hails-additions` and upstream `main`; add branches or PRs in `versions.json`), each downloaded and built only when you first play it | Any branch or worktree of your clone, including your own changes |
+| Building | None | On your PC: the first-time setup installs Git, Rust and the C++ build tools (one UAC prompt, 10 minutes or more); each version's first build takes several minutes | On your PC, same tools |
+| Disk space | About 10 GB of converted game files | The game files once (shared by every version) plus a build folder per version, which can reach tens of GB (`build_cap_gb` in `config.json` keeps them under a size you choose) | As the launcher, inside your clone |
+| Best for | Playing and reporting bugs | Testers who switch between versions, compare a branch with upstream, or try a PR before it is released | Development |
+
+The standalone launcher keeps everything (its settings, versions, builds and game files) in the folder you extract it to. Setup steps: "Launcher-only download" in `tools/steam-launcher/README.md`.
+
 ## Refreshing game files and trying early features
 
 **Refreshing your game files.** New builds sometimes need game files converted from your disc that an older setup did not make (new menus, props, living world data). You don't need to set up again from scratch:
@@ -73,6 +87,8 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Launcher updates itself (new):** at every start, before Tools > Update and build, and from Tools > Update the launcher, the Steam launcher brings its own files (`tools\steam-launcher`, `tools\second-pc`) to the newest `hails-additions` on the fork, rebuilds its window and restarts into it. No `git pull` or shell needed, the rest of the checkout is left alone, and local changes to those files are backed up first. The main screen shows the launcher's commit, and the fork's newer one when it could not update. Works in the standalone launcher too. A launcher from before this change needs one manual update (git pull or the next patch) to get it.
+- **Launcher build waiting (new):** a build that has to wait for another build of the same folder now says WAITING, who holds the folder and for how long, instead of "0 crates compiled"; B twice cancels it. Git checks and the build-folder size check print what they are doing, and a git fetch that stalls fails instead of hanging.
 - **Launcher in a window (new):** the Steam launcher opens as a normal window instead of full screen and comes to the front, and the game's window comes to the front once the startup splash is done.
 - **Launcher animations (new):** switching screens in the launcher slides and fades the new screen in briefly, and the selection outline eases on instead of snapping.
 - **Startup splash resizing (new):** the splash no longer changes size partway through the start.
@@ -167,16 +183,6 @@ Not play-tested yet; tell us if any of these still happen.
 - **Rolling on grass and dirt:** uses retail's sound routing for those surfaces instead of a stand-in grain sound.
 - **Frame hitches from the trick text:** the trick and score text no longer rebuilds its graphics every frame.
 - **Better logs:** a body hit while skating is heard again (and logged), every landing logs its sound, frame hitches are logged with their cause, and a trace-all mode turns on every log at once for test sessions.
-
-**Fixed in build 9**
-- **Peds floating in the air all over the map:** peds were stood on the first solid surface within 1.6 m above them (awnings, ledges, signs, invisible collision). They are now drawn on the floor under them: the search only reaches the navmesh step height (0.2 m) upward. On DownTown's navmesh this lifted peds at 195 spots before and none after.
-- **Peds spawning in the air or under the ground:** a ped could spawn at your height where the floor was far above or below you (on ledges, ramps and roofs) and stay there. Those spawns are now skipped and the ped spawns somewhere else; a session after the fix logged no floating peds.
-- **Game closed when letting go of a carried prop:** while carrying, the walk cycle's timing was asked to reach a phase in zero seconds, which turned it into an invalid number; on letting go, the stand-up animation could not pick a clip and the game stopped. Carrying now holds the walk cycle still. Found from a tester log thanks to the new error line, which now names the broken animation input and the clips it was choosing between.
-- **Landings going silent the longer you played:** NPC skaters that left kept their sounds held, which slowly filled the sound mixer until new sounds (your landings among them) were refused. NPC skaters now release their sounds when they go, and a full mixer clears finished sounds first.
-- **Frame-time counter modes:** Esc > GRAPHICS > Frame-time counter now cycles Off / Simple / Verbose. Simple is a small readout (fps, frame time, 1% low, worst) with a tiny spike graph; Verbose is the full one.
-- **No-NPC option:** NPC draw distance (Esc > GRAPHICS) has a **None** step that turns off all NPC skaters, peds and cars.
-- **Manual landing log:** every landing writes a `MANUAL_LANDING` line to the session log (stick position, whether a manual was asked for and whether it was granted, or why not), to check landings that should have gone into a manual.
-- **Better crash logs:** any animation choice that gets an invalid input now names that input and the candidate clips in the session log.
 
 ## Added since main
 

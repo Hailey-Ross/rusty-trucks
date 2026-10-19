@@ -311,6 +311,46 @@ frame rate and timing differ from the console, so its traces validate retail log
 Credits: [skate3recomp](https://github.com/mchughalex/skate3recomp) by @mchughalex, the
 [rexglue SDK](https://github.com/rexglue/rexglue-sdk) and [Xenia](https://github.com/xenia-project/xenia).
 
+## Local hails-additions patches
+
+Between pushes (for example during the hours when nothing is committed), the main PC can share its work in progress
+so the second PC tests it before it is pushed: the pushed `hails-additions` plus the main PC's unpushed commits,
+uncommitted changes and new files, as one patch in the same share (`<share>\_patches\`). The second PC applies it to
+a launcher-only copy and plays it as the launcher version **hails-local**, next to its normal `hails-additions`
+(which keeps following the fork). Only what git tracks travels: no build output, game files or logs.
+
+### Main PC (each new patch)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\second-pc\share-patches.ps1 -Folder <the shared SkateSessions folder> `
+  -Source .local\wt-living, .local\wt-hails -Notes "What to test\nSecond line"
+```
+
+Name every worktree with new work (user 2026-10-19: "everything should be updated that has new changes"): the
+living-world work and `wt-hails` (the launcher, these scripts, release notes).
+
+`-Source` takes one or more worktrees (default `.local\wt-living`). Each one's local work is taken against its pushed
+branch through a temporary index (its own files and index are not touched) and applied to `origin/hails-additions` in
+a throwaway worktree first, so a conflict stops here (merge `hails-additions` into the branch, then run it again). The
+share then holds `hails-local.patch`, `files.txt`, `patch.txt` (base commit, time, file count, SHA-256, notes, sources)
+and `tools\` (a copy of the second PC's script until it is on `hails-additions`).
+
+### Second PC
+
+1. Once, until the scripts are on `hails-additions`: copy `<share>\_patches\tools\get-patches.ps1` and
+   `GET-PATCHES.bat` into the checkout's `tools\second-pc\`. The share account from `play-and-send.ps1 -Setup` is used.
+2. Each new patch: `tools\second-pc\GET-PATCHES.bat` (`-Status` shows what the share has and what is applied,
+   `-Remove` removes the copy and its launcher version). It checks the hash, resets `.local\versions\hails-local` to
+   the base commit (the previous patch's changes and new files go), applies the patch and adds or updates `hails-local`
+   in `.local\steam-launcher\versions.json` (a working-tree version: rebuilt whenever a new patch changes it).
+   When the patch changes the launcher (`tools\steam-launcher`) or these scripts (`tools\second-pc`), they are updated
+   in the checkout too and `SkateLauncher.exe` is rebuilt (a running launcher keeps going; restart it to get the new
+   one). Each run first puts those two folders back to the checkout's own commit, so a later pull stays clean;
+   `-Remove` does the same.
+3. In the launcher pick **hails-local**; its first launch builds it (several minutes). Sessions are sent as usual.
+
+Once the work is pushed, `hails-additions` itself has it; `GET-PATCHES.bat -Remove` then tidies up.
+
 ## Moving the ISO
 
 A FAT32 flash drive cannot hold a file over 4 GB, whatever its free space. Format it as exFAT (Explorer: right-click

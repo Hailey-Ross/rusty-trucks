@@ -58,6 +58,19 @@ copy of the repository. It downloads and builds only the versions you use:
 5. Game files: the first version needs them converted from your Skate 3 disc once; the launcher says how
    (`tools\setup-dev-assets.ps1 -Disc ...` in that version's folder). Every other version then shares them.
 
+## Updating the launcher itself
+
+The launcher keeps itself current with the newest pushed `hails-additions` on the fork (no `git pull`, no shell):
+at every start (not while a game runs), before **Tools > Update and build the selected version**, and from **Tools >
+Update the launcher**. It fetches that branch into its own small clone (`self.git` in the state folder), copies
+`tools\steam-launcher` (into the launcher's folder) and `tools\second-pc` from it, rebuilds `SkateLauncher.exe`
+when its source changed and restarts into the new window (the old one waits hidden, so Steam keeps tracking it).
+Nothing else of the checkout is touched and nothing is committed. A local file that differs (for example one copied
+in by `get-patches.ps1`) is backed up to `self-update-backup\<time>\` first. The main screen shows the launcher's
+commit next to the wordmark, and the fork's newer one when it did not update. Log: `self-update.log`; on a failure
+the current launcher stays. `config.json`: `"self_update": false` turns the automatic runs off, `"launcher_branch"`
+picks another branch (default `hails-additions`, from `fork_url`).
+
 ## Files
 
 | File | What it is |
@@ -67,7 +80,7 @@ copy of the repository. It downloads and builds only the versions you use:
 | `launcher.ps1` | Does the work: versions, builds, launching, session checks, tools. The window runs it; it runs from a shell too. |
 | `setup.ps1` | The first-time setup: `setup.ps1` checks, `setup.ps1 -Install` installs what is missing. |
 | `launcher.bat` | `launcher.bat <entry> [label] [-Version <id>]` from a keyboard; no argument opens the window. |
-| `build.bat` | Builds `SkateLauncher.exe`. Run it again after pulling a new launcher. |
+| `build.bat` | Builds `SkateLauncher.exe` (the first time; afterwards the launcher rebuilds itself when it updates). |
 | `versions.example.json`, `config.example.json` | Examples for your own versions and settings. |
 
 State and your own settings live in `.local\steam-launcher\` (gitignored): `versions.json`, `config.json`,
@@ -148,7 +161,8 @@ A shortcut without launch options opens the menu.
 | `rust-devmods` | play with the version's `mods_enable` mod(s) on |
 | `rust-perf` | play + Bevy performance trace (`PLAY.bat -trace`) |
 | `tool-refresh` | `skate3rust.exe --update-game-files`: the game's start-up file check without starting the game; out of date = the same refresh as the game's Extras > Refresh Game Files. Versions built before it are greyed out |
-| `tool-build` | fetch and build the selected version now |
+| `tool-build` | update the launcher, then fetch and build the selected version now |
+| `tool-self-update` | update the launcher to the newest `hails-additions` on the fork (see Updating the launcher itself) |
 | `tool-send` | the `after_session` send now |
 | `tool-recomp-update`, `tool-recomp-getsave` | `play-recomp.ps1 -Update` / `-GetSave` |
 | `tool-setup` | `setup.ps1 -Install` |
@@ -163,6 +177,9 @@ build of `<id>`), `list`.
 
 ## Notes
 
+- A build that has to wait for another build of the same folder (a shell build, a second window, a dev `cargo`) shows
+  **WAITING** with who holds it (`BUILDING-<id>.txt` in the state folder, or the cargo process) and for how long; **B**
+  twice (Esc on a keyboard) cancels it. The build log gets `[launcher ...] waiting / waited / cancelled` lines.
 - Closing a game with Steam's **Exit game** also closes the launcher, so its after-session check is skipped; the next
   start of any shortcut catches it up.
 - A version's worktree is a normal git worktree: remove it with `git worktree remove <dir>` (its `assets` folder is a

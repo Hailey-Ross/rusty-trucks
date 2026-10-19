@@ -13,6 +13,7 @@ using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 static class Native {
@@ -61,6 +62,11 @@ class BuildView {
     static readonly System.Text.RegularExpressions.Regex Bar = new System.Text.RegularExpressions.Regex(@"Building \[[^\]]*\]\s*(\d+)/(\d+)(?::\s*(.*))?");
     static readonly System.Text.RegularExpressions.Regex Compiling = new System.Text.RegularExpressions.Regex(@"Compiling (\S+) v");
     static readonly System.Text.RegularExpressions.Regex ErrStart = new System.Text.RegularExpressions.Regex(@"^error(\[E\d+\])?: ");
+    // Cargo waiting for another cargo (USER-ASKS 72: the laptop showed "0 crates compiled" while cargo printed "Blocking
+    // waiting for file lock on build directory"); and its index / download stages, which come before any build step.
+    static readonly System.Text.RegularExpressions.Regex Lock = new System.Text.RegularExpressions.Regex(@"Blocking waiting for file lock on (.+)$");
+    static readonly System.Text.RegularExpressions.Regex Stage = new System.Text.RegularExpressions.Regex(@"^(Updating|Downloading|Downloaded|Locking|Fetching)\b");
+    public string Waiting, WaitWho, StageText; public DateTime WaitSince;
     public bool Active, Ended, Ok; public string Name = "", Commit = "", LogPath, Now = "";
     public int Done, Total, Compiled, Warnings; public DateTime Start, End;
     public readonly List<string> Error = new List<string>(); bool inError; string couldNot;
@@ -80,18 +86,27 @@ class BuildView {
         if (raw.StartsWith("LAUNCHER_BUILD\tbegin\t")) {
             var f = raw.Split('\t');
             Close(); Active = true; Ended = false; Name = f.Length > 2 ? f[2] : ""; Commit = f.Length > 3 ? f[3] : ""; LogPath = f.Length > 4 ? f[4] : null;
-            Done = Total = Compiled = Warnings = 0; Error.Clear(); Tail.Clear(); inError = false; couldNot = null; Now = ""; Start = DateTime.Now;
+            Done = Total = Compiled = Warnings = 0; Error.Clear(); Tail.Clear(); inError = false; couldNot = null; Now = ""; Start = DateTime.Now; Waiting = null; WaitWho = null; StageText = null;
             try { if (LogPath != null) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)); file = new StreamWriter(LogPath, false, new UTF8Encoding(false)); } } catch { file = null; }
             return true;
         }
         if (raw.StartsWith("LAUNCHER_BUILD\tend\t")) { Active = false; Ended = true; End = DateTime.Now; Ok = raw.EndsWith("\t0"); if (file != null) file.Flush(); return true; }
         if (!Active) return false;
+        // launcher.ps1 names who holds the build folder (BUILDING-<id>.txt or a cargo process) before cargo blocks.
+        if (raw.StartsWith("LAUNCHER_BUILD\twait\t")) { var f = raw.Split('\t'); WaitWho = f.Length > 3 ? f[3] : null; Note("holder: " + WaitWho); return true; }
         string c = Clean(raw);
         var m = Bar.Match(c);
         if (m.Success) { Done = int.Parse(m.Groups[1].Value); Total = int.Parse(m.Groups[2].Value); if (m.Groups[3].Success) Now = m.Groups[3].Value.Trim(); }
         var cm = Compiling.Match(c);
         bool barOnly = m.Success && !cm.Success;
         if (file != null && !barOnly && c != "") { try { file.WriteLine(Ansi.Replace(raw, "").Replace("\r", "")); } catch { } }
+        var lk = Lock.Match(c);
+        if (lk.Success) {
+            if (Waiting == null) { WaitSince = DateTime.Now; Note("waiting: " + lk.Groups[1].Value.Trim() + (WaitWho != null ? ", " + WaitWho : "")); }
+            Waiting = "another build is using the " + lk.Groups[1].Value.Trim();
+        }
+        else if (m.Success || cm.Success) { EndWait(); StageText = null; }
+        else if (Stage.IsMatch(c)) { EndWait(); StageText = c; }
         if (cm.Success) { Compiled++; Now = cm.Groups[1].Value; }
         if (inError) {
             if (c == "" || Error.Count >= 40) inError = false; else Error.Add(c);
@@ -106,6 +121,9 @@ class BuildView {
         if (Error.Count > 0) return Error;
         var l = new List<string>(); if (couldNot != null) l.Add(couldNot); l.AddRange(Tail); return l;
     }
+    void EndWait() { if (Waiting != null) Note("waited " + Clock(DateTime.Now - WaitSince)); Waiting = null; }
+    // A launcher line in the build log, so a session note shows when, why and how long a build waited.
+    public void Note(string text) { if (file != null) { try { file.WriteLine("[launcher " + DateTime.Now.ToString("HH:mm:ss") + "] " + text); file.Flush(); } catch { } } }
     public static string Clock(TimeSpan t) { return ((int)t.TotalMinutes) + ":" + t.Seconds.ToString("00"); }
     public void Close() { if (file != null) { try { file.Dispose(); } catch { } file = null; } }
 }
@@ -120,15 +138,18 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     readonly Timer tick = new Timer();
     readonly List<string> log = new List<string>();
     readonly BuildView build = new BuildView(); bool dirty;
-    readonly string[] direct;
+    readonly string[] direct; readonly bool afterUpdate;
     Dictionary<string, string> status = new Dictionary<string, string>();
     Process job; string jobTitle; bool jobHidGame; IntPtr gameWindow; DateTime hidAt; int closeAt = -1; DateTime closeTime;
     string waitEntry, waitLabel, waitName;   // waiting for another game to close before starting
+    bool cancelArmed, cancelled;             // B pressed once / twice while a build waits for another build
     ushort prevPad; int held; string lastAction = ""; bool lastFromPad; DateTime lastActionTime = DateTime.MinValue;
     Font monoFont, titleFont, itemFont, smallFont, heroFont, markFont, markLight, playFont, iconFont, iconSmall, itemBold, smallBold;
 
     public LauncherForm(string[] argv) {
-        direct = argv;
+        // --after-update: started by the previous exe after it updated itself (shows what changed), not a direct entry.
+        afterUpdate = Array.IndexOf(argv, "--after-update") >= 0;
+        direct = Array.FindAll(argv, a => a != "--after-update");
         Text = "Skate launcher";
         // A normal window: 70 % of the screen's work area at 16:10, centred, resizable (the layout scales with it).
         var area = Screen.PrimaryScreen.WorkingArea;
@@ -147,6 +168,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     void MakeFonts() { MakeFonts(ClientSize.Height); }
     void MakeFonts(int height) {
         float h = Math.Max(480, height);
+        foreach (var f in hintFonts.Values) f.Dispose();
+        hintFonts.Clear();
         titleFont = new Font("Segoe UI Semibold", h / 24f, GraphicsUnit.Pixel);
         heroFont = new Font("Segoe UI Semibold", h / 17f, GraphicsUnit.Pixel);
         itemFont = new Font("Segoe UI", h / 34f, GraphicsUnit.Pixel);
@@ -162,13 +185,20 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     }
 
     // Draws one screen into a PNG (the --snapshot mode): main, versions, tools or job (a sample build log).
-    public void Snapshot(string file, string screen) {
-        const int w = 1920, h = 1080;
+    public void Snapshot(string file, string screen, int w, int h) {
         MakeFonts(h);
         RefreshStatus();
         pages.Push(MainPage());
         if (screen == "versions") pages.Push(VersionPage());
         if (screen == "tools") pages.Push(EntryPage("Tools", "tools"));
+        if (screen == "waiting") {
+            job = new Process(); jobTitle = "Update and build";
+            build.Feed("LAUNCHER_BUILD\tbegin\thails-additions\t94774ce\t");
+            build.Start = DateTime.Now.AddSeconds(-75);
+            build.Feed("LAUNCHER_BUILD\twait\tbuild\thails-additions is being built by the shell since 16:41 (pid 21412)");
+            build.Feed("    Blocking waiting for file lock on build directory");
+            build.WaitSince = DateTime.Now.AddSeconds(-72);
+        }
         if (screen == "build" || screen == "failed") {
             job = new Process(); jobTitle = "Update and build";
             build.Feed("LAUNCHER_BUILD\tbegin\thails-additions\t94774ce\t");
@@ -181,7 +211,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             foreach (var l in new[] { "Fetching hails-additions at 94774ce", "   Compiling bevy_render v0.18.1", "   Compiling skate-core v0.1.0", "warning: unused import: `skitch_enabled`", "   Compiling skate-game v0.1.0" }) log.Add(l);
         }
         using (var bmp = new Bitmap(w, h)) {
-            using (var g = Graphics.FromImage(bmp)) Render(g, w, h);
+            // Twice: the first frame starts the screen-change fade; the second draws it finished.
+            using (var g = Graphics.FromImage(bmp)) { Render(g, w, h); screenAt = selAt = -10; Render(g, w, h); }
             bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
         }
     }
@@ -206,9 +237,30 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
     }
     static string Run(string args) { int c; return Run(args, out c); }
+    // The lists behind the main tiles (Versions, What to test, Recomp, RPCS3, Tools): each launcher.ps1 call is a new
+    // powershell.exe (1 to 2.5 s on the laptop, 2026-10-19), so they are fetched in the background at start and after
+    // every change (version picked, job finished) and the tiles open from memory. A tile pressed before its fetch is
+    // done waits only for the rest of it.
+    static readonly string[] Prefetched = { "entries", "versions", "notes" };
+    static readonly Dictionary<string, Task<string>> cache = new Dictionary<string, Task<string>>();
+    static Task<string> Fetch(string args) {
+        lock (cache) {
+            Task<string> t;
+            if (!cache.TryGetValue(args, out t)) { t = Task.Run(() => Run(args)); cache[args] = t; }
+            return t;
+        }
+    }
+    static string Listed(string args) {
+        if (Array.IndexOf(Prefetched, args) < 0) return Run(args);
+        var t = Fetch(args);
+        try { return t.GetAwaiter().GetResult(); }
+        catch { lock (cache) { Task<string> c; if (cache.TryGetValue(args, out c) && c == t) cache.Remove(args); } throw; }
+    }
+    static void Prefetch() { foreach (var a in Prefetched) Fetch(a); }
+    static void ForgetCache() { lock (cache) cache.Clear(); }
     static List<string[]> Rows(string args, int min) {
         var rows = new List<string[]>();
-        foreach (var l in Run(args).Split('\n')) { var f = l.TrimEnd('\r').Split('\t'); if (f.Length >= min) rows.Add(f); }
+        foreach (var l in Listed(args).Split('\n')) { var f = l.TrimEnd('\r').Split('\t'); if (f.Length >= min) rows.Add(f); }
         return rows;
     }
     static string StateDir() {
@@ -231,16 +283,36 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     string St(string k) { string v; return status.TryGetValue(k, out v) ? v : ""; }
 
     // ---------- start ----------
+    // The launcher updated its own exe (launcher.ps1 wrote restart.txt): start the new one and wait for it hidden, so
+    // Steam keeps the process it started (its controller layout and "playing" state) until the new window closes.
+    bool RestartIfUpdated(bool showLast) {
+        string f = Path.Combine(StateDir(), "restart.txt");
+        if (!File.Exists(f)) return false;
+        try { File.Delete(f); } catch { }
+        string exe = Path.Combine(Here, "SkateLauncher.exe");
+        if (!File.Exists(exe)) return false;
+        var args = new List<string>(direct);
+        if (showLast) args.Add("--after-update");
+        Process child;
+        try { child = Process.Start(new ProcessStartInfo(exe, string.Join(" ", args.ConvertAll(a => "\"" + a + "\"").ToArray())) { UseShellExecute = false }); } catch { return false; }
+        tick.Stop(); Hide();
+        child.EnableRaisingEvents = true;
+        child.Exited += delegate { BeginInvoke((Action)Close); };
+        if (child.HasExited) Close();
+        return true;
+    }
     void Start() {
         Activate(); Native.Front(Handle);
         int code; string pending = Run("pending", out code);
+        if (RestartIfUpdated(code == 10)) return;
         string ent = "", lbl = "", ver = "";
         foreach (var a in direct) { if (a.StartsWith("@")) ver = a.Substring(1); else if (ent == "") ent = a; else if (lbl == "") lbl = a; }
         if (ent != "") { Direct(ent, lbl, ver); return; }
+        Prefetch();
         RefreshStatus();
         pages.Push(MainPage());
         if (St("setup_missing") != "") pages.Push(SetupPage());
-        if (code == 10) ShowText("Previous session (closed before its check)", LastSession(), null);
+        if (code == 10 || afterUpdate) ShowText(LastSession().Contains("launcher update") || afterUpdate ? "Launcher updated" : "Previous session (closed before its check)", LastSession(), null);
         Invalidate();
     }
 
@@ -265,13 +337,13 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         p.OnBack = delegate { };
         var entries = Rows("entries", 7);
         p.Items.Add(new Item("Play: " + St("version"), "Our engine, the selected version (" + St("version_status") + ").", true, delegate { pages.Push(EntryPage("Play: " + St("version"), "rust")); }));
-        p.Items.Add(new Item("Choose version", "hails-additions, upstream main and the versions in versions.json.", true, delegate { pages.Push(VersionPage()); }));
-        p.Items.Add(new Item("What to test", "What this version changed and what to try in it.", true, delegate { ShowText("What to test", Run("notes"), null); }));
+        p.Items.Add(new Item("Versions", "Pick the build Play starts.", true, delegate { pages.Push(VersionPage()); }));
+        p.Items.Add(new Item("What to test", "What changed and what to try.", true, delegate { ShowText("What to test", Listed("notes"), null); }));
         bool recomp = entries.Exists(e => e[4] == "recomp"), retail = entries.Exists(e => e[4] == "retail");
-        p.Items.Add(new Item("Recomp", recomp ? "The recompiled retail game, with or without tracing." : "Not set up: add recomp_entries to config.json (see README.md).", recomp, delegate { pages.Push(EntryPage("Recomp", "recomp")); }));
-        p.Items.Add(new Item("Retail (RPCS3)", retail ? "The PS3 game in RPCS3." : "Not set up: add rpcs3 and rpcs3_entries to config.json (see README.md).", retail, delegate { pages.Push(EntryPage("Retail Skate 3 (RPCS3)", "retail")); }));
-        p.Items.Add(new Item("Tools", "Refresh game files, build, send logs, recomp update and save, first-time setup.", true, delegate { pages.Push(EntryPage("Tools", "tools")); }));
-        p.Items.Add(new Item("Last session", "The result of the last session: what was checked and sent.", true, delegate { ShowText("Last session", LastSession(), null); }));
+        p.Items.Add(new Item("Recomp", recomp ? "Recompiled retail, traced or not." : "Not set up (see README.md).", recomp, delegate { pages.Push(EntryPage("Recomp", "recomp")); }));
+        p.Items.Add(new Item("RPCS3", retail ? "The PS3 game in RPCS3." : "Not set up (see README.md).", retail, delegate { pages.Push(EntryPage("Retail Skate 3 (RPCS3)", "retail")); }));
+        p.Items.Add(new Item("Tools", "Game files, builds, logs, recomp, setup.", true, delegate { pages.Push(EntryPage("Tools", "tools")); }));
+        p.Items.Add(new Item("Last session", "What was checked and sent.", true, delegate { ShowText("Last session", LastSession(), null); }));
         p.Items.Add(new Item("Exit", "Close the launcher.", true, delegate { Close(); }));
         return p;
     }
@@ -343,6 +415,9 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         return p;
     }
     void RebuildMain() {
+        // A version change or a finished job can change every list (entries, versions, notes): fetch them again.
+        ForgetCache();
+        Prefetch();
         RefreshStatus();
         var all = new List<Page>(pages); all.Reverse();
         pages.Clear();
@@ -371,7 +446,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         StartJob(entry + (label == "" ? "" : " " + label), name);
     }
     void StartJob(string args, string title) {
-        jobTitle = title; jobHidGame = false; gameWindow = IntPtr.Zero; jobStart = DateTime.Now;
+        jobTitle = title; jobHidGame = false; cancelArmed = cancelled = false; gameWindow = IntPtr.Zero; jobStart = DateTime.Now;
         build.Close(); build.LogPath = null; build.Ended = false; build.Active = false;
         // Let the game take the foreground from us (Steam gives the foreground window its controller layout).
         Native.AllowSetForegroundWindow(-1);
@@ -393,8 +468,10 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         Activate(); Native.Front(Handle);
         string text = LastSession();
         build.Close();
+        if (direct.Length == 0 && RestartIfUpdated(true)) return;
         string mono = null;
-        if (build.LogPath != null && build.Ended) {
+        if (cancelled) text = "Build cancelled after " + BuildView.Clock(DateTime.Now - build.Start) + " (it was waiting for another build)." + (build.LogPath != null ? "\nBuild log: " + build.LogPath : "");
+        else if (build.LogPath != null && build.Ended) {
             string took = BuildView.Clock(build.End - build.Start);
             if (build.Ok) text += "\n\nBuilt " + build.Name + " at " + build.Commit + " in " + took + (build.Warnings > 0 ? ", " + build.Warnings + " warnings" : "") + ".\nBuild log: " + build.LogPath;
             else { text += "\n\nBuild failed after " + took + ". Build log: " + build.LogPath + "\n\nFirst error:"; mono = string.Join("\n", build.FirstError()); }
@@ -446,6 +523,9 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (Visible && ++frame % 2 == 0 && (job != null || (pages.Count > 0 && IsMain(pages.Peek())))) Invalidate();
         // Only while the menu is in front: XInput reports the pad to every process, so the game's presses would
         // otherwise drive the menu behind it.
+        if (job != null && Form.ActiveForm == this && build.Waiting != null && !build.Ended) {
+            ushort jb = Pad(); if ((jb & ~prevPad & B) != 0) CancelPress(); prevPad = jb; return;
+        }
         if (job != null || Form.ActiveForm != this) { prevPad = Pad(); return; }
         ushort b = Pad(), pressed = (ushort)(b & ~prevPad);
         if ((pressed & A) != 0) Act("ok", true);
@@ -458,7 +538,16 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (b != prevPad) held = 0;
         prevPad = b;
     }
+    // Cancelling a build that waits for another one: the first B arms, the second kills the job's process tree
+    // (powershell launcher.ps1 -> Build.ps1 -> cargo); a cargo that only waits on a lock loses nothing.
+    void CancelPress() {
+        if (job == null) return;
+        if (!cancelArmed) { cancelArmed = true; dirty = true; return; }
+        cancelled = true; build.Note("cancelled after " + BuildView.Clock(DateTime.Now - build.Start));
+        try { Process.Start(new ProcessStartInfo("taskkill.exe", "/T /F /PID " + job.Id) { CreateNoWindow = true, UseShellExecute = false }); } catch { }
+    }
     protected override bool ProcessCmdKey(ref Message msg, Keys key) {
+        if (job != null && build.Waiting != null && !build.Ended && (key == Keys.Escape || key == Keys.Back)) { CancelPress(); return true; }
         if (job == null) {
             switch (key) {
                 case Keys.Up: case Keys.W: Act("up", false); return true;
@@ -616,10 +705,10 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     static string Glyph(string text) {
         string t = text.ToLowerInvariant();
         if (t.StartsWith("play")) return "";
-        if (t.StartsWith("choose version")) return "";
+        if (t.StartsWith("versions")) return "";
         if (t.StartsWith("what to test")) return "";
         if (t.StartsWith("recomp")) return "";
-        if (t.StartsWith("retail")) return "";
+        if (t.StartsWith("rpcs3")) return "";
         if (t.StartsWith("tools")) return "";
         if (t.StartsWith("last session")) return "";
         if (t.StartsWith("exit")) return "";
@@ -663,6 +752,12 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         var skate = g.MeasureString("SKATE", markFont);
         Write(g, "SKATE", markFont, Ink, new RectangleF(wx, 0, skate.Width + 8, barH), StringAlignment.Near, StringAlignment.Center, false);
         Write(g, "LAUNCHER", markLight, Dim, new RectangleF(wx + skate.Width * 0.92f, 0, w * 0.3f, barH), StringAlignment.Near, StringAlignment.Center, false);
+        // The launcher's own commit, and the fork's newer one when it did not update itself (USER-ASKS 116).
+        if (St("launcher") != "") {
+            float lx = wx + skate.Width * 0.92f + g.MeasureString("LAUNCHER", markLight).Width + smallFont.Height * 0.4f;
+            string lv = St("launcher") + (St("launcher_newer") != "" ? "   newer on the fork: " + St("launcher_newer") + " (Tools: Update the launcher)" : "");
+            Write(g, lv, smallFont, St("launcher_newer") != "" ? Accent : Faint, new RectangleF(lx, 0, w * 0.45f, barH), StringAlignment.Near, StringAlignment.Center, false);
+        }
         string chip = St("version") == "" ? "" : St("version");
         if (chip != "") {
             var cs = g.MeasureString(chip, smallFont);
@@ -726,7 +821,10 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         g.Restore(clip);
         float pad = hero.Height * 0.12f;
         Write(g, "NOW SELECTED", smallBold, Accent, new RectangleF(hero.X + pad, hero.Y + pad, hero.Width * 0.6f, smallFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
-        Write(g, St("version"), heroFont, Ink, new RectangleF(hero.X + pad, hero.Y + pad + smallFont.Height * 1.2f, hero.Width * 0.62f, heroFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
+        // The version name shrinks (to 60 %) before it is cut, so a long name stays readable in the window.
+        var vr = new RectangleF(hero.X + pad, hero.Y + pad + smallFont.Height * 1.2f, hero.Width * 0.62f, heroFont.Height * 1.2f);
+        var vf = FitFont(g, St("version"), vr.Size, heroFont, 0.6f, false);
+        Write(g, St("version"), vf, Ink, new RectangleF(vr.X, vr.Y + (heroFont.Height - vf.Height) / 2, vr.Width, vr.Height), StringAlignment.Near, StringAlignment.Near, false);
         float sy = hero.Y + pad + smallFont.Height * 1.3f + heroFont.Height * 1.15f;
         Write(g, St("version_status"), itemFont, Dim, new RectangleF(hero.X + pad, sy, hero.Width * 0.6f, itemFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
         string send = St("send");
@@ -748,15 +846,16 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         float gy = hero.Bottom + h * 0.03f, gap = w * 0.012f;
         int n = p.Items.Count - 1, rows = Math.Max(1, (n + TileCols - 1) / TileCols);
         float tw = (w - 2 * m - gap * (TileCols - 1)) / TileCols, th = Math.Min((bottom - gy - gap * (rows - 1)) / rows, h * 0.15f);
+        var hint = PageHintFont(g, p, 1, new RectangleF(0, 0, tw, th), true);
         for (int i = 1; i < p.Items.Count; i++) {
             var it = p.Items[i]; bool sel = i == p.Sel;
             int k = i - 1; var r = new RectangleF(m + (k % TileCols) * (tw + gap), gy + (k / TileCols) * (th + gap), tw, th);
-            Tile(g, it, sel, r, true);
+            Tile(g, it, sel, r, true, hint);
             hits.Add(new KeyValuePair<RectangleF, int>(r, i));
         }
     }
 
-    void Tile(Graphics g, Item it, bool sel, RectangleF r, bool icon) {
+    void Tile(Graphics g, Item it, bool sel, RectangleF r, bool icon, Font hint) {
         float rad = r.Height * 0.16f;
         // The selection ring grows out over a few frames instead of snapping on.
         float ring = 1 + 2 * selEase;
@@ -783,9 +882,47 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         float ty = r.Y + r.Height * 0.16f, hy = ty + itemBold.Height * 1.15f;
         Write(g, title, itemBold, ink, new RectangleF(tx, ty, tw, itemBold.Height * 1.15f), StringAlignment.Near, StringAlignment.Near, false);
-        // At most two whole lines of the hint.
-        float hh = Math.Min(r.Bottom - hy - pad * 0.3f, smallFont.GetHeight(g) * 2.05f);
-        Write(g, it.Hint, smallFont, it.On ? Dim : Faint, new RectangleF(tx, hy, r.Right - tx - pad, hh), StringAlignment.Near, StringAlignment.Near, true);
+        // The hint in the space left under the title, in the page's hint font (PageHintFont).
+        Write(g, it.Hint, hint, it.On ? Dim : Faint, HintArea(r, icon), StringAlignment.Near, StringAlignment.Near, true);
+    }
+
+    // Where Tile draws the hint: under the title, right of the icon.
+    RectangleF HintArea(RectangleF r, bool icon) {
+        float pad = r.Height * 0.2f, tx = icon ? r.X + pad + r.Height * 0.5f + pad * 0.8f : r.X + pad;
+        float hy = r.Y + r.Height * 0.16f + itemBold.Height * 1.15f;
+        return new RectangleF(tx, hy, r.Right - tx - pad, r.Bottom - hy - pad * 0.3f);
+    }
+
+    // One hint font per page, small enough for its longest hint to show whole (user 2026-10-19: in the window the hints
+    // were cut after a few words). Items from `from` on are tiles of `tile`'s size.
+    Font PageHintFont(Graphics g, Page p, int from, RectangleF tile, bool icon) {
+        var area = HintArea(tile, icon).Size;
+        Font f = smallFont;
+        for (int i = from; i < p.Items.Count; i++) {
+            var x = HintFont(g, p.Items[i].Hint, area);
+            if (x.Size < f.Size) f = x;
+        }
+        return f;
+    }
+
+    Font HintFont(Graphics g, string s, SizeF area) { return FitFont(g, s, area, smallFont, 0.7f, true); }
+
+    // The largest font from `max` down to `minScale` of it (same family and style) that shows all of `s` in `area`
+    // (whole lines when wrapping, one line otherwise); cached per family and size.
+    readonly Dictionary<string, Font> hintFonts = new Dictionary<string, Font>();
+    Font FitFont(Graphics g, string s, SizeF area, Font max, float minScale, bool wrap) {
+        if (string.IsNullOrEmpty(s)) return max;
+        Font f = max;
+        using (var sf = new StringFormat { FormatFlags = wrap ? StringFormatFlags.LineLimit : StringFormatFlags.NoWrap, Trimming = StringTrimming.EllipsisCharacter }) {
+            for (int tenths = (int)(max.Size * 10); tenths >= (int)(max.Size * 10 * minScale); tenths -= 5) {
+                string key = max.Name + "|" + max.Style + "|" + tenths;
+                if (!hintFonts.TryGetValue(key, out f)) hintFonts[key] = f = new Font(max.FontFamily, tenths / 10f, max.Style, GraphicsUnit.Pixel);
+                int chars, lines;
+                g.MeasureString(s, f, area, sf, out chars, out lines);
+                if (chars >= s.Length) break;
+            }
+        }
+        return f;
     }
 
     void RenderPage(Graphics g, Page p, int w, int h, float m, float top, float bottom) {
@@ -812,9 +949,10 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         float ch = h * 0.095f, gap = h * 0.014f;
         int fit = Math.Max(1, (int)((bottom - y + gap) / (ch + gap)));
         int first = Math.Max(0, Math.Min(p.Sel - fit / 2, p.Items.Count - fit));
+        var hint = PageHintFont(g, p, 0, new RectangleF(0, 0, w - 2 * m, ch), false);
         for (int i = first; i < p.Items.Count && i < first + fit; i++) {
             var r = new RectangleF(m, y, w - 2 * m, ch);
-            Tile(g, p.Items[i], i == p.Sel, r, false);
+            Tile(g, p.Items[i], i == p.Sel, r, false, hint);
             hits.Add(new KeyValuePair<RectangleF, int>(r, i));
             y += ch + gap;
         }
@@ -825,7 +963,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     // A build: the version and commit, cargo's own step count as a progress bar with the board riding its head, the
     // crate being built, the warning count and, as soon as it appears, the first error.
     void RenderBuild(Graphics g, int w, int h, RectangleF card, float pad, float t) {
-        Write(g, "BUILDING", smallBold, Accent, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
+        Write(g, build.Waiting != null && !build.Ended ? "WAITING" : "BUILDING", smallBold, Accent, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
         Write(g, BuildView.Clock(DateTime.Now - build.Start), smallBold, Dim, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Far, StringAlignment.Near, false);
         float y = card.Y + pad + smallFont.Height * 1.3f;
         Write(g, build.Name, heroFont, Ink, new RectangleF(card.X + pad, y, card.Width - 2 * pad, heroFont.Height * 1.25f), StringAlignment.Near, StringAlignment.Near, false);
@@ -853,8 +991,10 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         g.Restore(clip);
         y = track.Bottom + h * 0.03f;
         string count = build.Total > 0 ? build.Done + " / " + build.Total + " build steps" : build.Compiled + " crates compiled";
+        if (!build.Ended && build.Waiting != null) count = "Waiting " + BuildView.Clock(DateTime.Now - build.WaitSince) + ": " + build.Waiting;
+        else if (!build.Ended && build.Total == 0 && build.Compiled == 0 && build.StageText != null) count = build.StageText;
         if (build.Ended) count = build.Ok ? "Built in " + BuildView.Clock(build.End - build.Start) : "Build failed";
-        Write(g, count, itemBold, build.Ended && !build.Ok ? Color.FromArgb(255, 120, 110) : Ink, new RectangleF(card.X + pad, y, card.Width * 0.5f, itemBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+        Write(g, count, itemBold, build.Ended && !build.Ok ? Color.FromArgb(255, 120, 110) : Ink, new RectangleF(card.X + pad, y, build.Warnings > 0 ? card.Width * 0.5f : card.Width - 2 * pad, itemBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
         if (build.Warnings > 0) {
             string wtext = build.Warnings + (build.Warnings == 1 ? " warning" : " warnings");
             var ws = g.MeasureString(wtext, smallBold);
@@ -863,7 +1003,12 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             Write(g, wtext, smallBold, Accent, pill, StringAlignment.Center, StringAlignment.Center, false);
         }
         y += itemBold.Height * 1.4f;
-        if (build.Now != "" && !build.Ended) Write(g, "Now: " + build.Now, smallFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+        if (!build.Ended && build.Waiting != null) {
+            // Who holds the folder (when launcher.ps1 knew) and how to stop waiting.
+            string why = (build.WaitWho ?? "Cargo does not say who; it continues by itself once that build ends.") + "\n" + (cancelArmed ? "B again to cancel this build" : "B: cancel");
+            Write(g, why, smallFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, smallFont.Height * 2.6f), StringAlignment.Near, StringAlignment.Near, true);
+        }
+        else if (build.Now != "" && !build.Ended) Write(g, "Now: " + build.Now, smallFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
         y += smallFont.Height * 2f;
         if (build.Error.Count > 0) {
             var eb = new RectangleF(card.X + pad, y, card.Width - 2 * pad, card.Bottom - pad - y);
@@ -913,11 +1058,13 @@ static class SkateLauncher {
     [STAThread]
     static void Main(string[] argv) {
         Application.EnableVisualStyles();
-        // SkateLauncher.exe --snapshot <out.png> [main|versions|tools|job]: draws one screen at 1920x1080 and exits
-        // (checking the look without opening the window).
+        // SkateLauncher.exe --snapshot <out.png> [main|versions|tools|job|build|failed|waiting] [<width>x<height>]: draws one screen (default
+        // 1920x1080; the window's own size to check the windowed layout) and exits (checking the look without the window).
         if (argv.Length >= 2 && argv[0] == "--snapshot") {
             var form = new LauncherForm(new string[0]);
-            form.Snapshot(argv[1], argv.Length > 2 ? argv[2] : "main");
+            int sw = 1920, sh = 1080;
+            if (argv.Length > 3) { var wh = argv[3].Split('x'); sw = int.Parse(wh[0]); sh = int.Parse(wh[1]); }
+            form.Snapshot(argv[1], argv.Length > 2 ? argv[2] : "main", sw, sh);
             return;
         }
         Application.Run(new LauncherForm(argv));

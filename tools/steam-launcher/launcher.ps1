@@ -92,8 +92,12 @@ function Version-Source($v) {
 }
 function Fetch-Version($v, [string]$Dir) {
     $s = Version-Source $v
-    # Full refspec: a release tag with the branch's name (the fork's rolling build) would win otherwise.
-    & git -C $Dir fetch -q $s.Fetch "+refs/heads/$($v.branch):$($s.Ref)" 2>$null
+    Write-Host "  Checking $($v.branch) on $($s.Fetch)..."
+    # Full refspec: a release tag with the branch's name (the fork's rolling build) would win otherwise. No prompt and
+    # a stall limit, so a credential helper or a dead network fails the fetch instead of hanging the launcher.
+    $keep = $env:GIT_TERMINAL_PROMPT; $env:GIT_TERMINAL_PROMPT = '0'
+    & git -C $Dir -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch -q $s.Fetch "+refs/heads/$($v.branch):$($s.Ref)" 2>$null | Out-Host
+    $env:GIT_TERMINAL_PROMPT = $keep
     return $s.Ref
 }
 
@@ -159,6 +163,7 @@ function Make-Room($v) {
     $capDir = Setting 'build_cap_dir' ''
     $others = @($Versions | Where-Object { $_.id -ne $v.id } | ForEach-Object { [pscustomobject]@{ V = $_; Dir = (Target-Dir $_) } } |
         Where-Object { (Test-Path -LiteralPath $_.Dir) -and $_.Dir -ne (Target-Dir $v) })
+    Write-Host '  Checking the build folders'' size...'
     $total = { if ($capDir) { Folder-Bytes $capDir } else { (@($Versions | ForEach-Object { Target-Dir $_ } | Sort-Object -Unique | ForEach-Object { Folder-Bytes $_ }) | Measure-Object -Sum).Sum } }
     $used = [double](& $total) / 1GB
     Write-Host ("  Build folders: {0:N1} GB of {1:N0} GB (a build needs about {2:N0} GB)." -f $used, $cap, $reserve)
@@ -199,6 +204,128 @@ function Repair-AllAssetLinks {
         if ($d -ne $Repo -and (Test-Path (Join-Path $d '.git'))) { $lines += Repair-AssetLink $d $v.name }
     }
     return @($lines | Where-Object { $_ })
+}
+
+# Self-update (USER-ASKS 116): the launcher brings its own files to the newest pushed hails-additions on the fork, so a
+# push reaches the launcher the user runs without git pull or a shell. Its own bare shallow clone in the state folder
+# (self.git) holds the fork's branch; the launcher copies tools\steam-launcher (into this folder) and tools\second-pc
+# (the scripts it calls) from it. Nothing else of the checkout is touched, nothing is committed, and a local file that
+# differs (get-patches.ps1 copies unpushed launcher files in) is backed up to self-update-backup\<time>\ first. Runs
+# at every start, before "Update and build", and from Tools; config.json "self_update": false turns the automatic
+# runs off, "launcher_branch" picks another branch. Log: self-update.log in the state folder.
+$SelfGit = Join-Path $StateDir 'self.git'
+$SelfCommit = Join-Path $StateDir 'launcher_commit.txt'
+$SelfLog = Join-Path $StateDir 'self-update.log'
+$SelfRestart = Join-Path $StateDir 'restart.txt'
+$SelfBranch = Setting 'launcher_branch' 'hails-additions'
+$SelfUrl = Setting 'fork_url' 'https://github.com/Hailey-Ross/rusty-trucks.git'
+$SelfPaths = @('tools/steam-launcher', 'tools/second-pc')
+function Self-Log([string]$Text) { Add-Content -Path $SelfLog -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "  $Text") -Encoding UTF8 }
+function Self-Short([string]$Sha) { if ($Sha.Length -ge 8) { return $Sha.Substring(0, 8) }; return $Sha }
+# The commit the launcher's files came from ('' = never updated by itself: a git checkout's own HEAD then).
+function Launcher-Commit {
+    if (Test-Path $SelfCommit) { return (Get-Content $SelfCommit -Raw).Trim() }
+    if (-not $Standalone) { return ((Invoke-Git $Repo rev-parse HEAD) | Select-Object -First 1) }
+    return ''
+}
+# The fork's branch tip as of the last fetch ('' = never fetched).
+function Fork-Commit { if (Test-Path (Join-Path $SelfGit 'HEAD')) { return ((Invoke-Git $SelfGit rev-parse --verify -q refs/heads/self) | Select-Object -First 1) }; return '' }
+# Builds SkateLauncher.exe from SkateLauncher.cs. The running exe can be renamed (not overwritten), so the new one takes
+# its name and the next start uses it. True = rebuilt.
+function Rebuild-LauncherExe {
+    $cs = Join-Path $Here 'SkateLauncher.cs'; $exe = Join-Path $Here 'SkateLauncher.exe'; $old = Join-Path $Here 'SkateLauncher.old.exe'
+    $new = Join-Path $Here 'SkateLauncher.new.exe'
+    & (Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe') /nologo /target:winexe "/out:$new" $cs | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $new)) { Remove-Item $new -ErrorAction SilentlyContinue; return $false }
+    try {
+        if (Test-Path $old) { Remove-Item $old -ErrorAction Stop }
+        if (Test-Path $exe) { Move-Item $exe $old -Force }
+        Move-Item $new $exe -Force
+        return $true
+    } catch { Remove-Item $new -ErrorAction SilentlyContinue; return $false }
+}
+# One line for the result. Writes restart.txt when the window's exe was rebuilt (SkateLauncher.exe restarts into it).
+function Self-Update([switch]$Force) {
+    $ErrorActionPreference = 'Continue'
+    Write-Host "  Checking the launcher: $SelfBranch on $SelfUrl..."
+    $keep = $env:GIT_TERMINAL_PROMPT; $env:GIT_TERMINAL_PROMPT = '0'
+    try {
+        if (-not (Test-Path (Join-Path $SelfGit 'HEAD'))) { & git init -q --bare $SelfGit 2>$null | Out-Null }
+        & git -C $SelfGit -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch -q --depth 1 $SelfUrl "+refs/heads/$($SelfBranch):refs/heads/self" 2>$null | Out-Null
+        $ok = $LASTEXITCODE -eq 0
+    } finally { $env:GIT_TERMINAL_PROMPT = $keep }
+    $sha = Fork-Commit
+    if (-not $ok -or -not $sha) { $r = "Launcher update: could not reach $SelfUrl ($SelfBranch); kept the current launcher."; Self-Log $r; return $r }
+    if (-not $Force -and (Test-Path $SelfCommit) -and (Get-Content $SelfCommit -Raw).Trim() -eq $sha) { return '' }
+    # The fork's files with this checkout's line endings (core.autocrlf=true, as the Windows checkouts have them).
+    $tmp = Join-Path $env:TEMP ('skate-launcher-update-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $zip = "$tmp.zip"
+    try {
+        & git -C $SelfGit -c core.autocrlf=true archive --format=zip -o $zip refs/heads/self -- @SelfPaths 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zip)) { $r = "Launcher update: could not unpack $(Self-Short $sha); kept the current launcher."; Self-Log $r; return $r }
+        Expand-Archive -Path $zip -DestinationPath $tmp -Force
+        $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+        $changed = @(); $backedUp = @()
+        foreach ($p in $SelfPaths) {
+            $src = Join-Path $tmp ($p -replace '/', '\')
+            if (-not (Test-Path $src)) { continue }
+            $dest = if ($p -eq 'tools/steam-launcher') { $Here } else { Join-Path $Repo ($p -replace '/', '\') }
+            foreach ($f in Get-ChildItem $src -Recurse -File) {
+                $rel = $f.FullName.Substring($src.Length + 1)
+                $target = Join-Path $dest $rel
+                $newBytes = [IO.File]::ReadAllBytes($f.FullName)
+                if (Test-Path $target) {
+                    $oldBytes = [IO.File]::ReadAllBytes($target)
+                    # Same text up to line endings counts as the same file.
+                    $a = [Text.Encoding]::UTF8.GetString($oldBytes).Replace("`r", ''); $b = [Text.Encoding]::UTF8.GetString($newBytes).Replace("`r", '')
+                    if ($a -eq $b) { continue }
+                    $bk = Join-Path $StateDir "self-update-backup\$stamp\$p\$rel"
+                    New-Item -ItemType Directory -Path (Split-Path $bk) -Force | Out-Null
+                    Copy-Item -LiteralPath $target -Destination $bk -Force
+                    $backedUp += "$p/$($rel -replace '\\', '/')"
+                }
+                New-Item -ItemType Directory -Path (Split-Path $target) -Force | Out-Null
+                [IO.File]::WriteAllBytes($target, $newBytes)
+                $changed += "$p/$($rel -replace '\\', '/')"
+            }
+        }
+    } catch {
+        $r = "Launcher update: failed while copying ($($_.Exception.Message)); kept what was not copied yet."; Self-Log $r; return $r
+    } finally {
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Set-Content -Path $SelfCommit -Value $sha -Encoding ASCII
+    $short = Self-Short $sha
+    if ($changed.Count -eq 0) { $r = "Launcher: up to date at $short."; Self-Log $r; return $r }
+    Self-Log ("Updated to $short from $SelfUrl ${SelfBranch}: " + ($changed -join ', '))
+    if ($backedUp.Count -gt 0) { Self-Log ("Local versions backed up to self-update-backup\${stamp}: " + ($backedUp -join ', ')) }
+    $r = "Launcher updated to $short ($($changed.Count) files)."
+    if ($backedUp.Count -gt 0) { $r += " Local changes to $($backedUp.Count) of them were backed up (self-update-backup\$stamp)." }
+    if ($changed -contains 'tools/steam-launcher/SkateLauncher.cs') {
+        if (Rebuild-LauncherExe) { Set-Content -Path $SelfRestart -Value $short -Encoding ASCII; $r += ' The launcher restarts into the new version.'; Self-Log "Rebuilt SkateLauncher.exe at $short." }
+        else { $r += ' Could not rebuild SkateLauncher.exe: the old window stays until build.bat runs.'; Self-Log 'SkateLauncher.exe rebuild failed; old exe kept.' }
+    }
+    return $r
+}
+
+# Who else is building into this version's target folder: another launcher (BUILDING-<id>.txt in the state folder,
+# written around every launcher build, stale once its pid is gone), else any cargo.exe whose command line names the
+# folder (a dev build). Empty when nobody.
+function Build-Holder($v, [string]$Target) {
+    $mark = Join-Path $StateDir ('BUILDING-' + $v.id + '.txt')
+    if (Test-Path $mark) {
+        $f = (Get-Content $mark -Raw).Trim() -split "`t"
+        if ($f.Count -ge 4 -and $f[0] -ne "$PID" -and (Get-Process -Id ([int]$f[0]) -ErrorAction SilentlyContinue)) {
+            return ('{0} is being built by the {1} since {2:HH:mm} (pid {3})' -f $f[1], $f[3], [datetime]$f[2], $f[0])
+        }
+        Remove-Item $mark -ErrorAction SilentlyContinue
+    }
+    try {
+        $c = Get-CimInstance Win32_Process -Filter "Name='cargo.exe'" -ErrorAction Stop | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($Target, [StringComparison]::OrdinalIgnoreCase) -ge 0 } | Select-Object -First 1
+        if ($c) { return ('another cargo is using this build folder (pid {0}, started {1:HH:mm})' -f $c.ProcessId, $c.CreationDate) }
+    } catch {}
+    return ''
 }
 
 # Makes sure the version's worktree exists, follows its pushed branch and is built. True = ready.
@@ -271,8 +398,17 @@ function Ensure-Version($v) {
         foreach ($k in $cargoEnv.Keys) { $keep[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $cargoEnv[$k]) }
         Write-Host ("LAUNCHER_BUILD`tbegin`t{0}`t{1}`t{2}" -f $v.name, $head, $script:BuildLog)
     }
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'scripts\Build.ps1') -TargetDirectory $target
-    $code = $LASTEXITCODE
+    # Cargo says only "Blocking waiting for file lock", never who holds it: name the holder up front (USER-ASKS 72).
+    $holder = Build-Holder $v $target
+    if ($holder) {
+        Write-Host "  Waiting: $holder."
+        if ($ui) { Write-Host ("LAUNCHER_BUILD`twait`tbuild`t{0}" -f $holder) }
+    }
+    $mark = Join-Path $StateDir ('BUILDING-' + $v.id + '.txt')
+    $who = if ($ui) { 'window' } else { 'shell' }
+    Set-Content -Path $mark -Value ("{0}`t{1}`t{2}`t{3}" -f $PID, $v.name, (Get-Date -Format s), $who) -Encoding ASCII
+    try { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'scripts\Build.ps1') -TargetDirectory $target; $code = $LASTEXITCODE }
+    finally { if (Test-Path $mark) { $own = (Get-Content $mark -Raw) -split "`t"; if ($own[0] -eq "$PID") { Remove-Item $mark -ErrorAction SilentlyContinue } } }
     if ($ui) {
         foreach ($k in $keep.Keys) { [Environment]::SetEnvironmentVariable($k, $keep[$k]) }
         Write-Host ("LAUNCHER_BUILD`tend`t{0}" -f $code)
@@ -447,13 +583,14 @@ function Recomp-Script {
 # isn't set up is greyed out in the window with the reason (Why), so the menu shows what could be there.
 $Entries = [ordered]@{
     'rust-play'     = @{ Group = 'rust'; Name = 'Play';                       Kind = 'rust';     Hint = "The version's PLAY.bat." }
-    'rust-traceall' = @{ Group = 'rust'; Name = 'Play + trace all';           Kind = 'traceall'; Hint = "Every session trace the version has (SKATE_TRACE_ALL: frame log, audio state log, performance report, GPU / render timing, audio trace, living-world readout), in the version's logs\trace-all-<time> folder." }
+    'rust-traceall' = @{ Group = 'rust'; Name = 'Play + trace all';           Kind = 'traceall'; Hint = "Every trace (frames, audio, performance, GPU, living world) into logs\trace-all-<time>." }
     'rust-statelog' = @{ Group = 'rust'; Name = 'Play + audio state log';     Kind = 'statelog'; Hint = 'Records the per-frame audio state (.local\audio-state-logs).' }
     'rust-trace'    = @{ Group = 'rust'; Name = 'Play + audio trace';         Kind = 'rust';     Hint = 'Logs every native sound start in logs\game-*.log (SKATE_AUDIO_TRACE=1).' }
     'rust-devmods'  = @{ Group = 'rust'; Name = 'Play with the dev test mods'; Kind = 'rust';    Hint = "Turns on the version's dev test mod (mods_enable in versions.json)." }
     'rust-perf'     = @{ Group = 'rust'; Name = 'Play + performance trace';   Kind = 'rust';     Hint = 'Bevy performance trace (PLAY.bat -trace).' }
-    'tool-refresh'  = @{ Group = 'tools'; Name = 'Refresh game files';        Kind = 'tool';     Hint = 'Runs the check the game runs at start, without starting the game. Out of date: converts again only what changed (setup shows its progress).' }
+    'tool-refresh'  = @{ Group = 'tools'; Name = 'Refresh game files';        Kind = 'tool';     Hint = 'Checks the game files without playing; converts only what changed.' }
     'tool-build'    = @{ Group = 'tools'; Name = 'Update and build the selected version'; Kind = 'tool'; Hint = 'Fetches its branch and builds it now, so the next launch starts at once.' }
+    'tool-self-update' = @{ Group = 'tools'; Name = 'Update the launcher';    Kind = 'tool';     Hint = 'Brings the launcher to the newest hails-additions on the fork and rebuilds it (also at every start and before Update and build).' }
     'tool-send'     = @{ Group = 'tools'; Name = 'Send the logs now';         Kind = 'tool';     Hint = 'Runs the after-session send (config.json after_session).' }
     'tool-recomp-update'  = @{ Group = 'tools'; Name = 'Recomp: get the newest build'; Kind = 'tool'; Hint = "Copies the main PC's newest recomp build (play-recomp.ps1 -Update)." }
     'tool-recomp-getsave' = @{ Group = 'tools'; Name = 'Recomp: get the main PC save'; Kind = 'tool'; Hint = "Copies the main PC's recomp save after backing up this PC's (play-recomp.ps1 -GetSave)." }
@@ -544,8 +681,13 @@ function Run-Tool([string]$Key, $Ver) {
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Here 'setup.ps1') -Install
             $r = if ($LASTEXITCODE -eq 0) { 'First-time setup: everything is installed.' } else { 'First-time setup: not finished (see the steps above).' }
         }
+        'tool-self-update' { $r = Self-Update -Force; if (-not $r) { $r = 'Launcher: up to date.' } }
         'tool-build' {
+            # The launcher first, so one press brings both to the newest push.
+            $self = ''; if ((Setting 'self_update' $true) -ne $false) { $self = Self-Update; if ($self) { Write-Host "  $self" } }
             $r = if (Ensure-Version $Ver) { "Ready: $($Ver.name) ($(Version-Status $Ver))" } else { "Build failed: $($Ver.name). Build log: $script:BuildLog" }
+            if ($self -and $self -notlike 'Launcher: up to date*') { $r = "$self
+$r" }
         }
         'tool-send' { $r = Send-Sessions }
         'tool-recomp-update'  { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Recomp-Script) -Update; $r = "Recomp update: exit code $LASTEXITCODE" + $(if ($LASTEXITCODE -eq 0) { ' (done)' } else { ' - see above' }) }
@@ -658,17 +800,17 @@ function Launch([string]$Key, [string]$Lbl) {
 # 'pending' checks the newest session (state log or recomp) if it's newer than last_session.txt and writes the result;
 # SkateLauncher.exe runs it at every start. Exit code 10 = a result was written, 0 = nothing pending.
 if ($Entry -eq 'pending') {
-    # A pulled launcher updates its own exe: SkateLauncher.cs newer than SkateLauncher.exe = build it again. The running
-    # exe can be renamed (not overwritten), so the new one takes its name and the next start uses it.
+    # The newest pushed launcher first (not while a game runs: its PLAYING.txt check below still needs the old state).
     $cs = Join-Path $Here 'SkateLauncher.cs'; $exe = Join-Path $Here 'SkateLauncher.exe'; $old = Join-Path $Here 'SkateLauncher.old.exe'
     if (Test-Path $old) { Remove-Item $old -ErrorAction SilentlyContinue }
-    if ((Test-Path $cs) -and (Test-Path $exe) -and (Get-Item $cs).LastWriteTime -gt (Get-Item $exe).LastWriteTime) {
-        $new = Join-Path $Here 'SkateLauncher.new.exe'
-        & (Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe') /nologo /target:winexe "/out:$new" $cs | Out-Null
-        if ($LASTEXITCODE -eq 0 -and (Test-Path $new)) {
-            try { Move-Item $exe $old -Force; Move-Item $new $exe -Force } catch { Remove-Item $new -ErrorAction SilentlyContinue }
-        } else { Remove-Item $new -ErrorAction SilentlyContinue }
+    $selfSaid = ''
+    if ((Setting 'self_update' $true) -ne $false -and (Running-Games).Count -eq 0) { $selfSaid = Self-Update }
+    # A pulled or patched launcher updates its own exe too: SkateLauncher.cs newer than SkateLauncher.exe = build it again.
+    if (-not (Test-Path $SelfRestart) -and (Test-Path $cs) -and (Test-Path $exe) -and (Get-Item $cs).LastWriteTime -gt (Get-Item $exe).LastWriteTime) {
+        if (Rebuild-LauncherExe) { Set-Content -Path $SelfRestart -Value 'local' -Encoding ASCII }
     }
+    # An update that changed files is shown at start like a session result (with the session check's, when one runs).
+    if ($selfSaid -like 'Launcher: up to date*') { $selfSaid = '' }
     # A refresh in any copy can leave the others' assets links dangling: repair them at every start.
     if ((Running-Games).Count -eq 0) { Repair-AllAssetLinks | ForEach-Object { Write-Host "  $_" } }
     $since = [datetime]::MinValue
@@ -689,13 +831,17 @@ if ($Entry -eq 'pending') {
     $missedSend = $Config -and $Config.after_session -and (($game -and $game.LastWriteTime -gt $since) -or ($ta -and $ta.LastWriteTime -gt $since))
     # A plain engine session (version '.') closed with Exit game: its panic check too.
     if ($kind -eq '' -and $game -and $game.LastWriteTime -gt $since) { $kind = 'rust'; $t0 = $game.CreationTime.AddSeconds(-1) }
-    if ($kind -eq '' -and -not $missedSend) { exit 0 }
+    if ($kind -eq '' -and -not $missedSend) {
+        if ($selfSaid) { Save-Result ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "  launcher update`r`n$selfSaid"); exit 10 }
+        exit 0
+    }
     $summary = ''
     if ($kind) {
         Write-Host '  Checking the last session (it closed before its check)...'
         $summary = Check-Session $kind $t0 $null
     }
     if ($missedSend) { $summary = (@($summary, (Send-Sessions)) | Where-Object { $_ }) -join "`r`n" }
+    if ($selfSaid) { $summary = "$selfSaid`r`n$summary" }
     Save-Result ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "  (checked at next start)`r`n$summary")
     exit 10
 }
@@ -725,6 +871,10 @@ if ($Entry -eq 'status') {
     "last`t$last"
     $sb = Send-Blocked; "send`t$(if (-not (Send-Script)) { 'off' } elseif ($sb) { $sb } else { 'on' })"
     "setup_missing`t$(Setup-Missing)"
+    # The launcher's own commit and the fork's newest (as of the last check at start), for the main screen.
+    $lc = Launcher-Commit; $fc = Fork-Commit
+    "launcher`t$(Self-Short $lc)"
+    "launcher_newer`t$(if ($fc -and $lc -and $fc -ne $lc) { Self-Short $fc } else { '' })"
     exit 0
 }
 if ($Entry -eq 'setup-check') { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Here 'setup.ps1'); exit $LASTEXITCODE }
