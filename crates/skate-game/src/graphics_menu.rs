@@ -1256,10 +1256,12 @@ fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
             16..=18 => menu.status = audio.adjust(audio_row(row), direction),
             MORE_AUDIBLE_ROW => {
                 let on = !audio.more_audible_world_saved();
+                crate::living_world::opt_ins::log_opt_in_changed("more_audible_world", !on, on, "player");
                 menu.status = format!("{}. Takes effect at the next start.", audio.set_more_audible_world(on));
             }
             SPEECH_ROW => {
                 let on = !audio.decode_speech();
+                crate::living_world::opt_ins::log_opt_in_changed("decode_speech", !on, on, "player");
                 let saved = audio.set_decode_speech(on);
                 menu.status = match (on, audio.speech_decoded()) {
                     (true, false) => format!("{saved}. Extras > Refresh Game Files decodes the speech (about 3.4 GB, a few minutes)."),
@@ -1293,6 +1295,7 @@ fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
 }
 /// EXTRAS "Better Water": switches the water look layer and saves `settings/water-look.json`.
 fn set_better_water(look: &mut crate::water_look::WaterLookSettings, on: bool) -> String {
+    crate::living_world::opt_ins::log_opt_in_changed("better_water", look.selected.enabled, on, "player");
     look.selected.enabled = on;
     info!("WATER_LOOK better_water={on} owner={:?}", look.patched_by());
     match look.save() {
@@ -1344,7 +1347,10 @@ fn reset_row(menu: &mut Menu, row: usize, audio: &mut crate::game_audio::AudioSe
             menu.custom_dirty = true;
         }
         16..=18 => menu.status = audio.reset(audio_row(row)),
-        MORE_AUDIBLE_ROW => menu.status = audio.set_more_audible_world(false),
+        MORE_AUDIBLE_ROW => {
+            crate::living_world::opt_ins::log_opt_in_changed("more_audible_world", audio.more_audible_world_saved(), false, "player");
+            menu.status = audio.set_more_audible_world(false);
+        }
         _ => {}
     }
 }

@@ -63,6 +63,9 @@ pub(crate) struct PedBodySettings {
     pub look_ahead: f32,
     /// Peds farther than this from every observer get no body (m; ours).
     pub range: f32,
+    /// The part whose speed after the solve decides the ped's reaction, whichever part was touched: retail reads
+    /// only part 0, the torso (`sub_82E38FB8` kind 5, `[parts]+76` with no index; b283).
+    pub reaction_part: usize,
 }
 
 impl Default for PedBodySettings {
@@ -84,8 +87,19 @@ impl Default for PedBodySettings {
             ],
             look_ahead: 1.0 / 60.0,
             range: 12.0,
+            reaction_part: 0,
         }
     }
+}
+
+/// The (|v|, |w|) after the solve of ped `serial`'s reaction part, from every ped part in the solve (`after`: proxy
+/// id, speeds). `None` when the settings name no such part or it was not in the solve.
+pub(crate) fn reaction_part_speed(after: &[(u64, [f32; 2])], serial: u32, s: &PedBodySettings) -> Option<[f32; 2]> {
+    if s.reaction_part >= s.parts.len() {
+        return None;
+    }
+    let id = proxy_id(serial, s.reaction_part);
+    after.iter().find(|p| p.0 == id).map(|p| p.1)
 }
 
 /// One part's body: a capsule centred between `a` and `b` (world) along `a -> b`, moving at `velocity`.
@@ -211,6 +225,21 @@ mod tests {
         assert!(world.x.abs() > 0.39 && world.y.abs() < 1e-4, "{world:?}");
         // The default is retail's three parts, 50 kg in total.
         assert_eq!(s.parts.iter().map(|p| p.mass).sum::<f32>(), 50.0);
+    }
+
+    /// b283: retail's reaction reads the torso (part 0) only, so a fast-spinning forearm touched alone does not decide
+    /// it; a mod can name another part, and a part that does not exist gives no reading.
+    #[test]
+    fn the_reaction_reads_the_torso_whichever_part_was_touched() {
+        let mut s = PedBodySettings::default();
+        assert_eq!(s.reaction_part, 0);
+        let after = [(proxy_id(7, 0), [0.9, 1.2]), (proxy_id(7, 1), [2.0, 9.5]), (proxy_id(8, 0), [5.0, 5.0])];
+        assert_eq!(reaction_part_speed(&after, 7, &s), Some([0.9, 1.2]));
+        assert_eq!(reaction_part_speed(&after, 9, &s), None, "not in the solve");
+        s.reaction_part = 1;
+        assert_eq!(reaction_part_speed(&after, 7, &s), Some([2.0, 9.5]));
+        s.reaction_part = 3;
+        assert_eq!(reaction_part_speed(&after, 7, &s), None, "only three parts");
     }
 
     /// Data test: the retail parts' bones exist in the exported ped rig, and in its reference pose part 0 stands on

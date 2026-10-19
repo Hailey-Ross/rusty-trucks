@@ -1460,3 +1460,22 @@ gated candidate before the time gate. `query` now takes the deck and writes it (
   (the spec loader reads both factors). Not play-tested yet: expect cars to queue closer (about a quarter of a car
   length) and to brake later and harder at lights, stopping dead at the line instead of running an amber.
 
+
+## Skitching: the car is drawn on the ticks the skater met it (2026-10-18)
+
+- **Problem:** laptop session 2026-10-18 22:01, the user, skitching: "it does jitter a tiny bit and struggle to stay
+  with the car at high speeds".
+- **Root cause [code, research `.local/research/b285-skitch-view-jitter.md`, main-checked]:** traffic moves after
+  Physics (`drive_traffic` in the chain after `step_population`, `living_world/mod.rs:867`, `vehicles.rs:1239`), and
+  the skater's solve reads the car proxies and grab splines from `CarMotion::curr` before Physics, so the skater of
+  tick N met the car of tick N-1. The skater and camera are drawn between their snapshots N-1 and N, the car between
+  `prev` (N-1) and `curr` (N): the car was drawn one tick ahead of the skater holding it, car speed / 60 (0.33 m at
+  20 m/s, 0.5 m at 30 m/s), wobbling with the car's speed changes.
+- **Change (drawing only):** `CarMotion` keeps one more pose (`drawn_prev`, `wheel_drawn_prev`); `present_car_pose`
+  draws between `drawn_prev` and `prev` (`vehicles::drawn_pose`). Simulation, proxies, rails and grab splines are
+  unchanged (still `curr`), so the result stays deterministic for multiplayer. Every car is drawn 16.7 ms later, the
+  delay the skater already has. Moving `drive_traffic` before Physics was not done: it changes the simulation, and
+  retail's update order is not documented in our notes.
+- **Verification:** test `the_car_is_drawn_on_the_ticks_the_skater_met_it`. Not play-tested.
+- **Open:** NPC skaters that skitch probably had the same gap (unverified). The tow itself may fall behind at high
+  car speed (force cap 500, `skate-core/src/riding/skitching.rs`); a session after this change separates the two.

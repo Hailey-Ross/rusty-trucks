@@ -27,6 +27,8 @@ pub(super) fn publish(
         let after = physics.network_proxies.ped_after.iter().find(|p| p.0 == id);
         (id, at, after.map_or([closing, 0.0], |(_, v, w)| [len(v), len(w)]))
     }));
+    skater.ped_after.clear();
+    skater.ped_after.extend(physics.network_proxies.ped_after.iter().map(|(id, v, w)| (*id, [len(v), len(w)])));
     let p = &skater.player_input.processed;
     let deck = deck_frame(&physics.board);
     skater.skeleton_output.correction.observe_board(

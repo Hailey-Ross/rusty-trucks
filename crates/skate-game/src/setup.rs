@@ -162,16 +162,42 @@ pub(crate) fn restart_with_refresh() -> Result<(), String> {
     Ok(())
 }
 
-/// `logs\game-refresh-<unix seconds>.stderr.log` where this copy's session logs go: the checkout's `logs\` beside
-/// `bin\` for a development copy (`scripts/Launch.ps1`), else `logs\` next to the exe (`PLAY-WITH-LOG.bat`).
+/// `logs\game-<yyyyMMdd-HHmmss>.stderr.log` (the launch scripts' name, local time) where this copy's session logs
+/// go: the checkout's `logs\` beside `bin\` for a development copy (`scripts/Launch.ps1`), else `logs\` next to the exe
+/// (`PLAY-WITH-LOG.bat`). A forced refresh can restart in the second the session started: then `-2`, `-3`, ...
 fn refresh_log(exe_dir: &Path) -> Option<(PathBuf, std::fs::File)> {
     let checkout_logs = exe_dir.parent().map(|p| p.join("logs")).filter(|d| exe_dir.ends_with("bin") && d.is_dir());
     let dir = checkout_logs.unwrap_or_else(|| exe_dir.join("logs"));
     std::fs::create_dir_all(&dir).ok()?;
-    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    let path = dir.join(format!("game-refresh-{seconds}.stderr.log"));
-    let file = std::fs::File::create(&path).ok()?;
+    let stamp = local_stamp();
+    let path = (1..100).map(|n| dir.join(if n == 1 { format!("game-{stamp}.stderr.log") } else { format!("game-{stamp}-{n}.stderr.log") }))
+        .find(|p| !p.exists())?;
+    let file = std::fs::File::create_new(&path).ok()?;
     Some((path, file))
+}
+
+/// The local time as `yyyyMMdd-HHmmss`, like the launch scripts' `Get-Date -Format`.
+fn local_stamp() -> String {
+    #[repr(C)]
+    #[derive(Default)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        milliseconds: u16,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLocalTime(time: *mut SystemTime);
+    }
+    let mut t = SystemTime::default();
+    // SAFETY: GetLocalTime only fills the struct it is given.
+    unsafe { GetLocalTime(&mut t) };
+    format!("{:04}{:02}{:02}-{:02}{:02}{:02}", t.year, t.month, t.day, t.hour, t.minute, t.second)
 }
 
 /// The data folder a refresh rebuilds: the installation behind a development copy's `--assets` link (refreshed by

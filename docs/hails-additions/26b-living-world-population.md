@@ -391,6 +391,12 @@ User: "anything opt in should be added as a setting to the guide overlay that ca
   mode is retail's cheat; this row stands in until the cheat screen exists.
 - **Verification:** tests `choices_round_trip_and_default_off`, `mod_reset_restores_the_players_choice`; the
   overlay row lists in `graphics_menu` tests include rows 40 to 43.
+- **Toggle events (2026-10-18):** laptop session 2026-10-18 22:01, the user: "when opt ins are toggled on/off should
+  be logged event, especially during trace all." Every opt-in switch now also logs one event line,
+  `OPT_IN_CHANGED <name> <old> -> <new> by <player|mod>` (`opt_ins::opt_in_changed_line`): the living world ones
+  (`zombie`, `npc_physics`, `visualize_grabs`) from `log_opt_ins` with the source (`mod` when the value in effect
+  differs from the player's choice), and the overlay's `better_water`, `more_audible_world` and `decode_speech` at
+  their toggle and reset. The `OPT_IN` summary line stays. Test `changes_name_each_toggle_and_its_source`.
 
 ## Map change: fresh NPC bodies, ids that never repeat, ped state cleared, 2026-10-18
 

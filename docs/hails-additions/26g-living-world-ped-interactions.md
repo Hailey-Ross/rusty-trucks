@@ -2007,3 +2007,69 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Open:** whether our skeleton's pose error stays under the on-foot 0.3 m bail limit while passing a ped (retail
   never bailed on foot in the sessions); the ped dodge before contact (b273 / b274: retail's SkaterAvoidance
   closest-approach test, not ported yet).
+
+## Peds fell over too easily at slow speeds: the reaction reads the torso only (2026-10-18)
+
+- **Problem:** laptop session 2026-10-18 22:01 (trace-all, notes `game-20261018-220128.notes.log`), the user: "much
+  better but they are a tiny bit too easy to knock over at slow speeds" (on the board and on foot). Six knock-downs
+  at part speeds of 0.65 to 2.59 m/s.
+- **Root cause:** the 3.0 m/s linear gate was never crossed in those knock-downs; the angular gate (|w| > 3.0 rad/s)
+  was. Their `PED_BODY_CONTACT` lines show part_spin 6.4 to 11.4 (the three slow contacts without a knock-down: 1.4
+  to 2.9). `peds.rs` took the largest |v| and the largest |w| over every part the skeleton touched, the forearms
+  included. Two of the six were forearm-only touches, and a forearm's small inertia spins it fast from a light push.
+- **Retail [code]:** `sub_82E38FB8` contact kind 5 reads one body only: `lwz r4,8(r9)` (the parts array) then
+  `lwz r11,76(r4)` with no index, part 0, the 10 kg torso capsule (`.local/research/peds/fn_82E38FB8.txt` lines
+  442 / 450, main-read). From it: |linear velocity| (`+32`) and |angular velocity| (`+48`), against the entity
+  entry values (0 for stock entities) and then the set's 3.0 / 3.0 knock-down gate. No max or sum over parts.
+- **Change:** any touched part still starts the reaction, but the speed that decides it is the touched ped's
+  reaction part after the solve (`ped_body::reaction_part_speed`, `SkaterRuntime::ped_after`, which holds every
+  observed part, touched or not). New setting `ped_body.reaction_part` (default 0, retail); without that part in
+  the solve, the fastest touched part decides as before (ours). New log line `PED_REACTION_BODY ped part speed spin
+  touched_max_speed touched_max_spin`, so a session shows both readings.
+- **Moddability / multiplayer:** mod patch `ped_body {.., reaction_part}` (0..7, part index into `parts`). The
+  choice is by part index, not by hit order, so every peer reads the same part.
+- **Verification:** test `the_reaction_reads_the_torso_whichever_part_was_touched`. Research
+  `.local/research/b283-ped-knockdown-gate.md`. Not play-tested.
+- **Open:** the four torso knock-downs logged |w| / |v| of 4.8 to 5.5, above what one hit at the capsule tip can
+  give (about 4.0 for this shape) [arithmetic; cause unverified: the posed part's walk velocity, several contacts in
+  one tick, or a frame mix-up in the inertia]; the next session's `PED_REACTION_BODY` lines show whether they remain.
+  The entity entry values are still the literal stock 0, not read from data. Whether retail's callback reads the
+  body before or after the solve was not re-read in b283.
+
+## Hand props drawn as nothing after a refresh: the asset check asks again (2026-10-18)
+
+- **Problem:** laptop session 2026-10-18 22:01 notes: "ped water bottles have no model" (`PED_HAND_PROP ... waterbottle not
+  created (no model)` for several peds). The refreshed game's log (`game-refresh-1792382523.stderr.log`) says
+  `PED_HAND_PROPS 23 records, 0 with models`: no hand prop had a model on the laptop, not only the bottle. This
+  PC's install has all 23 (`waterbottle.glb`, 208 vertices), so the export itself works.
+- **Root cause [code + log]:** `asset_check::hand_props` only flagged a `hand_props.json` whose props all lack `attach`;
+  a missing or unreadable file, or one where no prop has a `file`, gave no finding, so nothing offered the refresh
+  that writes it. Why the laptop's install lost or never got the file is not in its logs (setup's own progress is not
+  in the refresh log).
+- **Change:** with the living world tables installed (`tables.json`), a missing / unreadable `hand_props.json` or one
+  with no prop model is now the maps finding `hand prop models missing`, which offers the refresh of the maps group.
+- **Verification:** test `hand_props_without_grip_points_are_stale` extended (no tables, no file, no model, no
+  attach, current). Not run on the laptop.
+- **Open:** whether that refresh then writes the file on the laptop; its next `PED_HAND_PROPS` line shows it.
+
+## A bench pushed into water stops offering its seats (2026-10-18)
+
+- **Problem:** laptop session 2026-10-18 22:01: benches pushed into water had no ped paths to them and kept their
+  seats on offer. Asked whether a seat should stop being offered once its bench is in the water, the user: yes.
+- **Findings (research `.local/research/b286-bench-in-water.md`, main-checked):** the offer gate already skips a
+  `disabled` prop (`peds.rs` offer scan) and the drop path releases a ped walking to or sitting on one; the move check
+  only ran for props with check limits. A seat under water is off the navmesh, so `PedNav::plan` finds no polygon
+  and no path is planned: expected, not a bug (retail has no plugin reachability check either, only the 60 s
+  PluginTimeout). Props have no water physics: a pushed bench sinks.
+- **Change (NOT RETAIL, ours):** for a moved prop, `plugins::seats_in_water` asks `BoardWorld::water_surface_at` for
+  each seat (`water_above` 0.05, `water_max_depth` 10.0 m); a seat in water switches the prop off like a tipped one
+  (`PED_PLUGIN_PROP <class> <id> disabled (a seat in water), occupants evicted`), and it is back on once dry. The
+  query runs only when a seat moved (cache `PedPluginProps::in_water`), so a resting prop costs nothing. The move
+  check no longer depends on the type having check limits for this rule.
+- **Moddability / multiplayer:** `PluginSettings` is now reachable through `living_world.ped_brain` (copied into the
+  plugin props every think): `water_disables_seats` (default true), `water_max_depth` (0..=100). The host decides
+  (`PluginProp` is host-owned), by stable prop id.
+- **Verification:** tests `a_seat_in_water_switches_the_bench_off` (skate-core) and the `ped_brain` patch checks
+  (skate-mods). Not play-tested.
+- **Open:** a seated ped's exit through the drop path uses the same path as the tipped bench (not re-checked); the
+  other PluginSettings values are not in the mod patch yet.

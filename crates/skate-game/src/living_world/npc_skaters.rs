@@ -959,6 +959,19 @@ pub(crate) fn sim_peer(id: LivingWorldId) -> u64 {
 /// The proxy peer id of the player's body in a simulated NPC's solve.
 pub(crate) const PLAYER_PEER: u64 = PROXY_ID_TAG | (1 << 45);
 
+/// A contact's skater peer for the log: `player`, `#<serial>` for a simulated NPC, else the raw id.
+pub(crate) fn peer_name(peer: u64) -> String {
+    let peer = peer & !PROXY_BOARD_BIT;
+    if peer == PLAYER_PEER {
+        return "player".into();
+    }
+    let sim = PROXY_ID_TAG | (1 << 46);
+    match (peer & sim == sim).then(|| LivingWorldId::from_u64(peer & !sim)).flatten() {
+        Some(id) => format!("#{}", id.serial),
+        None => format!("{peer:#x}"),
+    }
+}
+
 /// Retail collision groups: skater skeleton parts 5 (the skeleton contact pass scales a group-5
 /// force by `SkaterSkeletonScalar` and raises the player's thresholds by
 /// `SkaterSkaterThresholdScalar`, `sub_82BD4A30` at `0x82BD53D0`), board 4 (ignored by that
@@ -1642,4 +1655,19 @@ pub(crate) fn install(app: &mut App) {
             push_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),
         )
         .add_systems(Update, (present_looks, present_pose, present_fade).chain().after(crate::app::FrameSet::Animation));
+}
+
+#[cfg(test)]
+mod peer_name_tests {
+    use super::*;
+
+    /// NPC_SKATER_CONTACT names the player, a simulated NPC by serial (body or board half), anything else raw.
+    #[test]
+    fn contact_peers_have_readable_names() {
+        assert_eq!(peer_name(PLAYER_PEER), "player");
+        let id = LivingWorldId { kind: skate_core::living_world::Kind::Skater, serial: 167 };
+        assert_eq!(peer_name(sim_peer(id)), "#167");
+        assert_eq!(peer_name(sim_peer(id) | PROXY_BOARD_BIT), "#167");
+        assert_eq!(peer_name(42), "0x2a");
+    }
 }

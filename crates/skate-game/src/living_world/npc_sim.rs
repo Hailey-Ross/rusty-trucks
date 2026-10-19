@@ -143,6 +143,9 @@ pub(crate) struct NpcSim {
     handover_push: Option<f32>,
     /// The skater's placement count when the bail started: a higher count = the respawn teleport happened.
     placements_at_bail: u32,
+    /// The last skater body its skeleton touched (the player or another NPC: `collision_feedback.other_skater`) and
+    /// the steps since; NPC_SKATER_CONTACT logs each new contact, NPC_SKATER_BAIL names one within a second.
+    skater_contact: Option<(u64, u32)>,
     /// The drawn pose and animation root before the last step, and the placement count then: the draw blends between
     /// them by the fixed-step overstep, as the player's presentation does (a simulated NPC jumped at 60 Hz before).
     pub(crate) previous_pose: Vec<skate_core::animation::output::NativeMatrix>,
@@ -433,7 +436,7 @@ fn spawn_sim(
         Some(pooled) => pooled,
         None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default() };
+    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default() };
     let v = place(&mut sim, target, hold_ticks)?;
     sim.handover_push = Some((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
     Ok(sim)
@@ -530,6 +533,30 @@ struct Job {
 /// solve had moved). Errors and the shared physics' proxy results are applied afterwards in NPC id order: the shared
 /// proxies end as the last NPC's solve left them, as before.
 #[allow(clippy::too_many_arguments)]
+/// NPC_SKATER_CONTACT: a simulated NPC's skeleton meets another skater's body (the player or an NPC) in its own solve;
+/// logged once per contact, with the skater force its wipeout check reads (`maximum_skater_force`), the NPC's speed,
+/// and `team` = hit by the local player (the bumped skater's 8290 team line, `collide_skater_local`).
+fn log_skater_contact(job: &Job, s: &mut NpcSim) {
+    let fb = &s.body.runtime.collision_feedback;
+    s.skater_contact = match (fb.other_skater, s.skater_contact) {
+        (Some(other), last) => {
+            // A new contact: another skater, or the same one after half a second apart (one-step gaps are the same touch).
+            if last.is_none_or(|(o, age)| o != other || age as f64 > 0.5 * skate_core::living_world::clock::RETAIL_TICK_HZ) {
+                let p = &s.body.runtime.player_input.processed;
+                let at = s.last_deck.unwrap_or_default();
+                info!(
+                    "NPC_SKATER_CONTACT #{} {} with={} force={:.2} speed={:.2} team={} wiped={} at=[{:.1}, {:.1}, {:.1}]",
+                    job.serial, job.character, super::npc_skaters::peer_name(other), fb.maximum_skater_force, p.scalar_2652,
+                    other == super::npc_skaters::PLAYER_PEER, p.flags_2468 & WIPEOUT_BIT != 0, at[0], at[1], at[2]
+                );
+            }
+            Some((other, 0))
+        }
+        (None, Some((o, age))) => Some((o, age.saturating_add(1))),
+        (None, None) => None,
+    };
+}
+
 fn run_steps(
     physics: &mut GamePhysics,
     npcs: &mut Query<(Entity, &NpcSkater, &mut NpcReplay, Option<&mut NpcSim>)>,
@@ -626,11 +653,12 @@ fn run_steps(
             physics.network_proxies.truncate(mark);
         }
     }
-    for (_, sim, _) in work.iter_mut() {
+    for (job, sim, _) in work.iter_mut() {
+        let s = &mut **sim;
         if bump.is_some() {
-            let s = &mut **sim;
             s.last_body = Some(GamePhysics::capture_context_body(&s.context, &s.body.runtime));
         }
+        log_skater_contact(job, s);
     }
     for ((job, _, worker), result) in work.iter_mut().zip(results) {
         GamePhysics::release_npc_worker(worker);
@@ -820,8 +848,12 @@ pub(crate) fn simulate(
                     let at = projected_point(sim, state_now).0;
                     let speed = sim.last_deck.map_or(0.0, |p| ((at[0] - p[0]).powi(2) + (at[1] - p[1]).powi(2) + (at[2] - p[2]).powi(2)).sqrt() * 60.0);
                     let (on_path, dist, a) = sim.follow.map_or((true, 0.0, (0, 0.0)), |(_, f)| (f.on_path, f.dist, f.a));
+                    // The skater it touched within the last second, if any (NPC_SKATER_CONTACT has the details).
+                    let hz = skate_core::living_world::clock::RETAIL_TICK_HZ;
+                    let contact = sim.skater_contact.filter(|(_, age)| (*age as f64) <= hz)
+                        .map_or("none".to_owned(), |(o, age)| format!("{} {:.2} s ago", super::npc_skaters::peer_name(o), age as f64 / hz));
                     info!(
-                        "NPC_SKATER_BAIL #{} {} respawn in {:.2} s (from {:?} -> {:?}, {speed:.1} m/s, node {}, A {}+{:.2}, on_path {on_path}, {dist:.2} m, at [{:.1}, {:.1}, {:.1}])",
+                        "NPC_SKATER_BAIL #{} {} respawn in {:.2} s (from {:?} -> {:?}, {speed:.1} m/s, node {}, A {}+{:.2}, on_path {on_path}, {dist:.2} m, at [{:.1}, {:.1}, {:.1}], skater contact {contact})",
                         npc.id.serial, npc.character, ticks as f32 / 60.0, sim.last_state, state_now, replay.cursor.node, a.0, a.1, at[0], at[1], at[2]
                     );
                     events.write(super::npc_skaters::NpcSkaterEvent::Bail { id: npc.id, respawn_seconds: ticks as f32 / 60.0 });

@@ -374,11 +374,15 @@ pub(crate) struct TrafficCar {
     pub spawn_tick: u64,
 }
 
-/// Fixed-step pose of a car (render interpolates between `prev` and `curr`).
+/// Fixed-step pose of a car. The skater's solve of tick N meets `curr` of tick N-1 (traffic moves after Physics), so
+/// the car is drawn between `drawn_prev` and `prev`, one tick behind `curr`, the ticks the skater and camera are
+/// drawn between (b285: drawn `prev` -> `curr` it was a tick ahead of the skater holding it, 0.5 m at 30 m/s).
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct CarMotion {
+    pub drawn_prev: Transform,
     pub prev: Transform,
     pub curr: Transform,
+    pub wheel_drawn_prev: f32,
     pub wheel_prev: f32,
     pub wheel: f32,
     pub velocity: Vec3,
@@ -596,7 +600,7 @@ pub(crate) fn apply_vehicle_records(
                 Name::new(format!("Traffic car {} ({})", s.id.serial, meta.entity)),
                 t,
                 Visibility::Inherited,
-                CarMotion { prev: t, curr: t, wheel_prev: 0.0, wheel: 0.0, velocity: Vec3::ZERO },
+                CarMotion { drawn_prev: t, prev: t, curr: t, wheel_drawn_prev: 0.0, wheel_prev: 0.0, wheel: 0.0, velocity: Vec3::ZERO },
                 audio,
                 AudioVelocity(Vec3::ZERO),
                 meta,
@@ -737,8 +741,12 @@ pub(crate) fn drive_traffic(
         }
         let Ok((meta, mut motion, mut audio, mut velocity)) = cars_q.get_mut(*e) else { continue };
         let t = car_transform(net, c);
-        motion.prev = prev_pose.get(&c.key).copied().unwrap_or(t);
+        let prev = prev_pose.get(&c.key).copied().unwrap_or(t);
+        // A car new to this list (spawned or teleported this tick) starts its drawn pair here too.
+        motion.drawn_prev = if prev_pose.contains_key(&c.key) { motion.prev } else { t };
+        motion.prev = prev;
         motion.curr = t;
+        motion.wheel_drawn_prev = motion.wheel_prev;
         motion.wheel_prev = motion.wheel;
         motion.wheel = (motion.wheel + travelled.get(&c.key).copied().unwrap_or(0.0) / meta.wheel_radius) % std::f32::consts::TAU;
         motion.velocity = Vec3::from_array(frame.forward) * c.speed;
@@ -1197,17 +1205,26 @@ pub(crate) fn update_car_light(lighting: Option<Res<crate::retail_character::Lig
     }
 }
 
+/// The car's drawn position, rotation and wheel angle at overstep `a`: between the two ticks before `curr` (see
+/// [`CarMotion`]).
+pub(crate) fn drawn_pose(motion: &CarMotion, a: f32) -> (Vec3, Quat, f32) {
+    let mut d = motion.wheel_prev - motion.wheel_drawn_prev;
+    if d < 0.0 {
+        d += std::f32::consts::TAU;
+    }
+    (
+        motion.drawn_prev.translation.lerp(motion.prev.translation, a),
+        motion.drawn_prev.rotation.slerp(motion.prev.rotation, a),
+        motion.wheel_drawn_prev + d * a,
+    )
+}
+
 /// Interpolate the car between fixed steps and spin the wheels.
 pub(crate) fn present_car_pose(fixed: Res<Time<Fixed>>, mut cars: Query<(&CarMotion, &CarLook, &mut Transform)>, mut joints: Query<&mut Transform, Without<CarLook>>) {
     let a = fixed.overstep_fraction();
     for (motion, look, mut t) in &mut cars {
-        t.translation = motion.prev.translation.lerp(motion.curr.translation, a);
-        t.rotation = motion.prev.rotation.slerp(motion.curr.rotation, a);
-        let mut d = motion.wheel - motion.wheel_prev;
-        if d < 0.0 {
-            d += std::f32::consts::TAU;
-        }
-        let angle = motion.wheel_prev + d * a;
+        let (translation, rotation, angle) = drawn_pose(motion, a);
+        (t.translation, t.rotation) = (translation, rotation);
         for (joint, bind) in &look.wheels {
             if let Ok(mut j) = joints.get_mut(*joint) {
                 j.rotation = Quat::from_rotation_x(angle) * bind.rotation;

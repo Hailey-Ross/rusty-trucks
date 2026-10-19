@@ -31,7 +31,8 @@
 //!   `ped_nav {steer_rate, turn_edges, stall_seconds, stuck_distance, stuck_seconds, crosswalk}` (ped navigation, see
 //!   `PedNavPatch`), `ped_body {enabled, parts, look_ahead, range}` (peds as solid bodies in the skater's contact solve, collision
 //!   group 11; retail on, three capsule parts posed from bones: `parts` = [{from, to, centre, radius, half_length,
-//!   mass}], `look_ahead` seconds of ped velocity, `range` m from an observer),
+//!   mass}], `look_ahead` seconds of ped velocity, `range` m from an observer, `reaction_part` the part whose speed
+//!   after the solve decides the ped's reaction, retail 0 = the torso),
 //!   `ped_vehicle_contact {enabled, push}` (traffic cars touching peds; retail on / on: the ped is
 //!   pushed out of the car, no knock-down),
 //!   `npc_tricks {mode, gate_window, min_air_frames}` (the trick an NPC skater does at a recorded
@@ -341,6 +342,10 @@ pub struct PedBrainPatch {
     pub run_from_honker_distance: Option<f32>,
     pub run_from_honker_speed: Option<f32>,
     pub warn_speech: Option<i32>,
+    /// A moved bench with a seat in water stops offering its seats (ours, default true) and how deep under a water
+    /// surface still counts (m, 0..=100, default 10.0).
+    pub water_disables_seats: Option<bool>,
+    pub water_max_depth: Option<f32>,
     /// Hand props: the attack throw's speed and look-ahead (retail 10.0 m/s, 0.8333 s), its jitter (0.25 m) and lift
     /// (1.0 m), the light (bin) throw's speed (5.0); 0..=100. `hand_prop_skater_contact` (thrown props hit the
     /// skater) and `starting_hand_props` (peds start out carrying), retail true.
@@ -459,6 +464,8 @@ pub struct PedBodyPatch {
     pub parts: Option<Vec<PedBodyPartPatch>>,
     pub look_ahead: Option<f32>,
     pub range: Option<f32>,
+    /// Index into `parts` of the part whose speed decides the ped's reaction (retail 0, the torso).
+    pub reaction_part: Option<usize>,
 }
 
 /// One capsule between two rig bones: centred at `centre` (0 = `from`, 1 = `to`), along `from -> to`; m / kg.
@@ -847,7 +854,7 @@ impl Merge for NpcSkaterPropsPatch {
 }
 impl Merge for PedBodyPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, parts, look_ahead, range);
+        merge_opts!(self, b; enabled, parts, look_ahead, range, reaction_part);
     }
 }
 impl Merge for SkaterLineChainPatch {
@@ -993,7 +1000,7 @@ impl Merge for NpcSimulatedPatch {
 
 impl Merge for PedBrainPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed, zombie_arrive_distance);
+        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech, water_disables_seats, water_max_depth, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed, zombie_arrive_distance);
     }
 }
 
@@ -1073,6 +1080,7 @@ impl LivingWorldPatch {
                 }))
                     && b.look_ahead.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
                     && b.range.is_none_or(|v| v.is_finite() && (0.0..=200.0).contains(&v))
+                    && b.reaction_part.is_none_or(|v| v < 8)
             })
             && self.skater_clips.as_ref().is_none_or(|m| {
                 m.len() <= MAX_TEMPLATES
@@ -1118,6 +1126,7 @@ impl LivingWorldPatch {
             && self.ped_brain.as_ref().is_none_or(|p| {
                 [p.wander_speed, p.warn_seconds, p.know_about_seconds, p.mood_want_memory_seconds, p.conversation_turn_seconds, p.conversation_gather_seconds, p.run_from_honker_distance, p.run_from_honker_speed, p.attack_throw_speed, p.attack_throw_lead_seconds, p.attack_throw_jitter, p.attack_throw_lift, p.light_throw_speed, p.zombie_follow_distance, p.zombie_sprint_distance, p.zombie_ring_min, p.zombie_ring_max, p.zombie_sprint_speed, p.zombie_walk_speed, p.zombie_arrive_distance].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
                     && p.warn_speech.is_none_or(|v| (0..=127).contains(&v))
+                    && p.water_max_depth.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v))
             })
             && self.traffic_horn.as_ref().is_none_or(|m| {
                 m.len() <= 16 && m.iter().all(|(k, v)| !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic()) && v.validate())
@@ -1294,6 +1303,8 @@ mod tests {
         assert!(!valid_patch("living_world", &json!({"traffic_horn": {"all": {"enabled_chance": 2.0}}})));
         assert!(!valid_patch("living_world", &json!({"traffic_horn": {"all": {"honk": 1}}})));
         assert!(!valid_patch("living_world", &json!({"ped_brain": {"warn_speech": 128}})));
+        assert!(valid_patch("living_world", &json!({"ped_brain": {"water_disables_seats": false, "water_max_depth": 2.5}})));
+        assert!(!valid_patch("living_world", &json!({"ped_brain": {"water_max_depth": 200.0}})));
         assert!(!valid_patch("living_world", &json!({"npc_avoid": {"radius_vehicle": -1.0}})));
         assert!(!valid_patch("living_world", &json!({"npc_avoid": {"max_entries": 100}})));
         assert!(!valid_patch("living_world", &json!({"npc_avoid": {"swerve": 1.0}})));

@@ -706,3 +706,19 @@ riding mode. `824660A0` writes `pc+922` every call (not a one-way latch).
 - **Open (b161):** the replay tier still sends the lite state (its lines record no contacts); the engine never sets
   the reaction bits (slam, missed trick, positive, chase, own crash: entry +388 / +392 / +396, writer not found);
   the loose-board state is never sent for NPCs; the 30 m gate's position.
+
+## NPC skater x player contacts in the session log (2026-10-18)
+
+- **Problem:** laptop session 2026-10-18 22:01, the user: "I was hit by a npc skater and caused them to bail." (in
+  Aletown, near the end). The log had no line for a skater touching another skater, so the bail could not be tied to
+  the contact.
+- **Change (log only, behaviour unchanged):** after each simulated NPC's step, `npc_sim::log_skater_contact` reads its
+  skeleton's skater contact (`collision_feedback.other_skater` / `maximum_skater_force`, the values its wipeout check
+  reads) and logs `NPC_SKATER_CONTACT #<serial> <character> with=<player|#serial> force speed team wiped at` once per
+  contact (the same skater again after half a second apart counts as new). `team` = hit by the local player, which is
+  when the bumped skater says its 8290 team line. `NPC_SKATER_BAIL` now ends with `skater contact <who> <s> ago` for a
+  contact within the last second (else `none`). Names come from `npc_skaters::peer_name`.
+- **Multiplayer:** the age counts simulation steps, not wall time, so every peer that runs the sim logs the same.
+- **Verification:** test `contact_peers_have_readable_names`. Not play-tested.
+- **Open:** only simulated NPCs (NPC Skater Physics opt-in) have a skeleton solve; replayed NPC skaters' contacts are
+  not logged. The player's own side of the contact is not logged separately.
