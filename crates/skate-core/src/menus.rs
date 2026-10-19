@@ -331,6 +331,31 @@ pub struct MenuData {
     /// The Challenge Map picture per location key (the `world` record's tMapInfo name, `map_skateschool`); a location
     /// not listed shows the default map. Data: mods may change it.
     pub map_pictures: std::collections::BTreeMap<String, String>,
+    /// The Challenge Map marker per location key (icon, world point, its world's map bounds); data, mods may change
+    /// it. A location without one draws no marker.
+    pub map_markers: std::collections::BTreeMap<String, MapMarker>,
+}
+
+/// One Challenge Map location marker (research b263 / b264 / b265): the icon texture name (`mini_teleport`), the
+/// world point (the locator's x / z plus its world record's offset) and that world's tMapInfo bounds b1..b6.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapMarker {
+    pub icon: String,
+    pub point: [f32; 2],
+    pub bounds: [i32; 6],
+}
+
+impl MapMarker {
+    /// Map pixels relative to the map centre (`sub_8268DB68`): size b5 x b6 over the bounds b2..b1 (x) and b4..b3
+    /// (z), shrunk to 99% / 95%.
+    pub fn projected(&self) -> [f32; 2] {
+        let b = self.bounds.map(|v| v as f32);
+        let mid_x = (b[0] - b[1]) * 0.5 + b[1];
+        let mid_y = (b[2] - b[3]) * 0.5 + b[3];
+        let x = if mid_x != b[1] { (b[4] * 0.5 / (mid_x - b[1])) * (self.point[0] - mid_x) * 0.99 } else { 0.0 };
+        let y = if mid_y != b[3] { (b[5] * 0.5 / (mid_y - b[3])) * (self.point[1] - mid_y) * 0.95 } else { 0.0 };
+        [x, y]
+    }
 }
 
 /// One Challenge Map node: its entry (kind + vault key), its parent folder, its label string id and sort order.

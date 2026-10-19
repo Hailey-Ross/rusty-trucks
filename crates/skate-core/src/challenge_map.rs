@@ -126,6 +126,22 @@ impl ChallengeMapState {
         registry.data().map_pictures.get(&row.entry.id).filter(|n| n.as_str() != DEFAULT_PICTURE_NAME).cloned()
     }
 
+    /// The map markers (`82649CD8` -> `8264A2A0`, b256 section 2): in a list of locations, one per location with marker
+    /// data, in list order, the highlighted one last (`8268D898` draws it on top); other lists show none. Each is
+    /// (icon texture name, map pixels from the centre, highlighted).
+    pub fn markers(&self, registry: &MenuRegistry, ctx: &MenuContext) -> Vec<(String, [f32; 2], bool)> {
+        let rows = self.rows(registry, ctx);
+        let markers = &registry.data().map_markers;
+        let mut out: Vec<(String, [f32; 2], bool)> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.entry.kind == EntryKind::FeLocation)
+            .filter_map(|(i, r)| markers.get(&r.entry.id).map(|m| (m.icon.clone(), m.projected(), i == self.hilight)))
+            .collect();
+        out.sort_by_key(|(.., highlighted)| *highlighted);
+        out
+    }
+
     /// Re-reads the picture; SetState 34 (RefreshMapTexture) when it changed.
     fn refresh_picture(&mut self, registry: &MenuRegistry, ctx: &MenuContext, states: &mut Vec<i32>) {
         let picture = self.picture_for(registry, ctx);
@@ -239,6 +255,11 @@ mod tests {
             ],
             ..Default::default()
         };
+        let mut data = data;
+        data.map_markers.insert(
+            "dist_downtown_aletown".into(),
+            crate::menus::MapMarker { icon: "mini_teleport".into(), point: [600.0, -100.0], bounds: [2050, -850, 1050, -1250, 512, 512] },
+        );
         let mut r = MenuRegistry::new(data);
         let owner = Owner::Engine("teleport:dist_downtown_aletown".into());
         r.register_handler(EntryRef::map(FeLocation, "dist_downtown_aletown"), Handler { owner, select: true, highlight: false, callback: None });
@@ -259,6 +280,12 @@ mod tests {
         assert_eq!(s.select(&r, &ctx, 1), Action::None, "an empty, greyed folder does nothing");
         assert_eq!(s.select(&r, &ctx, 0), Action::Refresh(vec![10, 80, 100, 110]));
         assert_eq!(s.title(&r, &ctx), "L_downtown");
+        // Downtown's one location: its marker, highlighted (b256 projection: x = 512/2 / 1450 * (600 - 600) * 0.99,
+        // y = 512/2 / 1150 * (-100 - -100) * 0.95 = the map centre).
+        assert_eq!(s.markers(&r, &ctx), vec![("mini_teleport".to_owned(), [0.0, 0.0], true)]);
+        let off = crate::menus::MapMarker { icon: String::new(), point: [1325.0, 475.0], bounds: [2050, -850, 1050, -1250, 512, 512] };
+        let [x, y] = off.projected();
+        assert!((x - 256.0 / 1450.0 * 725.0 * 0.99).abs() < 1e-3 && (y - 256.0 / 1150.0 * 575.0 * 0.95).abs() < 1e-3, "{x} {y}");
         assert_eq!(s.select(&r, &ctx, 0), Action::Select(EntryRef::map(EntryKind::FeLocation, "dist_downtown_aletown")));
         assert_eq!(s.hilight(&r, &ctx, 0), [110]);
         // Back pops to the folder's row in its parent (`sub_82D0D378`), then closes at the root.

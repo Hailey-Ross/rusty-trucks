@@ -1173,6 +1173,8 @@ mod tests {
         let slots: Vec<&str> = draws.iter().filter_map(|d| game.image_slots.texture(&d.texture)).collect();
         eprintln!("image slot draws: {slots:?}");
         assert!(slots.contains(&"image/fe/source/images/map/map1024"), "the default map draws: {slots:?}");
+        // The movie's MapRenderComponent (b262) is drawn as the marker placeholder the stage expands.
+        assert!(draws.iter().any(|d| d.texture == crate::apt_scene::MAP_MARKERS), "no MapRenderComponent placeholder");
         if set.has_named_image("fe/source/images/map/map1024") {
             assert!(set.image("image/fe/source/images/map/map1024").is_some());
         }
