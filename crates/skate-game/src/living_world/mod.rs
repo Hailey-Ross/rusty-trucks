@@ -37,6 +37,7 @@ pub(crate) mod opt_ins;
 pub(crate) mod ped_body;
 pub(crate) mod ped_graph;
 pub(crate) mod ped_mood;
+pub(crate) mod ped_alerts;
 pub(crate) mod ped_hand_props;
 pub(crate) mod ped_plugins;
 pub(crate) mod peds;

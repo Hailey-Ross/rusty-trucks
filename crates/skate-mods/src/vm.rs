@@ -202,6 +202,9 @@ pub enum Command {
     /// One line in the HUD's central message (retail's `hudcentral` movie, where the chase shows "ZAP!"): a
     /// language id of that movie or plain text. A one-shot: the movie's own animation removes it.
     UiCentralMessage { text: String },
+    /// Show (true, the default) or hide the alerts over peds that warn or chase the player; released when the
+    /// mod stops.
+    UiChaseAlerts { enabled: bool },
     CameraRig { body: String, options: crate::presentation::CameraRigOptions },
     AudioPreload { path: String },
     AudioPlay { key: String, options: crate::audio::AudioPlayOptions },
@@ -670,6 +673,7 @@ impl Command {
             Self::Overlay { key, text } | Self::MultiplayerDebug { key, text } => crate::schema::valid_id(key) && text.len() <= 1024,
             Self::UiCanvas { key, options } => crate::schema::valid_id(key) && options.validate(),
             Self::UiRemove { key } => crate::schema::valid_id(key),
+            Self::UiChaseAlerts { .. } => true,
             Self::UiCentralMessage { text } => !text.is_empty() && text.chars().count() <= 64 && !text.chars().any(char::is_control),
             Self::CameraRig { body, options } => crate::schema::valid_id(body) && options.validate(),
             Self::AudioPreload { path } => crate::audio::valid_audio_path(path),
@@ -975,6 +979,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::UiCanvas { .. } => "ui_canvas",
         Command::UiRemove { .. } => "ui_remove",
         Command::UiCentralMessage { .. } => "ui_central_message",
+        Command::UiChaseAlerts { .. } => "ui_chase_alerts",
         Command::CameraRig { .. } => "camera_rig",
         Command::AudioPreload { .. } => "audio_preload",
         Command::AudioPlay { .. } => "audio_play",

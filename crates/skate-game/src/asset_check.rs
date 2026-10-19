@@ -103,6 +103,9 @@ fn hud(assets: &Path) -> Vec<Finding> {
     if hud.join("trickdisplay.json").is_file() && !hud.join("hudcentral.json").is_file() {
         out.push(finding("hud", "central message HUD missing"));
     }
+    if hud.join("trickdisplay.json").is_file() && !assets.join("private/hud/chase-arrows/chase_arrows.json").is_file() {
+        out.push(finding("hud", "ped chase alert textures missing"));
+    }
     out
 }
 

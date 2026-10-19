@@ -858,6 +858,13 @@ fn clear_camera_angle(world: &mut World, owner: Option<&str>) {
     }
 }
 
+/// The ped chase alerts a mod hid: one mod (`Some`) or every mod (`None`).
+fn clear_chase_alerts(world: &mut World, owner: Option<&str>) {
+    if let Some(mut alerts) = world.get_resource_mut::<crate::living_world::ped_alerts::PedAlerts>() {
+        alerts.clear_owner(owner);
+    }
+}
+
 /// Water look patch of one mod (`Some`) or of every mod (`None`).
 fn clear_water_look(world: &mut World, owner: Option<&str>) {
     if let Some(mut settings) = world.get_resource_mut::<crate::water_look::WaterLookSettings>() {
@@ -918,6 +925,7 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     capture::clear(world);
     clear_camera_angle(world, None);
     clear_water_look(world, None);
+    clear_chase_alerts(world, None);
     world.resource_mut::<crate::physics::GamePhysics>().set_external_queries(None);
     mods.world = DynamicsWorld::default();
     mods.ground_ready = false;
@@ -959,6 +967,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         capture::clear_owner(world, id);
         clear_camera_angle(world, Some(id));
         clear_water_look(world, Some(id));
+        clear_chase_alerts(world, Some(id));
         player_physics::clear(world,Some(id));
         mods.custom_menus.retain(|(owner,_),_|owner!=id);
         crate::retail_menus::clear_owner(world, id);
@@ -1040,6 +1049,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             capture::clear_owner(world, &id);
             clear_camera_angle(world, Some(&id));
             clear_water_look(world, Some(&id));
+            clear_chase_alerts(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
             crate::retail_menus::clear_owner(world, &id);
@@ -1074,6 +1084,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             capture::clear_owner(world, &id);
             clear_camera_angle(world, Some(&id));
             clear_water_look(world, Some(&id));
+            clear_chase_alerts(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
             crate::retail_menus::clear_owner(world, &id);
@@ -1129,6 +1140,11 @@ fn apply_one(
             player_physics::impulse(world,&body,impulse,point,angular)?;
         }
         Command::UiCanvas { key, options } => canvas::set(world, &mut mods.canvases, id, key, options)?,
+        Command::UiChaseAlerts { enabled } => {
+            if let Some(mut alerts) = world.get_resource_mut::<crate::living_world::ped_alerts::PedAlerts>() {
+                if enabled { alerts.clear_owner(Some(id)); } else { alerts.hidden_by = Some(id.to_owned()); }
+            }
+        }
         Command::UiCentralMessage { text } => {
             world.write_message(crate::hud_central::CentralMessage::new(text));
         }

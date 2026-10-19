@@ -36,6 +36,8 @@ end
 function sdk.ui.remove(key) submit{kind="ui_remove",key=key} end
 -- One line in the HUD's central message (where the chase shows "ZAP!"): a HUD language id or plain text.
 function sdk.ui.central_message(text) submit{kind="ui_central_message",text=text} end
+-- Show (true) or hide (false) the alerts over peds that warn or chase the player; released when the mod stops.
+function sdk.ui.chase_alerts(enabled) submit{kind="ui_chase_alerts",enabled=enabled} end
 
 sdk.physics = {}
 function sdk.physics.spawn(key, body) submit{kind="physics_spawn",key=key,body=body} end

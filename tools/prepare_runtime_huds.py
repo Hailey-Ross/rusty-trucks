@@ -1,4 +1,4 @@
-"""Export the two HUDs and the front-end menu movies used by the engine, as one automatic setup stage.
+"""Export the HUDs, the ped chase alerts and the front-end menu movies used by the engine, as one automatic setup stage.
 
 Only runtime manifests and referenced RGBA payloads enter the installation.
 Extraction intermediates stay in setup's conversion workspace and are removed
@@ -60,6 +60,20 @@ def prepare_in_workspace(game, assets, work):
             retained=False
             (assets/'private'/'menu-movies'/'manifest.json').unlink(missing_ok=True)
         note(availability,'menu-movies',error,retained)
+    # The alerts over peds that warn or chase the player (retail ChaseArrow textures, b191).
+    import prepare_chase_arrows as arrows
+    availability=assets/'private'/'chase-arrows-availability.json'
+    try:
+        arrows.prepare(game, work/'chase-arrows')
+        files.update(arrows.install(assets, work/'chase-arrows'))
+        availability.unlink(missing_ok=True)
+    except CONTENT_ERRORS as error:
+        try:
+            arrows.runtime_files(assets/'private'/'hud'/'chase-arrows')
+            retained=True
+        except CONTENT_ERRORS:
+            retained=False
+        note(availability,'chase-arrows',error,retained)
     print(f'Original runtime HUDs ready: {len(files)} verified files', flush=True)
     return files
 
