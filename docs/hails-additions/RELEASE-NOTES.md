@@ -78,11 +78,7 @@ Not play-tested yet; tell us if any of these still happen.
 - **Ped left sitting in mid air (new):** a ped who left its bench (for example to greet someone) stayed in the sitting pose where the bench had been; it now stands up first.
 - **Assets link after a refresh (new):** after Refresh Game Files in one copy, other copies that share the converted files repair their link at the next start instead of stopping with "Asset root assets: The system cannot find the path specified".
 - **Better Water fountain splash (new):** with Better Water on, dropping into a fountain or other shallow water makes a small splash (Skate 3 has none there, so only with Better Water).
-- **Launcher in a window (new):** the Steam launcher opens as a normal window instead of full screen and comes to the front, and the game's window comes to the front once the startup splash is done.
-- **Startup splash resizing (new):** the splash no longer changes size partway through the start.
-- **Ped left sitting in mid air (new):** a ped who left its bench (for example to greet someone) stayed in the sitting pose where the bench had been; it now stands up first.
-- **Assets link after a refresh (new):** after Refresh Game Files in one copy, other copies that share the converted files repair their link at the next start instead of stopping with "Asset root assets: The system cannot find the path specified".
-- **Better Water fountain splash (new):** with Better Water on, dropping into a fountain or other shallow water makes a small splash (Skate 3 has none there, so only with Better Water).
+- **Launcher-only download (new):** `skate-launcher-windows.zip` below is the Steam launcher on its own, without a game build or a copy of the repository. It downloads and builds only the versions you play (see "Launcher-only download" in `tools/steam-launcher/README.md`).
 - **Peds fell over too easily at slow speeds (confirmed better):** a light bump, often only on a ped's arm, knocked peds over. Like Skate 3, a ped now reacts to how fast its body (torso) moves after the hit, whichever part you touched.
 - **Skitching view jitter (confirmed fixed):** at high speed the car you hold on to was drawn a frame ahead of you, so the view jittered and you seemed to slip behind the car. The car is now drawn at the same moment as you.
 - **NPC skaters riding their line backwards (new):** after walking back to their line, an NPC skater could set off the wrong way or carry an old trick into the new start. Like Skate 3, they now start the line fresh and steer by the way the board really faces.

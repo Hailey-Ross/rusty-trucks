@@ -82,6 +82,18 @@ jobs:
         with:
           name: skate3rust-windows-x64
           path: target
+      # The launcher-only download (tools/steam-launcher/README.md, "Launcher-only download"): the launcher's own
+      # files plus STANDALONE.txt, no game build. Kept out of target/ so the player package steps never see it.
+      - name: Package launcher-only download
+        run: |
+          set -e
+          d=launcher-out/skate-launcher
+          mkdir -p "$d"
+          (cd tools/steam-launcher && cp SkateLauncher.cs build.bat launcher.bat launcher.ps1 setup.ps1 README.md config.example.json versions.example.json "../../$d/")
+          printf 'Standalone launcher: its config, state and versions stay in this folder (README.md).\n' > "$d/STANDALONE.txt"
+          printf 'build %s\ncommit %s\n' "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" > "$d/LAUNCHER-VERSION.txt"
+          for f in "$d"/*; do sed -i 's/\r$//; s/$/\r/' "$f"; done
+          (cd launcher-out && zip -qr skate-launcher-windows.zip skate-launcher && sha256sum skate-launcher-windows.zip > skate-launcher-windows.zip.sha256)
       - name: Publish rolling hails-additions prerelease
         if: github.event_name != 'release' && inputs.release_tag == ''
         env:
@@ -89,9 +101,10 @@ jobs:
         run: |
           python tools/publish_branch.py --directory target --branch hails-additions --notes-file docs/hails-additions/RELEASE-NOTES.md
           gh release upload hails-additions PLAY-WITH-LOG.bat --clobber
+          gh release upload hails-additions launcher-out/skate-launcher-windows.zip launcher-out/skate-launcher-windows.zip.sha256 --clobber
       - name: Attach release package
         if: github.event_name == 'release' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
-        run: gh release upload "$RELEASE_TAG" target/skate3rust-windows-x64.zip target/skate3rust-windows-x64.zip.sha256 target/release.json --clobber
+        run: gh release upload "$RELEASE_TAG" target/skate3rust-windows-x64.zip target/skate3rust-windows-x64.zip.sha256 target/release.json launcher-out/skate-launcher-windows.zip launcher-out/skate-launcher-windows.zip.sha256 --clobber
