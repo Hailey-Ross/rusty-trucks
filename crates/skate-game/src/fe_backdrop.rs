@@ -37,6 +37,8 @@ pub(crate) const SETTINGS_SCREEN: &str = "0ca9bfe5c1ba4995";
 pub(crate) const TRICK_GUIDE_SCREEN: &str = "5d1ecaaf6c7275bf";
 /// The Video Calibration screen's id (TU3 FE id 51, template 91 VideoCalibration; its key is unique).
 pub(crate) const VIDEO_CALIBRATION_SCREEN: &str = "1f3e2788f93b6a2e";
+/// The Challenge Map screen's id (TU3 FE id 17, template 68 ChallengeMap; screens[17] of the menu tables, b253).
+pub(crate) const CHALLENGE_MAP_SCREEN: &str = "1e146362e71471a9";
 
 #[derive(Resource, Default)]
 pub(crate) struct FeBackdrop {

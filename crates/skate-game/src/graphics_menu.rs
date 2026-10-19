@@ -568,6 +568,7 @@ impl Plugin for GraphicsMenuPlugin {
             // Challenge Map teleports (retail map screen), applied the same way once their map is loaded.
             .init_resource::<crate::challenge_map::ChallengeMapTravel>()
             .add_systems(PreUpdate, crate::challenge_map::finish_travel.after(crate::map_transition::MapTransitionSet).before(crate::input::poll_controllers))
+            .add_systems(Update, crate::challenge_map::start_requested)
             .add_systems(PreUpdate, toggle_fullscreen.after(bevy::input::InputSystems))
             .add_systems(Update, preview_menu.before(view::view))
             .add_systems(Update, (crate::map_render::advance_day, apply, view::view, view::sync_blur, resize_menu).chain())

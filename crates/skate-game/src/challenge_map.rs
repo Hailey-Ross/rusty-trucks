@@ -52,10 +52,30 @@ pub(crate) fn plan(
     Ok((request, Some(entry.clone())))
 }
 
-/// The teleport waiting for its map (applied by [`finish_travel`]).
+/// Locations the map screen's teleport handler picked (queued by `retail_menu_stage`, planned by
+/// [`start_requested`]) and the teleport waiting for its map (applied by [`finish_travel`]).
 #[derive(Resource, Default)]
 pub(crate) struct ChallengeMapTravel {
+    pub requested: Vec<String>,
     pub pending: Option<(TeleportRequest, Option<PathBuf>)>,
+}
+
+/// Plan and start the requested teleports (the destinations and installed maps read when one comes).
+pub(crate) fn start_requested(
+    mut travel: ResMut<ChallengeMapTravel>,
+    config: Res<crate::config::Config>,
+    current: Res<crate::map_transition::CurrentMap>,
+    net: Res<crate::multiplayer::Multiplayer>,
+    mut transition: ResMut<crate::map_transition::MapTransition>,
+) {
+    let Some(key) = travel.requested.pop() else { return };
+    travel.requested.clear();
+    let destinations = crate::teleport_menu::load(&config.asset_root).unwrap_or_default();
+    let maps = crate::map_library::discover(&config.asset_root);
+    match plan(&key, &destinations, &maps, current.path.as_deref(), net.active()) {
+        Ok(planned) => travel.start(planned, current.path.clone(), &mut transition),
+        Err(refused) => warn!("CHALLENGE_MAP_TELEPORT {key} refused: {refused:?}"),
+    }
 }
 
 impl ChallengeMapTravel {
