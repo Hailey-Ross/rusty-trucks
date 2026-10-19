@@ -52,11 +52,21 @@ def font_mapping(collections: Path, cache: AssetCache) -> dict:
     return result
 
 
+# The scoring HUD (trick display) and the central message HUD (`hudcentral`: the chase "ZAP!" / "BAM!" lines and other
+# centre-screen messages, retail `826B4FC0` -> `82663F38`), each as runtime/<file> in the same format.
+MOVIES = (("data/fe/source/screens/hud2/trickdisplay2", "trickdisplay.json"),
+          ("data/fe/source/screens/hud2/hudcentral", "hudcentral.json"))
+
+
 def prepare(game: Path, output: Path, collections: Path):
-    extract_project(game, output, prefixes=("data/fe/source/screens/hud2/trickdisplay2",), update=True)
+    extract_project(game, output, prefixes=tuple(name for name, _ in MOVIES), update=True)
     cache = AssetCache(output)
     mappings = font_mapping(collections,cache)
-    name = "data/fe/source/screens/hud2/trickdisplay2"
+    results = [prepare_movie(output, cache, mappings, collections, name, file) for name, file in MOVIES]
+    return results[0]
+
+
+def prepare_movie(output: Path, cache, mappings, collections: Path, name: str, file: str):
     bundle = cache.load_bundle(name)
     apt_path = output / "raw" / (name + ".apt")
     const_path = apt_path.with_suffix('.const')
@@ -93,8 +103,11 @@ def prepare(game: Path, output: Path, collections: Path):
         'language': {row['label'].strip(): row['value'] for row in
                      json.loads((output / 'metadata/languages/english_global.json').read_text(encoding='utf-8'))['entries']},
         'unresolved_fonts': [family for family, asset in fonts.items() if asset is None],
+        # Linkage records (name, character id, source movie): the engine leaves an import no library resolves absent.
+        'imports': list((bundle.get('imports') or {}).values()),
+        'exports': list((bundle.get('exports') or {}).values()),
     }
-    target = output / 'runtime' / 'trickdisplay.json'
+    target = output / 'runtime' / file
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(result, separators=(',', ':')) + '\n', encoding='utf-8')
     print(f"Prepared {len(shapes)} original HUD shapes and {len(blocks)} action blocks: {target}")

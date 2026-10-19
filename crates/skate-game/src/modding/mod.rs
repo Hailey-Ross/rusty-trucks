@@ -1129,6 +1129,9 @@ fn apply_one(
             player_physics::impulse(world,&body,impulse,point,angular)?;
         }
         Command::UiCanvas { key, options } => canvas::set(world, &mut mods.canvases, id, key, options)?,
+        Command::UiCentralMessage { text } => {
+            world.write_message(crate::hud_central::CentralMessage::new(text));
+        }
         Command::UiRemove { key } => {
             let slot = (id.to_owned(), key);
             canvas::remove(world, &mut mods.canvases, &slot);

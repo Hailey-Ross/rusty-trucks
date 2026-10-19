@@ -525,6 +525,11 @@ impl Movie {
         let list = self.states[&instance.character][frame].clone();
         let mut children = BTreeMap::new();
         for (depth, placement) in list.depths {
+            // An import no library resolved stays absent, like retail's null slot: nothing is placed (the central
+            // HUD's team logo loader, `Image_Renderer_Component`, without the front end's image_renderer movie).
+            if !self.characters.contains_key(&placement.character) && self.linkage.values().any(|&c| c == placement.character) {
+                continue;
+            }
             let previous = instance.children.get(&depth).copied();
             if let Some(name) = previous
                 .and_then(|old| self.instances.get(&old))

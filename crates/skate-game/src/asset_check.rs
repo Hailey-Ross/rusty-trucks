@@ -98,6 +98,11 @@ fn hud(assets: &Path) -> Vec<Finding> {
             }
         }
     }
+    // The central message HUD (chase "ZAP!" / "BAM!" lines) came after the scoring HUD: offered, not forced.
+    let hud = assets.join("private/hud/runtime");
+    if hud.join("trickdisplay.json").is_file() && !hud.join("hudcentral.json").is_file() {
+        out.push(finding("hud", "central message HUD missing"));
+    }
     out
 }
 

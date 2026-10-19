@@ -2135,3 +2135,35 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Open:** `82E3AEA8` (clears three ped slots tied to the plugin graph) is not ported, and what the slots mean is
   open. Whether a greet may preempt a seated ped in retail is not researched. Why the occupied bench dropped will show
   in the next session's log.
+
+## The chase line on the HUD: "ZAP!", "Tazed!", "BAM!" (2026-10-19)
+
+- **Ask (user, 2026-10-19):** port the taser's player-side feedback. Retail has no tased animation for the player
+  (b248: the takedown wipeout); its one extra is a HUD line.
+- **Retail [code, Ghidra]:** the hit calls the chase manager's slot +64 `826B4FC0` with (1, 1) for a taze and (1, 0)
+  for a takedown. It looks up the HUD component `"central"`, rolls `rand() % 101 * 0.01` and posts a language id
+  through `82663F38`: taze `ID_CHASE_TAZER_1` "ZAP!" below 0.5, else `ID_CHASE_TAZER_2` "Tazed!"; takedown
+  `ID_CHASE_CAUGHT_1..4` ("BAM!", "Clobbered!", "KAPOW!!", "&@%#!!!") by quarters (thresholds 0.25 / 0.5 / 0.75 read
+  from the image); first argument 0 is `ID_CHASE_OVER` "Freedom!". `82663F38` stores the formatted text, a style
+  (`+0x34`, 0) and an audio hook (`+0x280`, 0) and sends the screen event 4.
+- **Retail [data]:** the component is the `hud2/hudcentral` movie (we did not convert it before). Its `SetState(4)`
+  calls `ShowMessage(mcMessageText, HUDComponents.Central_GetMessageData(), "center", ..., Central_GetAudioHook())`;
+  `ShowMessage` writes `data[0]` into the label, colours it off-white for style 0, red for 1 (else the celebratory
+  banner), plays `FE_SOUND_CENTRAL_MESSAGE_DEFAULT` for the hook `kAUDIOHOOK_DEFAULT` (= 0, defined in the movie)
+  and the clip's intro. The getters' bodies are not decoded; their values are what `82663F38` stores [inferred].
+  `Audio.PlayGenCentralMsge`, which the clip calls, is not in the TU3 image: a no-op in retail too.
+- **Change:**
+  - Setup: `tools/prepare_hud.py` converts `hudcentral` next to the trick display (`runtime/hudcentral.json`, now with
+    the movie's imports / exports); `install_prepared_hud.py` installs it when present. A missing file is an
+    `ASSET_CHECK hud` finding ("central message HUD missing") that offers Refresh Game Files.
+  - Engine: `hud_central.rs` runs the movie on the APT VM (bindings above, FE sounds as `FE_SOUND_<NAME>`, the
+    screen manager's two colours); `scoring_hud.rs` loads it with the HUD, resets it on a map change, advances it and
+    draws it above the trick display. `CentralMessage` posts a line (`HUD_CENTRAL message ...` in the log).
+  - `apt_movie.rs`: an import no library resolved is not placed (retail's null slot), instead of failing the load
+    (the movie's team logo loader imports `Image_Renderer_Component`).
+  - Living world: `post_chase_messages` turns a taze or a successful takedown of the local player into the retail id
+    (`skate_core::...::chase::chase_message`, `PED_CHASE_MESSAGE` in the log).
+  - Mods: `sdk.ui.central_message(text)` (command `ui_central_message`): a language id or plain text.
+- **Tests:** `chase_messages_follow_retails_bands` (skate-core), `a_taze_line_shows_its_text_and_plays_the_default_sound`
+  (data-gated: load, show, label text, the default sound, 90 frames), tool tests for the HUD install.
+- **Open:** who sends the chase-over line (first argument 0); the line's on-screen look is not play-tested.

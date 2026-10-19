@@ -13,6 +13,7 @@ mod fe_language;
 mod apt_text;
 mod apt_scene;
 mod apt_imports;
+mod hud_central;
 mod hud_runtime;
 mod scoring_runtime;
 mod scoring_hud;

@@ -288,9 +288,42 @@ pub fn escaped(chaser: Vec3, chasee: Vec3, record: &ChaseRecord) -> bool {
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - e * e > 0.0
 }
 
+/// The line the HUD's central message shows when a chase reaches the player (`826B4FC0`, chase manager
+/// `0x830854B8` vtable slot +64): `caught` false = the chase ended (`ID_CHASE_OVER`); a taze picks by halves, a
+/// takedown the four "caught" lines by quarters. `roll` is retail's `rand() % 101 * 0.01`. Language ids: the text is
+/// the HUD movie's language table ("ZAP!", "Tazed!", "BAM!", ...).
+pub fn chase_message(caught: bool, tazed: bool, roll: f32) -> &'static str {
+    match (caught, tazed) {
+        (false, _) => "ID_CHASE_OVER",
+        (true, true) if roll < 0.5 => "ID_CHASE_TAZER_1",
+        (true, true) => "ID_CHASE_TAZER_2",
+        (true, false) if roll < 0.25 => "ID_CHASE_CAUGHT_1",
+        (true, false) if roll < 0.5 => "ID_CHASE_CAUGHT_2",
+        (true, false) if roll < 0.75 => "ID_CHASE_CAUGHT_3",
+        (true, false) => "ID_CHASE_CAUGHT_4",
+    }
+}
+
+/// Retail's roll for [`chase_message`] from a random word: `r % 101 * 0.01` (0.00 ..= 1.00).
+pub fn chase_message_roll(r: u32) -> f32 {
+    (r % 101) as f32 * 0.01
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chase_messages_follow_retails_bands() {
+        assert_eq!(chase_message(true, true, chase_message_roll(49)), "ID_CHASE_TAZER_1");
+        assert_eq!(chase_message(true, true, chase_message_roll(50)), "ID_CHASE_TAZER_2");
+        assert_eq!(chase_message(true, false, chase_message_roll(24)), "ID_CHASE_CAUGHT_1");
+        assert_eq!(chase_message(true, false, chase_message_roll(25)), "ID_CHASE_CAUGHT_2");
+        assert_eq!(chase_message(true, false, chase_message_roll(74)), "ID_CHASE_CAUGHT_3");
+        assert_eq!(chase_message(true, false, chase_message_roll(100)), "ID_CHASE_CAUGHT_4");
+        assert_eq!(chase_message(false, true, 0.0), "ID_CHASE_OVER");
+        assert_eq!(chase_message_roll(101), 0.0);
+    }
 
     #[test]
     fn crossing_chasee_is_led_and_one_running_away_is_chased_directly() {

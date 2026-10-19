@@ -23,7 +23,14 @@ def contained(root, relative):
 
 
 def runtime_files(root, marker=False):
-    manifest = "hud.json" if marker else "runtime/trickdisplay.json"
+    files = movie_files(root, "hud.json" if marker else "runtime/trickdisplay.json", marker)
+    # The central message HUD (prepare_hud.MOVIES): optional, so a cache from before it still installs.
+    if not marker and (root / "runtime/hudcentral.json").is_file():
+        files.update(movie_files(root, "runtime/hudcentral.json", False))
+    return files
+
+
+def movie_files(root, manifest, marker):
     data = json.loads((root / manifest).read_text(encoding="utf-8"))
     if data.get("version") != 1:
         raise ValueError(f"Unsupported HUD version: {root}")

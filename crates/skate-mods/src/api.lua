@@ -34,6 +34,8 @@ function sdk.ui.canvas(key, options)
     submit{kind="ui_canvas",key=key,options=copy}
 end
 function sdk.ui.remove(key) submit{kind="ui_remove",key=key} end
+-- One line in the HUD's central message (where the chase shows "ZAP!"): a HUD language id or plain text.
+function sdk.ui.central_message(text) submit{kind="ui_central_message",text=text} end
 
 sdk.physics = {}
 function sdk.physics.spawn(key, body) submit{kind="physics_spawn",key=key,body=body} end
