@@ -73,6 +73,9 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Pause menu after Challenge Map trips (new):** after a few Challenge Map teleports, Start stopped opening Skate 3's pause menu and only opened the PC overlay for the rest of the session. Each teleport left a hidden copy of the pause menu loaded; that no longer happens, and if the menus ever stop again they restart on their own.
+- **Challenge Map markers and cursor (new):** the location markers and the cursor now sit where Skate 3 draws them on the map, at Skate 3's size (they were spread out and too big, and the cursor sat in the top-left corner). The map picture itself may still be off; the log now says which picture was shown.
+- **NPC skaters stuck below a ledge (new):** NPC skaters now do their recorded tricks even when they have drifted a little off their line, as in Skate 3, so they pop up onto ledges instead of stalling below them. Walking back to their line, they aim for the nearest point they can reach. Tell us if NPC skaters now bail more often.
 - **Switching maps (new):** NPC skaters with physics now ride the new map's rails and settings after a map change (they kept the old map's), and peds no longer carry conversations or chases over from the old map.
 - **Bumped NPC skaters (new):** an NPC skater bumped by another skater no longer also says its crash line for the next 3 s, and one you bump says its "team" line, both as in Skate 3 (with **Ped Speech** on).
 - **Game files refresh on their own when the menus need it (new):** the first start of this build restarts into **Refresh Game Files** once if your menu files are older than the build reads (it adds the Challenge Map's menu files). Let it finish; the game starts again by itself.
