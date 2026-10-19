@@ -210,7 +210,9 @@ impl Movie {
         events: &[ClipAction],
         into: Option<usize>,
     ) -> Result<usize, String> {
-        if depth > 32 || self.instances.len() > 2048 {
+        // Ours (a guard, not a retail rule): the Challenge Map pre-allocates 11 list rows of ~112 clips, ~2838 on
+        // load (b260), so 2048 was too low.
+        if depth > 32 || self.instances.len() > 16384 {
             return Err(format!("APT movie hierarchy limit (depth {depth}, {} instances, character {character})", self.instances.len()));
         }
         let c = self

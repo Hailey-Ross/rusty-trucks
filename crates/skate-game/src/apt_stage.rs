@@ -1160,8 +1160,9 @@ mod tests {
         let id = game.calls.iter().find_map(|c| c.strip_prefix("Game.OnScreenLoaded(")).map(|c| c.trim_end_matches(')').to_owned()).expect("the movie loaded");
         // The open states, as the stage posts them after the update.
         for state in std::mem::take(&mut game.challenge_map.states) {
-            stage.call_path(&format!("_level0.{id}.SetState"), vec![Value::Text(state.to_string())], &mut game).ok();
+            stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(id.clone()), Value::Text(state.to_string())], &mut game).unwrap();
         }
+        game.calls.clear();
         for _ in 0..20 {
             stage.update(16.0, &movies, &mut game).unwrap();
         }
@@ -1174,9 +1175,16 @@ mod tests {
             for _ in 0..8 {
                 stage.update(16.0, &movies, &mut game).unwrap();
             }
+            // The refresh states a push posts, as the stage flushes them after each key.
+            for state in std::mem::take(&mut game.challenge_map.states) {
+                stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(id.clone()), Value::Text(state.to_string())], &mut game).unwrap();
+            }
+            for _ in 0..8 {
+                stage.update(16.0, &movies, &mut game).unwrap();
+            }
             selected = selected.or(game.challenge_map.selected.clone());
         }
-        eprintln!("stack {:?} selected {selected:?}", game.challenge_map.state.stack);
+        eprintln!("stack {:?} selected {selected:?} calls after keys {:?}", game.challenge_map.state.stack, game.calls);
         assert_eq!(game.challenge_map.state.stack.len(), 1, "A opened the Downtown folder");
         assert!(selected.is_some_and(|e| e.kind == skate_core::menus::EntryKind::FeLocation), "A picked a location");
     }
