@@ -400,7 +400,7 @@ pub(crate) fn update(
     }
     let previous_position=owner.controller.state.position_368;
     let mut result=owner.run(job.job);
-    skater.walker_ped_hits = super::solid_contacts::constrain_ground(owner,&mut result,previous_position,&physics.network_proxies.solids);
+    super::solid_contacts::constrain_ground(owner,&mut result,previous_position,&physics.network_proxies.solids);
     log_step(owner, physics, contact.prefix, frame);
     if result
         .physical_frame

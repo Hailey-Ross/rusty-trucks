@@ -64,7 +64,7 @@ pub(super) fn load_collision_settings(data: &Collections) -> Result<CollisionSet
 pub(crate) fn post(skater: &mut SkaterRuntime, collision: CollisionInput<'_>) {
     // PLAYER_PED_CONTACT (research b247, user ask: log the player's decision): on a tick with a ped contact, the
     // on-foot check's inputs against its limits and what it decided, so a hit that did NOT bail says why.
-    let ped = skater.ped_hits.iter().map(|h| (h, "skeleton")).chain(skater.walker_ped_hits.iter().map(|h| (h, "walker"))).next();
+    let ped = skater.ped_hits.first().map(|h| (h, "skeleton"));
     let ped = ped.map(|((id, _, closing), by)| {
         let e = collision.shared.pose_error;
         let disp = (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt();

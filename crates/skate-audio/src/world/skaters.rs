@@ -430,8 +430,9 @@ impl NpcSkater {
         std::mem::take(&mut self.board.bail_grunt)
     }
 
-    /// The collide lines the body poster asked for since the last take (`Contacts::collides`).
-    pub fn take_collides(&mut self) -> u32 {
+    /// The collide lines the body poster asked for since the last take (`Contacts::collides`), one
+    /// record per call in order.
+    pub fn take_collides(&mut self) -> Vec<crate::player::contacts::CollideCall> {
         std::mem::take(&mut self.board.collides)
     }
 

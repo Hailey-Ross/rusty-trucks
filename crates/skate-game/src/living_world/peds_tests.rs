@@ -1040,3 +1040,48 @@ fn an_ended_approach_or_chase_drops_its_route_once() {
     assert!(chase_goal.is_none() && !approach_route, "both markers cleared");
     assert!(!ended_move_drops_route(&mut None, &mut false));
 }
+#[test]
+fn a_map_change_clears_the_ped_world_state_but_the_first_map_load_keeps_it() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    let mut data = PedData::default();
+    data.loaded_for = Some(("A".into(), 1));
+    let mut groups = PedChaseGroups::default();
+    groups.0.insert(5, Default::default());
+    app.insert_resource(PopulationState::default())
+        .insert_resource(data)
+        .insert_resource(groups)
+        .insert_resource(PedPluginProps { rng: Some(skate_core::living_world::Rng::new(9)), ..Default::default() })
+        .init_resource::<LivingWorldSettings>()
+        .init_resource::<LivingWorldObservers>()
+        .init_resource::<PedConversations>()
+        .add_message::<crate::world_audio::PedSpeechEvent>()
+        .add_message::<SkaterTakedownRequest>()
+        .add_message::<crate::world_audio::PedTazerEvent>()
+        .add_message::<PedEvent>()
+        .add_message::<super::vehicles::TrafficEvent>()
+        .add_systems(Update, think_peds);
+    // The first map: the plugin key goes from none to the map, nothing is reset.
+    app.update();
+    app.world_mut().resource_mut::<PedPluginProps>().key = Some(("A".into(), 1));
+    app.update();
+    assert_eq!(app.world().resource::<PedChaseGroups>().0.len(), 1);
+    assert!(app.world().resource::<PedPluginProps>().rng.is_some());
+    // A new map generation: the old world's chase groups and offer RNG go.
+    app.world_mut().resource_mut::<PedData>().loaded_for = Some(("B".into(), 2));
+    app.update();
+    assert!(app.world().resource::<PedChaseGroups>().0.is_empty());
+    assert!(app.world().resource::<PedPluginProps>().rng.is_none());
+}
+
+#[test]
+fn a_new_map_install_continues_the_id_serials() {
+    let settings = LivingWorldSettings { seed: 3, ..LivingWorldSettings::default() };
+    let loaded = || LoadedData { config: PopulationConfig::retail(), census: None, skaters: None, roads: None, vehicles: None, npc: Default::default(), status: "ids test".into() };
+    let mut state = PopulationState::default();
+    state.install("A", 1, &settings, loaded());
+    assert_eq!(state.world.state(skate_core::living_world::Kind::Pedestrian).next_serial(), 1, "the first map starts at 1");
+    state.world.apply(&skate_core::living_world::Decision::Spawn(record(7, "x", 1, 0)));
+    state.install("B", 2, &settings, loaded());
+    assert_eq!(state.world.state(skate_core::living_world::Kind::Pedestrian).next_serial(), 8);
+}

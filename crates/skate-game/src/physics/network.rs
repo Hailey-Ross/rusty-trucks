@@ -264,6 +264,11 @@ pub(crate) struct Proxies {
     pub actors: std::collections::BTreeMap<usize,(u64,usize)>,
     pub dynamics_before: Vec<(u64, usize, [f32; 3], [f32; 3])>,
     pub dynamics_deltas: Vec<(u64, [f32; 3], [f32; 3], [f32; 3], [f32; 3])>,
+    /// Ped parts (group 11) in the solve: id, solve index, velocity before. Observed only: the ped is not moved by
+    /// the solve; its reaction reads the part's velocity after it (`ped_after`, retail `sub_82E38FB8` kind 5).
+    pub observed: Vec<(u64, usize, [f32; 3])>,
+    /// Each observed part's linear velocity after the last solve.
+    pub ped_after: Vec<(u64, [f32; 3])>,
 }
 /// Where a proxy set stood before some appends ([`Proxies::mark`]), to drop them again ([`Proxies::truncate`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -272,6 +277,7 @@ pub(crate) struct ProxyMark {
     volumes: usize,
     solids: usize,
     dynamics_before: usize,
+    observed: usize,
     /// The solve index of the first body appended after the mark (keys of `groups` / `actors`).
     first_index: usize,
 }
@@ -284,6 +290,7 @@ impl Proxies {
             volumes: self.volumes.len(),
             solids: self.solids.len(),
             dynamics_before: self.dynamics_before.len(),
+            observed: self.observed.len(),
             first_index: skater.skeleton.bodies().len() + skater.skeleton_drives.targets.bodies.len() + self.bodies.len(),
         }
     }
@@ -294,6 +301,7 @@ impl Proxies {
         self.volumes.truncate(mark.volumes);
         self.solids.truncate(mark.solids);
         self.dynamics_before.truncate(mark.dynamics_before);
+        self.observed.truncate(mark.observed);
         self.groups.retain(|&k, _| k < mark.first_index);
         self.actors.retain(|&k, _| k < mark.first_index);
     }
@@ -413,6 +421,8 @@ impl Proxies {
         self.groups.insert(index, solid.contact_group);
         if locally_owned && solid.inverse_mass > 0. {
             self.dynamics_before.push((solid.id, index, solid.linvel.to_array(), solid.angvel.to_array()));
+        } else if solid.contact_group == crate::living_world::ped_body::PED_GROUP && solid.inverse_mass > 0. {
+            self.observed.push((solid.id, index, solid.linvel.to_array()));
         }
         self.bodies.push(body);
         self.solids.push((index, solid));
@@ -422,7 +432,13 @@ impl Proxies {
         &mut self, reactions: &[skate_core::physics::rigid_body::RetailReactionCorrections], dt: f32,
     ) {
         self.dynamics_deltas.clear();
+        self.ped_after.clear();
         if !(dt.is_finite() && dt > 0.) { return; }
+        for &(id, index, before) in &self.observed {
+            let Some(r) = reactions.get(skate_core::physics::board_step::ATTACHED_REACTION_BASE + index) else { continue };
+            let delta = xyz(r.linear_displacement);
+            self.ped_after.push((id, std::array::from_fn(|i| before[i] + delta[i] / dt)));
+        }
         for &(id, index, _, _) in &self.dynamics_before {
             let Some(r) = reactions.get(skate_core::physics::board_step::ATTACHED_REACTION_BASE + index) else { continue };
             self.dynamics_deltas.push((id,
@@ -431,5 +447,23 @@ impl Proxies {
                 xyz(r.position_displacement), xyz(r.orientation_displacement),
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod ped_after_tests {
+    use super::*;
+
+    /// A ped part in the solve is observed, never written back: its velocity after the solve is the velocity before
+    /// plus the solver's velocity change (the reaction reads it, retail `sub_82E38FB8` kind 5).
+    #[test]
+    fn an_observed_ped_part_reports_its_velocity_after_the_solve() {
+        let mut proxies = Proxies { observed: vec![(7, 2, [1.0, 0.0, 0.0])], ..Default::default() };
+        let mut reactions = vec![skate_core::physics::rigid_body::RetailReactionCorrections::default(); skate_core::physics::board_step::ATTACHED_REACTION_BASE + 3];
+        reactions[skate_core::physics::board_step::ATTACHED_REACTION_BASE + 2].linear_displacement = Vector3::new(0.1, 0.0, 0.0);
+        proxies.capture_dynamics_reactions(&reactions, 1.0 / 60.0);
+        assert_eq!(proxies.ped_after.len(), 1);
+        assert!((proxies.ped_after[0].1[0] - 7.0).abs() < 1e-4, "{:?}", proxies.ped_after);
+        assert!(proxies.dynamics_deltas.is_empty(), "nothing to write back");
     }
 }

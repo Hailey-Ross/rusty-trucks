@@ -175,6 +175,9 @@ pub struct AudioState {
     pub collide_vehicle: f32,
     pub collide_skater: f32,
     pub collide_other: f32,
+    /// The skater contact was with the local player (retail `+604` == the local skater's index;
+    /// `SkeletonCollision::other_skater`): a bumped NPC's team line (8290) needs it.
+    pub collide_skater_local: bool,
     /// `+216`: the previous bridge frame's `+212` (|COM v|, m/s; the bridge `sub_824B0DA8` copies
     /// `+212` there after scaling the region impacts by the speed graph at it). The game sets it
     /// per physics step; 0 (graph value 1.0) when nobody does.
@@ -271,6 +274,7 @@ impl Default for AudioState {
             collide_vehicle: 0.0,
             collide_skater: 0.0,
             collide_other: 0.0,
+            collide_skater_local: false,
             com_speed_216: 0.0,
             hands_on_deck: [false; 2],
             in_water: false,

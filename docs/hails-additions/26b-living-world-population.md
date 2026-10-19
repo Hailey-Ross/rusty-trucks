@@ -391,3 +391,46 @@ User: "anything opt in should be added as a setting to the guide overlay that ca
   mode is retail's cheat; this row stands in until the cheat screen exists.
 - **Verification:** tests `choices_round_trip_and_default_off`, `mod_reset_restores_the_players_choice`; the
   overlay row lists in `graphics_menu` tests include rows 40 to 43.
+
+## Map change: fresh NPC bodies, ids that never repeat, ped state cleared, 2026-10-18
+
+- **Problem:** after a map change (a teleport to another map, a reload) parts of the living world kept the old
+  world. The NPC skater pool was loaded once per session, so simulated NPC skaters on the new map rode bodies
+  holding the old map's grind world and skater settings (they predicted grinds and landings against the old
+  rails). Living world ids restarted at 1 on every map, against the id contract ("never repeats within a
+  session"), so state keyed by ped id (conversations, chase groups, pending refusals, contact touchers, hand prop
+  cues) could carry over from an old ped to a new one with the same serial. The ped offer and conversation random
+  streams kept running from the old world's seed, and released hand props were culled by body ids of the old
+  physics, which the new physics reuses.
+- **Root cause:** the data owners (population, ped data, traffic, DMO streaming) already reload on a
+  `(map name, CurrentMap.generation)` key, but the NPC pool used a plain `prewarmed` flag, `PopulationState::install`
+  built a new `LivingWorld` with fresh serial counters, and the per-world ped resources had no reset at all.
+- **Change:**
+  - `NpcSimPool.prewarmed_for` holds the map generation the bodies were loaded for. On a change the pooled bodies,
+    the sim workers and an unfinished background load are dropped and the pool loads again for the new map (on the
+    loader thread, as on the first map). The animation source is map independent and is kept. Log line
+    `NPC_SKATER_SIM pool: map changed (generation N); dropping K loaded skaters`.
+  - `LivingWorld::continue_serials_from` (skate-core) carries each kind's next serial into the new world;
+    `PopulationState::install` calls it. `KindState::next_serial()` reads it.
+  - `think_peds`: on a map change (not on the first map's load) the conversations, pending refusals, chase groups,
+    the conversation and plugin offer RNG, the plugin tick and the greeting / listener / toucher lists are cleared.
+    Log line `PED_WORLD_RESET`.
+  - `sync_hand_props`: on a map change the released props' models are despawned and the list is cleared without
+    removing bodies by id from the new physics.
+- **First map:** unchanged. The pool key goes from none to the first generation on the same tick as the old flag,
+  the first world's serials start at 1, and the ped reset only fires when a previous map's key existed.
+- **Side effect (expected):** entity seeds and car palettes are derived from the serial, so the population on a
+  second map differs from starting the session directly on that map. It is still deterministic for a given map
+  history, and the host owns it (clients mirror records).
+- **Moddability / multiplayer:** ids stay unique across the session, so mod tables and wire ids keyed by
+  `LivingWorldId` stay valid. Mod settings, looks and placed plugin props are world independent and are not
+  cleared. Open: the Lua SDK has no world reset event yet for a mod's own per-NPC tables.
+- **Files:** `crates/skate-core/src/living_world/population.rs`, `crates/skate-game/src/living_world/mod.rs`,
+  `npc_sim.rs`, `peds.rs`, `ped_hand_props.rs`; tests in `crates/skate-core/src/living_world/tests.rs` and
+  `crates/skate-game/src/living_world/peds_tests.rs`.
+- **Verification:** tests `a_new_world_continues_the_serials_so_ids_never_repeat_in_a_session`,
+  `a_new_map_install_continues_the_id_serials`,
+  `a_map_change_clears_the_ped_world_state_but_the_first_map_load_keeps_it`; living world tests: skate-core 349
+  passed, skate-game 101 passed (5 ignored, data gated). The pool reload on a real map change is not covered by a
+  headless test (it needs the skater assets); check the log line in a session with a map change.
+- **Retail:** not researched. Skate 3 streams districts inside one world; this is our map switch.

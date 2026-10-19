@@ -947,3 +947,24 @@ missing stock car files each frame, so the loading screen waited the 30 s cap: b
 - **Verification:** not run (a run with the flag starts a real refresh); the parser has no unit test (it reads the
   process arguments directly). The next in-game refresh should start the game again; its
   `logs\game-refresh-<unix>.stderr.log` shows the lines if not.
+
+## Fixed-step cost readout (`SKATE_FIXED_TIMING`, 2026-10-18)
+
+Problem: `SYSTEM_TIMING` sums every schedule and the render app per frame and lists the top 16, so the fixed step's
+cost (b213: about 4-5 ms of a ~5-6 ms laptop step not split by system) could not be compared with `fixed_ms`.
+
+Change (`crates/skate-game/src/system_timing.rs`, research b214 / b268 `.local/research/b268-fixed-timing-refresh.md`):
+- `SKATE_FIXED_TIMING=1`, also on under trace-all, extends the same layer: the fixed step is the span of
+  `FixedMain::run_fixed_main` (one per step, single-threaded); while it is open, `system` and `system_commands` spans
+  of the fixed schedules (membership read from `Schedules`, again whenever their system count changes) are summed.
+- Once per second: `FIXED_TIMING steps= step_ms=mean/max busy_ms= gaps_ms= cpu_ms= commands_ms= unlisted_ms= |
+  <every fixed system>=mean ms per step/max ms x runs ... | unlisted <top 3>`. `busy` = wall time with at least one
+  fixed system or command application running, `gaps = step - busy` (executor, sync points), `cpu` = the sum of the
+  systems (parallel systems overlap, so it can exceed the step), `unlisted` = other spans inside the window (render
+  systems overlapping the step, run conditions).
+- Off: nothing changes (the layer is installed only when either readout is on; `SYSTEM_TIMING`'s line keeps its form,
+  command spans are not in it).
+- Verification: test `the_fixed_step_system_is_found_by_name` pins the step system's name; trace-all tests pass
+  (`SKATE_FIXED_TIMING` in its switch list). Not yet run in a game session.
+- Open: nested spans (physics phases, per-mod callbacks) are not split (v2); `.local/tools/frame-time-run.ps1` saves
+  only `SYSTEM_TIMING` lines so far.
