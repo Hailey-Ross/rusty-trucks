@@ -2153,3 +2153,31 @@ Out-of-date menus force the refresh (user, 2026-10-18): the asset check's menu m
 into Refresh Game Files once (`asset_check::force_menu_refresh`); a run the refresh started never forces again.
 The engine still reads a version 5 movie set (`OLDEST_VERSION`), so a refresh that could not run leaves the menus
 working.
+
+## The pause menu no longer dies after Challenge Map teleports; a stopped stage restarts (2026-10-18)
+- **Problem** (laptop session 2026-10-18 22:01): after four Challenge Map teleports the next Start logged "APT
+  execution/object budget exceeded", the stage stopped, and every later Start opened the PC overlay.
+- **Root cause** (research `.local/research/b281-apt-budget-leak.md`, confirmed by a stage test): the teleport closes
+  `[map, pause]`; retail's stack op 5 closing a screen below the top unwinds to it and reopens it, so one stack batch
+  opened the pause menu and closed it again. The open only queues the movie load; the script's `CloseScreen` ignores a
+  screen that is still loading (no unload call reaches the stage), so the crossbar loaded into its holder on the next
+  update and stayed rooted: about 1545 objects and one level per teleport, until the VM's 16384-slot guard tripped.
+- **Change:**
+  - `retail_menu_stage.rs` `drop_reopen_and_close`: an Open and a later Close of the same screen in one batch are
+    both dropped (the screen ends closed either way; other effects keep their order). NOT RETAIL (mechanism), same
+    outcome.
+  - `apt_stage.rs` `unload_into`: a load still queued for a clip being unloaded is cancelled (any movie, mods'
+    included).
+  - Collector: triggers on slots in use (`live_objects`), not the slot vector's high-water mark (which made it
+    collect every update once passed), and `collect_at` is capped at 3/4 of the guard.
+  - `apt_vm.rs`: the two limits have their own messages ("APT execution budget exceeded (100000 instructions in one
+    update)", "APT object budget exceeded (slots S, in use L)").
+  - `restart_failed_stage`: a stopped stage is rebuilt with the startup boot once gameplay is back (up to 3 times
+    per session, "RETAIL_MENUS stage restarted (n/3)"); dropping the old stage frees every object its VM held.
+  - Log: "RETAIL_MENUS APT objects in use L slots S collect_at C levels N [key:instances, ...] before K screen
+    change(s)" at every stack batch.
+- **Tests:** `a_screen_reopened_and_closed_in_one_batch_is_neither`; the existing `pause_menu_reopens_without_growing`
+  passes (912 live after each of 8 opens). Before the fix, a same-frame open and close grew by about 1545 objects and
+  one level each time (2485 to 13300 over 8 cycles). skate-game 807 pass.
+- **Next session:** the APT objects line should show the same "in use" after each pause close and no level growth
+  across Challenge Map uses.

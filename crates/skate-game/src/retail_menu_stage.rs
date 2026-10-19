@@ -95,6 +95,8 @@ struct MenuStage {
     white: Handle<Image>,
     slots: Vec<Slot>,
     failed: bool,
+    /// A stopped stage has given gameplay back and is rebuilt next (`restart_failed_stage`).
+    restart_due: bool,
     /// `SKATE3_RETAIL_MENUS_OPEN=1`: open the pause menu once the world has run 4 s (screenshot checks).
     auto_open: bool,
     /// The pause menu's AS screen id (600 + template index; retail 669).
@@ -163,8 +165,60 @@ impl Plugin for RetailMenuStagePlugin {
         if !enabled() {
             return;
         }
-        app.add_systems(PostStartup, setup).add_systems(Update, (update, render).chain());
+        app.add_systems(PostStartup, setup).add_systems(Update, (update, restart_failed_stage, render).chain());
     }
+}
+
+/// One stack batch can open a screen and close it again: op 5 closing a screen below the top unwinds to it and
+/// reopens it first, so the Challenge Map teleport's close of [map, pause] reopens the pause menu and closes it. The
+/// pair is dropped (the screen ends closed either way): its movie would load after the script's CloseScreen, which
+/// ignores a screen still loading, and stay loaded for good (laptop session 2026-10-18: four teleports filled the
+/// VM's object budget). NOT RETAIL (mechanism): same outcome; the other effects keep their order.
+fn drop_reopen_and_close(effects: Vec<Effect>) -> Vec<Effect> {
+    let mut keep = vec![true; effects.len()];
+    for (i, effect) in effects.iter().enumerate() {
+        if let Effect::Open(screen) = *effect {
+            if let Some(j) = effects[i + 1..].iter().position(|e| *e == Effect::Close(screen)) {
+                keep[i] = false;
+                keep[i + 1 + j] = false;
+            }
+        }
+    }
+    effects.into_iter().zip(keep).filter_map(|(e, k)| k.then_some(e)).collect()
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::*;
+
+    #[test]
+    fn a_screen_reopened_and_closed_in_one_batch_is_neither() {
+        let fx = vec![
+            Effect::Close(7),
+            Effect::SuspendGameplay(true),
+            Effect::Open(3),
+            Effect::Close(3),
+            Effect::SuspendGameplay(false),
+        ];
+        assert_eq!(drop_reopen_and_close(fx), [Effect::Close(7), Effect::SuspendGameplay(true), Effect::SuspendGameplay(false)]);
+        // A close before the open (back to the screen) stays.
+        assert_eq!(drop_reopen_and_close(vec![Effect::Close(3), Effect::Open(3)]), [Effect::Close(3), Effect::Open(3)]);
+    }
+}
+
+/// Stage rebuilds a session may do after a stage error; past this Start keeps opening the PC overlay.
+const MAX_STAGE_RESTARTS: u32 = 3;
+
+/// A stopped stage is rebuilt with the same boot as at startup, once `update` has given gameplay back: dropping the
+/// old stage frees every object its VM held (any movie, mods' included), so a leak or a runaway script costs one
+/// silent rebuild instead of the retail menus for the rest of the session (laptop session 2026-10-18).
+fn restart_failed_stage(mut commands: Commands, stage: Option<Res<MenuStage>>, mut restarts: Local<u32>) {
+    if !stage.is_some_and(|s| s.restart_due) || *restarts >= MAX_STAGE_RESTARTS {
+        return;
+    }
+    *restarts += 1;
+    warn!("RETAIL_MENUS stage restarted ({}/{MAX_STAGE_RESTARTS})", *restarts);
+    commands.run_system_cached(setup);
 }
 
 /// Retail ScreenManagerReady handler (825D9450), in its order, with values as "%d" strings like retail:
@@ -405,6 +459,7 @@ fn setup(
                 white,
                 slots: Vec::new(),
                 failed: false,
+                restart_due: false,
                 auto_open: std::env::var("SKATE3_RETAIL_MENUS_OPEN").as_deref() == Ok("1"),
                 crossbar_id: as_id(CROSSBAR),
                 options_id: as_id(OPTIONS),
@@ -496,6 +551,7 @@ fn update(
             *fe_hud = crate::fe_backdrop::FeHud::default();
         }
         demo.set_if_neq(default());
+        ms.restart_due = true;
         return;
     }
     let ms = &mut *ms;
@@ -713,7 +769,13 @@ fn update(
             flush_challenge_map(&mut ms.stage, &mut ms.stack, map, map_id, &mut fe)?;
         }
         // The stack's update (sub_82D0A560) and what it asks of the movies and the game.
-        for effect in ms.stack.update(&|i| backdrop.info(i)) {
+        let effects = drop_reopen_and_close(ms.stack.update(&|i| backdrop.info(i)));
+        // The VM's objects at every screen change: after a close the count returns to the same value, and the
+        // levels list shows any screen still loaded.
+        if !effects.is_empty() {
+            info!("RETAIL_MENUS APT objects {} before {} screen change(s)", ms.stage.object_summary(), effects.len());
+        }
+        for effect in effects {
             match effect {
                 Effect::Open(i) if Some(i) == pause => {
                     info!("RETAIL_MENUS open pause menu (FE {i})");

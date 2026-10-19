@@ -240,6 +240,10 @@ impl Bindings<'_> {
     }
     /// Removes a movie loaded into `target`, if any (unload queued like a removal).
     fn unload_into(&mut self, vm: &mut Vm, target: usize) {
+        // A load still queued for this clip is cancelled: a screen opened and closed in one frame (the Challenge Map
+        // teleport reveals the pause menu and closes it at once) otherwise loaded into the dead holder on the next
+        // update and stayed rooted forever (laptop session 2026-10-18: four teleports, then the object budget).
+        self.state.loads.retain(|l| l.target != target);
         if let Some(i) = self.state.levels.iter().position(|l| l.movie.root == target) {
             let mut level = self.state.levels.remove(i);
             level.movie.unload(vm);
@@ -679,10 +683,22 @@ impl Stage {
                 self.drain(natives)?;
             }
         }
-        if self.vm.objects.len() >= self.collect_at {
+        if self.vm.live_objects() >= self.collect_at {
             self.collect()?;
         }
         Ok(())
+    }
+    /// Objects in use, slots, the next collection point and each level's key and instance count (for logs).
+    pub fn object_summary(&self) -> String {
+        let levels: Vec<String> = self.state.levels.iter().map(|l| format!("{}:{}", l.key, l.movie.instances.len())).collect();
+        format!(
+            "in use {} slots {} collect_at {} levels {} [{}]",
+            self.vm.live_objects(),
+            self.vm.objects.len(),
+            self.collect_at,
+            levels.len(),
+            levels.join(", ")
+        )
     }
     /// Frees objects nothing reaches any more, between updates: closed screens leave their clips, listeners and
     /// script objects behind, and without this a few pause menu opens filled the VM's object budget (session
@@ -708,7 +724,9 @@ impl Stage {
         }
         let free: BTreeSet<usize> = self.vm.collect(roots)?.into_iter().collect();
         self.state.dynamic.retain(|id, _| !free.contains(id));
-        self.collect_at = (2 * self.vm.live_objects()).max(MIN_COLLECT_AT);
+        // Twice the survivors, but never past three quarters of the VM's guard: garbage must not fill the slots to the
+        // guard before a collection runs.
+        self.collect_at = (2 * self.vm.live_objects()).clamp(MIN_COLLECT_AT, crate::apt_vm::MAX_OBJECTS * 3 / 4);
         Ok(())
     }
     /// Placement of the clip a level's root is loaded into, from its ancestors (each an instance of another
