@@ -33,12 +33,33 @@ pub struct PluginSettings {
     /// vector must be under this (`0x821DBCF0` 0.523599 rad = 30 degrees; the upper bound `0x822F9114` 5.75959 is the
     /// same cone on the other side). No distance limit.
     pub front_half_angle: f32,
+    /// NOT RETAIL (ours, user 2026-10-18): a moved prop with a seat in water (at most `water_max_depth` under a water
+    /// surface, or less than `water_above` over it) is switched off like a tipped one; back on once every seat is dry.
+    pub water_disables_seats: bool,
+    pub water_above: f32,
+    pub water_max_depth: f32,
 }
 
 impl Default for PluginSettings {
     fn default() -> Self {
-        Self { refusal_capacity: 16, refusal_value: 30.0, refusal_floor: -30.0, scan_period: 11, height_tolerance: 1.8, front_half_angle: 0.523_599 }
+        Self {
+            refusal_capacity: 16,
+            refusal_value: 30.0,
+            refusal_floor: -30.0,
+            scan_period: 11,
+            height_tolerance: 1.8,
+            front_half_angle: 0.523_599,
+            water_disables_seats: true,
+            water_above: 0.05,
+            water_max_depth: 10.0,
+        }
     }
+}
+
+/// Whether any of the seats is in water by `surface(seat, above, max_depth)` (a water surface over the point, see
+/// [`PluginSettings::water_disables_seats`]); `false` when the rule is off.
+pub fn seats_in_water(prop: &PluginProp, settings: &PluginSettings, mut surface: impl FnMut([f32; 3], f32, f32) -> Option<f32>) -> bool {
+    settings.water_disables_seats && prop.waypoints.iter().any(|w| surface(w.position, settings.water_above, settings.water_max_depth).is_some())
 }
 
 /// The plugin class a DMO hotpoint type makes (`82C4E128`); `None` for the root (0) and the skipped type (8).
@@ -483,6 +504,24 @@ mod tests {
     fn bench() -> PluginProp {
         let w = |x: f32| PluginWaypoint { position: [x, 0.0, 0.0], facing: [0.0, 0.0, 1.0], occupant: None };
         PluginProp { id: 7, class: "waypoint_sit".into(), waypoints: vec![w(0.0), w(1.0)], cooldown: 0.0, cooldown_reset: 10.0, disabled: false }
+    }
+
+    /// Ours (user 2026-10-18): one seat in water switches the bench off; the query gets the settings' depths; the rule
+    /// can be switched off.
+    #[test]
+    fn a_seat_in_water_switches_the_bench_off() {
+        let s = PluginSettings::default();
+        let dry = |_: [f32; 3], _: f32, _: f32| None;
+        assert!(!seats_in_water(&bench(), &s, dry));
+        let mut asked = Vec::new();
+        let second_wet = |p: [f32; 3], above: f32, depth: f32| {
+            asked.push((above, depth));
+            (p[0] > 0.5).then_some(0.4)
+        };
+        assert!(seats_in_water(&bench(), &s, second_wet));
+        assert_eq!(asked[0], (0.05, 10.0));
+        let off = PluginSettings { water_disables_seats: false, ..s };
+        assert!(!seats_in_water(&bench(), &off, |_, _, _| Some(0.0)));
     }
 
     #[test]

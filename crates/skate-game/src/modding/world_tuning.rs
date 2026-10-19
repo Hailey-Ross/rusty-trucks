@@ -267,6 +267,7 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         }
         b.look_ahead = f.look_ahead.unwrap_or(b.look_ahead);
         b.range = f.range.unwrap_or(b.range);
+        b.reaction_part = f.reaction_part.unwrap_or(b.reaction_part);
     }
     if let Some(m) = &p.skater_clips {
         s.skater_clips = m.clone();
@@ -347,6 +348,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         b.values.warn_speech = f.warn_speech.unwrap_or(b.values.warn_speech);
         b.run_from_honker.side_distance = f.run_from_honker_distance.unwrap_or(b.run_from_honker.side_distance);
         b.run_from_honker.run_speed = f.run_from_honker_speed.unwrap_or(b.run_from_honker.run_speed);
+        b.plugins.water_disables_seats = f.water_disables_seats.unwrap_or(b.plugins.water_disables_seats);
+        b.plugins.water_max_depth = f.water_max_depth.unwrap_or(b.plugins.water_max_depth);
         let h = &mut b.values.hand_prop;
         h.attack_speed = f.attack_throw_speed.unwrap_or(h.attack_speed);
         h.attack_lead_seconds = f.attack_throw_lead_seconds.unwrap_or(h.attack_lead_seconds);
@@ -569,6 +572,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                     "skaters": s.ped_obstacles.skaters, "skater_half_extents": s.ped_obstacles.skater_half_extents},
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
                 "ped_body": {"enabled": s.ped_body.enabled, "look_ahead": s.ped_body.look_ahead, "range": s.ped_body.range,
+                    "reaction_part": s.ped_body.reaction_part,
                     "parts": s.ped_body.parts.iter().map(|p| json!({"from": p.from, "to": p.to, "centre": p.centre, "radius": p.radius, "half_length": p.half_length, "mass": p.mass})).collect::<Vec<_>>()},
                 "ped_vehicle_contact": {"enabled": s.ped_vehicle_contact.enabled, "push": s.ped_vehicle_contact.push},
                 "skater_clips": s.skater_clips,
@@ -583,7 +587,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "free_play": s.free_play.map(|f| json!({"traffic": f.traffic, "pedestrians": f.pedestrians, "ai_skaters": f.ai_skaters})),
                 "npc_simulated": {"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max, "respawn_seconds": s.npc_simulated.respawn_seconds, "respawn_min": s.npc_simulated.respawn_min, "respawn_max": s.npc_simulated.respawn_max, "placement_hold_seconds": s.npc_simulated.placement_hold_seconds, "respawn_hold_seconds": s.npc_simulated.respawn_hold_seconds, "anticipation_distance": s.npc_simulated.signals.anticipation_distance, "anticipation_frames": s.npc_simulated.signals.anticipation_frames, "max_crossed_nodes": s.npc_simulated.signals.max_crossed_nodes, "walk_back": s.npc_simulated.walk_back, "walk_arrive_distance": s.npc_simulated.navmesh.arrive_h, "walk_stuck_ticks": s.npc_simulated.navmesh.stuck_waypoint_ticks, "board_yaw": s.npc_simulated.board_yaw_on, "board_yaw_dead_zone": s.npc_simulated.board_yaw.dead_zone, "manual_value": s.npc_simulated.signals.manual_value, "board_yaw_mag_scale": s.npc_simulated.board_yaw.mag_scale, "bump": s.npc_simulated.bump},
                 "npc_avoid": npc_avoid,
-                "ped_brain": {"enabled": s.ped_brain.enabled, "mood": s.ped_brain.mood, "wander_speed": s.ped_brain.values.wander_speed, "warn_seconds": s.ped_brain.values.warn_seconds, "know_about_seconds": s.ped_brain.values.know_about_seconds, "mood_want_memory_seconds": s.ped_brain.values.mood_want_memory_seconds, "conversation_turn_seconds": s.ped_brain.values.conversation_turn_seconds, "conversation_gather_seconds": s.ped_brain.values.conversation_gather_seconds, "run_from_honker_distance": s.ped_brain.run_from_honker.side_distance, "run_from_honker_speed": s.ped_brain.run_from_honker.run_speed, "warn_speech": s.ped_brain.values.warn_speech},
+                "ped_brain": {"enabled": s.ped_brain.enabled, "mood": s.ped_brain.mood, "wander_speed": s.ped_brain.values.wander_speed, "warn_seconds": s.ped_brain.values.warn_seconds, "know_about_seconds": s.ped_brain.values.know_about_seconds, "mood_want_memory_seconds": s.ped_brain.values.mood_want_memory_seconds, "conversation_turn_seconds": s.ped_brain.values.conversation_turn_seconds, "conversation_gather_seconds": s.ped_brain.values.conversation_gather_seconds, "run_from_honker_distance": s.ped_brain.run_from_honker.side_distance, "run_from_honker_speed": s.ped_brain.run_from_honker.run_speed, "warn_speech": s.ped_brain.values.warn_speech, "water_disables_seats": s.ped_brain.plugins.water_disables_seats, "water_max_depth": s.ped_brain.plugins.water_max_depth},
                 "npc_tricks": {"mode": s.npc_tricks.mode.name(), "gate_window": s.npc_tricks.params.gate_window, "min_air_frames": s.npc_tricks.params.min_air_frames},
                 "skater_trick_profiles": s.skater_trick_profiles.iter().map(|(k, v)| {
                     let table = |t: &Option<Vec<(i16, f32)>>| t.as_ref().map(|t| t.iter().map(|e| json!({"trick": e.0, "weight": e.1})).collect::<Vec<_>>());

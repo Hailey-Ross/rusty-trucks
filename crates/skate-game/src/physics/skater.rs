@@ -66,6 +66,9 @@ pub(crate) struct SkaterRuntime {
     /// layout: the ped's knock-down comes from these real contacts (research b185).
     /// Ped parts the skeleton touched: proxy id, contact point, the part's (|v|, |w|) after the solve.
     pub ped_hits: Vec<(u64, [f32; 3], [f32; 2])>,
+    /// Every ped part in the last solve, touched or not: proxy id, (|v|, |w|) after the solve. The reaction reads
+    /// the touched ped's `ped_body.reaction_part` here (retail: the torso, also for an arm-only touch).
+    pub ped_after: Vec<(u64, [f32; 2])>,
     /// The ped bodies that stopped the on-foot walker's capsule this step (`solid_contacts::constrain_ground`), same
     /// layout; the closing speed is the walker's, not yet the part's (the ped side applies the masses).
     pub scoring: crate::scoring_runtime::Runtime,
@@ -351,6 +354,7 @@ impl SkaterRuntime {
             takedown: None,
             vehicle_hits: Vec::new(),
             ped_hits: Vec::new(),
+            ped_after: Vec::new(),
             respawn,
             scoring: crate::scoring_runtime::Runtime::load(&data)?,
             climbing: super::climbing::Runtime::load(asset_root, &animation.evaluator.frames.bone_names)?,

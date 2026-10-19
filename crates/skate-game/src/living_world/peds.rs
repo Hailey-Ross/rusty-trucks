@@ -1055,11 +1055,18 @@ pub(crate) fn advance_peds(
                     let runtime = skater_runtime.as_ref()?;
                     let mine = |h: &&(u64, [f32; 3], [f32; 2])| super::ped_body::proxy_serial(h.0) == Some(ped.id.serial);
                     // On board and on foot the skeleton's solve reports each part it touched with the part's speed
-                    // after the solve (`skeleton_feedback::publish`), the fastest one decides.
-                    let speed = runtime.ped_hits.iter().filter(mine).map(|h| {
+                    // after the solve (`skeleton_feedback::publish`). Any touch counts, but only the reaction part's
+                    // speed decides, whichever part was touched (retail: the torso; b283). Without it (no such part)
+                    // the fastest touched part decides (ours).
+                    let touched_max = runtime.ped_hits.iter().filter(mine).map(|h| {
                         info!("PED_BODY_CONTACT ped=#{} part={} part_speed={:.2} part_spin={:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2[0], h.2[1]);
                         h.2
                     }).fold(None, |m: Option<[f32; 2]>, s| Some(m.map_or(s, |m| [m[0].max(s[0]), m[1].max(s[1])])))?;
+                    let reaction = super::ped_body::reaction_part_speed(&runtime.ped_after, ped.id.serial, &settings.ped_body);
+                    let speed = reaction.unwrap_or(touched_max);
+                    info!("PED_REACTION_BODY ped=#{} part={} speed={:.2} spin={:.2} touched_max_speed={:.2} touched_max_spin={:.2} tick={tick}",
+                        ped.id.serial, if reaction.is_some() { settings.ped_body.reaction_part.to_string() } else { "touched_max".into() },
+                        speed[0], speed[1], touched_max[0], touched_max[1]);
                     let closing = speed[0];
                     let d = [body.position.x - observer.position[0], body.position.z - observer.position[2]];
                     let len = d[0].hypot(d[1]).max(1e-4);
@@ -1830,6 +1837,9 @@ pub(crate) struct PedPluginProps {
     pub scan_ticks: u32,
     pub last_tick: Option<u64>,
     pub rng: Option<skate_core::living_world::Rng>,
+    /// Moved props by id and whether a seat is in water (the water rule, `PluginSettings::water_disables_seats`):
+    /// re-checked only when a seat moved, so a resting prop costs no water query.
+    pub in_water: BTreeMap<u64, bool>,
 }
 
 /// The live conversations by id (host-owned plain data, `skate_core::living_world::peds::conversation`).
@@ -1983,8 +1993,10 @@ pub(crate) fn think_peds(
             pp.props = key.as_ref().and_then(|k| data.plugins.placed.get(&k.0)).cloned().unwrap_or_default();
             pp.key = key;
             pp.scan_ticks = 0;
+            pp.in_water.clear();
             info!("PED_PLUGINS props on this map: {}", pp.props.len());
         }
+        pp.settings = settings.ped_brain.plugins;
         // Hotpoint seats ride on their object (a prop's plugin id carries its DMO body id in the low 32 bits): every
         // think they follow the body from its authored pose, so a moved bench takes its seats along.
         if let (Some(authored), Some(dynamics)) = (pp.key.as_ref().and_then(|k| data.plugins.placed.get(&k.0)), physics.as_ref().and_then(|p| p.prop_dynamics())) {
@@ -1993,6 +2005,7 @@ pub(crate) fn think_peds(
                 let body = prop.id as u32;
                 let (Some(spawn), Some(now)) = (dynamics.spawn_pose(body), dynamics.pose(body)) else { continue };
                 let (spawn, now) = (pose(spawn), pose(now));
+                let mut seats_moved = false;
                 for (w, a) in prop.waypoints.iter_mut().zip(&original.waypoints) {
                     let (position, facing) = super::ped_plugins::follow_prop(a.position, a.facing, spawn, now);
                     // A seat whose prop moves (grabbed, pushed, knocked): retail keeps the ped's plugin and seat
@@ -2001,6 +2014,7 @@ pub(crate) fn think_peds(
                     // it again (the locked waypoint is re-read every evaluation, `826AB9C0`). The seat's own speed stands
                     // in for the object's vector: its move over one step of `SEAT_PUSH_STEP_SECONDS`.
                     let step = (0..3).map(|k| (position[k] - w.position[k]).powi(2)).sum::<f32>().sqrt();
+                    seats_moved |= step > 1e-3;
                     let speed = step / dt.max(1e-4);
                     let per_step = speed * SEAT_PUSH_STEP_SECONDS;
                     if let Some(occupant) = w.occupant.filter(|_| per_step * per_step > SEAT_PUSH_STEP_SQ) {
@@ -2013,18 +2027,32 @@ pub(crate) fn think_peds(
                 // past its per-axis tolerance -> off (seated peds evicted); else each seat must stand on pavement navmesh.
                 // NOT RETAIL YET: when retail runs it (DMO vtable +264's caller) is open, likely on a move / settle
                 // message; ours every think, only for a prop away from its authored pose.
-                if let Some((tolerance, max_distance)) = dynamics.plugin_check_limits(body) {
-                    use skate_core::living_world::peds::plugins::{check_prop, PropCheck, ROTATION_EPSILON};
-                    let moved = (0..3).any(|k| (now.0[k] - spawn.0[k]).abs() > 1e-3)
-                        || (0..3).any(|c| (0..3).any(|r| (now.1[c][r] - spawn.1[c][r]).abs() > ROTATION_EPSILON));
-                    // The per-seat pavement probe (`82C539A8`) is not applied yet: our probe fails 10-23% of untouched
-                    // authored seats (test `living_world_authored_plugin_seats_pass_the_pavement_probe`), so it is not
-                    // retail's yet; a moved, upright prop keeps its seats as before.
-                    let off = moved && check_prop(spawn, now, tolerance, max_distance) == PropCheck::DisableAll;
-                    if off != prop.disabled {
-                        prop.disabled = off;
-                        info!("PED_PLUGIN_PROP {} {:016X} {} tick={tick}", prop.class, prop.id, if off { "disabled (moved / tipped), occupants evicted" } else { "enabled again" });
-                    }
+                use skate_core::living_world::peds::plugins::{check_prop, seats_in_water, PropCheck, ROTATION_EPSILON};
+                let moved = (0..3).any(|k| (now.0[k] - spawn.0[k]).abs() > 1e-3)
+                    || (0..3).any(|c| (0..3).any(|r| (now.1[c][r] - spawn.1[c][r]).abs() > ROTATION_EPSILON));
+                // The per-seat pavement probe (`82C539A8`) is not applied yet: our probe fails 10-23% of untouched
+                // authored seats (test `living_world_authored_plugin_seats_pass_the_pavement_probe`), so it is not
+                // retail's yet; a moved, upright prop keeps its seats as before.
+                let tipped = moved && dynamics.plugin_check_limits(body)
+                    .is_some_and(|(tolerance, max_distance)| check_prop(spawn, now, tolerance, max_distance) == PropCheck::DisableAll);
+                // NOT RETAIL (ours, user 2026-10-18: a seat stops being offered once its bench is in the water): a moved
+                // prop with a seat in water is off too; asked again only when a seat moved (or first seen moved).
+                let wet = if !moved {
+                    pp.in_water.remove(&prop.id);
+                    false
+                } else if let (false, Some(&cached)) = (seats_moved, pp.in_water.get(&prop.id)) {
+                    cached
+                } else {
+                    let world = physics.as_ref().map(|p| p.world());
+                    let wet = world.is_some_and(|w| seats_in_water(prop, &pp.settings, |p, above, depth| w.water_surface_at(skate_core::math::Vector3::new(p[0], p[1], p[2]), above, depth)));
+                    pp.in_water.insert(prop.id, wet);
+                    wet
+                };
+                let off = tipped || wet;
+                if off != prop.disabled {
+                    prop.disabled = off;
+                    let why = if off && wet { "disabled (a seat in water), occupants evicted" } else if off { "disabled (moved / tipped), occupants evicted" } else { "enabled again" };
+                    info!("PED_PLUGIN_PROP {} {:016X} {why} tick={tick}", prop.class, prop.id);
                 }
             }
         }

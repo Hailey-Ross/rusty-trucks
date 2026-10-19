@@ -102,14 +102,24 @@ fn hud(assets: &Path) -> Vec<Finding> {
 }
 
 /// Maps group: the ped hand props carry the grip points this build reads (`attach`, setup since b758f0cc). A file
-/// whose props have none was exported before them; a missing file is not this check's concern (no living world data).
+/// whose props have none was exported before them. With the living world tables installed, a missing or unreadable
+/// file, or one where no prop has a model (`file`), means every hand prop is drawn as nothing (laptop 2026-10-18:
+/// "PED_HAND_PROPS 23 records, 0 with models" after a refresh, no finding); without the tables there is no living
+/// world data and nothing to check.
 fn hand_props(assets: &Path) -> Vec<Finding> {
-    let Some(v) = std::fs::read(assets.join("private/living_world/hand_props.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
+    let living = assets.join("private/living_world");
+    if !living.join("tables.json").is_file() {
         return Vec::new();
+    }
+    let missing = || vec![finding("maps", "hand prop models missing")];
+    let Some(v) = std::fs::read(living.join("hand_props.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
+        return missing();
     };
     match v["props"].as_object() {
-        Some(props) if !props.is_empty() && props.values().all(|p| p.get("attach").is_none()) => vec![finding("maps", "hand props lack their grip points (attach)")],
-        _ => Vec::new(),
+        Some(props) if !props.values().any(|p| p.get("file").is_some_and(serde_json::Value::is_string)) => missing(),
+        Some(props) if props.values().all(|p| p.get("attach").is_none()) => vec![finding("maps", "hand props lack their grip points (attach)")],
+        Some(_) => Vec::new(),
+        None => missing(),
     }
 }
 
@@ -239,10 +249,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("skate-asset-check-hand-props-{}", std::process::id()));
         let file = dir.join("private/living_world/hand_props.json");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        assert!(hand_props(&dir).is_empty(), "no file: nothing to check");
-        std::fs::write(&file, r#"{"props": {"orange": {"glb": "hand_props/orange.glb"}}}"#).unwrap();
+        assert!(hand_props(&dir).is_empty(), "no living world data: nothing to check");
+        std::fs::write(dir.join("private/living_world/tables.json"), "{}").unwrap();
+        let missing = vec![finding("maps", "hand prop models missing")];
+        assert_eq!(hand_props(&dir), missing, "tables but no hand prop file");
+        std::fs::write(&file, r#"{"props": {"orange": {"model": "orange_lw", "error": "no template"}}}"#).unwrap();
+        assert_eq!(hand_props(&dir), missing, "no prop has a model");
+        std::fs::write(&file, r#"{"props": {"pop": {"file": "hand_props/pop.glb"}}}"#).unwrap();
         assert_eq!(hand_props(&dir), vec![finding("maps", "hand props lack their grip points (attach)")]);
-        std::fs::write(&file, r#"{"props": {"orange": {"glb": "x", "attach": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}, "mod": {"glb": "y"}}}"#).unwrap();
+        std::fs::write(&file, r#"{"props": {"pop": {"file": "x", "attach": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}, "orange": {"model": "orange_lw", "error": "no template"}}}"#).unwrap();
         assert!(hand_props(&dir).is_empty(), "current export (a prop without a template may lack it)");
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -922,3 +922,26 @@ Change (`physics/grab_view.rs`, display only): skitching shows the live car spot
 (Processed grab record 0 with its geometry while 2480 bit 22 is set); otherwise the owner list only while it is
 ready; a "skitching" mode in GRAB_VIEW. Tests `a_held_grab_shows_the_owner_list_only_while_it_is_ready`,
 `a_skitch_cue_follows_the_live_car_spot`.
+
+## Carry: right stick pivot and dumpster weight checked against retail; weight and orbit log (2026-10-18)
+
+- **Problem:** laptop session 2026-10-18 22:01, the user: carrying, the right stick should pivot on retail's anchor,
+  not spin the prop in place; dumpsters "feel too light".
+- **Retail [code] (research `.local/research/b284-carry-pivot-and-weight.md`):** the command turns the prop about its
+  own centre of mass; the only turn term in the linear target is the lever coupling fwd += 0.25 x lever x yaw rate
+  (`sub_82D45318`, constant -0.25 at 0x8208ED00); 82D9CC78 adds the linear command at the centre with no mass factor,
+  82D9CCF0 replaces the angular one with the yaw command; no data anchor. "Around the player" is the skater walking
+  round the prop: 82D45D30 / 82D46218 / 82D463D8 put the skater back on the grab edge every tick. Weight is two curves
+  set at the grab (82D444A0): speed scale from the mass (curve 57D37D696363167E, 1.0 up to 91 kg, 0.51 from 200 kg)
+  and yaw gain from the yaw inertia (curve EABFCC79873A2859, 2.0 down to 0.66 at 800); clamps, slew and gains are
+  the same for every prop.
+- **Ours:** the command matches (main-checked `move_object.rs:206` coupling -0.25, `:236-245` the two curves,
+  `:475-487` the targets; mass from the DMO data `Hash_E5778CDD4576D890`, `prop_dynamics.rs:599`; `held_body`
+  `prop_dynamics.rs:1850-1862`). No formula change. Likely gaps, not yet proved: the skater follow not keeping up with
+  the prop's turn (so the prop looks like it spins in place), or a dumpster with no DMO type block falling back to
+  density x volume.
+- **Change (log only):** `CARRY_WEIGHT prop mass yaw_inertia speed_scale yaw_gain` once per grab, and while the right
+  stick turns, every 15 steps `CARRY_ORBIT prop turn prop_heading skater_angle radius yaw_target step` (skater angle
+  round the prop centre: it should turn with the prop heading).
+- **Open:** the next carry session's lines decide which gap it is. Whether record +240 / +228 are body 0's or the whole
+  DMO's for multi-body dumpsters; the skater-side weight (82D46610, 82BDF268) is not decoded.

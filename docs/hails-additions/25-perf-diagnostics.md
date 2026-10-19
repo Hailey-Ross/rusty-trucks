@@ -583,7 +583,7 @@ and after every session; a real folder is never touched. Tested on a scratch che
 installation: both repaired. The send after a session missed a version's logs (they are in its own `logs\`):
 `tools/second-pc/play-and-send.ps1` now also collects every `.local\versions\<id>` checkout's `logs\` and `bin\logs\`
 and the one the launcher names in `SKATE_SEND_LOGS_DIR`. And the restarted refresh logs to its own
-`logs\game-refresh-<unix seconds>.stderr.log` (`setup::refresh_log`): the copy that restarts exits, the launcher closes
+`logs\game-<yyyyMMdd-HHmmss>.stderr.log` (`setup::refresh_log`; `game-refresh-<unix seconds>` until 2026-10-18): the copy that restarts exits, the launcher closes
 its session log, and the two refreshes of the day ended with exit code 1 and no line saying why.
 
 ## Steam launcher: A / Enter did nothing on the main page, no mouse (2026-10-18)
@@ -946,7 +946,7 @@ missing stock car files each frame, so the loading screen waited the 30 s cap: b
   setup's own failure line (`GAME_FILES failed: <reason>`) with the exit code instead of "see above".
 - **Verification:** not run (a run with the flag starts a real refresh); the parser has no unit test (it reads the
   process arguments directly). The next in-game refresh should start the game again; its
-  `logs\game-refresh-<unix>.stderr.log` shows the lines if not.
+  `logs\game-<stamp>.stderr.log` shows the lines if not.
 
 ## Fixed-step cost readout (`SKATE_FIXED_TIMING`, 2026-10-18)
 

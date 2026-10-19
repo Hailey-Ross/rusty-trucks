@@ -381,7 +381,7 @@ fn a_car_enters_the_grab_scene_with_its_rear_spline_in_world_space() {
     let net = road();
     let (car, ..) = car_from_record(&net, &d, &VehicleOverrides::default(), &std::collections::BTreeMap::new(), &record(7, 0, 50.0, 0), 0.0).unwrap();
     let t = Transform::from_xyz(1.0, 0.0, 2.0).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
-    let motion = CarMotion { prev: t, curr: t, wheel_prev: 0.0, wheel: 0.0, velocity: Vec3::new(5.0, 0.0, 0.0) };
+    let motion = CarMotion { drawn_prev: t, prev: t, curr: t, wheel_drawn_prev: 0.0, wheel_prev: 0.0, wheel: 0.0, velocity: Vec3::new(5.0, 0.0, 0.0) };
     let o = car_grab_object(&car, &motion, &d).unwrap();
     assert_eq!(o.id, CAR_GRAB_TAG | 7);
     assert!(matches!(o.provider, skate_core::player::offboard::grab_scene::Provider::Vehicle));
@@ -431,7 +431,7 @@ fn a_car_provides_its_grind_rails_at_its_current_transform() {
     let (car, ..) = car_from_record(&net, &d, &VehicleOverrides::default(), &std::collections::BTreeMap::new(), &record(7, 0, 50.0, 0), 0.0).unwrap();
     let rail = PropRail { guids: [3, 4], segments: vec![PropSegment { start: [0.0, 1.5, -1.0, 1.0], end: [0.0, 1.5, 1.0, 1.0], min: [0.0, 1.5, -1.0], max: [0.0, 1.5, 1.0] }] };
     let t = Transform::from_xyz(1.0, 0.0, 2.0).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
-    let motion = CarMotion { prev: t, curr: t, wheel_prev: 0.0, wheel: 0.0, velocity: Vec3::new(5.0, 0.0, 0.0) };
+    let motion = CarMotion { drawn_prev: t, prev: t, curr: t, wheel_drawn_prev: 0.0, wheel_prev: 0.0, wheel: 0.0, velocity: Vec3::new(5.0, 0.0, 0.0) };
     assert!(car_rails(&[(&car, &motion)], &d).0.is_empty(), "no rails exported for the model: none provided");
     d.models.get_mut(&car.model).unwrap().grind_rails = vec![rail].into();
     let poses = car_rails(&[(&car, &motion)], &d);
@@ -458,4 +458,18 @@ fn a_model_without_its_own_collision_takes_the_recipe_mesh() {
     assert_eq!(d.models["a"].collision.as_ref().map(|c| c.triangles.len()), Some(2));
     assert!(d.models["b"].collision.is_none(), "no mesh anywhere: the bounds box");
     assert_eq!(d.models["c"].collision.as_ref().map(|c| c.triangles.len()), Some(1), "the model's own mesh wins");
+}
+
+/// b285: the skater's solve of a tick meets the car where it stood the tick before (traffic moves after Physics), so
+/// the car is drawn one tick behind `curr`, between the same ticks as the skater holding it.
+#[test]
+fn the_car_is_drawn_on_the_ticks_the_skater_met_it() {
+    let at = |x: f32| Transform::from_xyz(x, 0.0, 0.0);
+    let motion = CarMotion { drawn_prev: at(0.0), prev: at(0.5), curr: at(1.0), wheel_drawn_prev: 6.0, wheel_prev: 0.2, wheel: 0.4, velocity: Vec3::new(30.0, 0.0, 0.0) };
+    let (p, _, wheel) = drawn_pose(&motion, 0.5);
+    assert!((p.x - 0.25).abs() < 1e-6, "halfway from drawn_prev to prev, never past prev: {p:?}");
+    assert!((drawn_pose(&motion, 1.0).0.x - 0.5).abs() < 1e-6);
+    // The wheel wraps forward through 2 pi like before.
+    let d = 0.2 + std::f32::consts::TAU - 6.0;
+    assert!((wheel - (6.0 + d * 0.5)).abs() < 1e-5, "{wheel}");
 }

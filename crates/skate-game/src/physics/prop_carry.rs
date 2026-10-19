@@ -511,6 +511,8 @@ pub(crate) struct PropCarry {
     follow: Option<SkaterFollow>,
     /// The last stick input `CARRY_STICK` logged (tenths of OB_ObjectMvZ / MvX / MvRot), so it writes on change.
     stick_logged: Option<[i32; 3]>,
+    /// Held steps since the grab (`None` until CARRY_WEIGHT is logged for this grab); CARRY_ORBIT every 15 while turning.
+    held_steps: Option<u32>,
     /// Last command, for HELD_PROP.
     last: MoveObjectCommand,
     last_input: [f32; 3],
@@ -837,6 +839,7 @@ impl PropCarry {
         self.frame = None;
         self.follow = None;
         self.stick_logged = None;
+        self.held_steps = None;
         self.controller = MoveObjectController::default();
     }
 
@@ -1051,6 +1054,25 @@ impl PropCarry {
             bevy::log::info!(
                 "CARRY_STICK prop={id} push={:.1} side={:.1} turn={:.1} facing=[{:.2}, {:.2}] right=[{:.2}, {:.2}] target_velocity=[{:.2}, {:.2}] yaw_target={:.2}",
                 input.move_z, input.move_x, input.move_rotation, f[0], f[2], -f[2], f[0], v[0], v[2], command.yaw_target
+            );
+        }
+        // CARRY_WEIGHT once per grab (b284: a held prop's weight is only these two curve outputs, set at the grab;
+        // a light dumpster means a light mass or yaw inertia here). CARRY_ORBIT while turning: retail turns the prop
+        // about its centre and the skater walks round it, so the skater's angle round the centre should follow the
+        // prop's heading.
+        let steps = self.held_steps.map_or(0, |s| s + 1);
+        if self.held_steps.is_none() {
+            bevy::log::info!(
+                "CARRY_WEIGHT prop={id} mass={:.1} yaw_inertia={:.1} speed_scale={:.2} yaw_gain={:.2}",
+                input.mass, input.yaw_inertia, tuning.speed_scale(input.mass), tuning.yaw_gain(input.yaw_inertia)
+            );
+        }
+        self.held_steps = Some(steps);
+        if input.move_rotation.abs() > 0.05 && steps % 15 == 0 {
+            let d = [body_position.x - input.center[0], body_position.z - input.center[2]];
+            bevy::log::info!(
+                "CARRY_ORBIT prop={id} turn={:.1} prop_heading={:.3} skater_angle={:.3} radius={:.2} yaw_target={:.2} step={steps}",
+                input.move_rotation, input.heading, d[0].atan2(d[1]), d[0].hypot(d[1]), command.yaw_target
             );
         }
         // Follow step after the command (this tick's latch): +416 steps

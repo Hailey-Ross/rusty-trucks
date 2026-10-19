@@ -106,10 +106,36 @@ pub(crate) fn in_effect(settings: &super::LivingWorldSettings) -> OptIns {
     }
 }
 
-/// Session log: an opt-in switching (start, overlay or mod), so a report shows which ones were on.
+/// Session log line for one opt-in switching: `OPT_IN_CHANGED <name> off -> on by player`. `by` is `player` (the
+/// overlay, or the player's choice back in effect) or `mod`. Every opt-in uses it, also the overlay's audio and
+/// water ones, so one search finds every toggle of a session.
+pub(crate) fn opt_in_changed_line(name: &str, old: bool, new: bool, by: &str) -> String {
+    let word = |on: bool| if on { "on" } else { "off" };
+    format!("OPT_IN_CHANGED {name} {} -> {} by {by}", word(old), word(new))
+}
+pub(crate) fn log_opt_in_changed(name: &str, old: bool, new: bool, by: &str) {
+    if old != new {
+        info!("{}", opt_in_changed_line(name, old, new, by));
+    }
+}
+
+/// The OPT_IN_CHANGED lines from `old` to `now`; a value that differs from the player's choice is a mod's.
+fn changes(old: OptIns, now: OptIns, user: OptIns) -> Vec<String> {
+    OptIn::ALL.iter().filter(|o| old.get(**o) != now.get(**o))
+        .map(|o| opt_in_changed_line(o.log_key(), old.get(*o), now.get(*o), if now.get(*o) == user.get(*o) { "player" } else { "mod" }))
+        .collect()
+}
+
+/// Session log: an opt-in switching (start, overlay or mod), so a report shows which ones were on and when each one
+/// was toggled.
 pub(crate) fn log_opt_ins(settings: Res<super::LivingWorldSettings>, mut last: Local<Option<OptIns>>) {
     let now = in_effect(&settings);
     if *last != Some(now) {
+        if let Some(old) = *last {
+            for line in changes(old, now, settings.user_opt_ins) {
+                info!("{line}");
+            }
+        }
         let on: Vec<&str> = OptIn::ALL.iter().filter(|o| now.get(**o)).map(|o| o.log_key()).collect();
         info!("OPT_IN {}", if on.is_empty() { "none".to_owned() } else { on.join(" ") });
         *last = Some(now);
@@ -146,5 +172,20 @@ mod tests {
         s.reset_mod_overrides();
         assert!(s.zombie && s.npc_simulated.enabled);
         assert_eq!(in_effect(&s).zombie, true);
+    }
+
+    /// One OPT_IN_CHANGED line per opt-in that switched, naming who switched it.
+    #[test]
+    fn changes_name_each_toggle_and_its_source() {
+        let off = OptIns::default();
+        let zombie = OptIns { zombie: true, ..Default::default() };
+        assert_eq!(changes(off, zombie, zombie), vec!["OPT_IN_CHANGED zombie off -> on by player"]);
+        assert_eq!(changes(zombie, off, zombie), vec!["OPT_IN_CHANGED zombie on -> off by mod"]);
+        assert!(changes(zombie, zombie, off).is_empty());
+        let both = OptIns { npc_physics: true, visualize_grabs: true, ..Default::default() };
+        assert_eq!(changes(off, both, both), vec![
+            "OPT_IN_CHANGED npc_physics off -> on by player",
+            "OPT_IN_CHANGED visualize_grabs off -> on by player",
+        ]);
     }
 }
