@@ -1136,3 +1136,24 @@ Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes 
   `shallow_splash` (0 to 2) in `skate-mods` presentation.
 - **Verification:** not built or tested yet (uncommitted at the time of writing); not play-tested.
 - **Open:** the plume's look in a fountain is the deep-water one scaled down; tune from the next session.
+
+## Better Water: calm swells on the open sea, 2026-10-19
+
+- **Ask (2026-10-19):** the user: "there are just a couple boats in the distance when you are at the Tanker spawn and
+  look out at the ocean, im sure if you don't make the swells too large and just make it look nice and calm but moving
+  it will be fine." So broad, calm swells on the open sea, no rings around boats (b301's boat positions not needed).
+- **Which water:** the sea is the `ocean.default` backdrop (family 31, PCA normals and Ward specular, b287 table). Its
+  mesh is 204 vertices over about 16 x 13 km (this doc, "ocean"), so the surface cannot move: the swells are shading
+  only (b287 part 1).
+- **Change:** in the family 31 branch of `retail_world.wgsl`, after retail's normal, the slopes of three sines on the
+  world xz position are added (directions and lengths fixed: 1.0x, 0.61x and 1.37x the set wavelength; each moves at
+  the deep-water speed for its length). Each sine fades out once a pixel covers more than about a tenth of its
+  wavelength, so the far sea does not shimmer. New frame-state row `ocean_swell` (amplitude, wavelength, speed),
+  written from `WaterLook.ocean_swell`, `ocean_swell_length` and `ocean_swell_speed` (Better Water defaults 0.05, 40 m,
+  7.9 m/s; retail look 0, so with Better Water off the row is zero and the branch is skipped). Mod patch keys with
+  the same names in `skate-mods` presentation (0 to 0.3, 1 to 400 m, 0 to 40 m/s).
+- **Verification:** `ocean_swells_only_with_better_water_and_mods_can_set_them` (`water_look`), the world shader naga
+  validation (`retail_shader_tests`) and the frame-state encoder tests. Not play-tested: the user judges the look from
+  the Tanker spawn.
+- **Open:** University's reservoir uses the same material family, so it gets the same calm swells; if that looks
+  wrong there, gate by body size like family 33's calming.

@@ -17,7 +17,7 @@ struct WorldParams {
     mode: vec4<f32>, foliage_debug: vec4<f32>, surface: vec4<f32>, family: vec4<f32>,
     fog_ramp: vec4<f32>, fog_color: vec4<f32>, shadow_color: vec4<f32>, sun_direction: vec4<f32>, decal: vec4<f32>, water: array<vec4<f32>, 4>,
 }
-struct FrameState { shadow: vec4<f32>, clock: vec4<f32>, pca: array<vec4<f32>, 7>, pca_slow: array<vec4<f32>, 7>, water_look: vec4<f32>, water_tint: vec4<f32>, view_dot_light: vec4<f32>, traffic_lights: array<vec4<f32>, 2> }
+struct FrameState { shadow: vec4<f32>, clock: vec4<f32>, pca: array<vec4<f32>, 7>, pca_slow: array<vec4<f32>, 7>, water_look: vec4<f32>, water_tint: vec4<f32>, ocean_swell: vec4<f32>, view_dot_light: vec4<f32>, traffic_lights: array<vec4<f32>, 2> }
 
 /// Where each texture channel of one material lives.
 ///

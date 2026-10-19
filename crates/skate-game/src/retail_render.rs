@@ -257,6 +257,8 @@ pub(crate) struct FrameStateData {
     pub water_look: Vec4,
     /// Water look reflection tint (rgb); w the flowing water's ripple scale, 0 = the look stays off family 30.
     pub water_tint: Vec4,
+    /// Water look ocean swells (family 31, not retail): x slope amplitude (0 = off), y wavelength (m), z speed (m/s).
+    pub ocean_swell: Vec4,
     /// Retail world constant `g_ViewDotLight`, shared by every draw (bound by
     /// name hash 0xE552F1C3 in `sub_826DD6B8` to `*(0x83083C60)+0x44370`),
     /// written each frame by `advance_view_dot_light` from `ViewDotLightParams`.
@@ -278,6 +280,7 @@ impl Default for FrameStateData {
             pca_slow: [Vec4::ZERO; 7],
             water_look: Vec4::ZERO,
             water_tint: Vec4::ZERO,
+            ocean_swell: Vec4::ZERO,
             view_dot_light: RETAIL_VIEW_DOT_LIGHT,
             traffic_lights: [Vec4::ZERO; 2],
         }
@@ -332,7 +335,7 @@ impl ViewDotLightParams {
 }
 
 impl FrameStateData {
-    const SIZE: usize = 21 * 16;
+    const SIZE: usize = 22 * 16;
 
     /// Turns the world's dynamic-shadow reads on with `floor` as the lightest
     /// value a dynamic shadow can leave on the baked world (see
@@ -341,13 +344,13 @@ impl FrameStateData {
         self.shadow = floor.clamp(Vec3::ZERO, Vec3::ONE).extend(1.);
     }
 
-    /// The rows in shader order (shadow, clock, PCA, slow PCA, water look and tint, view-dot-light, traffic lights).
+    /// The rows in shader order (shadow, clock, PCA, slow PCA, water look, tint and ocean swell, view-dot-light, traffic lights).
     fn rows(&self) -> impl Iterator<Item = Vec4> + '_ {
         std::iter::once(self.shadow)
             .chain(std::iter::once(self.clock))
             .chain(self.pca)
             .chain(self.pca_slow)
-            .chain([self.water_look, self.water_tint])
+            .chain([self.water_look, self.water_tint, self.ocean_swell])
             .chain(std::iter::once(self.view_dot_light))
             .chain(self.traffic_lights)
     }
@@ -369,7 +372,7 @@ impl FrameStateData {
             .chain(std::iter::once(self.clock))
             .chain(self.pca)
             .chain(self.pca_slow)
-            .chain([self.water_look, self.water_tint])
+            .chain([self.water_look, self.water_tint, self.ocean_swell])
             .chain(std::iter::once(self.view_dot_light))
             .chain(self.traffic_lights)
         {
@@ -1764,6 +1767,7 @@ fn advance_frame_state(
         f32::from(u8::from(look.body_calming)),
     );
     state.water_tint = Vec3::from_array(look.reflection_tint).extend(look.flowing_lane());
+    state.ocean_swell = look.ocean_swell_row().into();
 }
 
 /// The PCA frame at `rate` x the retail 30 Hz, blended linearly between
