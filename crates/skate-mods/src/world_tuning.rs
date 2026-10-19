@@ -478,6 +478,9 @@ pub struct PedBodyPartPatch {
     pub radius: f32,
     pub half_length: f32,
     pub mass: f32,
+    /// The part's contact friction, 0..=2 (absent: retail 0.0).
+    #[serde(default)]
+    pub friction: Option<f32>,
 }
 
 /// Ped obstacle rules (`skate_core::living_world::peds::ObstacleParams`; retail: on, 0.2 m minimum
@@ -1077,6 +1080,7 @@ impl LivingWorldPatch {
                         && p.radius.is_finite() && (0.01..=2.0).contains(&p.radius)
                         && p.half_length.is_finite() && (0.0..=2.0).contains(&p.half_length)
                         && p.mass.is_finite() && (0.1..=MAX_NUMBER).contains(&p.mass)
+                        && p.friction.is_none_or(|v| v.is_finite() && (0.0..=2.0).contains(&v))
                 }))
                     && b.look_ahead.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
                     && b.range.is_none_or(|v| v.is_finite() && (0.0..=200.0).contains(&v))

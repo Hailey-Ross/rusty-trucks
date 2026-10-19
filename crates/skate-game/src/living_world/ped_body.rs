@@ -51,7 +51,15 @@ pub(crate) struct PedBodyPart {
     pub half_length: f32,
     /// kg.
     pub mass: f32,
+    /// Contact friction of the part's collider (static; dynamic is 0.75 of it, restitution 0, `solid_contacts`).
+    pub friction: f32,
 }
+
+/// Retail 0 [code, b289]: every ped part's contact material is static / dynamic friction and restitution 0.0
+/// (`82E268C8` fills the three slots from `0x82165A10` = 0.0, the owner's material vfuncs +120 / +124 leave them;
+/// `82E0E4B0` writes them to the part definition +0x80, `82DC4588` copies them into the collision object). Our 0.5
+/// before had no source and spun the torso about its long axis past the 3.0 rad/s knock-down gate (b288).
+pub(crate) const DEFAULT_PART_FRICTION: f32 = 0.0;
 
 /// `living_world.ped_body` (mod-facing; the default is retail as marked).
 #[derive(Clone, Debug, PartialEq)]
@@ -77,6 +85,7 @@ impl Default for PedBodySettings {
             radius,
             half_length,
             mass,
+            friction: DEFAULT_PART_FRICTION,
         };
         Self {
             enabled: true,
@@ -123,7 +132,7 @@ pub(crate) fn part_proxy(serial: u32, index: usize, a: Vec3, b: Vec3, velocity: 
         linvel: p(velocity),
         angvel: Vector::new(0.0, 0.0, 0.0),
         contact_group: PED_GROUP,
-        colliders: vec![skate_dynamics::SolidCollider { shape: SharedShape::capsule_y(part.half_length.max(0.0), part.radius.max(0.01)), pose, friction: 0.5 }],
+        colliders: vec![skate_dynamics::SolidCollider { shape: SharedShape::capsule_y(part.half_length.max(0.0), part.radius.max(0.01)), pose, friction: part.friction.max(0.0) }],
     }
 }
 
@@ -208,6 +217,7 @@ mod tests {
         let s = PedBodySettings::default();
         let arm = &s.parts[1];
         let b = part_proxy(7, 1, Vec3::new(0.0, 1.2, 0.0), Vec3::new(0.3, 1.2, 0.0), Vec3::new(0.6, 0.0, 0.0), arm, s.look_ahead);
+        assert_eq!(b.colliders[0].friction, 0.0, "retail ped parts have no friction (b289)");
         assert_eq!((b.id, b.contact_group), (PED_PROXY_TAG | 7 << 2 | 1, 11));
         assert_eq!(proxy_serial(b.id), Some(7));
         // Any serial keeps the tag bits (the kind byte of `to_u64` did not: no ped hit was ever reported).

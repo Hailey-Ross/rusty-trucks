@@ -262,7 +262,7 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         b.enabled = f.enabled.unwrap_or(b.enabled);
         if let Some(parts) = &f.parts {
             b.parts = parts.iter().map(|p| crate::living_world::ped_body::PedBodyPart {
-                from: p.from.clone(), to: p.to.clone(), centre: p.centre, radius: p.radius, half_length: p.half_length, mass: p.mass,
+                from: p.from.clone(), to: p.to.clone(), centre: p.centre, radius: p.radius, half_length: p.half_length, mass: p.mass, friction: p.friction.unwrap_or(crate::living_world::ped_body::DEFAULT_PART_FRICTION),
             }).collect();
         }
         b.look_ahead = f.look_ahead.unwrap_or(b.look_ahead);
@@ -573,7 +573,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
                 "ped_body": {"enabled": s.ped_body.enabled, "look_ahead": s.ped_body.look_ahead, "range": s.ped_body.range,
                     "reaction_part": s.ped_body.reaction_part,
-                    "parts": s.ped_body.parts.iter().map(|p| json!({"from": p.from, "to": p.to, "centre": p.centre, "radius": p.radius, "half_length": p.half_length, "mass": p.mass})).collect::<Vec<_>>()},
+                    "parts": s.ped_body.parts.iter().map(|p| json!({"from": p.from, "to": p.to, "centre": p.centre, "radius": p.radius, "half_length": p.half_length, "mass": p.mass, "friction": p.friction})).collect::<Vec<_>>()},
                 "ped_vehicle_contact": {"enabled": s.ped_vehicle_contact.enabled, "push": s.ped_vehicle_contact.push},
                 "skater_clips": s.skater_clips,
                 "skater_blend_seconds": s.skater_blend_seconds,
@@ -825,6 +825,12 @@ mod tests {
         set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"parts": [arm], "range": 20.0}}))).unwrap();
         let s = w.resource::<LivingWorldSettings>().ped_body.clone();
         assert_eq!((s.parts.len(), s.parts[0].mass, s.range, s.look_ahead), (1, 5.0, 20.0, default.look_ahead), "absent fields keep the default");
+        assert_eq!(s.parts[0].friction, crate::living_world::ped_body::DEFAULT_PART_FRICTION, "no friction given: the default");
+        let slippery = json!({"from": "Hips", "to": "Head", "centre": 0.0, "radius": 0.2, "half_length": 0.5, "mass": 10.0, "friction": 0.1});
+        set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"parts": [slippery], "reaction_part": 0}}))).unwrap();
+        assert_eq!(w.resource::<LivingWorldSettings>().ped_body.parts[0].friction, 0.1);
+        assert_eq!(read(&w, "living_world")["ped_body"]["parts"][0]["friction"], json!(0.1f32));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"reaction_part": 9}}))).is_err(), "no such part index");
         let massless = json!({"from": "Hips", "to": "Head", "centre": 0.0, "radius": 0.2, "half_length": 0.5, "mass": 0.0});
         assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"parts": [massless]}}))).is_err(), "no massless part");
         assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"shape": "box"}}))).is_err());
