@@ -67,7 +67,6 @@ pub(crate) struct SkaterRuntime {
     pub ped_hits: Vec<(u64, [f32; 3], f32)>,
     /// The ped bodies that stopped the on-foot walker's capsule this step (`solid_contacts::constrain_ground`), same
     /// layout; the closing speed is the walker's, not yet the part's (the ped side applies the masses).
-    pub walker_ped_hits: Vec<(u64, [f32; 3], f32)>,
     pub scoring: crate::scoring_runtime::Runtime,
     pub climbing: super::climbing::Runtime,
     /// Completed physical pose in native animation space, read by rendering.
@@ -351,7 +350,6 @@ impl SkaterRuntime {
             takedown: None,
             vehicle_hits: Vec::new(),
             ped_hits: Vec::new(),
-            walker_ped_hits: Vec::new(),
             respawn,
             scoring: crate::scoring_runtime::Runtime::load(&data)?,
             climbing: super::climbing::Runtime::load(asset_root, &animation.evaluator.frames.bone_names)?,

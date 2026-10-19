@@ -138,6 +138,7 @@ the file of their topic (and get a line here).
 - [A ped that lost its prop no longer stalls a conversation (2026-10-17)](26g-living-world-ped-interactions.md#a-ped-that-lost-its-prop-no-longer-stalls-a-conversation-2026-10-17)
 - [A full mood store evicts by priority (2026-10-17)](26g-living-world-ped-interactions.md#a-full-mood-store-evicts-by-priority-2026-10-17)
 - [Peds stuck at walls: retail has no give-up (research, 2026-10-17)](26g-living-world-ped-interactions.md#peds-stuck-at-walls-retail-has-no-give-up-research-2026-10-17)
+- [On foot: the player passes a ped; the ped reacts to its part's speed after the solve (2026-10-18)](26g-living-world-ped-interactions.md#on-foot-the-player-passes-a-ped-the-ped-reacts-to-its-parts-speed-after-the-solve-2026-10-18)
 
 ### 26h: Traffic
 

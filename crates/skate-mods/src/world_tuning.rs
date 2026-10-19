@@ -29,7 +29,7 @@
 //!   stand-in for NavPower's moving avoider, default on),
 //!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on),
 //!   `ped_nav {steer_rate, turn_edges, stall_seconds, stuck_distance, stuck_seconds, crosswalk}` (ped navigation, see
-//!   `PedNavPatch`), `ped_body {enabled, parts, look_ahead, range, walker_mass}` (peds as solid bodies in the skater's contact solve, collision
+//!   `PedNavPatch`), `ped_body {enabled, parts, look_ahead, range}` (peds as solid bodies in the skater's contact solve, collision
 //!   group 11; retail on, three capsule parts posed from bones: `parts` = [{from, to, centre, radius, half_length,
 //!   mass}], `look_ahead` seconds of ped velocity, `range` m from an observer),
 //!   `ped_vehicle_contact {enabled, push}` (traffic cars touching peds; retail on / on: the ped is
@@ -459,8 +459,6 @@ pub struct PedBodyPatch {
     pub parts: Option<Vec<PedBodyPartPatch>>,
     pub look_ahead: Option<f32>,
     pub range: Option<f32>,
-    /// kg: the on-foot skater against a part it walks into (the part's speed after the hit).
-    pub walker_mass: Option<f32>,
 }
 
 /// One capsule between two rig bones: centred at `centre` (0 = `from`, 1 = `to`), along `from -> to`; m / kg.
@@ -849,7 +847,7 @@ impl Merge for NpcSkaterPropsPatch {
 }
 impl Merge for PedBodyPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, parts, look_ahead, range, walker_mass);
+        merge_opts!(self, b; enabled, parts, look_ahead, range);
     }
 }
 impl Merge for SkaterLineChainPatch {
@@ -1075,7 +1073,6 @@ impl LivingWorldPatch {
                 }))
                     && b.look_ahead.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
                     && b.range.is_none_or(|v| v.is_finite() && (0.0..=200.0).contains(&v))
-                    && b.walker_mass.is_none_or(|v| v.is_finite() && v > 0.0 && v <= 1000.0)
             })
             && self.skater_clips.as_ref().is_none_or(|m| {
                 m.len() <= MAX_TEMPLATES

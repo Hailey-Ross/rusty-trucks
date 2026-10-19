@@ -1971,3 +1971,34 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   already holds a prop). Not play-tested.
 - **Open:** whether our channel loops a `_CYC` clip (one-shots fade at their end; the carry pose then holds the
   taser), the hand bone (we use RIGHTHANDPROP), the HUD line.
+
+## On foot: the player passes a ped; the ped reacts to its part's speed after the solve (2026-10-18)
+
+- **Problem:** since 2026-10-17 the on-foot walker's capsule stopped at every ped body part, so walking into a ped felt
+  like hitting a wall, and the ped reacted to the walker's closing speed scaled by a made-up 75 kg walker mass
+  (`ped_body.walker_mass`, NOT RETAIL) instead of anything the solve computed.
+- **Retail:** the walker's queries never include the PedestrianPool (b266 [code]: builders `82764AB0` / BE8 / CF8 use
+  only world+0x5580 / +0x5584); only the skater's skeleton meets the ped parts, in the Skater x Ped pair job
+  (`8277AB70` / `8277A508`, contacts only) and the skeleton solve. The ped's reaction `sub_82E38FB8` kind 5 reads the
+  part's own linear / angular speed after that solve: knock-down above 3.0, otherwise the standing stumble (b272
+  [code]); the ped moves through that reaction, there is no root write-back. Two laptop recomp sessions
+  (recomp-pedbody-20261018-205249 / -210429, 34 player x ped contacts, 9 of them on foot; analysis
+  `.local/research/b271-pedbody-session.md`) [trace]: on foot the player keeps moving through the contact at up to
+  ~6 m/s and the on-foot wipeout check `82D90148` never requests a bail (body region strength at most 3.95 of 20.0).
+  On board the user: "there were several bails caused by contact with peds" (board check `82D8F9E0`, unchanged).
+- **Change:** `solid_contacts::constrained_position` skips group-11 solids (the walker block and its hit list
+  `walker_ped_hits` are gone, as is `ped_body.walker_mass`); the ped parts (already 10 / 20 / 20 kg) are observed in
+  the shared solve (`Proxies::observed`, never written back) and `capture_dynamics_reactions` records each part's
+  velocity after the solve (`Proxies::ped_after`: before + the solver's velocity change);
+  `skeleton_feedback::publish` gives every ped hit that part's |v|, which `peds.rs` feeds to the retail
+  `skater_reaction` rule. Log `PED_BODY_CONTACT ped part part_speed`.
+- **Moddability / multiplayer:** part shapes, masses, bones, range and look-ahead stay in `living_world.ped_body`
+  (mod patch `ped_body {enabled, parts, look_ahead, range}`; `walker_mass` removed); the 3.0 gates are the
+  collision rules' values. The skater's owner computes the part speed in its own solve; the hit is keyed by the
+  stable ped proxy id (`ped_body::proxy_id`); the ped's authority applies the reaction.
+- **Verification:** tests `the_walker_passes_a_ped_part_but_not_a_mod_solid`,
+  `an_observed_ped_part_reports_its_velocity_after_the_solve`; skate-mods 106, skate-game 803 pass. Not play-tested.
+- **Open:** our parts have no rotational inertia (`part_proxy` inverse inertia 0), so retail's |w| > 3.0 knock-down
+  never fires; whether our skeleton's pose error stays under the on-foot 0.3 m bail limit while passing a ped (retail
+  never bailed on foot in the sessions); the ped dodge before contact (b273 / b274: retail's SkaterAvoidance
+  closest-approach test, not ported yet).

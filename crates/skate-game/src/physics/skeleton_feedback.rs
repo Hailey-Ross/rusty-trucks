@@ -17,7 +17,14 @@ pub(super) fn publish(
     request_partial_ragdoll: bool,
 ) {
     let (reports, hits) = collect(physics, skater);
-    let (ped_hits, vehicle_hits) = hits.into_iter().partition(|h| crate::living_world::ped_body::proxy_serial(h.0).is_some());
+    let (mut ped_hits, vehicle_hits): (Vec<_>, Vec<_>) = hits.into_iter().partition(|h| crate::living_world::ped_body::proxy_serial(h.0).is_some());
+    // Retail's ped reaction reads the part's own velocity after the skater's solve (`sub_82E38FB8` kind 5), not the
+    // closing speed: the hit's speed becomes that part's |v| after the solve.
+    for hit in &mut ped_hits {
+        if let Some((_, v)) = physics.network_proxies.ped_after.iter().find(|(id, _)| *id == hit.0) {
+            hit.2 = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        }
+    }
     skater.vehicle_hits = vehicle_hits;
     skater.ped_hits = ped_hits;
     let p = &skater.player_input.processed;

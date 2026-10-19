@@ -1051,27 +1051,16 @@ pub(crate) fn advance_peds(
                     if ignored == Some(local) {
                         return None;
                     }
-                    // NOT RETAIL YET: the closing speed is the relative speed at the contact; retail reads the ped
-                    // part's velocity after the solve (|v| / |w| > 3.0).
+                    // Retail reads the ped part's linear and angular speed after the solve (|v| / |w| > 3.0); our parts
+                    // have no rotational inertia yet (`ped_body::part_proxy`), so only |v| is read.
                     let runtime = skater_runtime.as_ref()?;
                     let mine = |h: &&(u64, [f32; 3], f32)| super::ped_body::proxy_serial(h.0) == Some(ped.id.serial);
-                    // On foot the walker's capsule stops at the part (`solid_contacts::constrain_ground`), so it reports
-                    // the part instead of the skeleton: the part's speed after the hit by momentum (`ped_body.walker_mass`,
-                    // NOT RETAIL YET, b217). Retail gives a little through the stumble clip's root motion.
-                    let walker = runtime.walker_ped_hits.iter().filter(mine).map(|h| {
-                        let part = settings.ped_body.parts.get((h.0 & 3) as usize).map_or(0.0, |p| p.mass);
-                        let w = settings.ped_body.walker_mass;
-                        let speed = if part > 0.0 { h.2 * w / (w + part) } else { 0.0 };
-                        info!("PED_BODY_CONTACT ped=#{} part={} by=walker closing={:.2} part_speed={speed:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2);
-                        speed
-                    });
-                    // On board the skeleton's solve reports the part it touched with its closing speed.
-                    let board = runtime.ped_hits.iter().filter(mine).map(|h| {
-                        info!("PED_BODY_CONTACT ped=#{} part={} by=board closing={:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2);
+                    // On board and on foot the skeleton's solve reports each part it touched with the part's speed
+                    // after the solve (`skeleton_feedback::publish`), the fastest one decides.
+                    let closing = runtime.ped_hits.iter().filter(mine).map(|h| {
+                        info!("PED_BODY_CONTACT ped=#{} part={} part_speed={:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2);
                         h.2
-                    });
-                    let closing = board.chain(walker)
-                        .fold(None, |m: Option<f32>, s| Some(m.map_or(s, |m| m.max(s))))?;
+                    }).fold(None, |m: Option<f32>, s| Some(m.map_or(s, |m| m.max(s))))?;
                     let d = [body.position.x - observer.position[0], body.position.z - observer.position[2]];
                     let len = d[0].hypot(d[1]).max(1e-4);
                     let n = [d[0] / len, d[1] / len];

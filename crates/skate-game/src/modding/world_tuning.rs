@@ -267,7 +267,6 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         }
         b.look_ahead = f.look_ahead.unwrap_or(b.look_ahead);
         b.range = f.range.unwrap_or(b.range);
-        b.walker_mass = f.walker_mass.unwrap_or(b.walker_mass);
     }
     if let Some(m) = &p.skater_clips {
         s.skater_clips = m.clone();
@@ -569,7 +568,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                     "held_is_obstacle": s.ped_obstacles.held_is_obstacle, "moving_solid": s.ped_obstacles.moving_solid,
                     "skaters": s.ped_obstacles.skaters, "skater_half_extents": s.ped_obstacles.skater_half_extents},
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
-                "ped_body": {"enabled": s.ped_body.enabled, "look_ahead": s.ped_body.look_ahead, "range": s.ped_body.range, "walker_mass": s.ped_body.walker_mass,
+                "ped_body": {"enabled": s.ped_body.enabled, "look_ahead": s.ped_body.look_ahead, "range": s.ped_body.range,
                     "parts": s.ped_body.parts.iter().map(|p| json!({"from": p.from, "to": p.to, "centre": p.centre, "radius": p.radius, "half_length": p.half_length, "mass": p.mass})).collect::<Vec<_>>()},
                 "ped_vehicle_contact": {"enabled": s.ped_vehicle_contact.enabled, "push": s.ped_vehicle_contact.push},
                 "skater_clips": s.skater_clips,
@@ -819,10 +818,9 @@ mod tests {
         assert!(default.enabled && default.parts.len() == 3, "solid peds, retail three parts");
         assert_eq!(read(&w, "living_world")["ped_body"]["parts"][0]["from"], json!("Hips"));
         let arm = json!({"from": "LeftForeArm", "to": "LeftHand", "centre": 0.5, "radius": 0.1, "half_length": 0.2, "mass": 5.0});
-        set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"parts": [arm], "range": 20.0, "walker_mass": 60.0}}))).unwrap();
+        set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"parts": [arm], "range": 20.0}}))).unwrap();
         let s = w.resource::<LivingWorldSettings>().ped_body.clone();
-        assert_eq!((s.parts.len(), s.parts[0].mass, s.range, s.look_ahead, s.walker_mass), (1, 5.0, 20.0, default.look_ahead, 60.0), "absent fields keep the default");
-        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"walker_mass": 0.0}}))).is_err(), "no massless walker");
+        assert_eq!((s.parts.len(), s.parts[0].mass, s.range, s.look_ahead), (1, 5.0, 20.0, default.look_ahead), "absent fields keep the default");
         let massless = json!({"from": "Hips", "to": "Head", "centre": 0.0, "radius": 0.2, "half_length": 0.5, "mass": 0.0});
         assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"parts": [massless]}}))).is_err(), "no massless part");
         assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"shape": "box"}}))).is_err());
