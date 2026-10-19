@@ -677,10 +677,24 @@ main unless marked).** Corrections to the list above it: 24630 `423_Collide` / 2
 announcer lines (speaker `*(system)+1036`, 104 in free skate), not main-cast; 8290 `210_CollTeam` goes to the bumped
 skater's own speech record when it hit the local player (`+604` == the local index, `+492` 1.0 s cooldown, verified:
 `0x8231A844` = 1.0), with a voice slot (`+28` record `+80` > 0); the `*(system)+1036 < 104` / `sub_824F2DF0` gate
-guards a separate host comment (main-cast 254 for a pro bumper, else 248), not 8290. Still to port: the local
-player's branch (32797 gated by mode 55 or host model 40 / 30 / 31, then the announcer line by on-foot `+716`), 8290
-and the host comment; they need the other skater's index from physics (`+604`). Open: the names of 32797 and 248 /
-254, whether retail NPC skaters ever get ped contacts (`collide_other`, needs a trace).
+guards a separate host comment (main-cast 254 `311_Coll_Pro` for a pro bumper, else 248 `312_Coll_skater`), not 8290.
+
+**Team line 8290 (2026-10-18, b270).** Ported: the skeleton contact now carries the other body's owner
+(`SkeletonContactReport::other_entity` / `SkeletonCollision::other_skater`, a stable peer id from
+`Proxies::actors`, filled in `skeleton_feedback.rs`; retail `+604`), `AudioState::collide_skater_local` = that owner
+is `PLAYER_PEER`. The body poster keeps one `CollideCall { skater, team }` per call; `entry+492` is
+`Contacts::coll_team_cooldown`, counted down by dt at the start of every call and set to 1.0 when a skater contact
+from the local player asks for the team line. The speech host posts `ContactsTuning::coll_team` (8290 / 294) on the
+skater's own voice when it has no main-cast words: our stand-in for retail's AI voice slot (`+28` record `+80 > 0`,
+slots map to the living-world models 89..96) [inferred: a pro's slot 0 is not proven]. Tuning keys
+`coll_team_cooldown`, `coll_team` (posters, mod-settable). Test
+`the_team_line_needs_the_local_player_and_a_cooldown_counted_on_calls`; skate-core 1116, skate-audio 269, skate-game
+801 pass. Not play-tested.
+
+Still to port: the host comment (needs our challenge host as a ped speaker, unverified) and the local player's
+branch: 32797 `718_40_collide_skater` (cameramanspeech.big, not exported by our setup) is silent in free skate
+(b270 [code 0x824ACD00]: the gate reads the raw host model, 104 in free skate), then announcer 24630 / 24698 by
+on-foot `+716`. Open: whether retail NPC skaters ever get ped contacts (`collide_other`, needs a trace).
 
 **Data-driven / mod-overridable:** the two thresholds (tuning by key), the event id per game mode, the voice sets, and
 which graph an entity type runs (graph path per entity). Multiplayer: the host decides whether a bump plays a line,

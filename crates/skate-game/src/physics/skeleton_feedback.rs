@@ -190,7 +190,12 @@ fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> (Vec<SkeletonContac
                     spy[26] >> 16
                 },
                 other_group,
-                other_entity: None,
+                // The other body's owner (`Proxies::actors`: the player or a simulated NPC skater): retail's
+                // audio state `+604`, which the skater collide speech compares with the local player.
+                other_entity: match other {
+                    CollisionBody::Attached(index) => physics.network_proxies.actors.get(&index).map(|&(peer, _)| peer),
+                    _ => None,
+                },
                 body_a: contact_body(
                     resolve(spy[24], physics, skater),
                     point,

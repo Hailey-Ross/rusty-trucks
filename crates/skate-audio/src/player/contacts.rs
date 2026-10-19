@@ -148,6 +148,21 @@ pub struct ContactsTuning {
     /// How long a skater's crash line (`sub_824DB688`, 8229 / 125) stays muted after a skater
     /// contact asked for its collide line (s; `0x82063B08` = 3.0, counted down by `sub_824F9FC8`).
     pub collide_crash_mute: f32,
+    /// The bumped skater's team line after the local player hit it (`210_CollTeam` 8290 with
+    /// main-cast 294, posted to its own speech) and its cooldown (s; `0x8231A844` = 1.0).
+    pub coll_team: (u16, u16),
+    pub coll_team_cooldown: f32,
+}
+
+/// One collide-line call of the body poster (`sub_824BDA90`) for a non-local skater.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CollideCall {
+    /// A skater contact asked for it (`+600` over its floor): the speech record's `+148` crash
+    /// mute ([`ContactsTuning::collide_crash_mute`], written at 0x824BDDD8).
+    pub skater: bool,
+    /// The other skater was the local player and the cooldown had run out: the team line
+    /// ([`ContactsTuning::coll_team`]) when the skater has an AI voice (retail `+28` record `+80`).
+    pub team: bool,
 }
 
 impl Default for ContactsTuning {
@@ -206,6 +221,8 @@ impl Default for ContactsTuning {
             collide_vehicle_min: 0.16,
             collide_min: 0.2,
             collide_crash_mute: 3.0,
+            coll_team: (8290, 294),
+            coll_team_cooldown: 1.0,
         }
     }
 }
@@ -383,12 +400,11 @@ pub struct Contacts {
     /// poster calls it for every region it reaches (an impact, no cooldown, before the bands), and
     /// for a non-local skater any of the three contact speeds over its floor asks for the skater's
     /// collide line ([`crate::world::skater_speech::collide`]). The local player's own branch
-    /// (main-cast lines on a skater contact) is not modelled.
-    pub collides: u32,
-    /// Of `collides`, the ones asked for by a skater contact (`+600` over its floor): retail then
-    /// mutes that skater's crash line for [`ContactsTuning::collide_crash_mute`] (the speech record's
-    /// `+148`, written at 0x824BDDD8).
-    pub skater_collides: u32,
+    /// (main-cast lines on a skater contact) is not modelled. One record per call, in order.
+    pub collides: Vec<CollideCall>,
+    /// The team line's cooldown (`entry+492`, s): counted down by dt at the start of every call,
+    /// set to [`ContactsTuning::coll_team_cooldown`] when the team line is asked for.
+    pub coll_team_cooldown: f32,
     /// This process's landing posts ([`LandingNote`]), `None` on a process without a landing,
     /// manual landing or manual skip.
     pub landing_note: Option<LandingNote>,
@@ -703,13 +719,19 @@ impl Contacts {
         for i in 0..6 {
             let impact = if self.body_speed_on { s.body_impact[i] * scale } else { s.body_impact[i] };
             if impact > 0.0 && !(self.body_cooldown[i] > 0.0) {
+                // `sub_824BDA90` first counts its team-line cooldown down (only on calls).
+                if self.coll_team_cooldown > 0.0 {
+                    self.coll_team_cooldown -= s.dt;
+                }
                 // `sub_824BDA90` (call at 0x824BC354, before the bands): `+596` against the car
                 // floor, `+608` and `+600` against the other.
                 if !s.local && (s.collide_vehicle > c.collide_vehicle_min || s.collide_other > c.collide_min || s.collide_skater > c.collide_min) {
-                    self.collides += 1;
-                    if s.collide_skater > c.collide_min {
-                        self.skater_collides += 1;
+                    let skater = s.collide_skater > c.collide_min;
+                    let team = skater && s.collide_skater_local && !(self.coll_team_cooldown > 0.0);
+                    if team {
+                        self.coll_team_cooldown = c.coll_team_cooldown;
                     }
+                    self.collides.push(CollideCall { skater, team });
                 }
                 let (a, cloth, pad) = body_materials(i, s.body_slide_flag);
                 let tag = s.body_tag[i];
@@ -1641,9 +1663,8 @@ mod tests {
                 k.body_calls = Some(1);
                 k.process(s, [0; 4], &t, &c, &mut h);
             }
-            (k.collides, k.skater_collides)
+            k.collides.len()
         };
-        let run = |s: &AudioState, steps: usize| run(s, steps).0;
         let mut s = AudioState { local: false, collide_skater: 0.5, ..AudioState::default() };
         s.body_impact[2] = 0.7;
         s.body_tag[2] = 3;
@@ -1665,14 +1686,37 @@ mod tests {
             let mut k = Contacts { body_on: true, ..Default::default() };
             k.body_calls = Some(1);
             k.process(s, [0; 4], &t, &c, &mut Log::default());
-            (k.collides, k.skater_collides)
+            k.collides
         };
         let mut s = AudioState { local: false, collide_skater: 0.5, ..AudioState::default() };
         s.body_impact[2] = 0.7;
         s.body_tag[2] = 3;
-        assert_eq!(run(&s), (1, 1));
-        assert_eq!(run(&AudioState { collide_skater: 0.0, collide_vehicle: 0.17, ..s }), (1, 0), "a car");
+        assert_eq!(run(&s), [CollideCall { skater: true, team: false }]);
+        assert_eq!(run(&AudioState { collide_skater: 0.0, collide_vehicle: 0.17, ..s }), [CollideCall { skater: false, team: false }], "a car");
         assert_eq!(c.collide_crash_mute, 3.0, "0x82063B08");
+    }
+
+    /// `sub_824BDA90`: hit by the local player, the bumped skater asks for its team line, then not
+    /// again until the 1.0 s cooldown (`0x8231A844`), which only runs down on calls.
+    #[test]
+    fn the_team_line_needs_the_local_player_and_a_cooldown_counted_on_calls() {
+        let (t, c) = (body_tuning(), ContactsTuning::default());
+        let mut k = Contacts { body_on: true, ..Default::default() };
+        let mut s = AudioState { local: false, collide_skater: 0.5, collide_skater_local: true, dt: 0.4, ..AudioState::default() };
+        s.body_tag = [3; 6];
+        let mut call = |k: &mut Contacts, s: &AudioState| {
+            k.body_cooldown = [0.0; 6];
+            k.body_calls = Some(1);
+            k.collides.clear();
+            k.process(s, [0; 4], &t, &c, &mut Log::default());
+            k.collides.iter().filter(|x| x.team).count()
+        };
+        s.body_impact[2] = 0.7;
+        assert_eq!(call(&mut k, &s), 1);
+        assert_eq!(call(&mut k, &s), 0, "0.6 s left");
+        assert_eq!(call(&mut k, &s), 0, "0.2 s left");
+        assert_eq!(call(&mut k, &s), 1, "ran out on the third call");
+        assert_eq!(call(&mut k, &AudioState { collide_skater_local: false, ..s }), 0, "another skater");
     }
 
     /// The deck poster (`sub_824BD000`) on the console cadence (2026-10-03): the same messages on the

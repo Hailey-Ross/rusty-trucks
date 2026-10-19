@@ -155,8 +155,8 @@ pub(crate) struct WorldSpeech {
     /// This frame's requests (the hosts append).
     pub(crate) peds: Vec<PedRequest>,
     pub(crate) grunts: Vec<u64>,
-    /// The NPC skaters' collide lines (skater id, one per request; whether a skater contact asked).
-    pub(crate) collides: Vec<(u64, bool)>,
+    /// The NPC skaters' collide lines (skater id, one per poster call).
+    pub(crate) collides: Vec<(u64, skate_audio::player::contacts::CollideCall)>,
     /// The published NPC skaters with a voice (the NPC host rewrites it).
     pub(crate) skaters: Vec<SkaterSpeaker>,
     tried: bool,
@@ -841,14 +841,20 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
         says.push((sk, Some(lw), Some(mc), None, None));
     }
     // `sub_824BDA90`: a bumped NPC skater's collide line (free skate: game mode 0).
-    for (id, by_skater) in std::mem::take(&mut speech.collides) {
+    for (id, call) in std::mem::take(&mut speech.collides) {
         let Some(sk) = speech.skaters.iter().find(|s| s.id == id).copied() else { continue };
         if let Say::Message(lw, mc) = skate_audio::world::skater_speech::collide(0, &mut speech.rng) {
             says.push((sk, Some(lw), Some(mc), None, None));
         }
+        let tuning = library.contacts_tuning();
         // A skater contact mutes this skater's crash line (retail finds the record by model; ours by id).
-        if by_skater {
-            speech.skater_speech.entry(id).or_default().mute_crash(library.contacts_tuning().collide_crash_mute);
+        if call.skater {
+            speech.skater_speech.entry(id).or_default().mute_crash(tuning.collide_crash_mute);
+        }
+        // Hit by the local player: the team line on the skater's own voice when it has an AI voice slot
+        // (retail `+28` record `+80 > 0`, slots map to the living-world models; ours: no main-cast words).
+        if call.team && cast_of(library, sk.voice).is_none() {
+            says.push((sk, Some(tuning.coll_team.0), None, None, None));
         }
     }
     // `SFXObj_PlayerSpeech`'s non-local process, once per console frame (free skate: game mode 0).

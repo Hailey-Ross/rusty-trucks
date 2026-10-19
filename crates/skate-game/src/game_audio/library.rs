@@ -711,6 +711,9 @@ impl CollisionJson {
         c.collide_min = f("collide_min").unwrap_or(c.collide_min);
         // The crash line's mute after a skater collide (`0x82063B08`; not exported: the retail value, a mod can set it).
         c.collide_crash_mute = f("collide_crash_mute").unwrap_or(c.collide_crash_mute);
+        // The bumped skater's team line and its cooldown (`0x8231A844`; not exported: the retail values).
+        c.coll_team_cooldown = f("coll_team_cooldown").unwrap_or(c.coll_team_cooldown);
+        c.coll_team = ids("coll_team").filter(|v| v.len() == 2).map_or(c.coll_team, |v| (v[0] as u16, v[1] as u16));
         // The bridge's speed graph (exported since 2026-10-03; the stock vault's words otherwise).
         let eight = |k: &str| -> Option<[f32; 8]> {
             let a = self.posters.get(k)?.as_array()?;
