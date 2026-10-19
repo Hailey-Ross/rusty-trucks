@@ -73,6 +73,8 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Switching maps (new):** NPC skaters with physics now ride the new map's rails and settings after a map change (they kept the old map's), and peds no longer carry conversations or chases over from the old map.
+- **Bumped NPC skaters (new):** an NPC skater bumped by another skater no longer also says its crash line for the next 3 s, and one you bump says its "team" line, both as in Skate 3 (with **Ped Speech** on).
 - **Game files refresh on their own when the menus need it (new):** the first start of this build restarts into **Refresh Game Files** once if your menu files are older than the build reads (it adds the Challenge Map's menu files). Let it finish; the game starts again by itself.
 - **Grabbing props works again (new):** in the previous build no prop could be grabbed (only 2 of a map's props were known to the grab check). Benches, bins, newspaper boxes and dumpsters grab again, and a grab takes the handle Skate 3 picks instead of a bottom edge or corner post. A grab press that starts nothing logs `PROP_GRAB_MISS` with the reason, and **Visualize Grabs** shows what is in reach.
 - **Turning while carrying (new):** when you grab a prop you turn to face it over about half a second, like Skate 3, instead of snapping round at once.
@@ -85,7 +87,7 @@ Not play-tested yet; tell us if any of these still happen.
 - **Smoother frames (new):** cars no longer re-send their materials to the graphics card every frame, which lowers the average frame time (on the main test PC from 3.5 to 2.7 ms in DownTown).
 - **No freeze a few seconds into the first start after a reboot (new):** the world's traffic and people sounds now load while the loading screen is up; reading them from a cold disk froze the game for about 4 seconds once play had started.
 - **Shorter hitch when play starts, steadier frames without mods (new):** the first moment of play is about 60 ms shorter, and without mods the game no longer prepares mod data every frame that nothing reads (worst frames down about 15 % in DownTown on the main test PC).
-- **Walking into peds (new):** on foot, a ped you run into now stumbles and gives a little, like Skate 3, instead of standing like a wall.
+- **Walking into peds (new):** on foot you no longer stop dead at a ped as if it were a wall. Like Skate 3, you carry on through the contact, and the ped stumbles or is knocked down depending on how hard it was hit.
 - **Walking over benches (new):** on foot you step onto and over heavier props like benches, as in Skate 3, instead of shoving them along. Light things (cones, boxes, bin lids, rubbish bags) and the prop you are holding are not something you step onto, also like Skate 3.
 - **Pushing an occupied bench (new):** a ped sitting on a bench you push now jumps off it, like Skate 3, instead of riding along or standing up normally.
 - **Conversations (new):** a passing ped can now join two who are talking, as in Skate 3.
