@@ -76,8 +76,14 @@ Notes for whoever opens them:
   merged 2026-10-02: gone once our branches merge upstream `7ae67f2`),
   `pipelines_accept_valid_group_outputs_when_fingerprint_changes`,
   `sky_shader_validates` (fixed on `gameplay/water`, see
-  [10](10-sky-shader-test.md)); and three skate-data examples that do not compile
-  (`apt_data`, `hud_data`, `scoring_flow_data`).
+  [10](10-sky-shader-test.md)); and two skate-data examples that do not compile
+  because of upstream changes (rechecked 2026-10-18; `hud_data` builds again: stand-ins
+  for `prompt_glyphs` and `image_renderer_host`, which our `apt_scene.rs` uses): `apt_data` calls `Vm::construct`, removed upstream in `ddc30284`;
+  `scoring_flow_data` builds a scoring `Frame` with the pre-`84142e78` fields
+  (`nollie`, no bases / `regular` / `front_flip`) and includes `scoring_runtime.rs`,
+  which logs through `bevy::log::info!` (no bevy in skate-data). Left to upstream:
+  fixing them needs new example frame values in upstream's own examples. If they are
+  revived, `scoring_flow_data` also needs `hud_data`'s `image_renderer_host` stand-in.
 - PR H includes setup changes (environment group: `ocean_pca.py`, `particles.py`)
   that refresh that group once, and a dev-only mod (`mods/water-test-teleport/`)
   that must be dropped from the upstream branch. The frame-state buffer fix

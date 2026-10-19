@@ -427,7 +427,7 @@ fn controller_b_steps_off_and_walks_the_skater_onto_the_node() {
     // The goal as the only corner: what the peds' navmesh returns on open ground.
     struct Corner;
     impl PathService for Corner {
-        fn solve(&self, _from: [f32; 3], to: [f32; 3]) -> Option<Vec<PathElement>> {
+        fn solve(&self, _from: [f32; 3], to: [f32; 3], _goal_radius: f32) -> Option<Vec<PathElement>> {
             Some(vec![PathElement { entry: to, exit: to }])
         }
     }

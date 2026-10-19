@@ -387,7 +387,11 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         let world = app.world_mut();
-        world.resource_scope(|world, mut schedules: Mut<Schedules>| schedules.get_mut(bevy::app::FixedMain).unwrap().initialize(world).unwrap());
+        // Out of `Schedules` while it initializes: initializing inside `resource_scope` re-inserts `Schedules`, which
+        // bevy 0.18 rejects.
+        let mut fixed = world.resource_mut::<Schedules>().remove(bevy::app::FixedMain).unwrap();
+        fixed.initialize(world).unwrap();
+        world.resource_mut::<Schedules>().insert(fixed);
         let schedules = app.world().resource::<Schedules>();
         let names: Vec<String> = schedules.get(bevy::app::FixedMain).unwrap().systems().unwrap().map(|(_, s)| s.name().to_string()).collect();
         assert_eq!(names.iter().filter(|n| n.ends_with(FIXED_STEP)).count(), 1, "{names:?}");

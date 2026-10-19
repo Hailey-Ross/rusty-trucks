@@ -1021,6 +1021,7 @@ pub(crate) fn simulate(
                 // airborne skater as off the path for the steering record.
                 let airborne_now = (200..300).contains(&(state_now as u32)) && sim.body.runtime.player_input.processed.wheel_count_2556 == 0;
                 // Cursor B after this tick's projection: the steering record's target (`sub_8246DE38`, b174 3).
+                let mut left_path = false;
                 let (on_path, past_start, b_target) = match lines.get(&replay.cursor.line) {
                     Some(line) if stuck_respawn && sim.respawn_in.is_none() && !sim.teleport_pending => {
                         let search_start = sim.follow.map_or(replay.cursor.node, |(_, f)| f.search_start);
@@ -1101,6 +1102,7 @@ pub(crate) fn simulate(
                             }
                             replay.follow_target = Some(replay.cursor.frames + f.frames_to_b(line, replay.cursor.node, replay.cursor.frame_in_segment));
                             if f.on_path != was_on {
+                                left_path = was_on;
                                 info!("NPC_SKATER_PATH #{} {} {} at node {} (A {}+{:.2}, {:.2} m, lane {})", npc.id.serial, npc.character, if f.on_path { "rejoined the path" } else { "left the path" }, replay.cursor.node, f.a.0, f.a.1, f.dist, f.inside_lane);
                             }
                             sim.follow = Some((replay.cursor.line, f));
@@ -1311,13 +1313,14 @@ pub(crate) fn simulate(
                     (200..300).contains(&(state as u32)),
                     state == skate_core::player::state::PhysicalStateId::Skitching,
                 );
-                // Off the path (`sub_8246DB50`, 1.0 m) or off the board: no recorded trick (b109: tricks dispatched
-                // to a sim away from its line or walking were the second bail cause).
-                let off_path = !on_path;
+                // Off the board: no recorded trick (pc byte +0xA1 gates the dispatcher `sub_8246A2E0`). Off the path the
+                // trick still goes out, as retail: `sub_8246FA30` runs the dispatcher before the path drop
+                // `sub_8246DB50`, which never gates it (b279; b109's off-path drop dates from before the cursor followed
+                // the skater, b110).
                 let off_board = sim.body.runtime.player_input.processed.flags_2484 & 0x0800_0000 != 0;
-                if off_path || off_board {
+                if off_board {
                     if intents.iter().any(|x| x.0 == "Trick") {
-                        info!("NPC_SKATER_SIM_TRICK #{} {} dropped at node {}: {}", npc.id.serial, npc.character, replay.cursor.node, if off_board { "off the board" } else { "off the path" });
+                        info!("NPC_SKATER_SIM_TRICK #{} {} dropped at node {}: off the board", npc.id.serial, npc.character, replay.cursor.node);
                     }
                     skate_core::living_world::ai_signals::drop_trick_dispatch(&mut intents);
                 }
@@ -1334,13 +1337,13 @@ pub(crate) fn simulate(
                     skate_core::living_world::ai_signals::drop_trick_dispatch(&mut intents);
                 }
                 // The per-tick writer's slot arm (`sub_824696B8`, b113): the slot trick's timed intents. It runs inside
-                // the dispatcher, so not when the dispatch was skipped above (skitch, off the path or board, hold).
+                // the dispatcher, so not when the dispatch was skipped above (skitch, off the board, hold).
                 {
                     let skitch_skip = (avoid.last.mode == skate_core::living_world::avoid::AvoidMode::Skitch && !(200..300).contains(&(state as u32))) || state == skate_core::player::state::PhysicalStateId::Skitching;
                     if avoid.low_prop() {
                         sim.slot.category = 0;
                     }
-                    if skitch_skip || off_path || off_board || held {
+                    if skitch_skip || off_board || held {
                         sim.slot = slot_before;
                     } else {
                         let opened = sim.slot.ticks == 0 && sim.slot.category != 0 && sim.slot != slot_before;
@@ -1349,6 +1352,11 @@ pub(crate) fn simulate(
                             info!("NPC_SKATER_SIM_SLOT #{} {} category {} {} node {} schedule {}", npc.id.serial, npc.character, sim.slot.category, super::npc_skaters::trick_name(sim.slot.trick), replay.cursor.node, schedule.len());
                         }
                         intents.extend(skate_core::living_world::ai_signals::slot_signals(&mut sim.slot, &schedule, 1.0));
+                    }
+                    // Leaving the path clears the pending trick category once, after this tick's dispatch
+                    // (`sub_8246DB50`: `pc+920 = 0` and `pc+832 = 0` in the same block; b279).
+                    if left_path {
+                        sim.slot.category = 0;
                     }
                 }
                 // Logged after mode 4 so a dropped trick dispatch is not reported.
