@@ -2030,10 +2030,24 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   choice is by part index, not by hit order, so every peer reads the same part.
 - **Verification:** test `the_reaction_reads_the_torso_whichever_part_was_touched`. Research
   `.local/research/b283-ped-knockdown-gate.md`. Not play-tested.
-- **Open:** the four torso knock-downs logged |w| / |v| of 4.8 to 5.5, above what one hit at the capsule tip can
-  give (about 4.0 for this shape) [arithmetic; cause unverified: the posed part's walk velocity, several contacts in
-  one tick, or a frame mix-up in the inertia]; the next session's `PED_REACTION_BODY` lines show whether they remain.
-  The entity entry values are still the literal stock 0, not read from data. Whether retail's callback reads the
+- **Torso spin (research `.local/research/b288-ped-torso-spin.md`; main checked the friction literal and the
+  combine):** a normal impulse on the capsule points through its axis, so one contact gives at most |w| / |v| =
+  m h / I = 3.0 [arithmetic] (b283 said 4.0). The four torso knock-downs logged 4.8 to 5.5: friction at the capsule
+  surface (radius 0.2) spins the torso about its long axis (inverse inertia 6.25), 4.4 to 6.3 for one contact with
+  our part friction 0.5 (no retail source) and the max-combine (`physics/contact.rs:107`).
+- **Retail part material [code, research `.local/research/b289-ped-part-friction.md`]:** every ped part body gets
+  static / dynamic friction and restitution 0.0: `82E268C8` fills its three material slots (+80 / +84 / +88) from
+  `0x82165A10` (main checked the `lis r11,-32234` / `lfs f0,23056(r11)` load and the three stores; the 0.0 value and
+  the empty owner vfuncs +120 / +124 rest on the agent's dump), `82E0E4B0` writes them to the part definition +0x80
+  and `82DC4588` copies them into the collision object, which the retail combine (`82763078`, ours
+  `combine_contact_materials`) pairs with the skater bone's material (riding: friction 0). So a riding skater's
+  contact with a ped part has no friction, and one contact can spin the torso at most 3.0 x |v| (under the gate at
+  slow speeds).
+- **Change:** the part friction is per part data (`ped_body.parts[].friction`, mod-reachable), retail default 0.0
+  (`DEFAULT_PART_FRICTION`). Tests `ped_body_is_mod_reachable_and_reset_on_disable` (the new keys) and
+  `a_part_is_a_capsule_between_its_bones_in_group_11` (friction 0).
+- **Open:** the next session's `PED_REACTION_BODY` lines show whether slow knock-downs remain (b289 did not prove
+  nothing rewrites the material after the part is built). The entity entry values are still the literal stock 0, not read from data. Whether retail's callback reads the
   body before or after the solve was not re-read in b283.
 
 ## Hand props drawn as nothing after a refresh: the asset check asks again (2026-10-18)
