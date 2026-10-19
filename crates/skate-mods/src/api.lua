@@ -35,7 +35,7 @@ function sdk.ui.canvas(key, options)
 end
 function sdk.ui.remove(key) submit{kind="ui_remove",key=key} end
 -- One line in the HUD's central message (where the chase shows "ZAP!"): a HUD language id or plain text.
-function sdk.ui.central_message(text) submit{kind="ui_central_message",text=text} end
+function sdk.ui.central_message(text, seconds) submit{kind="ui_central_message",text=text,seconds=seconds} end
 -- Show (true) or hide (false) the alerts over peds that warn or chase the player; released when the mod stops.
 function sdk.ui.chase_alerts(enabled) submit{kind="ui_chase_alerts",enabled=enabled} end
 
@@ -751,6 +751,11 @@ function sdk.menus.trick_guide(entry, key, options) submit{kind="menu_trick_guid
 -- priority (-1000..1000, highest shows), cancelable (B answers 255)}. The choice arrives as on_event
 -- {name='menu_popup', key=key, choice=index}; nil options take it down; removed when the mod stops (no event).
 function sdk.menus.popup(key, options) submit{kind="menu_popup",key=key,options=options} end
+-- Fill the Free Play Skate Profile screen (retail FE 61): page 'career' | 'challenges' (an overall bar; options
+-- {title, icon, current, total}, key = the mod's id for the change) or 'stats' | 'personal_bests' (a table row by
+-- key; options {label, value (number or text), order, hidden}). Unset fields keep the current value; nil options
+-- drop this mod's change. Mods apply in load order; removed when the mod stops.
+function sdk.menus.profile(page, key, options) submit{kind="menu_profile",page=page,key=key,options=options} end
 -- Replace one bitmap of a menu movie by its stable id: the movie's import name plus the bitmap
 -- character id (sdk.menus.info().movies.bitmaps lists them), with a PNG in the mod's folder. The
 -- image covers the same fill area as the retail bitmap; newest mod wins; removed when the mod stops.

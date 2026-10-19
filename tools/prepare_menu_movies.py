@@ -31,7 +31,7 @@ from vendor.skate3_ui.scene_graph import AssetCache, SceneFlattener
 from vendor.skate3_ui.actions import Actions
 
 FORMAT = 'skate3-menu-movies'
-VERSION = 7  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies; 6: the challenge map; 7: named runtime images (challenge map pictures)
+VERSION = 10  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies; 6: the challenge map; 7: named runtime images (challenge map pictures); 8: the Skate Profile (FE 61); 9: Extras (FE 18); 10: the text viewer (FE 3)
 # Menu screens the engine's retail menus start from (pause menu, Game Settings,
 # Freeskate options, the screen manager and its helpers). Library movies are
 # found through imports, not listed.
@@ -59,6 +59,13 @@ MENU_ROOTS = (
     # The pause menu's ChallengeMap / OnlineChallengeMap (template 68 ChallengeMap, FE screen 17, host object
     # FEChallengeMap).
     'source/screens/map/challengemap',
+    # The Free Play pause row Skate Profile (template 106 OfflineProfile, FE screen 61, host objects Progression and
+    # Stats; research b308).
+    'source/screens/profile/offline_skateProfile',
+    # The Free Play pause row Extras (template 15 Extras, FE screen 18; research b320).
+    'source/screens/main/extras',
+    # The text viewer the Extras Licenses row opens (template 28 ToSScreen, FE screen 3; research b322).
+    'source/screens/nucleus/nucleus_tos',
     'source/screens/main3dhud',
     'source/helper/screenmanager',
     'source/helper/screentransitionmanager',

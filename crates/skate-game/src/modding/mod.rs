@@ -250,6 +250,15 @@ impl Mods {
         self.busy_reason_except_proxies().is_some()
     }
 
+    /// Whether the mods' Rapier world steps this tick: the same rule as [`Self::snapshot_has_reader`]. With no mod and
+    /// nothing a mod left behind the world holds only the static ground and the skater proxies (re-posed every tick),
+    /// and nothing reads its step: skipping it saved ~0.4 ms per fixed step in DownTown (profile 2026-10-19, ask 79).
+    /// Rapier's carried-over contact state of the proxies then differs for a mod's first ticks; the user accepted
+    /// that (2026-10-19, "Allow it").
+    fn needs_dynamics_step(&self) -> bool {
+        self.snapshot_has_reader()
+    }
+
     fn busy_reason_except_proxies(&self) -> Option<&'static str> {
         self.busy_reasons().find_map(|(busy, why)| (busy && why != PROXIES).then_some(why))
     }
@@ -794,10 +803,12 @@ fn fixed(world: &mut World) {
             let skater = world.resource::<crate::physics::SkaterRuntime>();
             bridge::push_skater_into_rapier(&mut mods, physics, skater);
         }
-        if !mods.bodies.is_empty() || mods.ground_ready || !mods.skater_proxies.is_empty() {
+        if mods.needs_dynamics_step() {
             let _span = bevy::log::tracing::info_span!("mods.dynamics_step").entered();
             mods.world.step(dt as f32);
             mods.last_contacts = mods.world.drain_contacts();
+        } else {
+            mods.last_contacts.clear();
         }
         let _sync = bevy::log::tracing::info_span!("mods.sync").entered();
         triggers::sync_tracked(world, &mods);
@@ -1145,8 +1156,8 @@ fn apply_one(
                 if enabled { alerts.clear_owner(Some(id)); } else { alerts.hidden_by = Some(id.to_owned()); }
             }
         }
-        Command::UiCentralMessage { text } => {
-            world.write_message(crate::hud_central::CentralMessage::new(text));
+        Command::UiCentralMessage { text, seconds } => {
+            world.write_message(crate::hud_central::CentralMessage { seconds, ..crate::hud_central::CentralMessage::new(text) });
         }
         Command::UiRemove { key } => {
             let slot = (id.to_owned(), key);
@@ -1602,6 +1613,10 @@ fn apply_one(
         Command::MenuPopup { key, options } => {
             let mut popups = world.get_resource_mut::<crate::popup_host::PopupMods>().ok_or("menus are not ready")?;
             popups.set(id, &key, options);
+        }
+        Command::MenuProfile { page, key, options } => {
+            let mut profile = world.get_resource_mut::<crate::offline_profile_host::ProfileMods>().ok_or("menus are not ready")?;
+            profile.set(id, &page, &key, options);
         }
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
@@ -2095,6 +2110,21 @@ mod snapshot_reader_tests {
         mods.volumes.clear();
         mods.bodies.insert(("m".into(), "b".into()), 9);
         assert!(mods.snapshot_has_reader(), "a mod's body");
+    }
+
+    /// No mod and nothing mod-made: the mods' world (ground + skater proxies only) does not step (ask 79).
+    #[test]
+    fn dynamics_step_only_with_something_a_mod_owns() {
+        let dir = std::env::temp_dir().join(format!("skate-dynamics-step-{}", std::process::id()));
+        let mut mods = Mods::new(skate_mods::Manager::new(dir.clone(), dir));
+        mods.ground_ready = true;
+        mods.skater_proxies.insert(3, 7);
+        assert!(!mods.needs_dynamics_step(), "ground and proxies alone");
+        mods.bodies.insert(("m".into(), "b".into()), 9);
+        assert!(mods.needs_dynamics_step(), "a mod's body");
+        mods.bodies.clear();
+        mods.volumes.insert(("m".into(), "v".into()), volumes::Volume { position: Vec3::ZERO, size: Vec3::ONE, rotation: Quat::IDENTITY, visible: false, color: [1.; 3], opacity: 1., entity: None });
+        assert!(mods.needs_dynamics_step(), "a mod's volume");
     }
 }
 

@@ -63,6 +63,10 @@ pub struct ObstacleParams {
     pub detour_margin: f32,
     /// Detour corners one path may get (ours, a cost cap).
     pub max_detours: usize,
+    /// A path end inside a cut moves to the nearest free point when that is at most this far (xz), metres: retail
+    /// snaps a bot destination onto the cut mesh within a 0.5 m window (`82C46348` / `82C460E0`, radius
+    /// `0x8209975C` = 0.5, research b302), so a plugin waypoint just in front of its own prop is reached.
+    pub target_snap: f32,
     /// Objects whose box top (after the 0.2 m minimum) is no higher than this above the ped's feet
     /// are stepped over (ours; 0 = every box counts, as retail's ground cut has no height test).
     pub step_height: f32,
@@ -104,7 +108,7 @@ impl Ignore {
 
 impl Default for ObstacleParams {
     fn default() -> Self {
-        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3] }
+        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, target_snap: 0.5, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3] }
     }
 }
 
@@ -360,6 +364,35 @@ impl NavObstacles {
         self.cuts_near([p[0] - r, p[2] - r], [p[0] + r, p[2] + r]).iter().any(|(_, f)| f.applies(p[1], self.params.step_height) && f.contains(p, grow))
     }
 
+    /// `p` moved out of the cuts grown by `grow` to the nearest free point, when that is within
+    /// [`ObstacleParams::target_snap`] (xz); `p` itself when it is free; `None` when it cannot snap.
+    pub fn snap_out(&self, p: Vec3, grow: f32) -> Option<Vec3> {
+        if !self.blocked(p, grow) {
+            return Some(p);
+        }
+        let r = grow + self.params.target_snap + 0.01;
+        let mut best: Option<(f32, Vec3)> = None;
+        for (_, f) in self.cuts_near([p[0] - r, p[2] - r], [p[0] + r, p[2] + r]) {
+            if !f.applies(p[1], self.params.step_height) || !f.contains(p, grow) {
+                continue;
+            }
+            // Out through the nearest edge of this rectangle (just past it).
+            let l = f.local([p[0], p[2]]);
+            let ext = [f.half[0] + grow + 1e-3, f.half[1] + grow + 1e-3];
+            for (k, s) in [(0, 1.0f32), (0, -1.0), (1, 1.0), (1, -1.0)] {
+                let mut q = l;
+                q[k] = s * ext[k];
+                let w = f.world(q);
+                let c = [w[0], p[1], w[1]];
+                let d = super::nav::dist_xz(p, c);
+                if d <= self.params.target_snap && !self.blocked(c, grow) && best.is_none_or(|(b, _)| d < b - 1e-6) {
+                    best = Some((d, c));
+                }
+            }
+        }
+        best.map(|(_, c)| c)
+    }
+
     /// Id of the obstacle (cut or moving, not carried) whose footprint grown by `grow` holds `p`
     /// at its height, for diagnostics (lowest id first).
     pub fn blocker_at(&self, p: Vec3, grow: f32) -> Option<u64> {
@@ -403,8 +436,13 @@ impl NavObstacles {
         while i < corners.len() {
             let to = corners[i];
             let hit = if inserted < self.params.max_detours { self.first_hit(from, to, grow) } else { None };
-            // A start already inside the grown rectangle (pushed against it): leave the leg.
-            let Some((t, id, f)) = hit.filter(|(t, _, f)| *t > 0.0 || !f.contains(from, grow)) else {
+            // A leg ending inside the margin only (a path end snapped out of the cut, [`Self::snap_out`]) is tested
+            // against the body's rectangle: the end is reachable without entering the cut.
+            let hit = hit.and_then(|h| if h.2.contains(to, grow) && !h.2.contains(to, radius) { self.first_hit(from, to, radius) } else { Some(h) });
+            // A start inside the body's rectangle (a prop pushed onto the ped): leave the leg. A ped standing against
+            // the prop (inside the margin only) is still outside the cut and is routed round it, as on retail's cut
+            // mesh (2026-10-19, a ped pinned 55 s against the back of a newspaper box re-planned straight through it).
+            let Some((t, id, f)) = hit.filter(|(t, _, f)| *t > 0.0 || !f.contains(from, radius)) else {
                 out.push(to);
                 from = to;
                 i += 1;
@@ -415,11 +453,15 @@ impl NavObstacles {
             for c in f.corners(grow + 0.05) {
                 let Some(on) = mesh.locate([c[0], from[1], c[1]]) else { continue };
                 let p = on.position;
-                if super::nav::dist_xz(p, [c[0], p[1], c[1]]) > 0.05 || self.blocked(p, radius) {
+                // Never the corner the leg starts from: its zero-length leg never hits, so it won every time and a
+                // detour needing a second corner repeated the first one up to `max_detours` (2026-10-19).
+                if super::nav::dist_xz(p, [c[0], p[1], c[1]]) > 0.05 || self.blocked(p, radius) || super::nav::dist_xz(p, from) < 1e-3 {
                     continue;
                 }
-                // The leg to the corner must not enter this rectangle again (or any earlier cut).
-                if self.first_hit(from, p, grow).is_some_and(|(_, hid, _)| hid == id) {
+                // The leg to the corner must not enter this rectangle again (or any earlier cut); from inside the
+                // margin, not the body's rectangle.
+                let leg = if f.contains(from, grow) { radius } else { grow };
+                if self.first_hit(from, p, leg).is_some_and(|(_, hid, _)| hid == id) {
                     continue;
                 }
                 let cost = super::nav::dist_xz(from, p) + super::nav::dist_xz(p, to);

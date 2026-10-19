@@ -34,6 +34,23 @@ impl ReactionKind {
             Self::Standing => "Standing",
         }
     }
+    /// The inverse of `name` (mod data).
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Knockdown, Self::Standing].into_iter().find(|k| k.name() == name)
+    }
+}
+
+/// A contact reaction stored for later (retail: the collision component's begin-colliding byte +8 with the reaction
+/// `ped+0x9C0` / direction `ped+0x9C4`): a contact during a takedown attempt, or the failed takedown's trip (b326).
+/// It plays when the ped's graph next enters `PedestrianColliding`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StoredReaction {
+    pub kind: ReactionKind,
+    pub direction: ReactionDirection,
+    /// The contact's closing speed (m/s; 0 for a trip).
+    pub closing: f32,
+    /// Who touched the ped (`None` for a trip).
+    pub toucher: Option<u64>,
 }
 
 /// Retail hit direction (`ped+2500`).
@@ -53,6 +70,10 @@ impl ReactionDirection {
             Self::FromLeft => "FromLeft",
             Self::FromRight => "FromRight",
         }
+    }
+    /// The inverse of `name` (mod data).
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::FromFront, Self::FromBack, Self::FromLeft, Self::FromRight].into_iter().find(|d| d.name() == name)
     }
 }
 

@@ -208,6 +208,12 @@ pub struct FrontEnd<'a> {
     pub trick_guide: crate::trick_guide_host::TrickGuideHost,
     /// The Challenge Map screen (challenge_map_host).
     pub challenge_map: crate::challenge_map_host::ChallengeMapHost,
+    /// The Skate Profile screen (offline_profile_host).
+    pub offline_profile: crate::offline_profile_host::OfflineProfileHost,
+    /// The Extras screen (extras_host).
+    pub extras: crate::extras_host::ExtrasHost,
+    /// The text viewer FE 3's `tos` object (extras_host).
+    pub tos: crate::extras_host::TosHost,
     /// The image slots (`Game.ImageRenderer_*`, one global manager across screens).
     pub image_slots: crate::image_renderer_host::ImageSlots,
     /// The popup host (FE screen 29): the shown popup and the choices made.
@@ -235,6 +241,9 @@ impl<'a> FrontEnd<'a> {
             sub_options: Default::default(),
             trick_guide: Default::default(),
             challenge_map: Default::default(),
+            offline_profile: Default::default(),
+            extras: Default::default(),
+            tos: Default::default(),
             image_slots: Default::default(),
             popup: Default::default(),
         }
@@ -243,7 +252,9 @@ impl<'a> FrontEnd<'a> {
 
 impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     fn objects(&self) -> Vec<String> {
-        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "HUDComponents", "Popup"].map(String::from).to_vec()
+        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "HUDComponents", "Popup", "Progression", "Stats", "tos"]
+            .map(String::from)
+            .to_vec()
     }
     fn call(&mut self, vm: &mut Vm, object: &str, method: &str, args: Vec<Value>) -> Result<Value, String> {
         if object == "CoreMenu" {
@@ -267,6 +278,18 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
             return Ok(value);
         }
         if let Some(value) = self.trick_guide.call(vm, object, method, &args)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.offline_profile.call(vm, object, method)? {
+            return Ok(value);
+        }
+        if object == "tos" {
+            if let Some(value) = self.tos.call(vm, method, &args)? {
+                return Ok(value);
+            }
+        }
+        // The Extras rows and its picker callbacks (only while FE 18 is on top).
+        if let Some(value) = (object == "Game").then(|| self.extras.call(method, &args)).flatten() {
             return Ok(value);
         }
         if object == "Game" {

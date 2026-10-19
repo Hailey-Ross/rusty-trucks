@@ -398,5 +398,96 @@ Change: `PedMind::approach_route` marks the approach's route; `ended_move_drops_
 route, as before) on the first tick without a brain move. A mod's `PedRoute` is not marked and is not dropped.
 
 Test: `an_ended_approach_or_chase_drops_its_route_once` (peds_tests). Not play-tested yet.
-Open (b177): NavPower's path follower (does it end a path without progress, `sub_82E94F60` / `sub_82E95F00`), the
-10-update reachability check that sets `skip_long` (`sub_82C465A8`), what reads the mover's median speed (+0xE0).
+Answered 2026-10-19 (next section, b190): NavPower's path follower has no progress give-up.
+
+## Peds pinned against the prop they want to use (2026-10-19)
+
+Problem: "peds stuck walking into walls" (USER-ASKS 68, PR #52 next item 1). The newest laptop session
+(`second-pc/HAILS-ROGLAPTOP/game-20261019-001947`, after the 2026-10-17 route fix) still has walking peds standing
+still, now nearly all inside a prop plugin on their way to its waypoint: ped #563 55 s and #573 25 s in
+`waypoint_newspaperbox`, #578 in `waypoint_sit`, each `blocked` 1 to 3 s. `PED_BLOCKED` names the prop itself: #573 at
+(-261.19, 539.74), 1.045 m from its waypoint, pressing into `prop_DT_NewspaperBoxReclaimedBlack_1004` at (-261.80,
+539.57) with `progressed=false`, until the plugin's 60 s `PluginTimeout` (graph data) ends the plugin. The waypoint
+(`native-props/DownTown.json`, hotpoint `EB4A16533EACEC04`) is at (-262.22, 539.56) facing the box: 0.42 m in front of
+the box centre, inside the box grown by the agent radius. The ped came from behind the box.
+
+Retail [code, TU3; b177, b190 and a 2026-10-19 pass]:
+- No give-up on missing progress anywhere in the ped's NavPower stack. Bot update `82E974A8`: re-requests the path
+  when it is no longer valid (`82E95FD0`: path vfunc 4, portal flags, follower vfunc 0x70 = sub-path invalid,
+  `82EA0398`), ends it on the last segment when the follower is done (`82E96F08`, mode 0 = done, so the wander goal
+  picks a new target). Path follower (vtable `0x8232E428`, update slot 0x34 = `82EA0808`): states 1 turn in place,
+  2 move, 3 arrive, 0 done, 4 link; the only timer is a 3.0 s start-up window (`+0x108`, `0x82063B08`). The bot's
+  no-progress timer (`82E965D0`, +0x21C) has no reader (b190).
+- Movement stays on the mesh: `82EA5C40` moves the agent in up to 10 sub-steps (`82EA4C20`, each returning the time
+  left after an edge), crossing into the next polygon or sliding along a boundary edge [code, medium on the slide].
+- A resting prop is cut into the mesh (`82C477B0` -> `8293EF28`, record `{-1, 15.0 (0x820BD16C), obj+0x4C}`; the
+  meaning of -1 / 15.0 is not decoded), and a bot destination is snapped onto the cut mesh within a 0.5 m window
+  (`82C46348` / `82C460E0`, radius `0x8209975C`; b302). So a retail ped is never inside a cut, its path goes round the
+  prop, and its path ends at the free point next to a waypoint that lies in the cut; TargetWaypoint's slide
+  (`slideDistance` 1.0 m in `moveontowaypoint.xml`) covers the rest. Only `sit` uses
+  DisableCollisionsWithBehaviourSource, so a newspaper box user never ignores its box.
+
+Root cause [code, ours, three parts]:
+1. `NavObstacles::detour` picked the leg's own start corner as the next corner (its zero-length leg never hits), so any
+   detour that needs a second corner repeated the first up to `max_detours` and the path went straight from it.
+2. A route point inside a cut stayed the path end, so the last leg always entered the box.
+3. `detour` left the leg unbent when the start was inside the box grown by radius plus `detour_margin`, which is where
+   a ped stands after the step check stopped it at the box: every re-plan (stuck watch, patience) aimed through the box
+   again.
+
+Change (`crates/skate-core/src/living_world/peds/obstacles.rs`, `wander.rs`): the start corner is never a candidate;
+a route point inside a cut snaps to the nearest free point within `ObstacleParams::target_snap` (0.5 m, retail window;
+`snap_out`), else stays (no path, short fan next, as before); "start inside" means inside the body's rectangle (radius),
+and from inside the margin the corner legs are tested against that rectangle; a leg ending inside the margin only (a
+snapped end) is tested against the body's rectangle. Mod key `world_tuning` `ped_obstacles.target_snap` (dump and
+merge in `skate-mods` / `skate-game` `world_tuning.rs`).
+
+Tests (`obstacle_tests.rs`): `a_ped_reaches_a_waypoint_in_front_of_its_prop_from_behind` (the #573 geometry, from
+behind and from pressed against the back; before the change the ped ended 1.03 m from the waypoint, the log's 1.045 m)
+and `a_target_inside_a_cut_snaps_out_only_within_the_snap_radius`. `cargo test -p skate-core --lib living_world::peds`
+148 passed; `skate-mods` 106 passed with only the known `skyline_physics` failure (gitignored GLB); `skate-game`
+checks. Not play-tested yet.
+
+Changed 2026-10-19 (next section): the body step applies a slide however short, as retail's mesh walker does. Still ours: the stuck watch, corner stall and patience stay NOT
+RETAIL fallbacks. Open: the cut record's -1 / 15.0 (hard block or a cost), the sit case #578 (same mechanism assumed,
+not checked against its seat geometry).
+## Peds slide along walls instead of standing pinned (2026-10-19)
+- **Problem:** peds walking into a wall or street furniture at a shallow angle stood pinned (laptop sessions; asks 84,
+  item 1 of the #52 list). User: "no I don't really see peds stuck against a wall in retail."
+- **Retail** ([trace] own scripted recomp run, `.local/research/b325-wall-stuck-recomp-results.md`): at two of our
+  worst spots, 15 peds over ~8.5 min of game time, the still-timer obstacle chain (`82E97118` -> `82EA17E8`, b315)
+  never fired once: retail peds do not get pinned, so no unstick rule is needed. ([code] Ghidra + recomp, b311 /
+  `.local/research/b331-ped-slide-port-plan.md`) The mover `82EA5C40` runs up to 10 sub-steps of `82EA4C20`: a move
+  that hits a boundary edge is placed on the hit point and its velocity projected onto the edge, however small the
+  rest; head-on the projection is 0 and the ped stands on the edge. No progress ratio.
+- **Change:** `peds.rs` body step: the `progressed` test (a slide under 25 % of the wanted step counted as refused)
+  is gone; `PED_BLOCKED` no longer prints it and now logs only real refusals (off the mesh, a prop corner with no free
+  slide, another ped, a red light). On a straight edge our `move_along` snap gives the same point as retail's
+  projection [inference: geometry, not traced].
+- **Test:** `a_ped_walking_into_a_wall_at_an_angle_slides_along_it` (80 degrees into a wall: every tick's short slide
+  is applied and the ped moves along the wall; head-on it stays on the edge).
+- **Open:** inside / outside wall corners (retail's on-edge branch to the next edge not read); the stuck watch still
+  uses our values (retail's still timer 0.13 m / 0.5 s re-paths to the same destination, b314); needs a play test.
+## Peds keep their target and re-path to it, as retail (2026-10-19)
+- **Problem:** our stuck watch (0.3 m in 2 s), the yield patience (3 s) and the host's refused-step patience gave a
+  ped's target up and planned away from it. Retail never gives up a walking ped's target for lack of progress.
+- **Retail** ([code] research `.local/research/b332-ped-stuck-watch-parity.md`, b336; b190, b313-b315; [trace] b325):
+  retail never gives a walking ped's target up. The bot's still timer (`82E97118`, 0.13 m / 0.5 s, re-requests the
+  same destination `82E957F8`) runs in bot mode 4 only, not for walking peds (b336);
+  an invalid path is re-requested every tick and only a failed request ends it (then the bot picks a new target).
+  The walking path step `82EA0808` has no neighbour handling at all (b336: every callee read), so our yield, sidestep
+  and push are ours; what keeps retail walking peds apart (acceleration writer, character-layer collision) is not read; the 2.0 s "detour home" of
+  `82EA4408` belongs to the bot's mode-0 controller (no path: a standing ped pushed off its spot), not walking peds
+  (`.local/research/b335-ped-crowd-detour.md`).
+- **Change:** `PedNav::repath` (same target, a route's index kept; no path: drop the corners and skip the long fan, so
+  a new target is picked). The stuck watch re-paths after 0.5 s within 0.13 m, once per spell (OURS on walking peds,
+  with the still timer's values). The yield (`yield_patience` 2.0 s, NOT RETAIL: the wait is ours, b335) and the host's refused steps re-path instead of dropping the
+  path. NOT RETAIL, kept as a safety net: `give_up_seconds` (2.0 s, 0 = off) still gives the target up when the ped
+  stays pinned; to be switched off once a play session shows no give-ups. Mod keys: `ped_nav.give_up_seconds`,
+  `ped_nav.yield_patience` (new), `stuck_distance` / `stuck_seconds` now the still timer.
+- **Tests:** `a_still_walking_ped_repaths_to_its_target_once_then_gives_up` (retail values, one re-path per still
+  spell, same target, a new spell after moving, no give-up when off); `a_pinned_walking_ped_gives_up_and_plans_away_from_its_target` (the safety net at 2 s); `ped_nav_is_mod_reachable_and_reset_on_disable` (give-up off).
+- **Open:** what keeps retail walking peds apart (b336 open: the +0x20 acceleration writer, slot +0x3C, character-layer
+  collision; a recomp trace of two walking peds meeting would settle it); a standing ped pushed off its spot
+  (mode 0: path home after 0.455 m and 2.0 s, b335) is not ported; whether walking ambient peds run the still timer
+  at all (b325 never saw it fire).

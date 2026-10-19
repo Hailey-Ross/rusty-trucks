@@ -76,6 +76,11 @@ pub(crate) fn payloads(
             PedEvent::Hit { id, kind, direction, closing, toucher } => {
                 out.push(json!({"name": "living_world", "event": "ped_hit", "id": id.to_u64(), "kind": kind.name(), "direction": direction.name(), "closing": closing, "toucher": toucher}))
             }
+            // A stored reaction played at the ped's next Colliding (a contact during its takedown attempt, or a failed
+            // takedown's trip with no toucher): the same event, marked deferred.
+            PedEvent::DeferredHit { id, kind, direction, closing, toucher } => {
+                out.push(json!({"name": "living_world", "event": "ped_hit", "id": id.to_u64(), "kind": kind.name(), "direction": direction.name(), "closing": closing, "toucher": toucher, "deferred": true}))
+            }
             PedEvent::Chase { id, chasee, kind, reason } => out.push(json!({"name": "living_world", "event": "ped_chase", "id": id.to_u64(), "chasee": chasee, "kind": kind, "reason": reason})),
             PedEvent::Taze { id, target } => out.push(json!({"name": "living_world", "event": "ped_taze", "id": id.to_u64(), "target": target})),
             PedEvent::Takedown { id, target, success } => out.push(json!({"name": "living_world", "event": "ped_takedown", "id": id.to_u64(), "target": target, "success": success})),

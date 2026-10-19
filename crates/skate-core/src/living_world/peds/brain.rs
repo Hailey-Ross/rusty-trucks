@@ -46,6 +46,9 @@ pub struct BrainSettings {
     pub aggressive_capture_distance: f32,
     /// CannotReachChaseTarget's radius (`82E31D58`: flat distance to the chasee, 25.0 squared at `0x8209994C`) [code].
     pub unreachable_radius: f32,
+    /// How often the mover checks that its destination is reachable, seconds: every 10 mover updates
+    /// (`82E2CB08`, counter mover `+0xB0`), at the console's 30 fps cadence 10 / 30 s [code; cadence: ours].
+    pub reach_check_seconds: f32,
     /// DrawTazer's draw time (`826A8258`, timer 37, `0x82099478` 0.133 s) and TazeWantTarget's
     /// delay before the hit (`826A8398`, timer 39, `0x820D06C0` 0.3 s); speeches 66 / 67.
     pub tazer_draw_seconds: f32,
@@ -72,6 +75,9 @@ pub struct BrainSettings {
     pub hand_prop: super::hand_prop::HandPropSettings,
     /// ZombieFollow's distances and speeds (`826A9250`; retail hard-codes them).
     pub zombie_follow: ZombieFollowSettings,
+    /// The reaction a failed takedown's trip stores (`826A5068`: Knockdown `830218C0[0]`, FromBack `830218B0[1]`; b326).
+    pub trip_kind: super::skater_contact::ReactionKind,
+    pub trip_direction: super::skater_contact::ReactionDirection,
 }
 
 /// ZombieFollow (`826A91A8` / `826A9250` / `826A9518`) [code]: beyond `follow_distance` the goal is the player; inside
@@ -102,7 +108,7 @@ impl Default for ZombieFollowSettings {
 
 impl Default for BrainSettings {
     fn default() -> Self {
-        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, mood_want_memory_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, tazer_clip_blend: 0.2, tazer_clip_end: 0.2, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default() }
+        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, mood_want_memory_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, tazer_clip_blend: 0.2, tazer_clip_end: 0.2, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, reach_check_seconds: 10.0 / 30.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default(), trip_kind: super::skater_contact::ReactionKind::Knockdown, trip_direction: super::skater_contact::ReactionDirection::FromBack }
     }
 }
 
@@ -365,8 +371,10 @@ pub enum PedOp {
     /// `826A4E50` Begin: knock the target down (`T.vfn20(chaser position)`), speech 65 for the
     /// player, else 19.
     TakeDownTargetableSuccess,
-    /// `826A5068` Begin: the failed attempt (the ped's own stumble is not ported).
-    TakeDownTargetableFailure,
+    /// `826A5068` Begin: the failed attempt. The ped trips (stores Knockdown / FromBack) when the target refused, or when
+    /// the chosen takedown entry may trip and a 1..=100 roll is at most `trip_chance` x 100 (`tripChance`, behaviour
+    /// +0x1C, default `8208EA6C` 0.35); otherwise a reaction stored during the attempt stays stored (b326).
+    TakeDownTargetableFailure { trip_chance: f32 },
     /// `826A5230` End: forget the takedown target (inferred from the name).
     TakedownTargetableClearOnEnd,
     /// `826AC898`: exhausted, or resting and not rested yet (chaser vfn148 / 164 / 152).
@@ -628,7 +636,7 @@ impl PedOp {
             "TakeDownAttemptSuccessful" => PedOp::TakeDownAttemptSuccessful,
             "TakeDownAttemptFailed" => PedOp::TakeDownAttemptFailed,
             "TakeDownTargetableSuccess" => PedOp::TakeDownTargetableSuccess,
-            "TakeDownTargetableFailure" => PedOp::TakeDownTargetableFailure,
+            "TakeDownTargetableFailure" => PedOp::TakeDownTargetableFailure { trip_chance: float("tripchance").unwrap_or(0.35) },
             "TakedownTargetableClearOnEnd" => PedOp::TakedownTargetableClearOnEnd,
             "NeedToRest" => PedOp::NeedToRest,
             "RestFromChase" => PedOp::RestFromChase,
@@ -1022,6 +1030,13 @@ pub struct PedBrain {
     pub takedown_result: Option<u8>,
     pub takedown_active: bool,
     pub takedown_contact: bool,
+    /// The chosen takedown entry may trip on failure (`826A49D8` copies entry byte +0x26 bit 0 to brain +0xCCC bit 0).
+    pub takedown_trips: bool,
+    /// A contact reaction stored until the next `PedestrianColliding` (the collision component's +8 with
+    /// `ped+0x9C0` / `+0x9C4`): a contact during a takedown attempt, or the failed takedown's trip (b326).
+    pub pending_reaction: Option<super::skater_contact::StoredReaction>,
+    /// The stored reaction moved here when `PedestrianColliding` begins; the host plays it that tick.
+    pub reaction_due: Option<super::skater_contact::StoredReaction>,
     /// Seconds spent chasing (`brain+3220`; the Intercept and Pursue updates add dt) and the
     /// resting flag (`brain+3277` bit 0x02).
     pub chase_exhaustion: f32,
@@ -1202,7 +1217,11 @@ impl PedBrain {
 
     /// `GoingToStandBackUp`'s roll.
     pub fn roll_stand_up(&mut self) -> bool {
-        let chance = self.sit.stand_up_chance;
+        self.roll_chance(self.sit.stand_up_chance)
+    }
+
+    /// `8269A588`: true when `chance` x 100 is at least a 1..=100 roll (one draw of the brain's RNG).
+    pub fn roll_chance(&mut self, chance: f32) -> bool {
         let k = self.rng().modulo(100) + 1;
         chance * 100.0 >= k as f32
     }
@@ -1403,7 +1422,11 @@ impl Host for BrainHost<'_> {
         let s = *self.settings;
         let b = &mut *self.brain;
         match op {
-            PedOp::PedestrianColliding => b.collision_began = true,
+            PedOp::PedestrianColliding => {
+                b.collision_began = true;
+                // A reaction stored earlier plays now (`8269DA00` posts it at Begin); the host takes it this tick.
+                b.reaction_due = b.pending_reaction.take();
+            }
             PedOp::Wander => {
                 b.honker = None;
                 b.motion_intent = Some(motion::WANDER);
@@ -1632,10 +1655,18 @@ impl Host for BrainHost<'_> {
                 b.takedown_active = true;
                 b.takedown_result = None;
                 b.takedown_contact = false;
+                // `826A49D8` clears the begin-colliding byte (+8): a reaction stored before the attempt is dropped. It
+                // keeps the chosen entry's "may trip" flag for a failure.
+                b.begin_colliding = false;
+                b.pending_reaction = None;
+                b.takedown_trips = b.takedown_choice.is_some_and(|c| c.trips);
             }
             // Ours: the takedown intent ends with the decision (no takedown clips play yet).
             PedOp::TakeDownTargetableSuccess => {
                 b.takedown_active = false;
+                // `826A4E50` clears the controller's begin-colliding byte (+8): the touch that decided the takedown
+                // starts no Colliding reaction (b317).
+                b.begin_colliding = false;
                 if let Some(target) = b.takedown_target {
                     // `826A4E50` also stores the target in `ped+5680`: its contacts are ignored from now on.
                     b.ignore_collisions_with = Some(target);
@@ -1647,7 +1678,16 @@ impl Host for BrainHost<'_> {
                     b.ignore_collisions_with = Some(w.target);
                 }
             }
-            PedOp::TakeDownTargetableFailure => {
+            PedOp::TakeDownTargetableFailure { trip_chance } => {
+                // `826A5068`: refusal first, the roll only when not refused (one RNG draw, only with the entry flag).
+                // Every retail takedown target accepts: target slot 0x10 is `8281DD70` (`li r3,1`) in all seven
+                // vtables carrying the interface (b340, 26g), so the refusal branch never runs.
+                let refused = false;
+                if refused || (b.takedown_trips && b.roll_chance(*trip_chance)) {
+                    b.pending_reaction = Some(super::skater_contact::StoredReaction { kind: s.trip_kind, direction: s.trip_direction, closing: 0.0, toucher: None });
+                    b.begin_colliding = true;
+                }
+                // Otherwise a reaction stored during the attempt stays stored and plays at the next Colliding.
                 b.takedown_active = false;
                 if let Some(target) = b.takedown_target {
                     b.chase_requests.push(ChaseRequest::TakedownFailed { target });
@@ -1680,6 +1720,8 @@ impl Host for BrainHost<'_> {
                     }
                     b.chasee = Some(target);
                     b.end_reason = None;
+                    // Ours: a new chase starts reachable (retail leaves the bit to the next report, b108).
+                    b.target_unreachable = false;
                     b.chase_requests.push(ChaseRequest::Join { chasee: target });
                 }
             }
@@ -1714,6 +1756,8 @@ impl Host for BrainHost<'_> {
                     b.chase_requests.push(ChaseRequest::Leave { chasee: c });
                     b.unset_want("angrychase");
                 }
+                // Ours: no stale CannotReachChaseTarget into the next chase (retail leaves the bit, b108).
+                b.target_unreachable = false;
                 // Steering speed 0 (`vfn176 -> vfn168(0.0)`): the intercept stops.
                 if b.motion_intent == Some(motion::INTERCEPT) {
                     b.motion_intent = None;
@@ -1858,7 +1902,9 @@ impl Host for BrainHost<'_> {
                 self.brain.takedown_choice = target.and_then(|t| self.chase.takedowns.and_then(|f| f(t)));
             }
             PedOp::AttemptTakeDownTargetable => {
-                if b.takedown_active && b.takedown_result.is_none() && b.takedown_contact {
+                // `826A4BE8`: a contact by anyone but the target blocks the decision (the 3 s timer then fails it).
+                // Ours looks at any stored contact; retail at the last toucher (`brain+0xC70`) [approximation].
+                if b.takedown_active && b.takedown_result.is_none() && b.takedown_contact && b.pending_reaction.is_none() {
                     b.takedown_result = Some(2);
                 }
             }
@@ -1966,7 +2012,14 @@ impl Host for BrainHost<'_> {
             PedOp::RestFromChase => b.chase_resting = false,
             PedOp::LostChasee => b.search_point = None,
             PedOp::UnsetIsReactingToMoodEventFlagOnEnd => b.reacting_to_mood = false,
-            PedOp::Plugin => b.in_plugin = false,
+            // Plugin End (`8269F310`) releases the plugin (`82E0C9E8`: leaves the conversation, which aborts an
+            // unfinished one, and clears the participant's plugin instance): a ped bumped out of a conversation into
+            // Colliding goes on to Wander, not back into it, and runs the mood producer again (b318; laptop
+            // 2026-10-19: conversing peds skipped the warn). The host's ExitPlugin release does that work.
+            PedOp::Plugin => {
+                b.in_plugin = false;
+                b.chase_requests.push(ChaseRequest::ExitPlugin);
+            }
             PedOp::PedestrianInConversation => b.in_conversation = false,
             // `826A0F50` clears the explicit turn flag.
             PedOp::TurnToFaceWaypointOrientation => {

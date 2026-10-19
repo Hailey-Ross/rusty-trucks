@@ -72,7 +72,10 @@ pub(crate) struct FrameTiming {
     /// The current frame's CPU split, from `record` (Last).
     pending: Option<FrameCpu>,
     window: VecDeque<Sample>,
+    /// Previous frames without their physics loop (`ms - fixed_ms`), and the cost of one fixed step in the frames
+    /// that ran any: the hitch rule's expected frame time ([`stats::expected_ms`]).
     history: VecDeque<f32>,
+    step_history: VecDeque<f32>,
     summary: stats::Summary,
     hitches: usize,
     interval: Interval,
@@ -101,6 +104,7 @@ impl Default for FrameTiming {
             pending: None,
             window: VecDeque::new(),
             history: VecDeque::with_capacity(stats::HITCH_HISTORY + 1),
+            step_history: VecDeque::with_capacity(stats::HITCH_HISTORY + 1),
             summary: stats::Summary::default(),
             hitches: 0,
             interval: Interval::default(),
@@ -146,10 +150,12 @@ impl Interval {
 impl FrameTiming {
     /// Records one frame that took `ms` (start to next start) and ended at
     /// `now_s` (seconds on this resource's clock), with what it did on the main
-    /// thread. Returns the log row values: (hitch, median of the history).
+    /// thread. Returns the log row values: (hitch, the frame's expected time).
     fn push(&mut self, now_s: f64, ms: f32, cpu: FrameCpu) -> (bool, Option<f32>) {
         let FrameCpu { main_ms, fixed_ms, steps } = cpu;
-        let median = stats::history_median(self.history.iter().copied(), &mut self.scratch);
+        let rest = stats::history_median(self.history.iter().copied(), &mut self.scratch);
+        let step = stats::history_median(self.step_history.iter().copied(), &mut self.scratch);
+        let median = stats::expected_ms(rest, step, steps);
         let hitch = stats::is_hitch(ms, median);
         self.frame += 1;
         self.last_ms = ms;
@@ -162,7 +168,13 @@ impl FrameTiming {
         if self.history.len() == stats::HITCH_HISTORY {
             self.history.pop_front();
         }
-        self.history.push_back(ms);
+        self.history.push_back((ms - fixed_ms).max(0.0));
+        if steps > 0 {
+            if self.step_history.len() == stats::HITCH_HISTORY {
+                self.step_history.pop_front();
+            }
+            self.step_history.push_back(fixed_ms / steps as f32);
+        }
         self.window.push_back(Sample { end_s: now_s, ms, hitch });
         while self.window.len() > MAX_FRAMES
             || self.window.front().is_some_and(|s| s.end_s < now_s - WINDOW_S)
@@ -267,6 +279,11 @@ struct FrameText;
 struct FrameBar(usize);
 #[derive(Component)]
 struct FrameGraph;
+/// The red "game files need a refresh" box: below the counter when it is shown, in its place when it is not.
+#[derive(Component)]
+struct RefreshWarning;
+#[derive(Component)]
+struct RefreshWarningText;
 
 pub(crate) struct FrameTimingPlugin;
 
@@ -353,12 +370,28 @@ fn show(
     mut text: Query<(&mut Text, &mut TextFont), With<FrameText>>,
     mut bars: Query<(&FrameBar, &mut Node, &mut BackgroundColor), (Without<FrameOverlay>, Without<FrameGraph>)>,
     mut graph_node: Query<&mut Node, (With<FrameGraph>, Without<FrameOverlay>, Without<FrameBar>)>,
+    mut warning_box: Query<&mut Node, (With<RefreshWarning>, Without<FrameOverlay>, Without<FrameBar>, Without<FrameGraph>)>,
+    mut warning_text: Query<(&mut Text, &mut TextFont), (With<RefreshWarningText>, Without<FrameText>)>,
     mut graph: Local<Vec<f32>>,
+    mut hitch_bars: Local<Vec<f32>>,
     mut shown_at: Local<Option<f64>>,
     mut layout_simple: Local<Option<bool>>,
+    mut warning_generation: Local<u64>,
 ) {
     let visible = menu.as_ref().is_some_and(|m| m.frame_stats_visible());
     let simple = menu.as_ref().is_some_and(|m| m.frame_stats_simple());
+    // The asset check's notice (start-up check, then the full check): shown whether or not the counter is.
+    let (generation, features) = crate::asset_check::notice();
+    if generation != *warning_generation {
+        *warning_generation = generation;
+        let text = crate::asset_check::warning_box_text(&features);
+        for mut node in &mut warning_box {
+            node.display = if text.is_some() { Display::Flex } else { Display::None };
+        }
+        for (mut label, _) in &mut warning_text {
+            label.0 = text.clone().unwrap_or_default();
+        }
+    }
     for mut node in &mut overlay {
         let display = if visible { Display::Flex } else { Display::None };
         if node.display != display {
@@ -374,6 +407,9 @@ fn show(
         *layout_simple = Some(simple);
         *shown_at = None;
         for (_, mut font) in &mut text {
+            font.font_size = if simple { 11.0 } else { 14.0 };
+        }
+        for (_, mut font) in &mut warning_text {
             font.font_size = if simple { 11.0 } else { 14.0 };
         }
         for mut node in &mut graph_node {
@@ -397,11 +433,14 @@ fn show(
     }
     graph.resize(if simple { SIMPLE_BARS } else { GRAPH_BARS }, 0.0);
     stats::bucket_worst(timing.window.iter().map(|s| (s.end_s, s.ms)), now_s, GRAPH_BUCKET_S, graph.as_mut_slice());
-    let median = timing.summary.median_ms;
+    // Red = the bucket holds a hitch by the expected-time rule (not 2 x the median: a normal fixed-step frame is ~2x a
+    // step-less one at high fps).
+    hitch_bars.resize(graph.len(), 0.0);
+    stats::bucket_worst(timing.window.iter().map(|s| (s.end_s, if s.hitch { 1.0 } else { 0.0 })), now_s, GRAPH_BUCKET_S, hitch_bars.as_mut_slice());
     for (bar, mut node, mut color) in &mut bars {
         let Some(&ms) = graph.get(bar.0) else { continue };
         node.height = percent((ms / GRAPH_FULL_MS).clamp(0.0, 1.0) * 100.0);
-        color.0 = if median > 0.0 && ms > stats::HITCH_FACTOR * median {
+        color.0 = if hitch_bars.get(bar.0).is_some_and(|&h| h > 0.0) {
             Color::srgb(0.95, 0.25, 0.2)
         } else if ms > 1000.0 / 60.0 {
             Color::srgb(0.95, 0.75, 0.2)
@@ -414,22 +453,36 @@ fn show(
 fn spawn_overlay(mut commands: Commands) {
     // Uses the existing UI camera; no separate render loop. Hidden until the
     // graphics menu's "Frame-time counter" row turns it on.
+    // The top-right corner holds the counter and, below it, the refresh warning; a hidden counter takes no room, so
+    // the warning then sits in its place.
+    let corner = commands
+        .spawn((
+            Name::new("Frame-time corner"),
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(12),
+                right: px(12),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::FlexEnd,
+                row_gap: px(6),
+                ..default()
+            },
+            GlobalZIndex(100),
+        ))
+        .id();
     commands
         .spawn((
             Name::new("Frame-time overlay"),
             FrameOverlay,
             Node {
                 display: Display::None,
-                position_type: PositionType::Absolute,
-                top: px(12),
-                right: px(12),
                 padding: UiRect::axes(px(10), px(6)),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
-            GlobalZIndex(100),
+            ChildOf(corner),
         ))
         .with_children(|parent| {
             parent.spawn((
@@ -455,6 +508,23 @@ fn spawn_overlay(mut commands: Commands) {
                         ));
                     }
                 });
+        });
+    // Same box style as the counter, in red, hidden until the asset check publishes something to refresh.
+    commands
+        .spawn((
+            Name::new("Refresh warning"),
+            RefreshWarning,
+            Node {
+                display: Display::None,
+                padding: UiRect::axes(px(10), px(6)),
+                max_width: px(420),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.62, 0.06, 0.06, 0.92)),
+            ChildOf(corner),
+        ))
+        .with_children(|parent| {
+            parent.spawn((RefreshWarningText, Text::new(""), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
         });
 }
 
@@ -504,6 +574,27 @@ mod tests {
         }
         assert_eq!(timing.window.len(), MAX_FRAMES);
         assert_eq!(timing.history.len(), stats::HITCH_HISTORY);
+    }
+
+    /// 5 ms frames alternating with 11 ms frames that ran one ~6 ms fixed step: no hitches; a 30 ms step frame is one.
+    #[test]
+    fn alternating_fixed_step_frames_are_not_hitches() {
+        let mut timing = FrameTiming { legacy: None, ..default() };
+        let mut now = 0.0;
+        let mut hitches = 0;
+        for i in 0..400 {
+            let (ms, cpu) = if i % 2 == 0 {
+                (5.1, FrameCpu { main_ms: 4.6, fixed_ms: 0.0, steps: 0 })
+            } else {
+                (11.2, FrameCpu { main_ms: 10.6, fixed_ms: 5.9, steps: 1 })
+            };
+            now += f64::from(ms) / 1000.0;
+            hitches += usize::from(timing.push(now, ms, cpu).0);
+        }
+        assert_eq!(hitches, 0);
+        let (hitch, expected) = timing.push(now + 0.03, 30.0, FrameCpu { main_ms: 29.0, fixed_ms: 6.0, steps: 1 });
+        assert!(hitch);
+        assert!((expected.unwrap() - 11.0).abs() < 0.01, "{expected:?}");
     }
 
     #[derive(Resource, Default, Debug, Clone, PartialEq)]
@@ -586,7 +677,9 @@ mod tests {
         app.init_resource::<bevy::diagnostic::DiagnosticsStore>();
         crate::performance::install(
             &mut app,
-            crate::performance::Performance::rolling(dir.join("perf.json"), 0.02).with_warmup(0.0),
+            // 1 ms windows: the 600 MinimalPlugins frames take only ~20 ms of wall time, so a 20 ms window could close
+            // after the run (flaky NotFound on perf.json, 2026-10-19).
+            crate::performance::Performance::rolling(dir.join("perf.json"), 0.001).with_warmup(0.0),
         );
         let started = std::time::Instant::now();
         for i in 0..frames {

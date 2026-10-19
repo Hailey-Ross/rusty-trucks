@@ -23,7 +23,11 @@ fn advance_inner(
     carry_tick: super::prop_carry::Tick,
 ) -> Result<(), String> {
     let timer = std::time::Instant::now();
-    let mod_before = crate::modding::player_physics::before_solve(physics,skater);
+    // The mods' contact frame (`sdk.player_physics`) is read from the player's runtime only
+    // (`player_physics::snapshot`); a simulated NPC skater's copy was built every tick and never read (~0.2-0.35 ms a
+    // frame, b327). The three builders take shared references and only fill `mod_contact_frame`, so physics is the same.
+    let mod_frame = skater.ai_physics.is_none();
+    let mod_before = mod_frame.then(|| crate::modding::player_physics::before_solve(physics,skater));
     let before = diagnostics::snapshot(physics, skater);
     diagnostics::validate(&before, "before shared solve").map_err(|error| format!(
         "{error}; com_frame={:?}; lifted_com_frame={:?}; animation_root={:?}; biped_position={:?}; biped_surface={:?}",
@@ -235,8 +239,10 @@ fn advance_inner(
     );
     add_phase(PHASE_SOLVE_SOLVER, timer);
     let timer = std::time::Instant::now();
-    skater.mod_contact_frame = crate::modding::player_physics::after_solve(physics,skater,&mod_before);
-    skater.mod_contact_frame.joint_loads=crate::modding::player_physics::joint_loads(skater,&joints,dt);
+    if let Some(mod_before) = &mod_before {
+        skater.mod_contact_frame = crate::modding::player_physics::after_solve(physics,skater,mod_before);
+        skater.mod_contact_frame.joint_loads=crate::modding::player_physics::joint_loads(skater,&joints,dt);
+    }
     physics.network_proxies.capture_dynamics_reactions(physics.board.solved_reactions(), dt);
     if let Err(error) = diagnostics::validate(
         &diagnostics::snapshot(physics, skater), "after shared solve",

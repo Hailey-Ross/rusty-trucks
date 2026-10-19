@@ -408,6 +408,70 @@ impl PopupOptions {
     }
 }
 
+/// The Skate Profile pages a mod fills (`sdk.menus.profile(page, key, options)`): the two overall bars and the two
+/// tables.
+pub const PROFILE_PAGES: [&str; 4] = ["career", "challenges", "stats", "personal_bests"];
+
+/// A table cell: a number (the movie formats it) or text (a string id or `#literal text`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum ProfileValue {
+    Number(f64),
+    Text(String),
+}
+
+/// `sdk.menus.profile(page, key, options)`: change an overall bar (`career` / `challenges`: title, icon, current,
+/// total; key ignored) or add / change a table row by key (`stats` / `personal_bests`: label, value, order, hidden).
+/// Unset fields keep the current value.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileOptions {
+    /// Bar title: a string id (FELanguage) or `#literal text`.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Bar icon: an asset name the movie loads (`LoadAssetByName`).
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub current: Option<f64>,
+    #[serde(default)]
+    pub total: Option<f64>,
+    /// Row label: a string id or `#literal text`.
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub value: Option<ProfileValue>,
+    /// A row's place in its table (ascending; rows without one keep their order after those with one).
+    #[serde(default)]
+    pub order: Option<i32>,
+    /// Take the row out of its table.
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+impl ProfileOptions {
+    pub fn validate(&self, page: &str) -> bool {
+        let text = |t: &Option<String>| t.as_ref().is_none_or(|t| t.len() <= 512);
+        let number = |n: &Option<f64>| n.is_none_or(|n| n.is_finite());
+        let bar = page == "career" || page == "challenges";
+        let bar_fields = self.title.is_some() || self.icon.is_some() || self.current.is_some() || self.total.is_some();
+        let row_fields = self.label.is_some() || self.value.is_some() || self.order.is_some() || self.hidden;
+        let value = match &self.value {
+            Some(ProfileValue::Number(n)) => n.is_finite(),
+            Some(ProfileValue::Text(t)) => t.len() <= 512,
+            None => true,
+        };
+        PROFILE_PAGES.contains(&page)
+            && if bar { !row_fields } else { !bar_fields }
+            && text(&self.title)
+            && text(&self.icon)
+            && text(&self.label)
+            && number(&self.current)
+            && number(&self.total)
+            && value
+    }
+}
+
 pub fn valid_trick_guide_key(s: &str) -> bool {
     (s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())) || valid_menu_id(s)
 }

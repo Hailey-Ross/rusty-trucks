@@ -141,10 +141,11 @@ See `skate.lua` for the complete annotated API. The sample mod in
 
 ## Central message
 
-`sdk.ui.central_message(text)` shows one line in the HUD's central message, the
-retail `hudcentral` movie where a ped's taze shows "ZAP!". `text` is a language id
-of that movie (`ID_CHASE_TAZER_1`) or plain text (1 to 64 characters). It plays the
-movie's own intro, sound and outro; nothing to clean up.
+`sdk.ui.central_message(text [, seconds])` shows one line in the HUD's central message,
+the retail `hudcentral` movie where a ped's taze shows "ZAP!". `text` is a language id
+of that movie (`ID_CHASE_TAZER_1`, shown as its text, "ZAP!") or plain text (1 to 64
+characters). It plays the movie's intro and sound, stays `seconds` (default 6, retail's;
+up to 60) and then plays the outro; a new line replaces it. Nothing to clean up.
 
 `sdk.ui.chase_alerts(enabled)` shows (`true`, the default) or hides the alerts
 over peds that warn or chase the player (retail's yellow and red arrows). A hide

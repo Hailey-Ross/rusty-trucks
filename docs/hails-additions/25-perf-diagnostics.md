@@ -1031,3 +1031,65 @@ Change (`crates/skate-game/src/system_timing.rs`, research b214 / b268 `.local/r
 - **Verification:** compiles with the .NET Framework 4 `csc` that `build.bat` uses (no warnings). Not looked at on
   screen yet; the user judges the feel.
 
+
+## Start-up splash: out-of-date game files are named at once (2026-10-19)
+
+- **Ask (user, laptop session 2026-10-19 10:08):** "the refresh warning should show under the startup splash once
+  detected during the startup". The asset check ran about 24 s after the game window opened (it waits for the
+  loading screen so its thousands of reads do not slow the start on an HDD), so the user only noticed "central
+  message HUD missing" / "ped chase alert textures missing" after playing.
+- **Change:** `asset_check::quick_check` (the feature files later builds added: the central message HUD, the chase
+  alert textures, the hand props' models and grip points; a few file tests and one 17 KB read) runs in `main.rs` right
+  after the settings load, while the splash is up. Findings become `splash::warning`: an amber, two-line, wrapped
+  line under the status ("Game files out of date: <what>. Refresh Game Files (the launcher's Tools, or Extras in the
+  game) to turn them on."), kept until the splash closes; the finished lines make room (two kept). Logged as
+  `ASSET_CHECK start-up: ...`. The full check after loading is unchanged (it still offers the refresh in game, and
+  out-of-date menus still force it).
+- **In game (user, 2026-10-19):** "add a warning to the bottom of the fps counter (when its shown) or in place of the
+  fps counter (when its not shown) that is a clear, easy to read red warning box in the same style as the fps
+  counter that warns an asset refresh is needed (use better wording)", then "not under, but below the fps counter
+  when shown". The frame-time counter and a red box share a top-right column (`frame_timing` `spawn_overlay`): the
+  box sits below the counter, and a hidden counter takes no room, so the box then sits in its place. Same padding and
+  font as the counter (and its Simple-mode size), dark red, white text:
+  `GAME FILES NEED A REFRESH` / `Off until then: <features>` / `Launcher: Tools > Refresh Game Files (or Esc >
+  Extras)`. Its source is `asset_check::publish`: the start-up quick check, replaced by the full check when it ends
+  (a clean full check hides it). Findings are named as features (`feature_name`: "chase messages (ZAP!, BAM!)",
+  "ped chase alerts", "ped hand props", "menus", else "<group> files"); the splash uses the same names.
+- **Tests:** `the_splash_names_what_stays_off_until_a_refresh` (asset_check: splash text and box text),
+  `systems_touch_only_their_own_state` (frame_timing; the box is written by `show` only). Not looked at on screen yet.
+
+## Frame pacing: hitches counted against the expected frame, a cheaper fixed step (2026-10-19)
+- **Problem:** laptop session 2026-10-19 11:05 (user: "Hitches still seem to be fairly prevalent while testing but not
+  causing major hitches that stutter the game."): 567 `FRAME_HITCH` lines. The frame log shows frames alternating about
+  5 ms and 11 ms at ~124 fps: every other frame also runs the ~6 ms fixed physics step (60 Hz). 9,912 of the 9,918
+  frames flagged as hitches were such normal one-step frames (2 x the median of all frames is ~11 ms).
+- **Hitch rule (ours, diagnostics only):** a hitch is now a frame longer than 2 x its EXPECTED time = the median of
+  the previous 120 frames without their physics loop, plus the frame's fixed steps x the median cost of one step
+  (`frame_timing::stats::expected_ms`). The overlay, `FRAME_HITCH`, the `SKATE_FRAME_LOG` `hitch` column and the mod
+  snapshot use it; the log's `median_ms` column / field now holds the expected time. Overlay bars turn red only for a
+  bucket with a real hitch. Gameplay is unchanged (the plugin still writes only its own state).
+- **Cheaper step (user's choice "Cheaper physics step" over a pacing limiter):** profile on the main PC (release,
+  DownTown, no input, no mods, Chrome trace, 3,600 steps): 3.84 ms per fixed step; skater collision + solve 1.74 ms
+  (player + simulated NPC skaters), `npc_sim::simulate` 1.03, `physics::advance` 0.90, the mods' fixed step 0.50 of
+  which the Rapier step 0.37 (with no mod installed), `think_peds` 0.35. Changes so far:
+  - The mods' Rapier world steps only while a mod is running or something a mod made exists
+    (`Mods::needs_dynamics_step`, the same rule as the snapshot reader). Without mods it held only the static ground
+    and the skater proxies, re-posed every tick. Not byte-identical for a mod's first contact ticks (Rapier's
+    carried-over contact state of the proxies); the user accepted that ("Allow it").
+  - Simulated NPC skaters no longer build the mods' per-tick contact frame (`player_physics::before_solve`,
+    `after_solve`, `joint_loads`): only the player's is read (`player_physics::snapshot`), the builders take shared
+    references and only fill `mod_contact_frame`, so physics is identical (research b327: ~0.2 to 0.35 ms a frame).
+  - The NPC worker sync copies a proxy set per job each tick: `Proxies` now has a field-by-field `clone_from` that
+    reuses the buffers (the derived one allocated every Vec again; same values; test `clone_from_equals_clone`; b333).
+  - The grab registry (~700 DownTown props and cars, rebuilt three times a tick) checks duplicate ids with a set
+    instead of scanning the earlier objects (O(n^2)); the same error at the same object (test
+    `registry_errors_match_the_old_duplicate_scan`, 2,000 random lists against the old scan; b334).
+  - The drive filter returns at once when no mod disabled a drive (no per-tick rebuild of three Vecs; b327).
+- **Files:** `crates/skate-game/src/frame_timing/{mod.rs,stats.rs,hitch.rs,log.rs}`, `crates/skate-game/src/modding/mod.rs`,
+  `crates/skate-game/src/physics/{solve.rs,network.rs}`, `crates/skate-game/src/modding/player_physics.rs`,
+  `crates/skate-core/src/player/offboard/grab_scene/registry.rs`.
+- **Tests:** `fixed_step_frames_are_expected_not_hitches`, `alternating_fixed_step_frames_are_not_hitches`,
+  `dynamics_step_only_with_something_a_mod_owns`; the trace-all test's report window is 1 ms now (a 20 ms window could
+  close after its ~20 ms run: flaky).
+- **Open:** a measured after-profile; further exact candidates in `.local/research/b327-solve-speedup-candidates.md`
+  (the `solve_queries` timer also covers the prop step and mod maps, so split it before optimising "queries").

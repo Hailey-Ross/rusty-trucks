@@ -1,8 +1,9 @@
 //! `FRAME_HITCH` log line: one line per hitch frame (rate-limited), so a reported stutter can be
 //! placed and attributed from the session log alone (logs must diagnose).
 //!
-//! A frame is a hitch when it took longer than `factor` x the median of the previous frames (the
-//! overlay's rule, [`super::stats`]) or longer than `floor_ms`. The line carries the frame's split
+//! A frame is a hitch when it took longer than `factor` x its expected time (the overlay's rule,
+//! [`super::stats::expected_ms`]: the median frame without physics plus its fixed steps x the median step cost; the
+//! line's `median_ms=` is that expected time) or longer than `floor_ms`. The line carries the frame's split
 //! (main-thread CPU, physics loop, wait outside the schedules), the wall time of the main stages
 //! (fixed: input / controls / physics, and inside the physics tick: animation graphs, collision
 //! and solve, finish, scoring; frame: assets / physics present / animation / audio pass), the game
@@ -22,7 +23,7 @@ use std::time::Instant;
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct HitchConfig {
     pub enabled: bool,
-    /// Hitch when the frame is longer than this times the median of the previous frames.
+    /// Hitch when the frame is longer than this times its expected time.
     pub factor: f32,
     /// Hitch when the frame is longer than this, whatever the median (ms).
     pub floor_ms: f32,

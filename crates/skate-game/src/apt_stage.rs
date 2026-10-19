@@ -1125,6 +1125,179 @@ mod tests {
     /// The Challenge Map (template 68, movie map/challengemap) through the screen manager on the real vault tree:
     /// every FEChallengeMap native the movie calls is answered, the list shows the location folders, A opens Downtown
     /// and A again picks a location the teleport handler enables. Data-gated (a version 6 menu set, the collections).
+    /// The Skate Profile (FE 61, template 106): the movie loads, every Progression / Stats native it calls is answered,
+    /// and the three tab pages (SetState 5 / 10 / 20, with the tab sync 30 between) run with mod-filled rows.
+    /// Data-gated (a menu set with offline_skateProfile).
+    #[test]
+    fn retail_skate_profile_screen_opens_and_shows_each_tab() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/profile/offline_skateProfile") {
+            eprintln!("skipped: menu set without the skate profile");
+            return;
+        }
+        let assets = crate::apt_imports::main_checkout().join("assets");
+        let (data, loaded) = crate::retail_menus::read(&assets);
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        use skate_core::offline_profile::{StatRow, StatValue};
+        game.offline_profile.data.career = skate_core::offline_profile::ProfileOverall { title: "#Career".into(), icon: String::new(), current: 3.0, total: 10.0 };
+        game.offline_profile.data.stats = vec![StatRow { id: "flips".into(), label: "#Flips".into(), value: StatValue::Number(42.0) }];
+        game.offline_profile.data.personal_bests = vec![StatRow { id: "air".into(), label: "#Best air".into(), value: StatValue::Text("#2.5 m".into()) }];
+        game.offline_profile.open();
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("OfflineProfile".into())], &mut game).unwrap();
+        for (name, i) in [("AptNext", "2"), ("AptPrevious", "3"), ("AptUp", "12"), ("AptDown", "13")] {
+            stage.call_path("_level0._root.RegisterAptInputEnum", vec![Value::Text(name.into()), Value::Text(i.into())], &mut game).unwrap();
+        }
+        let args = ["source/screens/profile/offline_skateProfile.swf", "screen", "0", "OfflineProfile"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", args, &mut game).unwrap();
+        let step = |stage: &mut Stage, game: &mut crate::crossbar_host::FrontEnd, frames: usize| {
+            for frame in 0..frames {
+                if let Err(e) = stage.update(16.0, &movies, game) {
+                    let traces = stage.take_traces();
+                    panic!("frame {frame}: {e}\ncalls: {:?}\ntraces (last 40): {:?}", game.calls, &traces[traces.len().saturating_sub(40)..]);
+                }
+            }
+        };
+        step(&mut stage, &mut game, 120);
+        let id = game.calls.iter().find_map(|c| c.strip_prefix("Game.OnScreenLoaded(")).map(|c| c.trim_end_matches(')').to_owned()).expect("the movie loaded");
+        // Init's page, then each tab as the tab keys post it (sync 30, then the page).
+        for state in [5, 30, 10, 30, 20, 30, 5] {
+            stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(id.clone()), Value::Text(state.to_string())], &mut game).unwrap();
+            step(&mut stage, &mut game, 10);
+        }
+        eprintln!("game calls: {:?}", game.calls);
+        let unanswered: Vec<&String> = game.calls.iter().filter(|c| c.starts_with("Progression.") || c.starts_with("Stats.")).collect();
+        assert!(unanswered.is_empty(), "Progression / Stats calls nobody answered: {unanswered:?}");
+        let asked = game.offline_profile.asked.lock().unwrap().clone();
+        eprintln!("profile calls: {asked:?}");
+        for member in ["Progression.GetOverallCareerData", "Stats.GetStatsChunk", "Stats.GetPersonalBestChunk", "Stats.GetCareerProfileSelectedTab"] {
+            assert!(asked.iter().any(|a| a == member), "the movie never asked {member}: {asked:?}");
+        }
+        assert!(stage.draw(|key, movie| set.scene(key, movie)).is_ok());
+    }
+
+    /// Extras (FE 18, template 15): the movie lists its rows through Game.Extras_* (SetState 10), greys the rows the
+    /// host greys, and A on row 0 asks for the cheat code entry. Data-gated (a menu set with main/extras).
+    #[test]
+    fn retail_extras_screen_lists_its_rows_and_opens_cheat_entry() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/main/extras") {
+            eprintln!("skipped: menu set without extras");
+            return;
+        }
+        let assets = crate::apt_imports::main_checkout().join("assets");
+        let (data, loaded) = crate::retail_menus::read(&assets);
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        game.extras.open = true;
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("Extras".into())], &mut game).unwrap();
+        for (name, i) in [("AptNext", "2"), ("AptPrevious", "3"), ("AptUp", "12"), ("AptDown", "13")] {
+            stage.call_path("_level0._root.RegisterAptInputEnum", vec![Value::Text(name.into()), Value::Text(i.into())], &mut game).unwrap();
+        }
+        let args = ["source/screens/main/extras.swf", "screen", "0", "Extras"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", args, &mut game).unwrap();
+        let step = |stage: &mut Stage, game: &mut crate::crossbar_host::FrontEnd, frames: usize| {
+            for frame in 0..frames {
+                if let Err(e) = stage.update(16.0, &movies, game) {
+                    let traces = stage.take_traces();
+                    panic!("frame {frame}: {e}\ncalls: {:?}\ntraces (last 40): {:?}", game.calls, &traces[traces.len().saturating_sub(40)..]);
+                }
+            }
+        };
+        step(&mut stage, &mut game, 120);
+        let id = game.calls.iter().find_map(|c| c.strip_prefix("Game.OnScreenLoaded(")).map(|c| c.trim_end_matches(')').to_owned()).expect("the movie loaded");
+        stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(id.clone()), Value::Text("10".into())], &mut game).unwrap();
+        step(&mut stage, &mut game, 30);
+        eprintln!("game calls: {:?}", game.calls);
+        let unanswered: Vec<&String> = game.calls.iter().filter(|c| c.starts_with("Game.Extras_") || c.starts_with("Game.OnMenu")).collect();
+        assert!(unanswered.is_empty(), "Extras calls nobody answered: {unanswered:?}");
+        // A on the first row (the picker starts on the first enabled row).
+        stage.call_path("_global.ScreenManager.UpdateInput", vec![Value::Text(id.clone()), Value::Text("2".into()), Value::Text("0".into())], &mut game).unwrap();
+        step(&mut stage, &mut game, 10);
+        assert_eq!(game.extras.selected, vec![skate_core::extras::ExtrasAction::CheatEntry], "calls: {:?}", game.calls);
+        assert!(stage.draw(|key, movie| set.scene(key, movie)).is_ok());
+    }
+
+    /// The text viewer (FE 3, template 28 ToSScreen) with our licenses: the movie loads, SetState(1) reads the words
+    /// through `tos` (GetNumWords, GetWordRange) and every `tos` call is answered. Data-gated (a set with nucleus_tos).
+    #[test]
+    fn retail_text_viewer_shows_the_licenses() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/nucleus/nucleus_tos") {
+            eprintln!("skipped: menu set without the text viewer");
+            return;
+        }
+        let assets = crate::apt_imports::main_checkout().join("assets");
+        let (data, loaded) = crate::retail_menus::read(&assets);
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        game.tos.viewer = Some(skate_core::text_viewer::TextViewer::open("ID_EXTRA_LICENSES_TITLE", crate::extras_host::LICENSES, &Default::default()));
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("ToSScreen".into())], &mut game).unwrap();
+        let args = ["source/screens/nucleus/nucleus_tos.swf", "screen", "0", "ToSScreen"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", args, &mut game).unwrap();
+        let step = |stage: &mut Stage, game: &mut crate::crossbar_host::FrontEnd, frames: usize| {
+            for frame in 0..frames {
+                if let Err(e) = stage.update(16.0, &movies, game) {
+                    let traces = stage.take_traces();
+                    panic!("frame {frame}: {e}\ncalls: {:?}\ntraces (last 40): {:?}", game.calls, &traces[traces.len().saturating_sub(40)..]);
+                }
+            }
+        };
+        step(&mut stage, &mut game, 120);
+        let id = game.calls.iter().find_map(|c| c.strip_prefix("Game.OnScreenLoaded(")).map(|c| c.trim_end_matches(')').to_owned()).expect("the movie loaded");
+        stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(id), Value::Text("1".into())], &mut game).unwrap();
+        step(&mut stage, &mut game, 30);
+        eprintln!("game calls: {:?}", game.calls);
+        let unanswered: Vec<&String> = game.calls.iter().filter(|c| c.starts_with("tos.")).collect();
+        assert!(unanswered.is_empty(), "tos calls nobody answered: {unanswered:?}");
+        assert!(stage.draw(|key, movie| set.scene(key, movie)).is_ok());
+    }
+
     #[test]
     fn retail_challenge_map_screen_opens_and_picks_a_location() {
         let Some(root) = crate::apt_imports::test_menu_set() else {

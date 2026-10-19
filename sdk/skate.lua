@@ -1117,7 +1117,12 @@ function sdk.audio.seed(n) end
 --   weight}, ...}, nollie = {...}}} (replaces that table; an absent table keeps the disc's; a character key
 --   wins over a profile name),
 --   npc_simulated {enabled, radius, max} (NPC skaters near the player as full physics skaters driven by their
---   AI record; default off until play-tested, 40 m, 3),
+--   AI record; default off until play-tested, no distance limit as retail, 3),
+--   npc_walk_back {<any ControllerBSettings field>} (the NPC skaters' walk-back controller: e.g. start_locate_radius /
+--   goal_locate_radius (m, retail unbounded), arrive_h (2.4 m), stuck_waypoint_ticks (600); floats >= 0, counts
+--   <= 36000, push_period >= 1),
+--   npc_line_controller {<any ControllerSettings field>} (the NPC skaters' line controller: e.g. resnap_frames (240),
+--   stuck_limits (six stage limits in ticks, retail {30, 30, 2, 180, 30, 3}), safe_run (3, >= 1)),
 --   skaters / pedestrians / vehicles {enabled, density} (density 1 = retail, 0..4, scales the census caps),
 --   ambient_skaters (NPC skaters offline, retail 3, 0..8),
 --   free_play {traffic, pedestrians, ai_skaters} (retail Free Play mode: traffic / peds 0..1, 0 removes them at once;
