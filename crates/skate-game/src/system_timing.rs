@@ -4,11 +4,17 @@
 //! on, research b214); this layer names each span once when Bevy creates it and adds up the time between enter and exit
 //! per name, with no allocation per run. Parallel systems overlap, so the per-system numbers add up to more than the
 //! frame; they show where the CPU goes, the frame log shows the frame. Off: the layer is not installed at all.
+//!
+//! `SKATE_FIXED_TIMING=1` (research b214 / b268): the same spans inside the fixed step only, once per second one
+//! `FIXED_TIMING` line with the step's wall time, the time any fixed system or command application ran (`busy`), the
+//! rest (`gaps`: executor and sync points), and every fixed-schedule system per step. The step is the span of
+//! `FixedMain::run_fixed_main` (one per step, single-threaded); fixed systems run on pool threads with no span parent,
+//! so the window is a global flag, and render systems that overlap it are kept apart by schedule membership.
 use bevy::log::tracing::{Id, Subscriber, field::Field, field::Visit, span::Attributes};
 use bevy::log::tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 use bevy::prelude::*;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -17,6 +23,17 @@ pub(crate) fn on() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var("SKATE_SYSTEM_TIMING").is_ok_and(|v| v == "1"))
 }
+
+/// Whether the fixed-step readout is on, read once.
+pub(crate) fn fixed_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SKATE_FIXED_TIMING").is_ok_and(|v| v == "1"))
+}
+
+/// The span name of the fixed step (`bevy_app` `FixedMain::run_fixed_main`).
+const FIXED_STEP: &str = "FixedMain::run_fixed_main";
+/// Command applications get their own slot under this prefix (`system_commands` spans).
+const COMMANDS: &str = "cmd:";
 
 /// Systems named so far; a slot is never reused.
 const SLOTS: usize = 2048;
@@ -29,6 +46,34 @@ struct Slot {
     total_ns: AtomicU64,
     runs: AtomicU64,
     max_ns: AtomicU64,
+    /// Inside the fixed step only (`SKATE_FIXED_TIMING`).
+    fixed_ns: AtomicU64,
+    fixed_runs: AtomicU64,
+    fixed_max_ns: AtomicU64,
+    /// A system of a fixed schedule (set by `report_fixed` from `Schedules`).
+    member: AtomicBool,
+}
+
+impl Slot {
+    fn new() -> Self {
+        let z = || AtomicU64::new(0);
+        Self { total_ns: z(), runs: z(), max_ns: z(), fixed_ns: z(), fixed_runs: z(), fixed_max_ns: z(), member: AtomicBool::new(false) }
+    }
+}
+
+/// The fixed step window and its totals since the last line.
+static IN_FIXED: AtomicBool = AtomicBool::new(false);
+static STEP_NS: AtomicU64 = AtomicU64::new(0);
+static STEP_MAX_NS: AtomicU64 = AtomicU64::new(0);
+static STEPS: AtomicU64 = AtomicU64::new(0);
+/// Member spans open inside the window, when the count last left 0, and the summed time it was above 0.
+static RUNNING: AtomicU32 = AtomicU32::new(0);
+static BUSY_FROM: AtomicU64 = AtomicU64::new(0);
+static BUSY_NS: AtomicU64 = AtomicU64::new(0);
+
+fn now_ns() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64
 }
 
 struct Table {
@@ -40,12 +85,14 @@ fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
     TABLE.get_or_init(|| Table {
         names: Mutex::new(Vec::new()),
-        slots: (0..SLOTS).map(|_| Slot { total_ns: AtomicU64::new(0), runs: AtomicU64::new(0), max_ns: AtomicU64::new(0) }).collect(),
+        slots: (0..SLOTS).map(|_| Slot::new()).collect(),
     })
 }
 
 /// The span's slot, kept in its extensions.
 struct SlotId(usize);
+/// The fixed step's span (`FIXED_STEP`).
+struct StepMarker;
 
 #[derive(Default)]
 struct NameField(Option<String>);
@@ -63,14 +110,15 @@ impl Visit for NameField {
 }
 
 thread_local! {
-    static OPEN: RefCell<Vec<(u64, Instant)>> = const { RefCell::new(Vec::new()) };
+    /// Open spans: id, enter time, entered inside the fixed step, counted as busy.
+    static OPEN: RefCell<Vec<(u64, Instant, bool, bool)>> = const { RefCell::new(Vec::new()) };
 }
 
 pub(crate) struct SystemTimingLayer;
 
 /// The layer when the readout is on.
 pub(crate) fn layer() -> Option<SystemTimingLayer> {
-    on().then_some(SystemTimingLayer)
+    (on() || fixed_on()).then_some(SystemTimingLayer)
 }
 
 impl<S> Layer<S> for SystemTimingLayer
@@ -78,12 +126,16 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        if attrs.metadata().name() != "system" {
-            return;
-        }
+        let commands = match attrs.metadata().name() {
+            "system" => false,
+            "system_commands" if fixed_on() => true,
+            _ => return,
+        };
         let mut field = NameField::default();
         attrs.record(&mut field);
         let Some(name) = field.0 else { return };
+        let step = !commands && name.ends_with(FIXED_STEP);
+        let name = if commands { format!("{COMMANDS}{name}") } else { name };
         let t = table();
         let mut names = t.names.lock().unwrap_or_else(|e| e.into_inner());
         let slot = match names.iter().position(|n| *n == name) {
@@ -96,28 +148,62 @@ where
         };
         drop(names);
         if let Some(span) = ctx.span(id) {
-            span.extensions_mut().insert(SlotId(slot));
+            let mut ext = span.extensions_mut();
+            ext.insert(SlotId(slot));
+            if step {
+                ext.insert(StepMarker);
+            }
         }
     }
-    fn on_enter(&self, id: &Id, _ctx: Context<'_, S>) {
-        OPEN.with(|open| open.borrow_mut().push((id.into_u64(), Instant::now())));
+    fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
+        let (mut inside, mut busy) = (false, false);
+        if fixed_on() {
+            if let Some(span) = ctx.span(id) {
+                let ext = span.extensions();
+                if ext.get::<StepMarker>().is_some() {
+                    IN_FIXED.store(true, Ordering::Relaxed);
+                } else if IN_FIXED.load(Ordering::Relaxed) {
+                    inside = true;
+                    busy = ext.get::<SlotId>().is_some_and(|s| table().slots[s.0].member.load(Ordering::Relaxed));
+                    if busy && RUNNING.fetch_add(1, Ordering::Relaxed) == 0 {
+                        BUSY_FROM.store(now_ns(), Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+        OPEN.with(|open| open.borrow_mut().push((id.into_u64(), Instant::now(), inside, busy)));
     }
     fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
         let key = id.into_u64();
-        let Some(begin) = OPEN.with(|open| {
+        let Some((begin, inside, busy)) = OPEN.with(|open| {
             let mut open = open.borrow_mut();
-            let at = open.iter().rposition(|(k, _)| *k == key)?;
-            Some(open.remove(at).1)
+            let at = open.iter().rposition(|o| o.0 == key)?;
+            let o = open.remove(at);
+            Some((o.1, o.2, o.3))
         }) else {
             return;
         };
+        if busy && RUNNING.fetch_sub(1, Ordering::Relaxed) == 1 {
+            BUSY_NS.fetch_add(now_ns().saturating_sub(BUSY_FROM.load(Ordering::Relaxed)), Ordering::Relaxed);
+        }
         let Some(span) = ctx.span(id) else { return };
-        let Some(slot) = span.extensions().get::<SlotId>().map(|s| s.0) else { return };
+        let ext = span.extensions();
+        let Some(slot) = ext.get::<SlotId>().map(|s| s.0) else { return };
         let ns = begin.elapsed().as_nanos() as u64;
         let s = &table().slots[slot];
         s.total_ns.fetch_add(ns, Ordering::Relaxed);
         s.runs.fetch_add(1, Ordering::Relaxed);
         s.max_ns.fetch_max(ns, Ordering::Relaxed);
+        if fixed_on() && ext.get::<StepMarker>().is_some() {
+            IN_FIXED.store(false, Ordering::Relaxed);
+            STEP_NS.fetch_add(ns, Ordering::Relaxed);
+            STEP_MAX_NS.fetch_max(ns, Ordering::Relaxed);
+            STEPS.fetch_add(1, Ordering::Relaxed);
+        } else if inside {
+            s.fixed_ns.fetch_add(ns, Ordering::Relaxed);
+            s.fixed_runs.fetch_add(1, Ordering::Relaxed);
+            s.fixed_max_ns.fetch_max(ns, Ordering::Relaxed);
+        }
     }
 }
 
@@ -127,6 +213,9 @@ impl Plugin for SystemTimingPlugin {
     fn build(&self, app: &mut App) {
         if on() {
             app.add_systems(Last, report);
+        }
+        if fixed_on() {
+            app.add_systems(Last, report_fixed);
         }
     }
 }
@@ -156,7 +245,7 @@ fn report(mut state: Local<ReportState>) {
             let s = &t.slots[i];
             (s.total_ns.swap(0, Ordering::Relaxed), s.runs.swap(0, Ordering::Relaxed), s.max_ns.swap(0, Ordering::Relaxed), n.as_str())
         })
-        .filter(|r| r.1 > 0)
+        .filter(|r| r.1 > 0 && !r.3.starts_with(COMMANDS))
         .collect();
     rows.sort_by(|a, b| b.0.cmp(&a.0));
     let total: u64 = rows.iter().map(|r| r.0).sum();
@@ -175,6 +264,93 @@ fn report(mut state: Local<ReportState>) {
         total as f64 / 1e6 / frames as f64,
         top.join(" "),
         if slow.is_empty() { String::new() } else { format!(" | slow {}", slow.join(" ")) }
+    );
+}
+
+#[derive(Default)]
+struct FixedReport {
+    since: Option<Instant>,
+    /// The fixed schedules' system count when membership was last read.
+    members_for: usize,
+}
+
+/// The fixed schedules `FixedMain::run_fixed_main` runs, in order.
+fn fixed_schedules() -> [bevy::ecs::intern::Interned<dyn bevy::ecs::schedule::ScheduleLabel>; 5] {
+    use bevy::ecs::schedule::ScheduleLabel;
+    [FixedFirst.intern(), FixedPreUpdate.intern(), FixedUpdate.intern(), FixedPostUpdate.intern(), FixedLast.intern()]
+}
+
+/// Once per second: the `FIXED_TIMING` line (every fixed-schedule system per step), then the counters start again.
+fn report_fixed(schedules: Res<Schedules>, mut state: Local<FixedReport>) {
+    let t = table();
+    // Membership: the names of the fixed schedules' systems, read again whenever their count changes.
+    let labels = fixed_schedules();
+    let count: usize = labels.iter().filter_map(|l| schedules.get(*l)).map(|s| s.systems_len()).sum();
+    if count != state.members_for {
+        let members: Vec<String> = labels
+            .iter()
+            .filter_map(|l| schedules.get(*l))
+            .filter_map(|s| s.systems().ok().map(|it| it.map(|(_, system)| system.name().to_string()).collect::<Vec<_>>()))
+            .flatten()
+            .collect();
+        // Not initialised yet: try again next frame.
+        if !members.is_empty() {
+            let names = t.names.lock().unwrap_or_else(|e| e.into_inner());
+            for (i, n) in names.iter().enumerate() {
+                let plain = n.strip_prefix(COMMANDS).unwrap_or(n);
+                t.slots[i].member.store(members.iter().any(|m| m == plain), Ordering::Relaxed);
+            }
+            state.members_for = count;
+        }
+    }
+    let now = Instant::now();
+    let since = *state.since.get_or_insert(now);
+    if now.duration_since(since).as_secs_f32() < 1.0 {
+        return;
+    }
+    state.since = Some(now);
+    let steps = STEPS.swap(0, Ordering::Relaxed);
+    let (step_ns, step_max) = (STEP_NS.swap(0, Ordering::Relaxed), STEP_MAX_NS.swap(0, Ordering::Relaxed));
+    let busy_ns = BUSY_NS.swap(0, Ordering::Relaxed);
+    let names = t.names.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut rows: Vec<(u64, u64, u64, &str, bool)> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let s = &t.slots[i];
+            (s.fixed_ns.swap(0, Ordering::Relaxed), s.fixed_runs.swap(0, Ordering::Relaxed), s.fixed_max_ns.swap(0, Ordering::Relaxed), n.as_str(), s.member.load(Ordering::Relaxed))
+        })
+        .filter(|r| r.1 > 0)
+        .collect();
+    if steps == 0 {
+        return;
+    }
+    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    let per = |ns: u64| ns as f64 / 1e6 / steps as f64;
+    let sum = |keep: &dyn Fn(&(u64, u64, u64, &str, bool)) -> bool| rows.iter().filter(|r| keep(r)).map(|r| r.0).sum::<u64>();
+    let cpu = sum(&|r| r.4 && !r.3.starts_with(COMMANDS));
+    let commands = sum(&|r| r.4 && r.3.starts_with(COMMANDS));
+    let unlisted = sum(&|r| !r.4);
+    let systems: Vec<String> = rows
+        .iter()
+        .filter(|r| r.4 && (!r.3.starts_with(COMMANDS) || per(r.0) >= 0.01))
+        .map(|(ns, runs, max, name, _)| {
+            let (prefix, plain) = name.strip_prefix(COMMANDS).map_or(("", *name), |p| (COMMANDS, p));
+            format!("{prefix}{}={:.3}/{:.2}x{}", short(plain), per(*ns), *max as f64 / 1e6, runs)
+        })
+        .collect();
+    let others: Vec<String> = rows.iter().filter(|r| !r.4).take(3).map(|(ns, runs, _, name, _)| format!("{}={:.2}x{}", short(name), per(*ns), runs)).collect();
+    info!(
+        "FIXED_TIMING steps={steps} step_ms={:.2}/{:.2} busy_ms={:.2} gaps_ms={:.2} cpu_ms={:.2} commands_ms={:.2} unlisted_ms={:.2} | {}{}",
+        per(step_ns),
+        step_max as f64 / 1e6,
+        per(busy_ns),
+        per(step_ns.saturating_sub(busy_ns)),
+        per(cpu),
+        per(commands),
+        per(unlisted),
+        systems.join(" "),
+        if others.is_empty() { String::new() } else { format!(" | unlisted {}", others.join(" ")) }
     );
 }
 
@@ -202,5 +378,18 @@ mod tests {
         assert_eq!(short("skate3rust::living_world::peds::think_peds"), "peds::think_peds");
         assert_eq!(short("think"), "think");
         assert_eq!(short("bevy_pbr::material::check<skate3rust::a::B>"), "material::check<skate3rust::a::B>");
+    }
+
+    /// FIXED_TIMING finds the fixed step by the name of the one system in `FixedMain` (b268: the exact text was
+    /// not verified from source alone).
+    #[test]
+    fn the_fixed_step_system_is_found_by_name() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let world = app.world_mut();
+        world.resource_scope(|world, mut schedules: Mut<Schedules>| schedules.get_mut(bevy::app::FixedMain).unwrap().initialize(world).unwrap());
+        let schedules = app.world().resource::<Schedules>();
+        let names: Vec<String> = schedules.get(bevy::app::FixedMain).unwrap().systems().unwrap().map(|(_, s)| s.name().to_string()).collect();
+        assert_eq!(names.iter().filter(|n| n.ends_with(FIXED_STEP)).count(), 1, "{names:?}");
     }
 }
