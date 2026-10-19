@@ -433,8 +433,29 @@ fn repoint_link(link: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A development `--assets` link left pointing at an installation a refresh elsewhere removed (another checkout or
+/// launcher version shares the data folder; laptop note 2026-10-19): point it at that data folder's current
+/// installation, so scripts and checkouts started outside the launcher keep working.
+fn repair_stale_link(link: &Path) -> Result<bool, String> {
+    if link.is_dir() {
+        return Ok(false);
+    }
+    let Ok(target) = std::fs::read_link(link) else { return Ok(false) };
+    let installations = target.parent().and_then(Path::parent);
+    let Some(base) = installations.filter(|i| i.file_name().is_some_and(|n| n == "installations")).and_then(Path::parent) else {
+        return Ok(false);
+    };
+    let Some((assets, _)) = installed(base)? else { return Ok(false) };
+    eprintln!("SETUP: {} pointed at a removed installation ({}); re-pointing it", link.display(), target.display());
+    repoint_link(link, &assets)?;
+    Ok(true)
+}
+
 pub(crate) fn asset_root() -> Result<PathBuf, String> {
     if let Some(assets) = assets_arg() {
+        if let Err(e) = repair_stale_link(&assets) {
+            eprintln!("SETUP: could not repair the assets link {}: {e}", assets.display());
+        }
         if std::env::args_os().any(|arg| arg == "--refresh-assets") {
             refresh_dev_copy(&assets)?;
         }
@@ -614,6 +635,30 @@ mod tests {
         assert!(old.is_dir(), "re-pointing removes the link, never its old target");
         // A real folder is never replaced.
         assert!(repoint_link(&old, &new).is_err());
+        std::fs::remove_dir(&link).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A link to an installation that a refresh in another checkout removed is re-pointed at the data folder's
+    /// current installation; a working link and a real folder are left alone.
+    #[cfg(windows)]
+    #[test]
+    fn a_link_to_a_removed_installation_is_repointed() {
+        let dir = std::env::temp_dir().join(format!("skate3rust-stale-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (old_id, new_id) = ("a".repeat(32), "b".repeat(32));
+        let data = dir.join("data");
+        for id in [&old_id, &new_id] {
+            std::fs::create_dir_all(data.join("installations").join(id).join("assets")).unwrap();
+        }
+        std::fs::write(data.join("installation.json"), format!(r#"{{"version":1,"directory":"installations/{new_id}"}}"#)).unwrap();
+        let link = dir.join("assets");
+        let old = data.join("installations").join(&old_id).join("assets");
+        assert!(Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(&link).arg(&old).status().unwrap().success());
+        assert!(!repair_stale_link(&link).unwrap(), "a working link stays");
+        std::fs::remove_dir_all(data.join("installations").join(&old_id)).unwrap();
+        assert!(repair_stale_link(&link).unwrap());
+        assert_eq!(link.canonicalize().unwrap(), data.join("installations").join(&new_id).join("assets").canonicalize().unwrap());
+        assert!(!repair_stale_link(&data.join("installations").join(&new_id).join("assets")).unwrap(), "a real folder stays");
         std::fs::remove_dir(&link).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }

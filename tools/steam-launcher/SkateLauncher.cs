@@ -21,6 +21,25 @@ static class Native {
     [DllImport("xinput1_4.dll")] public static extern int XInputGetState(int i, out XState s);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int pid);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+
+    // Windows only lets the foreground owner hand the foreground on; a window Steam or a hidden launcher starts is
+    // otherwise left behind the last active one. Joining the foreground thread's input for the call lifts that.
+    public static void Front(IntPtr h) {
+        if (h == IntPtr.Zero) return;
+        if (IsIconic(h)) ShowWindow(h, 9);
+        uint fg = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero), me = GetCurrentThreadId();
+        bool joined = fg != 0 && fg != me && AttachThreadInput(me, fg, true);
+        BringWindowToTop(h); SetForegroundWindow(h);
+        if (joined) AttachThreadInput(me, fg, false);
+    }
 }
 
 // One menu row: greyed rows (On = false) can be selected to read why, but do nothing.
@@ -103,7 +122,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     readonly BuildView build = new BuildView(); bool dirty;
     readonly string[] direct;
     Dictionary<string, string> status = new Dictionary<string, string>();
-    Process job; string jobTitle; bool jobHidGame; int closeAt = -1; DateTime closeTime;
+    Process job; string jobTitle; bool jobHidGame; IntPtr gameWindow; DateTime hidAt; int closeAt = -1; DateTime closeTime;
     string waitEntry, waitLabel, waitName;   // waiting for another game to close before starting
     ushort prevPad; int held; string lastAction = ""; bool lastFromPad; DateTime lastActionTime = DateTime.MinValue;
     Font monoFont, titleFont, itemFont, smallFont, heroFont, markFont, markLight, playFont, iconFont, iconSmall, itemBold, smallBold;
@@ -111,7 +130,11 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     public LauncherForm(string[] argv) {
         direct = argv;
         Text = "Skate launcher";
-        FormBorderStyle = FormBorderStyle.None; WindowState = FormWindowState.Maximized;
+        // A normal window: 70 % of the screen's work area at 16:10, centred, resizable (the layout scales with it).
+        var area = Screen.PrimaryScreen.WorkingArea;
+        int h = Math.Min(area.Height * 7 / 10, area.Width * 7 / 10 * 10 / 16);
+        StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(h * 16 / 10, h);
+        MinimumSize = new Size(800, 540);
         BackColor = Color.FromArgb(18, 20, 24); ForeColor = Color.White;
         DoubleBuffered = true; KeyPreview = true;
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
@@ -209,7 +232,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
 
     // ---------- start ----------
     void Start() {
-        Activate();
+        Activate(); Native.Front(Handle);
         int code; string pending = Run("pending", out code);
         string ent = "", lbl = "", ver = "";
         foreach (var a in direct) { if (a.StartsWith("@")) ver = a.Substring(1); else if (ent == "") ent = a; else if (lbl == "") lbl = a; }
@@ -348,7 +371,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         StartJob(entry + (label == "" ? "" : " " + label), name);
     }
     void StartJob(string args, string title) {
-        jobTitle = title; jobHidGame = false; jobStart = DateTime.Now;
+        jobTitle = title; jobHidGame = false; gameWindow = IntPtr.Zero; jobStart = DateTime.Now;
         build.Close(); build.LogPath = null; build.Ended = false; build.Active = false;
         // Let the game take the foreground from us (Steam gives the foreground window its controller layout).
         Native.AllowSetForegroundWindow(-1);
@@ -366,7 +389,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     void JobDone() {
         job = null;
         if (!Visible) Show();
-        WindowState = FormWindowState.Maximized; Activate(); Native.SetForegroundWindow(Handle);
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Activate(); Native.Front(Handle);
         string text = LastSession();
         build.Close();
         string mono = null;
@@ -381,11 +405,16 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         RebuildMain();
         ShowText(bad ? "Finished, check this" : "Finished", text, null, mono);
     }
-    // While a job runs: hide once the game's window shows, so it gets the foreground and the controller layout.
+    // While a job runs: hide once the game's window shows, so it gets the foreground and the controller layout. The
+    // first window is the startup splash; the game's own window comes when the splash is done, and gets the front too.
     void WatchGame() {
-        if (job == null || jobHidGame) return;
+        if (job == null || (jobHidGame && (DateTime.Now - hidAt).TotalSeconds > 300)) return;
         foreach (var n in GameNames) foreach (var p in Process.GetProcessesByName(n)) {
-            if (p.MainWindowHandle != IntPtr.Zero) { jobHidGame = true; Native.SetForegroundWindow(p.MainWindowHandle); Hide(); return; }
+            IntPtr w = p.MainWindowHandle;
+            if (w == IntPtr.Zero || w == gameWindow || !Native.IsWindowVisible(w)) continue;
+            gameWindow = w; Native.Front(w);
+            if (!jobHidGame) { jobHidGame = true; hidAt = DateTime.Now; Hide(); }
+            return;
         }
     }
 

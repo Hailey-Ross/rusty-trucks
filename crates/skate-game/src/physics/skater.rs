@@ -459,4 +459,18 @@ pub(crate) struct AiPhysicsSource {
     pub record: skate_core::animation::output::actor_packet::ExternalPhysicsInput,
     /// Set when the AI wrote `record` this tick (`1904` bit 27); the next packet consumes it.
     pub fresh: bool,
+    /// Where the record's trajectory came from this tick, for the `NPC_GRIND_ENTRY` log (b294).
+    pub cursor: Option<AiRecordCursor>,
+}
+
+/// The line cursor behind an AI record's trajectory (diagnostics only, never read by the simulation).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AiRecordCursor {
+    pub node: u32,
+    pub frame_in_segment: u32,
+    /// The node whose ext the record read (`ai_record::trajectory_node`).
+    pub ext_node: u32,
+    pub has_trajectory: bool,
+    /// The node `lands_in_grind` started from (`max(node - 1, 0)`).
+    pub lands_node: u32,
 }

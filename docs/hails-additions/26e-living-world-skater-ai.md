@@ -966,6 +966,55 @@ keyed by the NPC skater's stable id.
 - **Change:** one helper `effective_deck_forward` for the steer and the projection. No retail facing rule at the
   re-board (b291 / b292: none exists; the board keeps its yaw, the stance comes from the mount clip's
   `animboardbackward` event).
-- **Verification:** skate-game suite; the next stall run compares STUCK / LOST / BAIL with stall-9.
+- **Verification:** skate-game suite (811). Muted stall run stall-11 on 294af680 (150 s, DownTown, 3 NPC physics
+  loads as stall-9): lost 2 (stall-9: 4), stuck 54 (109), bails 3 (6, all WipeoutGround), BACKWARDS 23 (62), no panics.
 - **Open:** which mount clip sets `animboardbackward` for a hand-carried board; the off-board heading (`[Skeleton+0]`
   vs our `root[2]`, open since b116).
+
+## The record's trajectory comes from the cursor's node only (2026-10-19)
+
+- **Problem:** NPC skaters #2 and #8 locked onto grinds that have no recording (b293). The grind gate (`82D68FE8`,
+  `scoring.rs`) reads record bits 26 / 27, and our record set them from the NEXT recorded jump, however many ground
+  nodes ahead.
+- **Retail [code]:** `sub_8246DA18` fills the trajectory only from the PathController's current ext (`pc+692`, ext
+  byte `+0x27` bit 0 HasTrajectory) and takes bit 27 from `sub_824551C0(path, max(pc+704 - 1, 0))` (main read both
+  in the recomp's `8246DA18`). Which node `pc+692` is: the cursor's node while the segment fraction is below 0.5,
+  else the next one, the last node its own (b294, from the cursor writer; the 0.5 constant rests on b294's reading,
+  not re-read by main). Between jumps the record has no trajectory and the gate reads the cached previous jump
+  (`publication.rs`), which is retail too (b294 section 2).
+- **Change:** `ai_record::trajectory_node` / `current_trajectory` replace `upcoming_trajectory`; `npc_sim.rs` passes the
+  cursor's node and `frame_in_segment`, and `lands_in_grind` starts at the cursor's node - 1.
+- **Log:** `NPC_GRIND_ENTRY` on every NPC grind or slide entry (`player_state/transition.rs`): the gate's bits 26 / 27,
+  `flags_2472` bit 29, this tick's record bits and `fresh`, the processed-input cache's bit 27, and the cursor (node,
+  frame in segment, ext node, whether it had a trajectory, the node `lands_in_grind` started from). The trajectory
+  selector's candidate index (b294 asked for it) is not logged yet.
+- **Mod reach:** the window and bit 27 come only from the line's nodes and ext flags, so a mod's line drives them.
+- **Tests:** `a_recorded_trajectory_fills_the_record_block` (nearest node, the half-segment switch, none between
+  jumps, the last node).
+- **Open:** our cursor is time-based, retail's `pc+660` follows a projection (`8246E3B8`).
+
+## Teleport reset: the grind manager, the trajectory selector and the landing deck; a fresh cache for a new actor (2026-10-19)
+
+- **Problem:** a grind lock (engagement counter past 151, then a 90-tick cooldown, `grind/history.rs`) and the
+  selector's grind-locked-to-middle bit survived every teleport, respawn and placement, and a pooled NPC body handed
+  the previous NPC's processed-input cache (with a stale "lands in grind" bit 27) to the next NPC. Both are candidates
+  for the grind stalls of #2 / #8 (not measured yet; the `NPC_GRIND_ENTRY` log shows it).
+- **Retail [code]:** ResetSystems `82DB92D0` (the teleport / placement reset) makes 14 calls (b297 table). Ours had
+  10 of them; missing were TrajectorySelector `82D67228` (ours cleared only `trajectory_available`), OffBoardFeetIK
+  `82D77168` (b298: two foot records and the manager's tail back to their initial values, no child objects),
+  LandingOnDeck `82D78B28` and, last, the grind manager `82D8A638` (main read `lwz r3,1872(r30); bl 82D8A638` at the end of
+  `82DB92D0`, and `+484` = the 90-tick cooldown in `82D8ABD8`). `82D8A638` leaves the manager's child objects
+  (balance, jumper, history) alone, and `82D67228` keeps the in-flight trajectory request. A new NPC is a new actor:
+  `82590DC0` allocates a PhysicalPlayer and runs `82DB18A0`, so its cache at `+1008` starts empty; the same actor
+  keeps its cache across a respawn or its next line (b295).
+- **Change:** the teleport block in `input_phase.rs` (taken when a reset is requested, before the input phase and
+  the grind gate) now calls `trajectory.selector.reset()`, `offboard_feet.reset()`, `landing_deck.reset()` and
+  `player_input.grind.reset()` (no longer test-only), in retail's order. `spawn_sim` gives a pooled body `reset_external_physics_cache()` (82DB18A0's value, shared
+  with `initial.rs`) and drops the last owner's AI record. Same path for the player, ambient NPCs and mod-spawned
+  NPCs, no dependence on pool order.
+- **Tests:** `a_teleport_resets_the_grind_lock_and_a_new_actor_gets_a_fresh_input_cache` (data-gated: the lock is
+  cleared by a teleport, the actor's cache survives it, the new-actor reset restores the 82DB18A0 cache).
+- **Open:** the two float constants of `82D77168` (0x82165A10, 0x8231A844) are taken as 0.0 / 1.0, not read from
+  the image; `physics/offboard/feet.rs` and its siblings are uncompiled duplicates (not in `offboard/mod.rs`); the
+  rest of a pooled body (takedown latch, timers, the grind orientation random stream, b296) still carries over.
+

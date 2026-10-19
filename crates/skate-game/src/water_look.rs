@@ -48,6 +48,10 @@ pub(crate) struct WaterLook {
     /// blur and tint. It has no PCA waves, so the third wave, swells and calming stay family 33 only.
     pub flowing_water: bool,
     pub flowing_ripple_scale: f32,
+    /// A small splash where the skater or the board drops into shallow water (fountains, channels), as a share of
+    /// the deep-water plume; 0 = none. Retail shows none in shallow water (doc 09), so Better Water only (user
+    /// 2026-10-19: "the fountain splash should only haopen in better water mode").
+    pub shallow_splash: f32,
 }
 
 impl WaterLook {
@@ -63,6 +67,7 @@ impl WaterLook {
         seamless_clock: true,
         flowing_water: false,
         flowing_ripple_scale: 1.,
+        shallow_splash: 0.,
     };
 
     fn apply(&mut self, patch: &WaterLookPatch) {
@@ -77,6 +82,7 @@ impl WaterLook {
         if let Some(v) = patch.seamless_clock { self.seamless_clock = v; }
         if let Some(v) = patch.flowing_water { self.flowing_water = v; }
         if let Some(v) = patch.flowing_ripple_scale { self.flowing_ripple_scale = v; }
+        if let Some(v) = patch.shallow_splash { self.shallow_splash = v; }
     }
 
     /// `FrameState.water_tint.w`: the flowing water's ripple scale, 0 = the look stays off flowing water.
@@ -105,6 +111,7 @@ impl Default for WaterLook {
             seamless_clock: true,
             flowing_water: true,
             flowing_ripple_scale: 2.,
+            shallow_splash: 0.5,
         }
     }
 }

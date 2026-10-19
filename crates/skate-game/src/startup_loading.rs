@@ -25,11 +25,13 @@ pub(crate) struct StartupLoading {
     holds: Vec<(String, String)>,
     started: Instant,
     done: bool,
+    /// Frames the splash stays up after the game's window was shown (see `hold_time`).
+    splash_frames: u8,
 }
 
 impl StartupLoading {
     pub(crate) fn new() -> Self {
-        Self { holds: Vec::new(), started: Instant::now(), done: false }
+        Self { holds: Vec::new(), started: Instant::now(), done: false, splash_frames: 0 }
     }
 
     /// Whether the hold `id` is still taken (tests, and holds that wait for another, `world_sources`).
@@ -95,6 +97,12 @@ fn hold_time(
     mut window: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     if loading.done {
+        if loading.splash_frames > 0 {
+            loading.splash_frames -= 1;
+            if loading.splash_frames == 0 {
+                crate::splash::close();
+            }
+        }
         return;
     }
     // Never keep the window hidden for good: a hold that hangs gives way after a while (the work goes on behind).
@@ -112,7 +120,9 @@ fn hold_time(
         w.visible = true;
         w.focused = true;
     }
-    crate::splash::close();
+    // The splash goes a few frames later, once the window is up and focused: closing it first left the foreground
+    // to whatever window was behind it, and Windows then refused the game's focus request.
+    loading.splash_frames = 3;
     if !menu.is_some_and(|m| m.open || m.fe_suspended) {
         time.unpause();
     }

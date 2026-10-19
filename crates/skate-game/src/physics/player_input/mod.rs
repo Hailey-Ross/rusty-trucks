@@ -44,6 +44,12 @@ pub(crate) struct PlayerInputRuntime {
     pub grind_observation: Option<super::grind::ManagerObservation>,
 }
 impl PlayerInputRuntime {
+    /// A pooled NPC body becoming a new NPC: retail builds a new PhysicalPlayer for every new actor
+    /// (`82590DC0` -> `82DB18A0`), so its processed-input cache starts empty (b295). The same actor keeps it
+    /// across a respawn or its next line, so this is for the pool only.
+    pub(crate) fn reset_external_physics_cache(&mut self) {
+        self.player.external_physics_cache_1008 = initial::external_physics_cache();
+    }
     pub fn pending_teleport(&self) -> Option<AnimationPartTransform> {
         self.pending_teleport
     }
