@@ -1998,7 +1998,12 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   stable ped proxy id (`ped_body::proxy_id`); the ped's authority applies the reaction.
 - **Verification:** tests `the_walker_passes_a_ped_part_but_not_a_mod_solid`,
   `an_observed_ped_part_reports_its_velocity_after_the_solve`; skate-mods 106, skate-game 803 pass. Not play-tested.
-- **Open:** our parts have no rotational inertia (`part_proxy` inverse inertia 0), so retail's |w| > 3.0 knock-down
-  never fires; whether our skeleton's pose error stays under the on-foot 0.3 m bail limit while passing a ped (retail
+- **Part inertia (b275):** each part now turns in the solve with retail's capsule inertia (`ped_body::inverse_inertia`:
+  `sub_82AE7770` / `sub_82AE7228`, R = max(r, 0.05 h), along the axis 0.4 R^2, across (1.6 R^3 + 0.75 h R^2 + 4 h^2 R
+  + h^3) / (4 R + 3 h), times the mass; inverse torso 0.520984 / 6.25, forearms 2.037273 / 19.53125, matching the
+  PEDPART trace [code + trace]), computed from the part's shape so a mod's part keeps a matching inertia. The hit
+  carries the part's (|v|, |w|) after the solve into `skater_reaction`'s 3.0 / 3.0 gate; the log adds `part_spin`.
+  Test `the_parts_turn_with_retails_capsule_inertia`; skate-game 804 pass.
+- **Open:** whether our skeleton's pose error stays under the on-foot 0.3 m bail limit while passing a ped (retail
   never bailed on foot in the sessions); the ped dodge before contact (b273 / b274: retail's SkaterAvoidance
   closest-approach test, not ported yet).
