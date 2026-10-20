@@ -590,13 +590,15 @@ impl PedAnimPlayer {
             }
             Locomotion::Reaction => {
                 // [data] `WillExpire InTime=0.01` ends a clip step; the ground cycle runs until the
-                // AI's `Recover` (the set's ground time); then back to locomotion (idle).
+                // AI's `Recover` (the set's ground time); then back to locomotion (idle). The ground
+                // time counts from the reaction's Begin, not from the cycle (b372: `sub_8269DA00` starts
+                // it with the fall, `sub_8269E058` posts Recover at expiry), so the get-up comes at the
+                // later of the fall's end and `ground_seconds` after the hit.
                 let next = match self.reaction.as_mut() {
-                    Some(r) if r.steps[r.index].cycle => {
+                    Some(r) => {
                         r.ground_left -= dt;
-                        r.ground_left <= 0.0
+                        if r.steps[r.index].cycle { r.ground_left <= 0.0 } else { remaining <= 0.01 }
                     }
-                    Some(_) => remaining <= 0.01,
                     None => true,
                 };
                 if next {
