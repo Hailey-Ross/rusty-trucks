@@ -422,6 +422,82 @@ fn a_knock_down_falls_lies_for_the_ground_time_gets_up_and_walks_on() {
     assert_eq!(p.reaction_anim(), None);
 }
 
+/// Retail's knock-down Colliding state machine (b372): a contact while down re-arms the ground timer at its expiry
+/// (the get-up comes one ground time later); a contact while getting up re-hits from the posture the get-up clip has
+/// reached; more than `block_after` expiries block contacts.
+#[test]
+fn a_knocked_down_ped_stays_down_when_hit_again_and_is_rehit_while_getting_up() {
+    use super::anim::KnockdownContact;
+    use super::skater_contact::{reaction_steps, Posture, ReactionDirection, ReactionKind};
+    let (_, mut set, mut clips) = fixture();
+    let r = |c: &str| vec![RemapClip { clip: c.into(), windows: vec![] }];
+    for (name, frames, looping) in [("FALL", 31, false), ("GROUND", 21, true), ("GETUP", 121, false), ("CROUCH", 31, false)] {
+        clips.insert(name.into(), clip(name, frames, 0.0, 0.0, looping, 0.0, vec![]));
+    }
+    set.entries.insert("WipeoutBackFall".into(), r("FALL"));
+    set.entries.insert("WipeoutBackGroundCyc".into(), r("GROUND"));
+    set.entries.insert("WipeoutBackGetUp".into(), r("GETUP"));
+    set.entries.insert("WipeoutBackCrouch".into(), r("CROUCH"));
+    set.entries.insert("WipeoutLeftCrouch".into(), r("CROUCH"));
+    let dt = 1.0 / 60.0;
+    let knock = |p: &mut PedAnimPlayer| {
+        assert!(p.react(&set, reaction_steps(ReactionKind::Knockdown, ReactionDirection::FromFront), 1.5));
+        p.begin_knockdown(ReactionDirection::FromFront);
+    };
+    let run_until = |p: &mut PedAnimPlayer, clip: &str, limit: usize| -> usize {
+        (0..limit).find(|_| {
+            p.intent = Intent::Walk;
+            p.step(dt, &set, &clips);
+            p.current_clip() == clip
+        }).unwrap_or(limit)
+    };
+
+    // Posture choice (`sub_8269E460`) by the stored direction's intervals.
+    let rules = set.collision;
+    assert_eq!(rules.posture(1.9, ReactionDirection::FromFront), Posture::LyingDown);
+    assert_eq!(rules.posture(2.5, ReactionDirection::FromFront), Posture::Crouched);
+    assert_eq!(rules.posture(3.3, ReactionDirection::FromBack), Posture::Standing);
+    assert_eq!(rules.posture(1.7, ReactionDirection::FromLeft), Posture::Crouched);
+
+    // A contact while down waits for the expiry and re-arms the timer: the get-up comes 3.0 s after the hit.
+    let mut p = PedAnimPlayer::new(&set, 3).unwrap();
+    knock(&mut p);
+    let before = run_until(&mut p, "GROUND", 600);
+    assert_eq!(p.knockdown_contact(&set, ReactionDirection::FromBack), KnockdownContact::Pending);
+    let getup = before + 1 + run_until(&mut p, "GETUP", 600);
+    assert!((179..=181).contains(&getup), "get-up {getup} ticks after the hit");
+
+    // A contact while getting up re-hits: early in the get-up lying down (fall restarted, stored direction), later
+    // crouched (the crouch clip, the new direction).
+    let mut p = PedAnimPlayer::new(&set, 3).unwrap();
+    knock(&mut p);
+    run_until(&mut p, "GETUP", 600);
+    assert_eq!(p.knockdown_contact(&set, ReactionDirection::FromBack), KnockdownContact::ReHit(Posture::LyingDown, ReactionDirection::FromFront));
+    assert_eq!(p.current_clip(), "FALL");
+    assert!((p.current_time() - rules.ground_restart[0]).abs() < 1e-4, "fall restarted at {}", p.current_time());
+    run_until(&mut p, "GETUP", 600);
+    for _ in 0..(2.2 / dt) as usize {
+        p.step(dt, &set, &clips);
+    }
+    assert_eq!(p.knockdown_contact(&set, ReactionDirection::FromLeft), KnockdownContact::ReHit(Posture::Crouched, ReactionDirection::FromLeft));
+    assert_eq!(p.reaction_anim(), Some("WipeoutLeftCrouch"));
+
+    // Contacts at every expiry keep the ped down until more than `block_after` expiries, then are dropped.
+    let mut p = PedAnimPlayer::new(&set, 3).unwrap();
+    knock(&mut p);
+    let mut results = Vec::new();
+    for _ in 0..(12.0 / dt) as usize {
+        if p.knocked_down() && p.reaction_anim() != Some("WipeoutBackGetUp") {
+            let r = p.knockdown_contact(&set, ReactionDirection::FromFront);
+            if results.last() != Some(&r) {
+                results.push(r);
+            }
+        }
+        p.step(dt, &set, &clips);
+    }
+    assert_eq!(results, vec![KnockdownContact::Pending, KnockdownContact::Ignored], "blocked after {} expiries", rules.block_after);
+}
+
 /// The sit plugin state (`motiongraph_sit.xml` via `plugin_motion`): Stand2Sit, then SitIdleCyc held for as long as the
 /// packet stays on its first stage, then (released on StandUp) Sit2Stand and back to locomotion.
 #[test]

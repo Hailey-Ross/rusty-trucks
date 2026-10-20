@@ -223,6 +223,10 @@ pub(crate) struct PedNavSettings {
 /// The ped ground probe's retry reach after a miss (`82EA5F48`: 4.0 at `0x82257308`) [code, b107].
 pub(crate) const GROUND_RETRY_FACTOR: f32 = 4.0;
 
+/// The ped ground probe's length L (`82EA5F48`: the probe settings' +16), 1.6 m on every ped call in the recomp
+/// [trace, 2026-10-19, b359 section 9].
+pub(crate) const GROUND_PROBE_LENGTH: f32 = 1.6;
+
 /// Dynamic objects as ped navigation obstacles (fix 11): props and mod bodies by stable id.
 #[derive(Resource, Default, Clone, Debug, PartialEq)]
 pub(crate) struct PedObstacles(pub NavObstacles);
@@ -645,6 +649,16 @@ pub(crate) fn ground(physics: Option<&crate::physics::GamePhysics>, at: Vec3, up
     }
 }
 
+/// The first hit of a line from `at` straight up to `up` above it (a ceiling), `None` when nothing is hit.
+pub(crate) fn ceiling(physics: Option<&crate::physics::GamePhysics>, at: Vec3, up: f32) -> Option<f32> {
+    use skate_core::math::Vector3;
+    let p = physics?;
+    match p.world().query_thin_line(Vector3::new(at.x, at.y, at.z), Vector3::new(at.x, at.y + up, at.z)) {
+        Ok(Some(hit)) => Some(hit.geometry.position.y),
+        _ => None,
+    }
+}
+
 /// Fixed tick: keep the loaded data current, then load the map's ped data unless the loading screen already did.
 pub(super) fn load_ped_data(
     config: Option<Res<crate::config::Config>>,
@@ -1052,6 +1066,9 @@ pub(crate) fn advance_peds(
             if let Some(r) = body.reaction_due.take() {
                 let steps = skate_core::living_world::peds::skater_contact::reaction_steps(r.kind, r.direction);
                 if body.player.react(set, steps, set.collision.ground_seconds) {
+                    if r.kind == skate_core::living_world::peds::skater_contact::ReactionKind::Knockdown {
+                        body.player.begin_knockdown(r.direction);
+                    }
                     info!("PED_SKATER_CONTACT_DEFERRED ped=#{} by={:?} kind={} direction={} closing={:.2} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, r.toucher, r.kind.name(), r.direction.name(), r.closing, body.position.x, body.position.y, body.position.z);
                     events.write(PedEvent::DeferredHit { id: ped.id, kind: r.kind, direction: r.direction, closing: r.closing, toucher: r.toucher });
                 }
@@ -1061,7 +1078,10 @@ pub(crate) fn advance_peds(
             // using a prop (its plugin clip plays as a reaction) can be knocked over.
             let clip_reaction = body.taunt == TauntClip::Playing || body.plugin_motion.state == TauntClip::Playing;
             let in_collision = mind.is_some_and(|m| m.brain.colliding) || (body.player.state == Locomotion::Reaction && !clip_reaction);
-            if !in_collision {
+            // A knocked-down ped still takes contacts (retail drops them only during a stumble, `sub_8269DEE0` state 0, or
+            // once blocked): they re-arm its ground timer or re-hit it while it gets up (b372).
+            let knocked_down = body.player.knocked_down();
+            if !in_collision || knocked_down {
                 let radius = data.nav.as_deref().map_or(super::vehicle_contacts::FALLBACK_PED_RADIUS, |m| m.agent[1]);
                 // Contacts from the entity the ped ignores (`ped+5680`, its takedown target) are dropped (`sub_82E38400`).
                 let ignored = mind.and_then(|m| m.brain.ignore_collisions_with);
@@ -1124,7 +1144,22 @@ pub(crate) fn advance_peds(
                 let attempting = mind.is_some_and(|m| m.brain.takedown_active);
                 let attacking = |toucher: u64| attempting && mind.is_some_and(|m| m.brain.takedown_target == Some(toucher));
                 let contact = skater.or_else(touched).filter(|(_, t)| !attacking(*t));
-                if let Some(((kind, direction, closing), toucher)) = contact.filter(|_| attempting) {
+                if knocked_down {
+                    if let Some(((kind, direction, closing), toucher)) = contact {
+                        use skate_core::living_world::peds::anim::KnockdownContact;
+                        let result = body.player.knockdown_contact(set, direction);
+                        if result != KnockdownContact::Ignored {
+                            let what = match result {
+                                KnockdownContact::ReHit(posture, dir) => format!("rehit posture={} direction={}", posture.name(), dir.name()),
+                                _ => "pending".to_string(),
+                            };
+                            info!("PED_COLLIDING ped=#{} by={toucher} {what} kind={} closing={closing:.2} tick={tick}", ped.id.serial, kind.name());
+                            if matches!(result, KnockdownContact::ReHit(..)) {
+                                events.write(PedEvent::Hit { id: ped.id, kind, direction, closing, toucher });
+                            }
+                        }
+                    }
+                } else if let Some(((kind, direction, closing), toucher)) = contact.filter(|_| attempting) {
                     // Stored, not played (the attempt states have no Colliding transition); the latest contact wins.
                     if mind.is_some_and(|m| m.brain.pending_reaction.is_none()) {
                         info!("PED_SKATER_CONTACT_STORED ped=#{} by={toucher} kind={} direction={} closing={closing:.2} tick={tick}", ped.id.serial, kind.name(), direction.name());
@@ -1149,6 +1184,9 @@ pub(crate) fn advance_peds(
                         body.player.react(set, steps, set.collision.ground_seconds)
                     };
                     if started {
+                        if kind == skate_core::living_world::peds::skater_contact::ReactionKind::Knockdown {
+                            body.player.begin_knockdown(direction);
+                        }
                         info!("PED_SKATER_CONTACT ped=#{} by={toucher} kind={} direction={} closing={closing:.2} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, kind.name(), direction.name(), body.position.x, body.position.y, body.position.z);
                         events.write(PedEvent::Hit { id: ped.id, kind, direction, closing, toucher });
                     }
@@ -1368,22 +1406,24 @@ pub(crate) fn advance_peds(
             }
         }
         // The render ground: a line query round the navmesh height. It never feeds back into the
-        // navigation position (fix 17). Upward it only searches the NavPower step height (agent
-        // block [2], 0.2 m [data]): NavPower keeps its polygons within one step of the walkable
-        // floor, and a window of one agent height (1.6 m) took the first hit from the top, so an
-        // awning, ledge, sign or invisible collision overhead drew the ped floating on it
-        // (2026-10-06 session, peds in the air all over DownTown). Downward one agent height.
-        // Not retail yet: retail's own ped render placement is not decoded.
+        // navigation position (fix 17). Until 2026-10-19 the upward reach was the NavPower step
+        // height (0.2 m) after peds were drawn on awnings in the 2026-10-06 session; retail's probe
+        // reaches 1.6 m both ways, and b358 found no overhead hit within 1.6 m on any map. Retail's
+        // own ped render placement (who writes the ped matrix y, `82E221B0`) is not decoded (b360).
         let mut shown = body.position;
-        let (up, down) = data.nav.as_deref().map_or((3.0, 3.0), |m| (m.agent[2].max(0.05), m.agent[3].max(0.5)));
-        // Retail's NavPower mover probe (`82EA5F48`, debug bool `probe_for_ground` on by default) casts again with
-        // 4x the reach after a miss (`0x82257308` 4.0) [code, b107]: a coarse navmesh triangle can sit 1.7 m above the
-        // pavement (DownTown poly 7376). The retry widens both ends, as retail's does (b351: the cast runs from
-        // point + axis * L to point - axis * L): a coarse triangle can also sit under the floor (University terrace,
-        // x 12..14, z -127..-220: up to 0.5 m), where the one-step upward reach starts below the surface.
-        if let Some(y) = ground(physics.as_deref(), body.position, up, down)
-            .or_else(|| ground(physics.as_deref(), body.position, up * GROUND_RETRY_FACTOR, down * GROUND_RETRY_FACTOR))
-        {
+        // Retail's NavPower mover probe (`82EA5F48`) [code, b359]: cast 1 from point + L to point - L, with L the probe
+        // settings' length, 1.6 m on every ped call measured in the recomp [trace, 2026-10-19]; after a miss
+        // (`0x82257308` 4.0) cast 2 runs UP from the point to point + 4L and its end (a ceiling, if hit) is the top of
+        // cast 3, which runs down to point - 4L. Coarse navmesh triangles sit up to 1.7 m above the pavement
+        // (DownTown poly 7376) and up to 4.3 m under the road (b358); retail's peds always stand on the floor (user
+        // 2026-10-19: "Peds dont ... sink into the ground.. ever"). b358: an upward reach of 1.6 m takes no overhead
+        // geometry on any map.
+        let reach = GROUND_PROBE_LENGTH;
+        if let Some(y) = ground(physics.as_deref(), body.position, reach, reach).or_else(|| {
+            let wide = reach * GROUND_RETRY_FACTOR;
+            let top = ceiling(physics.as_deref(), body.position, wide).map_or(wide, |c| (c - body.position.y - 0.01).max(0.0));
+            ground(physics.as_deref(), body.position, top, wide)
+        }) {
             shown.y = y;
         }
         transform.translation = shown;
