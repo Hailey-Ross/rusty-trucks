@@ -114,9 +114,24 @@ function Build-Launcher {
     }
 }
 
+# A copy folder without its worktree (`worktree remove` leaves the untracked `assets` junction behind, laptop
+# 2026-10-20): unlink junctions only (rmdir on a link never touches the game files it points to), then the empty
+# folder. Anything else in it stops here, so nothing real is deleted.
+function Clear-Leftover {
+    if (-not (Test-Path $wt) -or (Test-Path (Join-Path $wt '.git'))) { return }
+    foreach ($link in @(Get-ChildItem -LiteralPath $wt -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })) {
+        & cmd.exe /c rmdir "$($link.FullName)" | Out-Null
+    }
+    if (@(Get-ChildItem -LiteralPath $wt -Force).Count -gt 0) {
+        throw "$wt holds files but no worktree: move them away, then run this again."
+    }
+    Remove-Item -LiteralPath $wt -Force
+}
+
 if ($Remove) {
     if (Restore-Tools) { Build-Launcher }
     if (Test-Path (Join-Path $wt '.git')) { Git $Root worktree remove --force $wt | Out-Null }
+    Clear-Leftover
     Save-Versions (@(Load-Versions) | Where-Object { $_.id -ne $id })
     Write-Host 'Removed the hails-local copy and its launcher version.'
     return
@@ -149,6 +164,7 @@ if (-not $known) { Git $Root fetch -q https://github.com/Hailey-Ross/rusty-truck
 # A launcher-only copy, never worked in: back to the base each time (the last patch's changes and new files go), then
 # the new patch, staged, so the launcher's working-tree build sees new files too.
 if (-not (Test-Path (Join-Path $wt '.git'))) {
+    Clear-Leftover
     New-Item -ItemType Directory -Force (Split-Path $wt) | Out-Null
     Git $Root worktree add -q --detach $wt $info.base | Out-Null
 } else {
