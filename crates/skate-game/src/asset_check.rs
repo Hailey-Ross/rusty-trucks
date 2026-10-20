@@ -112,6 +112,9 @@ fn hud_features(assets: &Path) -> Vec<Finding> {
     if hud.join("trickdisplay.json").is_file() && !assets.join("private/hud/chase-arrows/chase_arrows.json").is_file() {
         out.push(finding("hud", "ped chase alert textures missing"));
     }
+    if hud.join("trickdisplay.json").is_file() && !assets.join("private/hud/replay-shake/replay_shake.json").is_file() {
+        out.push(finding("hud", "replay shake clips missing"));
+    }
     out
 }
 
@@ -134,6 +137,7 @@ pub(crate) fn feature_name(f: &Finding) -> String {
     match f.reason.as_str() {
         "central message HUD missing" => "chase messages (ZAP!, BAM!)".into(),
         "ped chase alert textures missing" => "ped chase alerts".into(),
+        "replay shake clips missing" => "replay camera shake".into(),
         r if r.starts_with("hand prop") => "ped hand props".into(),
         r if r.starts_with("menu") => "menus".into(),
         _ => format!("{} files", f.group),
@@ -361,17 +365,19 @@ mod tests {
         std::fs::create_dir_all(&runtime).unwrap();
         std::fs::write(runtime.join("trickdisplay.json"), "{}").unwrap();
         let found = quick_check(&dir);
-        let text = splash_warning(&found).expect("two features off");
-        assert!(text.contains("chase messages (ZAP!, BAM!)") && text.contains("ped chase alerts"), "{text}");
+        let text = splash_warning(&found).expect("three features off");
+        assert!(text.contains("chase messages (ZAP!, BAM!)") && text.contains("ped chase alerts") && text.contains("replay camera shake"), "{text}");
         assert!(text.contains("Refresh Game Files") && text.ends_with("turns them on."), "{text}");
         let names: Vec<String> = found.iter().map(feature_name).collect();
         let boxed = warning_box_text(&names).unwrap();
         assert!(boxed.starts_with("GAME FILES NEED A REFRESH
-") && boxed.contains("Off until then: chase messages (ZAP!, BAM!), ped chase alerts"), "{boxed}");
+") && boxed.contains("Off until then: chase messages (ZAP!, BAM!), ped chase alerts, replay camera shake"), "{boxed}");
         assert_eq!(warning_box_text(&[]), None);
         std::fs::write(runtime.join("hudcentral.json"), "{}").unwrap();
         std::fs::create_dir_all(dir.join("private/hud/chase-arrows")).unwrap();
         std::fs::write(dir.join("private/hud/chase-arrows/chase_arrows.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.join("private/hud/replay-shake")).unwrap();
+        std::fs::write(dir.join("private/hud/replay-shake/replay_shake.json"), "{}").unwrap();
         assert_eq!(splash_warning(&quick_check(&dir)), None, "current files: no warning");
         std::fs::remove_dir_all(&dir).unwrap();
     }

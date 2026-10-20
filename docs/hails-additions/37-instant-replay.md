@@ -287,3 +287,113 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   transport row, Instant replay bar, Estimated Video Length, A / X / B / Start prompts, Hide).
 - Next: Start = help (FE 13 ReplayHelp), L3 hide / show, the prompts' actions (A edit timeline = the editor, X photo,
   B Finished popup with a "Save to PC" row), the `{0:time}` format, the L3 icon missing next to Hide.
+
+## Retail instant replay screen, step 2: help (Start) and hide / show (L3) (2026-10-20)
+- The replay movie's own SetState (read from its actions with `.claude/skills/retail-menus/tools/apt_dump.py`)
+  names its states [data]: 999 kMovePlayHead, 1000 / 1001 kMoveStartMarker / kMoveEndMarker, 1002 / 1003
+  kShowEditor / kHideEditor (the whole panel; the movie then shows its "Show" prompt), 18 / 19
+  kStartPlaybackReplay / kStopPlaybackReplay, 20 kOnlineInstantReplayMode, 21 / 22 kShowToggle / kHideToggle (only
+  the Hide / Show prompt, `ForceShowHideToggle`). Step 1 had 1002 / 1003 the wrong way round.
+- L3 (H on the keyboard) hides / shows the panel: kHideEditor / kShowEditor on the edge. With our free camera on, L3
+  stays its speed modifier. The Bevy fallback panel hides too.
+- Start opens the help (FE 13, template ReplayHelp, `replay2/replay_help`, exported since menu set 11): it asks
+  `FEReplayMenu.GetHelpMode` (its kInstantReplayMode = 0, two pages) and turns the page on SetState(0)
+  (`NextHelpPage`); A turns the page, B or Start closes it, nothing else reaches the replay meanwhile. Only with the
+  retail screen.
+- Verified: stage tests `retail_replay_editor_opens`, `retail_replay_help_opens` (GetHelpMode answered, page turn
+  leaves nothing unanswered), host test (L3 states), a verify screenshot of "Help - Instant Replay" over the replay
+  (`SKATE_VERIFY_REPLAY_HELP=1`). Not play-tested yet.
+
+## Retail instant replay screen, step 3: Take Photo (X) (2026-10-20)
+- Retail X (`826147C8`, b386): stops playback, asks with a confirm popup (callback `82614940`) and saves the photo.
+  Ours: the same with retail's strings (Take Photo / "Save Photo?" No / Yes, then "Your photograph has been saved
+  successfully." OK; NOT RETAIL YET: the popup title / options are ours). The photo is the world image the game renders
+  into (`graphics_menu::SceneTarget`, captured with `Screenshot::image`), so it holds no UI; saved as a PNG to
+  `Pictures\Skate 3 Rust` (`SKATE_PHOTO_DIR` overrides; retail saves to My Media). P on the keyboard. Log
+  `REPLAY_PHOTO saving <path> at <cursor>`.
+- B stays retail: without sign-in / storage retail's Finished shows the quit warning (b387), which is ours; the
+  Finished menu with our "Save to PC" row comes with the video export.
+- Verified: `retail_screen_keys_help_panel_and_photo` (L3, Start / A / B help, X photo flow), a verify run with
+  `SKATE_VERIFY_REPLAY_PHOTO=1` wrote a 1280 x 800 PNG of the world without UI. Not play-tested yet.
+
+## Retail instant replay screen, step 4: prompt icons and the length text (2026-10-20)
+- The screen's prompts ask for HUD-style button names (`L3_Click_hud` for Hide, `EnableShowHide`; the transport row
+  likewise); `prompt_glyphs::resolve` now reads `<name>_hud` as `<name>`, so Hide shows its L3 glyph and the transport
+  buttons their RB / LT / RT / D-pad glyphs (all were blank). Test `every_retail_button_has_an_equivalent_on_every_family`.
+- Length text (research b397, `.local/research/b397-language-time-format.md`; main checked `ID_COMMON_METRIC_TIME` =
+  "s" and `sub_824FE900` in the recomp): retail's `{0:time}` (handler 824FE900) is the number grouped by 3
+  (`8290E370`) + " " + `ID_COMMON_METRIC_TIME`, not a clock: "Estimated Video Length: 42 s". NOT RETAIL YET: the
+  default decimals (0 assumed). The general `{0:time}` / distance / speed types in `fe_language.rs` are a follow-up.
+
+## M2 step 3: the editor timeline and the Pro Edit Menu on the retail screen (2026-10-20)
+- A (panel shown, retail screen, at least 150 timeline frames) leaves the instant replay for the editor's timeline
+  (`82613988`: mode 6, SetState 21, 9; b386). `replay/editor.rs` puts skate-core's model on the recording: one clip
+  over it in 30 fps timeline frames, the session's mode, and the effects row.
+- Timeline (mode 6): RB plays the clip from the cursor at its speed lane and stops at the out point (from the in
+  point when at the end); LB held (mode 2, SetState 1005 / 21) trims: left stick x the in point, right stick x the out
+  point, at retail's rate (0.005 of the timeline per 30 Hz console frame at full stick, b387), the playhead on the head
+  that moved (the movie draws the heads at the playhead, b398); D-pad Down / Up released drop / remove a marker at the
+  cursor; D-pad Left / Right released skip to the previous / next marker, else the in / out point (the screen's
+  "Skip to previous / next marker"); B Finished, X photo, Start help (help mode 1), L3 hide. Keyboard: Space, L,
+  M / N, comma / period, Enter.
+- A opens the Pro Edit Menu (mode 0xB, SetState 22, 4): 9 rows (b398, item table `8302CCE0`): 0..6 cameras (A selects;
+  NOT PORTED YET, Left / Right do nothing there), 7 speed (10..100 % step 10, `8250ADF8`), 8 shake (0..3 wrapping,
+  `8250AB28`); Up / Down move the row (SetState 5), Left / Right change the value at the cursor (SetState 6), B back
+  to the timeline (SetState 21, 9). It opens on the game camera row (2), the only camera our keys have.
+- Natives (b398, AS integers): GetEditIndex, GetSimpleSpeedSetting, GetShakeCamType, GetCurrentCameraEditIndex (2),
+  GetStartHeadPosition / GetEndHeadPosition (30 fps frames); GetCameraZoomString empty (NOT RETAIL YET).
+- Verified: editor test `opens_over_the_recording_trims_marks_and_slows`, host test (mode states), verify screenshots
+  of "Edit timeline" (marker and in / out point prompts, "Estimated Video Length: 10 s") and the Pro Edit Menu
+  (`SKATE_VERIFY_REPLAY_AT=12 SKATE_VERIFY_REPLAY_EDITOR=timeline|effects`). Not play-tested yet.
+- Open: the camera keys (follow / tripod / free and the advanced ones, b376), shake applied to the camera, the look
+  lanes into the grade (M3), the markers drawn on the timeline (retail draws them from C++, the drawer not found yet,
+  b398), the Finished menu with "Save to PC" (M4).
+
+## M2 step 4: camera shake from retail's recorded clips (2026-10-20)
+- Retail [code, b376 / b399 / b400]: the Shake row's levels play short recorded handheld-camera clips from
+  `data/scene/ICELite.bin` (in `scene.big`; 14 ICELite sub-entries, index 0 empty), 30 keys per second, six channels
+  (SHAKE_QUAT_X/Y/Z, SHAKE_POS_X/Y/Z, 16-bit, -1..1). Low = clip 3 ("Jog") at 0.35, Medium = clip 3 at 1.0, High =
+  clip 4 ("RunFast") at 1.0 (amplitude = frequency). The evaluator `82C8AF50` builds a rotation (key i to i + 1,
+  per-component lerp, `w = sqrt(1 - |xyz|)`) and a translation (key i only) and multiplies them into the camera
+  matrix.
+- Setup: `tools/prepare_replay_shake.py` (in the hud stage, `prepare_runtime_huds.py`) writes
+  `private/hud/replay-shake/replay_shake.json`; the asset check offers "replay camera shake" until a refresh adds it.
+- Engine: `skate_core::replay_edit::shake` (clips, levels as data, `sample`), `Replay::shake` (the shake lane at the
+  cursor, timed from the in point), applied in `camera.rs` (camera space). NOT RETAIL YET: retail's gain is
+  `2 x amp x sin(R)` with R a global angle whose writer is not found; ours holds `2 sin(R)` at 1, and normalises the
+  quaternion.
+- Verified: `off_and_empty_clips_do_nothing_and_keys_step_at_the_clip_rate`, the asset check test, the exporter on the
+  owned disc (13 of 14 clips with keys; Jog 119, RunFast 110), the game logs `REPLAY_SHAKE 13 clips`. Not play-tested.
+
+## M2 step 5: the basic cameras (Follow, Tripod, Game, Free) (2026-10-20)
+- Retail [code, b401 / b402]: A on a camera row of the Pro Edit Menu opens the camera's key edit mode: Follow
+  `82614658` (mode 7, movie state 1), Tripod `82614A18` (8, state 2), Game `82614B70` (9, kDefaultCameraMode 10), Free
+  `82614C78` (10, state 7); A commits (21, 9). Follow: eye and look in the skater object's frame (space 0); Tripod: a
+  world eye looking at the skater; Free: all world; Game: the recorded camera, lens only. Per console frame (no dt):
+  orbit 2.5 degrees per stick unit capped at 3, pitch +-85, distance 0.2 m cap within 0.5..1000 m, look height 0.01 m
+  within +-1 m; Free turn cap 1.6 degrees, move 0.2 m; lens 0.5 mm within the editor's 24..75 mm (default 24).
+- Ours: `replay/camera_key.rs` (CameraKey, CameraRules as data, `key_from_view`, `edit`, `pose`, `lens_fov`), one key
+  per clip in `replay/editor.rs`, the edit modes in `replay.rs` `editor_controls`, the pose and lens applied in
+  `camera.rs` (before the shake), `GetCurrentCameraEditIndex` from the clip's camera, the edit states posted by the
+  host. Rates are normalised to 30 Hz so any fps gives the same motion.
+- NOT RETAIL YET: one key per clip (retail keys live on the ICELITE camera channel; whether a basic camera holds one pose
+  is open), the skater root for retail's objects 2 / 4, the pad mapping (left stick turns, right stick distance /
+  move, D-pad up / down height, left / right lens; retail's axis table unread), the lens to FOV (24 mm high gate), and
+  the curves between keys (not needed with one key). The advanced cameras (rows 4..6) are not ported.
+- Verified: `follow_orbits_in_the_skater_frame_with_retail_caps` (orbit pose, 90 degrees in one second at full stick,
+  pitch and lens clamps), full bin 850 passed. No screenshot (the user is gaming: no windows). Not play-tested.
+
+## M2 step 6: the timeline strip (markers on the timeline) (2026-10-20)
+- Retail [code, b403]: the movie's mCustomRender clip has `_type` "CustomTimeline"; the APT custom render dispatcher
+  `825D4828` calls `82509B80`, which draws in the clip's space (x = normalised time x 817) every frame: `82508E08` one
+  untextured band per camera segment from y 3 to the clip height, coloured by the camera type (normal / selected,
+  alpha 0.65 / 0.85; selected = no key under the playhead, not instant mode), and `82509298` one 13 x 51 quad per key
+  after the first with `key_default` / `key_glow` (under the playhead within 0.00889) or `marker_default` /
+  `marker_glow` (hard markers); in the camera edit modes the key under the playhead is not drawn.
+- Ours: `apt_scene.rs` emits a `REPLAY_TIMELINE` placeholder with the clip transform; `retail_menu_stage.rs`
+  `timeline_draws` expands it from the replay feed (one band for the clip's camera, the markers as keys) with
+  `TimelineLook` (retail's colours, sizes, snap; data). The textures are retail's, already in the menu set.
+- NOT RETAIL YET: the band bottom (clip height 30 assumed), our markers live on the speed lane (retail's keys are camera
+  channel keys carrying the values), no hard markers (Advanced cameras), one segment per clip.
+- Verified: `timeline_draws_the_camera_band_and_the_keys`, full bin 850 before the test was added. No screenshot (the
+  user is gaming). Not play-tested.

@@ -16,6 +16,7 @@ struct Verification {
     elapsed: f32,
     requested: bool,
     captured: bool,
+    photo: bool,
 }
 
 pub(crate) struct VerificationPlugin;
@@ -44,9 +45,32 @@ fn verify(
     };
     state.elapsed += time.delta_secs();
     // Opt-in visual smoke check of the replay HUD and presentation endpoints.
-    if animation.ready && state.elapsed > 2.0 && !replay.active
+    let replay_at = std::env::var("SKATE_VERIFY_REPLAY_AT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(2.0);
+    if animation.ready && state.elapsed > replay_at && !replay.active
         && std::env::var("SKATE_VERIFY_REPLAY").as_deref() == Ok("1") {
         replay.enter();
+    }
+    // SKATE_VERIFY_REPLAY_EDITOR=timeline / effects: the editor (A, then A again for the effects menu), a second after
+    // the replay opened (needs SKATE_VERIFY_REPLAY_AT past 5 s of recording).
+    if let Ok(mode) = std::env::var("SKATE_VERIFY_REPLAY_EDITOR") {
+        if replay.active && replay.editor.is_none() && state.elapsed > replay_at + 1.0 {
+            let (start, end) = replay.bounds();
+            replay.editor = crate::replay::editor::Editor::open(start, end, Default::default());
+        }
+        // The effects menu half a second later, from the timeline (as A does).
+        if let Some(e) = replay.editor.as_mut().filter(|e| mode == "effects" && e.mode() == 6 && state.elapsed > replay_at + 1.5) {
+            e.session.mode = skate_core::replay_edit::session::EditorMode::Effects;
+            e.row = crate::replay::editor::GAME_CAMERA_ROW;
+        }
+    }
+    // SKATE_VERIFY_REPLAY_PHOTO=1: take a replay photo (as Yes on Take Photo) two seconds in.
+    if replay.active && state.elapsed > 4.0 && !state.photo && std::env::var("SKATE_VERIFY_REPLAY_PHOTO").as_deref() == Ok("1") {
+        state.photo = true;
+        replay.photo = crate::replay::Photo::Capture;
+    }
+    // SKATE_VERIFY_REPLAY_HELP=1: the replay's help screen too (Start), a second after the replay opened.
+    if replay.active && state.elapsed > 3.0 && !replay.help_open && std::env::var("SKATE_VERIFY_REPLAY_HELP").as_deref() == Ok("1") {
+        replay.help_open = true;
     }
     // SKATE_VERIFY_AT: capture time in seconds (default 4), e.g. to catch an effect.
     let capture_at = std::env::var("SKATE_VERIFY_AT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(4.);

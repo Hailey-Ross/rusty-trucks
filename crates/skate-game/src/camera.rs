@@ -80,7 +80,23 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
     for (mut camera, mut transform, mut projection) in &mut cameras {
         *transform = crate::presentation::blend(previous.camera, current.camera, alpha);
         if replay.active {
-            if let Some(free) = replay.free_camera { *transform = free; }
+            if let Some(free) = replay.free_camera {
+                *transform = free;
+            } else {
+                // The editor's camera key on the skater root (Follow / Tripod / Free; Game keeps the recording).
+                let root = crate::presentation::blend(previous.root, current.root, alpha);
+                let (key_pose, fov) = replay.editor_camera(&root);
+                if let Some(pose) = key_pose {
+                    *transform = pose;
+                }
+                if let (Some(fov), Projection::Perspective(p)) = (fov, &mut *projection) {
+                    p.fov = fov;
+                }
+                // The editor's Shake row: retail multiplies the shake into the camera matrix (`82C8AF50`, b399).
+                if let Some(shake) = replay.shake() {
+                    *transform = *transform * shake;
+                }
+            }
         } else if let Some(pose) = manual_pose {
             *transform = pose;
         }

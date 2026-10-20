@@ -958,7 +958,7 @@ mod tests {
             stage.update(16.0, &movies, &mut game).unwrap();
         }
         game.replay_menu.open = true;
-        game.replay_menu.feed = crate::replay_menu_host::ReplayScreenFeed { instant: true, position: 1.0, playing: false, panel: true, length_seconds: 42 };
+        game.replay_menu.feed = crate::replay_menu_host::ReplayScreenFeed { active: true, instant: true, position: 1.0, playing: false, panel: true, length_seconds: 42, mode: 5, ..Default::default() };
         stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("Replay2".into())], &mut game).unwrap();
         let open = ["source/screens/replay2/replay_editor2.swf", "screen", "0", "Replay2"].map(|a| Value::Text(a.into())).to_vec();
         stage.call_path("_global.ScreenManager.OpenScreen", open, &mut game).unwrap();
@@ -980,6 +980,48 @@ unhandled: {:?}", game.calls, stage.unhandled());
             assert!(game.replay_menu.seen.iter().any(|m| m == native), "{native} not asked: {:?}", game.replay_menu.seen);
         }
         assert!(!stage.unhandled().iter().any(|c| c.starts_with("FEReplayMenu.")), "{:?}", stage.unhandled());
+    }
+
+    /// The instant replay help (template ReplayHelp, FE 13, `replay2/replay_help`): loads over the replay screen and
+    /// reports loaded and intro complete; no FEReplayMenu / Game native is left unanswered. Data-gated like the above.
+    #[test]
+    fn retail_replay_help_opens() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        let (data, loaded) = crate::retail_menus::read(&crate::apt_imports::main_checkout().join("assets"));
+        if !loaded || !movies.contains_key("source/screens/replay2/replay_help") {
+            eprintln!("skipped: no menu tables or no replay_help");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        game.replay_menu.open = true;
+        game.replay_menu.feed.instant = true;
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("ReplayHelp".into())], &mut game).unwrap();
+        let open = ["source/screens/replay2/replay_help.swf", "screen", "0", "ReplayHelp"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", open, &mut game).unwrap();
+        for _ in 0..90 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        assert!(game.calls.iter().any(|c| c == "Game.OnScreenIntroComplete(600)"), "{:?}", game.calls);
+        assert_eq!(game.replay_menu.seen, vec!["GetHelpMode".to_owned()]);
+        assert!(!game.calls.iter().any(|c| c.starts_with("FEReplayMenu.")), "{:?}", game.calls);
+        // A turns the page (SetState 0 = NextHelpPage) without leaving anything unanswered.
+        stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text("0".into())], &mut game).unwrap();
+        for _ in 0..10 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        assert!(!stage.unhandled().iter().any(|c| c.starts_with("FEReplayMenu.") || c.starts_with("Game.")), "{:?}", stage.unhandled());
     }
 
     /// The retail popup movie (template 17 Sk8Popup) on the "popup" layer: SetState(1) with a shown popup builds its
