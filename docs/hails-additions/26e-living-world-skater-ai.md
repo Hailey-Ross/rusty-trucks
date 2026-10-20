@@ -1112,6 +1112,14 @@ Change: (1) a failed body goes back to the pool like a hand-back (`pool_from`); 
 the old state exits with its selection and the new actor still never completes the old batch (b299's goal).
 Test: `a_teleport_resets_the_grind_lock_and_a_new_actor_gets_a_fresh_input_cache` (data-gated) checks the pending
 reset and that the next placement does it. Not play-tested.
+Checked 2026-10-19 (b362, `.local/research/b362-selector-reads-on-exit.md`) [code]: KnownAir is the only state whose
+Exit reads the selector (covered by the deferral); every other Exit dispatched in `transition.rs` and both placement
+Enters (PhysicsGround, BipedGround) leave it alone (main spot-checked PhysicsAir's Exit). The "grind trajectory
+target" b310 named is KnownAir's Enter / Update (`start_grind_air_adjust_from_selector`), not an Exit. Retail's
+teleport resets its selector (`82D67228` via ResetSystems `82DB92D0`) before the old Exit and the Ground Enter
+(`82DB8540(100)`), the same order as ours. Open: whether a pooled body's first step is always the placement (else one
+Update would read the old, complete selector: a stale aim, not an error); a snapshot of `SkaterRuntime` must carry
+`trajectory_reset_pending`.
 
 ## A walk-back that frees a stuck skater says so in the log (2026-10-19)
 

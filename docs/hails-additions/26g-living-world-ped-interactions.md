@@ -1275,6 +1275,31 @@ height on a miss. Change: skate-game `living_world/peds.rs` retries with `GROUND
 reach; upward stays one step (so overhead geometry is still never taken). Open: which mover byte enables the probe
 per ped (`(*(this+556))+109`) and the probe length L (`ctx+16`).
 
+Update 2026-10-19 (session `game-20261019-180444`, University terrace x 12..14, z -127..-220; user: "I thought I saw one
+but when i turned back around it looked like they got moved to the floor"). Research b351
+(`.local/research/b351-university-floating-strip.md`; main verified our lines): not a conversion gap [data: one
+collision surface per logged point, a flat terrace at y 54.5]. The 16 m navmesh triangles span terrace and
+embankments, so on the lower half the navmesh sits 0.2 to 0.5 m under the floor; our window reached only 0.2 m up and
+the retry widened only downward, so the cast started below the surface and the ped stayed at the navmesh height
+(drawn sunk). The `PED_FLOATING` check had the same blind spot (`floor_y=none`). Retail's probe `82EA5F48` casts
+symmetrically from point + axis x L to point - axis x L, retrying at 4L [code, recomp]. Change: the retry widens both
+ends by `GROUND_RETRY_FACTOR`; the floating check also looks 2 m up, so a sunk ped logs a negative `gap`. Open:
+retail's L for peds and the geometry filter of the cast (a recomp hook at `82EA5F48` with a short teleport drop at
+(12.9, 54.5, -220) would settle it). All maps counted by b358 (`.local/research/b358-navmesh-vs-floor-all-maps.md`,
+simulated casts on the extracted collision) [data]: walkable navmesh (pavement 0x11, road 0xA1) where both casts still
+miss a floor above: University 72 m2, DownTown 19,910 m2, Industrial 1,689 m2, almost all on road triangles of about
+2,000 m2 over sloped streets (floor 0.8 to 4.3 m above, e.g. DownTown polys 32918 / 32922 / 32923 at x 6..84,
+z 1314..1379); on pavement alone 72 / 176 / 8 m2. An upward retry of 1.6 m would leave 0 / 7,516 / 364 m2, 3.2 m
+0 / 589 / 0 m2 with the first overhead hits (DownTown polys 16685/16686, 32551/32552). Not changed: retail's L for peds
+decides it (recomp trace of `82EA5F48` pending, needs the user not gaming).
+Where retail draws the ped (b360, `.local/research/b360-ped-drawn-height.md`, partial) [code]: the probe runs once per
+path-node advance (`sub_82E96B88`), at the next node point on the next polygon's plane and along that polygon's
+normal; a hit becomes the target of a NavPower path follower (vtable `0x8232E4F0`) whose position the bot reports, a
+miss leaves the plane point. The ped sync `82E37108` keeps the ped's own y (`vrlimi128 v123,v63,4,0`, main verified),
+so the bot's probed y does not reach the ped there; who writes the ped's world matrix (ped vtable `0x8232BE80`
+slot +0x20, `82E221B0`) decides the drawn y and is still open (a hook on `82E221B0` with the `82EA5F48` run). Ours
+stays a render-only per-frame cast, a stand-in with probably the same visible result.
+
 ## Peds give up a chase they cannot reach (2026-10-13)
 User (2026-10-13): "the ped doesn't give up when attacking the player if they fall into the water, which is something
 we have seen in the recomp where being unable to reach the player causes them to give up".

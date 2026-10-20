@@ -61,7 +61,22 @@ by one decoded retail reader (below), not by a full port of how retail's skater 
   facing_flipped phase pos` (warn, always on, at most one line per NPC every 2 s) when the drawn heading is more
   than 135 deg from the velocity yaw at 1 m/s or more (`facing_check`, `facing_diagnostic`: diagnostic constants,
   not retail values). `recorded_fakie true` means the line's own path frame opposes travel there (retail fakie). The
-  `SKATE_LIVING_WORLD_DEBUG` readout now also prints `heading` and `velocity_yaw`.
+  `SKATE_LIVING_WORLD_DEBUG` readout now also prints `heading` and `velocity_yaw`. 2026-10-19 (b352): an NPC handed
+  to the physics sim is drawn from its body, so its line reads the body instead of the cursor's ghost: `tier sim`,
+  the effective board forward against the deck velocity and the body's retail fakie bit (`riding_fakie`,
+  `82BB2330`). Before, all 161 `recorded_fakie false drawn_fakie true` lines of session 2026-10-19 18:04 were sim
+  NPCs judged on the ghost (27 NPCs, 12 lines); the drawing was not wrong (user: "I didn't notice"). Open: our code
+  names two retail steering targets (skater frame x flip, `replay.rs:477-482`, and the path frame of `sub_8246DE38`,
+  `replay.rs:414-428`); `sub_8246B358` / `sub_8246DE38` decide which. Answered by b353
+  (`.local/research/b353-npc-steer-target-frame.md`) [code]: on the ground retail aims at the path forward 2 ticks
+  ahead of cursor A (`sub_8246AA00` -> `sub_82471070`), measured from the effective deck forward (negated when riding
+  fakie) and reversed on the path when it faces away; it reads neither the skater frame (`+208`) nor the flip
+  (`+927`). Skater frame x flip is the air arm only (`sub_8246B358`, called while `+438`, the airborne byte, is set);
+  `sub_8246DE38` builds the external-physics record, not the stick target. Ours already matches
+  (`ground_steer.rs` `heading_error`, main verified). Followed by b354 (`.local/research/b354-replay-flip-latch.md`, main verified
+  the `+438` store in the recomp): `+438` = player state id in 200..300 and wheel count 0 (airborne), so retail
+  latches `+927` at takeoff; ported (`node_airborne`, see Change). Open: whether the recorder's AIRBORNE node flag
+  equals that predicate.
 - Multiplayer: everything is a pure function of the lines, the node and the branch records; a client mirroring the
   records draws the same frames (tested). No new state.
 
@@ -133,9 +148,11 @@ flip, and its target is the whole recorded skater frame, not a per-node fold aga
 - `skate-core::living_world::replay`: `FacingRule { RidingEntry, PerNode }`. `RidingEntry` is the retail rule:
   `target_skater` (slerp of the recorded skater frames, `slerp` with shortest-arc sign; the nlerp threshold 0.9995 is
   ours, retail's is not decoded), turned 180 deg (`turn_about_up`) while `LineCursor::flip`. The cursor latches
-  `flip` with `flip_test` (retail's dot test) at spawn against `node_world_frame` and on every riding entry
-  (`node_riding`: landing = airborne -> grounded node, back on the board = off board -> on board) against the
-  drawn skater of the previous frame, and holds it across branches and chains. `riding` is the edge detector. Both
+  `flip` with `flip_test` (retail's dot test) at spawn against `node_world_frame` (an air spawn as retail; a riding
+  spawn as a labelled stand-in, retail holds 0 until the first takeoff) and at every takeoff (`node_airborne` rising:
+  `+928` is the airborne byte `+438`, b354) against the drawn skater of the previous frame, and holds it across
+  landings, branches and chains. `airborne` is the edge detector. (Until 2026-10-19 it latched on landing and on
+  getting back on the board, from a wrong "riding" reading of `+438`.) Both
   are plain public fields, a pure function of the lines, the spawn and the branch records (a mirroring client derives
   the same values; tested).
 - **Default drawing stays the fix 23 per-node fold (`PerNode`), NOT RETAIL YET** (decision of the main session
@@ -156,11 +173,11 @@ flip, and its target is the whole recorded skater frame, not a per-node fold aga
 
 **Verification.**
 - New skate-core tests (the rule's math, not measured output): `retail_flip_latches_at_spawn_against_the_node_world_frame`
-  (switch stance at the spawn node sets the flip, drawn = recorded frame turned; forward node, air and off-board
-  spawns do not latch; a recorded revert while riding turns the drawn body with it),
-  `retail_flip_is_held_across_a_switch_and_relatched_on_landing` (held across a ground chain; a chain onto a line
-  starting in the air relatches on landing against the body: set when the landing comes inside the 0.2 s blend,
-  clear when the body already shows the new line; a mirroring client agrees frame by frame),
+  (switch stance at the spawn node sets the flip, drawn = recorded frame turned; forward node and off-board
+  spawns do not latch, an air spawn latches against its spawn frame; a recorded revert while riding turns the drawn body with it),
+  `retail_flip_is_held_across_a_switch_and_relatched_at_takeoff` (held across a ground chain; a chain onto a line
+  starting in the air relatches at takeoff against the body, however long the air lasts, and the landing keeps it;
+  a mirroring client agrees frame by frame),
   `slerp_takes_the_short_arc_and_the_steer_ramp_matches_the_ai_skater_defaults`.
 - Data-gated `npc_skater_facing_rules_on_the_exported_lines` (212 seeded 40 s rides, 882 switches, 474,412 judged
   settled frames; frames drawn more than 135 deg against travel where the path frame does not oppose travel, i.e.

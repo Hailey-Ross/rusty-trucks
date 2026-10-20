@@ -1362,8 +1362,12 @@ pub(crate) fn advance_peds(
         let (up, down) = data.nav.as_deref().map_or((3.0, 3.0), |m| (m.agent[2].max(0.05), m.agent[3].max(0.5)));
         // Retail's NavPower mover probe (`82EA5F48`, debug bool `probe_for_ground` on by default) casts again with
         // 4x the reach after a miss (`0x82257308` 4.0) [code, b107]: a coarse navmesh triangle can sit 1.7 m above the
-        // pavement (DownTown poly 7376). Upward stays one step so overhead geometry is still never taken.
-        if let Some(y) = ground(physics.as_deref(), body.position, up, down).or_else(|| ground(physics.as_deref(), body.position, up, down * GROUND_RETRY_FACTOR)) {
+        // pavement (DownTown poly 7376). The retry widens both ends, as retail's does (b351: the cast runs from
+        // point + axis * L to point - axis * L): a coarse triangle can also sit under the floor (University terrace,
+        // x 12..14, z -127..-220: up to 0.5 m), where the one-step upward reach starts below the surface.
+        if let Some(y) = ground(physics.as_deref(), body.position, up, down)
+            .or_else(|| ground(physics.as_deref(), body.position, up * GROUND_RETRY_FACTOR, down * GROUND_RETRY_FACTOR))
+        {
             shown.y = y;
         }
         transform.translation = shown;
@@ -1373,7 +1377,10 @@ pub(crate) fn advance_peds(
         // navmesh polygon and its area code (once per ped per 10 s).
         if (body.ticks + ped.id.serial as u64) % 120 == 0 {
             let floor = ground(physics.as_deref(), shown, 0.2, 30.0);
-            if floor.map_or(true, |y| shown.y - y > 0.3)
+            // No floor below but one just above: the ped is drawn sunk, not floating (b351); logged with a
+            // negative gap.
+            let floor = floor.or_else(|| ground(physics.as_deref(), shown, 2.0, 0.2));
+            if floor.map_or(true, |y| (shown.y - y).abs() > 0.3)
                 && floating_logged.get(&ped.id).map_or(true, |t| tick >= t + 600)
             {
                 floating_logged.insert(ped.id, tick);
