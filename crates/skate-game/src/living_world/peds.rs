@@ -1724,7 +1724,13 @@ pub(crate) fn present_ped_pose(
     mut peds: Query<(&Pedestrian, &PedBody, &mut PedPuppet, Option<&mut super::npc_skaters::NpcFade>, Option<&super::ped_hand_props::HeldHandProp>)>,
     mut joints: Query<&mut Transform, Without<PedBody>>,
     mut vis: Query<&mut Visibility>,
+    replay: Option<Res<crate::replay::Replay>>,
 ) {
+    // During a replay the ped is drawn where it was recorded (`replay::world::play_back`), not at its frozen live body,
+    // so the draw distance fade and LOD do not apply: every recorded ped draws at full detail (laptop session
+    // 2026-10-20: replayed peds only showed once the camera came near their live spot).
+    let replaying = replay.is_some_and(|r| r.active);
+    let distance = |cam: Vec3, at: Vec3| if replaying { 0.0 } else { cam.distance(at) };
     let hz = state.world.clock().hz;
     let ahead = ((state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * hz).clamp(0.0, 1.0) as f32) * tick_seconds(hz);
     let camera = cameras.iter().next().map(|c| c.translation());
@@ -1746,7 +1752,7 @@ pub(crate) fn present_ped_pose(
         if let (Some(cam), Some(mut fade)) = (camera, fade) {
             let pair = data.catalog.models.get(&ped.model).and_then(|m| m.lod_near);
             let since = state.world.tick().saturating_sub(ped.spawn_tick) as f32 / hz.max(1.0) as f32;
-            let alpha = ped_draw_alpha(&settings, pair, cam.distance(body.position), since);
+            let alpha = ped_draw_alpha(&settings, pair, distance(cam, body.position), since);
             if fade.alpha != alpha {
                 fade.alpha = alpha;
             }
@@ -1761,7 +1767,7 @@ pub(crate) fn present_ped_pose(
         }
         if let Some(cam) = camera {
             let near = data.catalog.models.get(&ped.model).and_then(|m| m.lod_near).unwrap_or([45.0, 55.0]);
-            let lod = lod_for(cam.distance(body.position), puppet.lod, near);
+            let lod = lod_for(distance(cam, body.position), puppet.lod, near);
             if lod != puppet.lod || puppet.lod == 0 {
                 puppet.lod = lod;
                 for &(node, level) in &puppet.lods {
@@ -1836,7 +1842,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<super::ped_alerts::PedAlerts>()
         .add_systems(PostStartup, super::ped_alerts::load_alert_textures)
         .add_systems(Update, super::ped_alerts::draw_ped_alerts.after(crate::app::FrameSet::Animation))
-        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, super::ped_hand_props::sync_hand_props, apply_skater_takedowns, post_chase_messages, super::ped_alerts::update_ped_alerts, advance_peds, log_ped_readout).chain().after(super::step_population))
+        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, super::ped_hand_props::sync_hand_props, apply_skater_takedowns, post_chase_messages, super::ped_alerts::update_ped_alerts, advance_peds, log_ped_readout).chain().after(super::step_population).distributive_run_if(crate::replay::world_live))
         .init_resource::<PedMaterials>()
         .add_systems(Update, (present_ped_looks, present_ped_tints, present_ped_pose).chain().after(crate::app::FrameSet::Animation).before(super::npc_skaters::present_fade));
 }
@@ -1931,14 +1937,18 @@ struct StillWatch {
 }
 
 /// Per-ped log repeat limiter: the same line key logs at most once per `LOG_REPEAT_TICKS`; the next line of that
-/// key carries how many were held back.
+/// key carries how many were held back. `.1`: the key of the ped's last PED_MOOD result.
 #[derive(Default)]
-struct LogRepeats(BTreeMap<u64, (u64, u32)>);
+struct LogRepeats(BTreeMap<u64, (u64, u32)>, u64);
 
 /// 5 s of the 60 Hz world tick.
 const LOG_REPEAT_TICKS: u64 = 300;
 
 impl LogRepeats {
+    /// Whether the ped's mood result differs from its previous one (always logged).
+    fn mood_changed(&mut self, key: u64) -> bool {
+        std::mem::replace(&mut self.1, key) != key
+    }
     /// `Some(held back count)` when the line should be logged now, `None` when it is held back.
     fn allow(&mut self, key: u64, tick: u64) -> Option<u32> {
         match self.0.get_mut(&key) {
@@ -2120,6 +2130,8 @@ pub(crate) fn think_peds(
     let streamed_out = |plugin_id: u64| dormant.contains(&(plugin_id as u32));
     // Peds whose seat's prop moved this tick (grabbed, pushed, knocked): `82E3DBE0` fires the seated owner's avoid.
     let mut seat_pushed: Vec<u64> = Vec::new();
+    // A seat's sub-threshold step, per seated occupant: retail sums it (brain `+3168`) into the ped's root (`82E36D70`).
+    let mut seat_carry: Vec<(u64, [f32; 3])> = Vec::new();
     // Horn kind 2 at a ped (`sub_82E3C3D0`: the honker id into brain `+3232`; the last car wins).
     let honked: BTreeMap<u64, u64> = traffic_events.read().filter_map(|e| match e { super::vehicles::TrafficEvent::HonkedAt { id, ped } => Some((*ped, id.to_u64())), _ => None }).collect();
     let Some(graph) = data.graph.as_deref() else { return };
@@ -2209,6 +2221,11 @@ pub(crate) fn think_peds(
                     if let Some(occupant) = w.occupant.filter(|_| per_step * per_step > SEAT_PUSH_STEP_SQ) {
                         info!("PED_PLUGIN_SEAT_MOVED prop={:016X} {} occupant={occupant} speed={speed:.2} from=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] tick={tick}", prop.id, prop.class, w.position[0], w.position[1], w.position[2], position[0], position[1], position[2]);
                         seat_pushed.push(occupant);
+                    } else if let Some(occupant) = w.occupant.filter(|_| step > 0.0) {
+                        // b219: steps at or under the gate are accumulated and carry the seated ped with the seat (a
+                        // slowly pushed bench). Without it the seat crept away from the locked body past OnWaypoint's
+                        // 0.05 m and the graph re-sat the ped every few ticks (laptop session 2026-10-20, #20, b396).
+                        seat_carry.push((occupant, [position[0] - w.position[0], position[1] - w.position[1], position[2] - w.position[2]]));
                     }
                     (w.position, w.facing) = (position, facing);
                 }
@@ -2591,7 +2608,10 @@ pub(crate) fn think_peds(
             let produced = if brain.busy() || brain.moods_disabled { None } else { tables.produce(&mut mind.mood, &ctx, brain.hand_prop.holding, &outstanding, &pending, rng) };
             if let Some(reaction) = produced {
                 let key = reaction.result.bytes().chain([0]).chain(reaction.category.bytes()).fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)) & !(1 << 63);
-                if let Some(held) = mind.log_repeats.allow(key, tick) {
+                // Collision results and any change of result are always logged: a held-back converse_everyone line
+                // hid why a bumped ped skipped the warn (laptop session 2026-10-20, b393).
+                let always = mind.log_repeats.mood_changed(key) || reaction.category == "collision";
+                if let Some(held) = if always { Some(0) } else { mind.log_repeats.allow(key, tick) } {
                     info!(
                         "PED_MOOD ped=#{} {} result={} category={} roll={:?} passed={} wants={:?} tick={tick}{}",
                         ped.id.serial,
@@ -2649,6 +2669,16 @@ pub(crate) fn think_peds(
             let v = observers.observers.get(t.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
             skate_core::living_world::peds::takedown::choose(table, at, forward, ped_speed, p, v)
         };
+        // The seat's carried steps move the seated ped's root and its lock with it (`82E36D70`, b219).
+        if mind.brain.own_plugin_object && !mind.sit_avoid {
+            for (_, d) in seat_carry.iter().filter(|(o, _)| *o == me) {
+                if let Some(p) = mind.brain.locked_at.as_mut() {
+                    (p[0], p[2]) = (p[0] + d[0], p[2] + d[2]);
+                }
+                body.position.x += d[0];
+                body.position.z += d[2];
+            }
+        }
         // LockToCurrentPosition: the body stays on the locked point (root motion does not move it).
         if let Some(p) = mind.brain.locked_at {
             body.position.x = p[0];

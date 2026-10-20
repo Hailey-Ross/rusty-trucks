@@ -163,5 +163,5 @@ pub(crate) fn ped_vehicle_contacts(
 
 pub(crate) fn install(app: &mut App) {
     app.add_message::<VehicleContactEvent>()
-        .add_systems(FixedUpdate, ped_vehicle_contacts.after(super::peds::advance_peds).after(super::vehicles::drive_traffic));
+        .add_systems(FixedUpdate, ped_vehicle_contacts.after(super::peds::advance_peds).after(super::vehicles::drive_traffic).run_if(crate::replay::world_live));
 }

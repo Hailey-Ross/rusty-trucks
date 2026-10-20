@@ -33,11 +33,22 @@ fn tag_actors(
     peds: Query<(Entity, &crate::living_world::peds::Pedestrian), Without<ReplayActor>>,
     cars: Query<(Entity, &crate::living_world::vehicles::TrafficCar), Without<ReplayActor>>,
     props: Query<(Entity, &crate::skate_world::PropInstance), Without<ReplayActor>>,
+    held: Query<(&crate::living_world::peds::Pedestrian, &crate::living_world::ped_hand_props::HeldHandProp)>,
+    actors: Query<(), With<ReplayActor>>,
 ) {
+    // A ped's held prop is drawn from the ped's live hand every frame; recorded as its own actor (keyed by its ped)
+    // it plays back with the ped instead of floating at the frozen live hand (desktop session 2026-10-20).
+    for (ped, prop) in &held {
+        if actors.get(prop.entity).is_err() {
+            if let Ok(mut e) = commands.get_entity(prop.entity) {
+                e.insert(ReplayActor { id: HAND_PROP_TAG | u64::from(ped.id.serial) });
+            }
+        }
+    }
     let ids = npcs.iter().map(|(e, n)| (e, n.id.to_u64()))
         .chain(peds.iter().map(|(e, p)| (e, p.id.to_u64())))
         .chain(cars.iter().map(|(e, c)| (e, c.id.to_u64())))
-        .chain(props.iter().map(|(e, p)| (e, PROP_TAG | u64::from(p.id))));
+        .chain(props.iter().filter(|(e, _)| !held.iter().any(|(_, h)| h.entity == *e)).map(|(e, p)| (e, PROP_TAG | u64::from(p.id))));
     for (entity, id) in ids {
         commands.entity(entity).insert(ReplayActor { id });
     }
@@ -66,7 +77,11 @@ fn refresh_joints(
 pub(crate) struct ReplayGhost;
 
 /// At most this many ghosts are kept (the oldest-despawned are dropped first by their tracks leaving the window).
-pub(crate) const MAX_GHOSTS: usize = 64;
+/// Traffic churns: 90 s of cars, peds and NPC skaters leaving can pass 64.
+pub(crate) const MAX_GHOSTS: usize = 256;
+
+/// Id tag of a ped's held hand prop (after `PROP_TAG`): one track per ped, whichever prop it holds.
+pub(crate) const HAND_PROP_TAG: u64 = 5 << 56;
 
 /// Despawn an actor, keeping its drawn scene for the replay. Use instead of `despawn()` for anything that has a
 /// [`ReplayActor`] and [`ReplayJoints`]; anything else (or past the ghost cap) is simply despawned.
@@ -100,14 +115,26 @@ fn ghost_parts(world: &mut World, entity: Entity) -> Option<(ReplayActor, Replay
     let ghosts = world.query_filtered::<(), With<ReplayGhost>>().iter(world).count();
     let replay = world.get_resource::<Replay>()?;
     let e = world.get_entity(entity).ok()?;
-    let (actor, joints, transform) = (*e.get::<ReplayActor>()?, e.get::<ReplayJoints>()?.clone(), *e.get::<Transform>()?);
-    if ghosts >= MAX_GHOSTS || !replay.world.contains(actor.id) {
-        return None;
+    let actor = *e.get::<ReplayActor>()?;
+    // Every refusal is logged: a missing ghost shows as an actor vanishing from the replay.
+    let refuse = |why: &str| {
+        info!("REPLAY_GHOST refused id={:#x} reason={why}", actor.id);
+        None
+    };
+    let (Some(joints), Some(transform)) = (e.get::<ReplayJoints>().cloned(), e.get::<Transform>().copied()) else {
+        return refuse("no joints");
+    };
+    if ghosts >= MAX_GHOSTS {
+        return refuse("cap");
     }
-    let mut child = *joints.0.first()?;
+    if !replay.world.contains(actor.id) {
+        return refuse("not recorded");
+    }
+    let Some(mut child) = joints.0.first().copied() else { return refuse("no joints") };
     loop {
-        let parent = world.get::<ChildOf>(child)?.parent();
+        let Some(parent) = world.get::<ChildOf>(child).map(|c| c.parent()) else { return refuse("scene not under the actor") };
         if parent == entity {
+            info!("REPLAY_GHOST id={:#x} joints={} ghosts={}", actor.id, joints.0.len(), ghosts + 1);
             return Some((actor, joints, transform, child));
         }
         child = parent;
@@ -162,8 +189,12 @@ pub(super) fn record(
         replay.world.end(id);
     }
     for (entity, actor, root, list, visibility) in &actors {
-        // A jointless actor (a prop) whose root and visibility did not change keeps its last key.
-        let changed = actor.is_added() || root.is_changed() || visibility.as_ref().is_some_and(|v| v.is_changed());
+        // A jointless actor (a prop) whose root and visibility did not change keeps its last key. One without a track
+        // yet always records: its `Added` tick falls on a render frame without a new replay frame most of the time,
+        // and such a prop then had no key until it next moved, so it was hidden in the replay (laptop session
+        // 2026-10-20: a bench and the ped on it appeared only once they were touched again).
+        let changed = actor.is_added() || root.is_changed() || visibility.as_ref().is_some_and(|v| v.is_changed())
+            || !replay.world.contains(actor.id);
         if list.is_none() && !changed {
             continue;
         }

@@ -933,6 +933,55 @@ mod tests {
         }
     }
 
+    /// The instant replay screen (template Replay2, FE 12, `replay2/replay_editor2`; b390 / b391): loads through the
+    /// screen manager, reports loaded and intro complete, and once shown asks the instant mode natives. Data-gated
+    /// like the above (a v11 menu set: `SKATE3_MENU_MOVIES` at a fresh export until the install is refreshed).
+    #[test]
+    fn retail_replay_editor_opens() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        let (data, loaded) = crate::retail_menus::read(&crate::apt_imports::main_checkout().join("assets"));
+        if !loaded || !movies.contains_key("source/screens/replay2/replay_editor2") {
+            eprintln!("skipped: no menu tables or no replay_editor2");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        game.replay_menu.open = true;
+        game.replay_menu.feed = crate::replay_menu_host::ReplayScreenFeed { instant: true, position: 1.0, playing: false, panel: true, length_seconds: 42 };
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("Replay2".into())], &mut game).unwrap();
+        let open = ["source/screens/replay2/replay_editor2.swf", "screen", "0", "Replay2"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", open, &mut game).unwrap();
+        for _ in 0..90 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        eprintln!("calls: {:?}
+unhandled: {:?}", game.calls, stage.unhandled());
+        assert!(game.calls.iter().any(|c| c == "Game.OnScreenLoaded(600)"), "{:?}", game.calls);
+        stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text("600".into()), Value::Text("true".into())], &mut game).unwrap();
+        for state in [999, 18, 999] {
+            stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text(state.to_string())], &mut game).unwrap();
+            for _ in 0..30 {
+                stage.update(16.0, &movies, &mut game).unwrap();
+            }
+        }
+        // The instant mode natives (b390 table 2) are all asked and answered by the host; no FEReplayMenu call is left.
+        for native in ["IsInstantReplayMode", "GetCursorPosition", "GetPlayheadPosition", "GetEncodedLength", "IsEncodedLengthValid", "CanSaveMedia"] {
+            assert!(game.replay_menu.seen.iter().any(|m| m == native), "{native} not asked: {:?}", game.replay_menu.seen);
+        }
+        assert!(!stage.unhandled().iter().any(|c| c.starts_with("FEReplayMenu.")), "{:?}", stage.unhandled());
+    }
+
     /// The retail popup movie (template 17 Sk8Popup) on the "popup" layer: SetState(1) with a shown popup builds its
     /// panel from the Popup natives (doc 31 "Popups"), every layout value finite; A on the first option reaches the
     /// popup host as choice 0. Data-gated like the above; `SKATE3_DUMP_DRAWS=1` prints the draws.

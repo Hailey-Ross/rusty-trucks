@@ -373,6 +373,48 @@ pub(crate) fn set_prop_grab_enabled(on: bool) {
     PROP_GRAB.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Height of a generated grab spline over the box bottom, m (the authored splines sit at about hand height, ~0.98 m
+/// on the DownTown tables); a lower box is held by its top.
+const GENERATED_GRAB_HEIGHT: f32 = 1.0;
+
+/// Better Object Mover's grab splines for a prop without authored ones: one per vertical box face along its
+/// horizontal edge at [`GENERATED_GRAB_HEIGHT`], approach = the face's outward normal and flags 4, as the authored
+/// splines are laid out (template space, scale divided out: `grab_object_of` multiplies it back in).
+fn generated_grab_splines(b: &PropBody) -> Vec<crate::living_world::vehicles::CarGrabSpline> {
+    let (c, h, s) = ([b.local_center.x, b.local_center.y, b.local_center.z], [b.half_extents.x, b.half_extents.y, b.half_extents.z], [b.axis_scale.x, b.axis_scale.y, b.axis_scale.z]);
+    if h.iter().chain(&s).any(|v| !(v.is_finite() && v.abs() > 1e-4)) {
+        return Vec::new();
+    }
+    let y = (c[1] - h[1] + GENERATED_GRAB_HEIGHT).min(c[1] + h[1]);
+    let unscale = |p: [f32; 3]| [p[0] / s[0], p[1] / s[1], p[2] / s[2]];
+    let mut out = Vec::new();
+    for (axis, along) in [(0, 2), (2, 0)] {
+        for side in [-1.0f32, 1.0] {
+            let mut mid = c;
+            mid[1] = y;
+            mid[axis] += side * h[axis];
+            let (mut a, mut b) = (mid, mid);
+            a[along] -= h[along] * 0.9;
+            b[along] += h[along] * 0.9;
+            let mut direction = [0.0; 3];
+            direction[axis] = side;
+            out.push(crate::living_world::vehicles::CarGrabSpline { points: vec![unscale(a), unscale(a), unscale(b), unscale(b)], direction, flags: 4 });
+        }
+    }
+    out
+}
+
+/// The PC overlay's Better Object Mover into the prop bodies (each frame a cheap compare; a map load starts off).
+pub(crate) fn apply_better_object_mover(menu: Option<Res<crate::graphics_menu::Menu>>, mut physics: ResMut<super::GamePhysics>) {
+    let want = menu.is_some_and(|m| m.better_object_mover());
+    if physics.prop_dynamics().is_some_and(|d| d.better_object_mover() != want) {
+        if let Some(dynamics) = physics.prop_dynamics_mut() {
+            let generated = dynamics.set_better_object_mover(want);
+            info!("SKATE_PROP_GRAB better_object_mover={want} generated={generated}");
+        }
+    }
+}
+
 /// Grab-scene id tag of props (cars use `living_world::vehicles::CAR_GRAB_TAG`, the high bit).
 pub(crate) const PROP_GRAB_TAG: u32 = 0x4000_0000;
 
@@ -408,8 +450,11 @@ pub(crate) struct PropBody {
     type_data: Option<DmoType>,
     /// Resolved tuning of this prop type.
     tuning: PropTuning,
-    /// The template's authored grab splines (template space; `set_grab_splines`).
+    /// The template's authored grab splines (template space; `set_grab_splines`), or with Better Object Mover on and
+    /// none authored, generated ones ([`generated_grab_splines`]).
     grab_splines: Vec<crate::living_world::vehicles::CarGrabSpline>,
+    /// The template has authored grab splines (retail can move it).
+    authored_grab: bool,
     /// Box derived from the render AABB (scale folded in), kept so a
     /// `collision_box` override can be removed again.
     authored_center: Vector3,
@@ -772,6 +817,9 @@ pub(crate) struct PropDynamics {
     next_runtime_id: u32,
     /// Next grab slot ([`PropBody::grab_slot`]) for a body created mid-game.
     next_grab_slot: u32,
+    /// Better Object Mover (PC overlay, not retail; user 2026-10-20): props without authored grab splines get
+    /// generated ones, so every prop can be moved. Off = retail (only props with authored splines).
+    better_object_mover: bool,
     /// Grind rails per template id, template space (`native-props/<map>.json` `grind_splines`); looked up by
     /// template at query time, so runtime copies of a template carry them too.
     grind_rails: std::collections::BTreeMap<String, std::sync::Arc<[crate::grind_world::props::PropRail]>>,
@@ -1025,6 +1073,7 @@ impl PropDynamics {
             bodies,
             by_id,
             next_grab_slot,
+            better_object_mover: false,
             simulation,
             pair: PrimitivePairSettings {
                 padding_a: PropTuning::default().contact_padding,
@@ -1088,6 +1137,9 @@ impl PropDynamics {
             return false;
         };
         body.runtime = true;
+        if self.better_object_mover {
+            body.grab_splines = generated_grab_splines(&body);
+        }
         body.grab_slot = self.next_grab_slot;
         self.next_grab_slot = self.next_grab_slot.wrapping_add(1);
         body.type_data = spec.type_data.clone();
@@ -1210,6 +1262,7 @@ impl PropDynamics {
             template: template.to_string(),
             type_data: None,
             grab_splines: Vec::new(),
+            authored_grab: false,
             tuning: PropTuning::default(),
             authored_center: local_center,
             authored_half_extents: half_extents,
@@ -1356,12 +1409,33 @@ impl PropDynamics {
     /// got splines.
     pub(crate) fn set_grab_splines(&mut self, splines: &std::collections::BTreeMap<String, Vec<crate::living_world::vehicles::CarGrabSpline>>) -> usize {
         let mut count = 0;
+        let better = self.better_object_mover;
         for body in &mut self.bodies {
             let id = body.template.split('/').next().unwrap_or_default();
             body.grab_splines = splines.get(id).cloned().unwrap_or_default();
-            count += usize::from(!body.grab_splines.is_empty());
+            body.authored_grab = !body.grab_splines.is_empty();
+            count += usize::from(body.authored_grab);
+            if better && !body.authored_grab {
+                body.grab_splines = generated_grab_splines(body);
+            }
         }
         count
+    }
+
+    pub(crate) fn better_object_mover(&self) -> bool {
+        self.better_object_mover
+    }
+
+    /// Better Object Mover on / off: props without authored grab splines get generated ones / lose them. Returns how
+    /// many props have generated splines now.
+    pub(crate) fn set_better_object_mover(&mut self, on: bool) -> usize {
+        self.better_object_mover = on;
+        let mut generated = 0;
+        for body in self.bodies.iter_mut().filter(|b| !b.authored_grab) {
+            body.grab_splines = if on { generated_grab_splines(body) } else { Vec::new() };
+            generated += usize::from(!body.grab_splines.is_empty());
+        }
+        generated
     }
 
     /// The grind rails per template id (`native-props/<map>.json` `grind_splines`). Returns the props that got
@@ -3714,6 +3788,28 @@ mod tests {
             let lag = ((target.x - at.position.x).powi(2) + (target.z - at.position.z).powi(2)).sqrt();
             assert!(lag < 0.2, "skater fell {lag} m behind the grab frame");
         }
+    }
+
+    /// Better Object Mover: a prop without authored grab splines gets one generated spline per vertical box face (the
+    /// authored layout: outward approach, flags 4) and loses them again when it goes off; a later map load (new
+    /// splines) keeps them while on. Off = retail: no grab object for it.
+    #[test]
+    fn better_object_mover_gives_props_without_grab_splines_generated_ones() {
+        let (_, _, mut dynamics) = fixture([0., REST_Y, 1.2]);
+        assert_eq!(dynamics.set_grab_splines(&std::collections::BTreeMap::new()), 0);
+        assert!(dynamics.grab_object(7).is_none(), "retail: no grab handles, not movable");
+        assert_eq!(dynamics.set_better_object_mover(true), 1);
+        let object = dynamics.grab_object(7).expect("generated grab object");
+        assert_eq!(object.splines.len(), 4);
+        for spline in &object.splines {
+            let a = spline.geometry.approach_vectors[0];
+            assert!((a[0].abs() + a[2].abs() - 1.0).abs() < 1e-6 && a[1] == 0.0, "outward horizontal approach {a:?}");
+            assert_eq!(spline.geometry.word_60, 4);
+        }
+        assert_eq!(dynamics.set_grab_splines(&std::collections::BTreeMap::new()), 0);
+        assert!(dynamics.grab_object(7).is_some(), "kept across a spline reload while on");
+        assert_eq!(dynamics.set_better_object_mover(false), 0);
+        assert!(dynamics.grab_object(7).is_none());
     }
 
     /// The carry binds exactly the record the Move Object enter passed (82D442D0, b233): the decision on tick N

@@ -206,6 +206,8 @@ pub struct FrontEnd<'a> {
     pub sub_options: std::sync::Arc<Vec<SubOptionRow>>,
     /// The Trick Guide screen (trick_guide_host).
     pub trick_guide: crate::trick_guide_host::TrickGuideHost,
+    /// The instant replay screen FE 12 (replay_menu_host).
+    pub replay_menu: crate::replay_menu_host::ReplayMenuHost,
     /// The Challenge Map screen (challenge_map_host).
     pub challenge_map: crate::challenge_map_host::ChallengeMapHost,
     /// The Skate Profile screen (offline_profile_host).
@@ -240,6 +242,7 @@ impl<'a> FrontEnd<'a> {
             settings_titles: Vec::new(),
             sub_options: Default::default(),
             trick_guide: Default::default(),
+            replay_menu: Default::default(),
             challenge_map: Default::default(),
             offline_profile: Default::default(),
             extras: Default::default(),
@@ -252,7 +255,7 @@ impl<'a> FrontEnd<'a> {
 
 impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     fn objects(&self) -> Vec<String> {
-        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "HUDComponents", "Popup", "Progression", "Stats", "tos"]
+        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "tos"]
             .map(String::from)
             .to_vec()
     }
@@ -278,6 +281,9 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
             return Ok(value);
         }
         if let Some(value) = self.trick_guide.call(vm, object, method, &args)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.replay_menu.call(vm, self.language, object, method) {
             return Ok(value);
         }
         if let Some(value) = self.offline_profile.call(vm, object, method)? {

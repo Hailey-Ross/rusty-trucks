@@ -945,3 +945,15 @@ ready; a "skitching" mode in GRAB_VIEW. Tests `a_held_grab_shows_the_owner_list_
   round the prop centre: it should turn with the prop heading).
 - **Open:** the next carry session's lines decide which gap it is. Whether record +240 / +228 are body 0's or the whole
   DMO's for multi-body dumpsters; the skater-side weight (82D46610, 82BDF268) is not decoded.
+
+## Better Object Mover (PC overlay, not retail; user 2026-10-20)
+- Ask: "we should add an extra option for "Better object mover" which allows you to move all objects when enabled (not
+  retail) or just the current objects (retail option)"; scope (user): every prop (static world stays).
+- Retail moves only props whose template has authored grab splines (DownTown: 691 of 786). The in-game grab starts
+  only from the Ground decision qualifying an authored record (Move Object enter), so the other props cannot be moved.
+- Change: PC overlay Extras > Objects "Better Object Mover" (Retail / On, saved). On: props without authored splines
+  get generated ones (`prop_dynamics.rs` `generated_grab_splines`: one per vertical box face along its edge at 1.0 m
+  over the box bottom or its top, approach = the face's outward normal, flags 4, the authored layout), so the whole
+  retail Move Object path runs on them; off removes them. Runtime props get them at creation. Log
+  `SKATE_PROP_GRAB better_object_mover= generated=`. Test `better_object_mover_gives_props_without_grab_splines_generated_ones`.
+- Open: mod access (an `sdk` switch), and whether very large / heavy props should stay unmovable.

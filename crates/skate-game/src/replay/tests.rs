@@ -178,8 +178,10 @@ fn controller_replay_scrub_camera_and_exit_do_not_leak_gameplay_input() {
     tick(&mut app, DPAD_RIGHT, [0; 2], [0; 2]);
     let replay = app.world().resource::<Replay>();
     assert!(!replay.playing && replay.cursor == replay.bounds().1);
-    // Without the retail menu stage, B (Finished) leaves at once.
+    // Without the retail menu stage, B (Finished) leaves when it is released.
     tick(&mut app, B, [255, 0], [32767, 0]);
+    assert!(app.world().resource::<Replay>().active, "not while B is held");
+    tick(&mut app, 0, [255, 0], [32767, 0]);
     assert!(!app.world().resource::<Replay>().active);
     assert_eq!(
         app.world().resource::<ControllerInput>().mapped_actions,
@@ -472,6 +474,9 @@ fn retail_quit_warning_and_minimum_length() {
     // With the retail menu stage up, B raises the quit warning; No stays, Yes leaves.
     app.world_mut().resource_mut::<crate::popup_host::PopupMods>().stage_ready = true;
     tick(&mut app, B);
+    // Not while B is held: the press would reach the popup and cancel it (desktop session 2026-10-20).
+    assert!(app.world().resource::<crate::popup_host::PopupMods>().engine_requests.is_empty());
+    tick(&mut app, 0);
     let request = app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_requests.pop().unwrap();
     assert_eq!((request.description.as_str(), request.options.len()), ("ID_REPLAY_EDITOR_QUIT", 2));
     assert!(app.world().resource::<Replay>().active);
@@ -483,4 +488,71 @@ fn retail_quit_warning_and_minimum_length() {
     app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((QUIT_POPUP.into(), 1));
     tick(&mut app, 0);
     assert!(!app.world().resource::<Replay>().active, "Yes leaves");
+}
+
+#[test]
+fn the_living_world_freezes_during_a_replay() {
+    #[derive(Resource, Default)]
+    struct Steps(u32);
+    let mut app = App::new();
+    app.init_resource::<Steps>()
+        .add_systems(Update, (|mut s: ResMut<Steps>| s.0 += 1).run_if(world_live));
+    app.update();
+    assert_eq!(app.world().resource::<Steps>().0, 1, "no replay resource: runs");
+    app.init_resource::<Replay>();
+    for i in 0..400 {
+        app.world_mut().resource_mut::<Replay>().record(pose(i as f32), 1. / 60., false);
+    }
+    app.update();
+    assert_eq!(app.world().resource::<Steps>().0, 2);
+    app.world_mut().resource_mut::<Replay>().enter();
+    app.update();
+    app.update();
+    assert_eq!(app.world().resource::<Steps>().0, 2, "frozen while the replay is open");
+    app.world_mut().resource_mut::<Replay>().exit();
+    app.update();
+    assert_eq!(app.world().resource::<Steps>().0, 3);
+}
+
+#[test]
+fn extended_replays_scale_the_window_and_a_mod_still_wins() {
+    let retail = skate_core::replay_buffer::ReplayLimits::default();
+    let mut replay = Replay::default();
+    replay.set_user_length(Some(240));
+    assert_eq!(replay.world.limits.max_frames, 240 * 60);
+    assert_eq!(replay.world.limits.byte_budget, retail.byte_budget * 240 / 90);
+    // A mod's limits win; clearing them goes back to the player's length, not retail.
+    replay.set_limits("m", Some(600), None);
+    assert_eq!(replay.world.limits.max_frames, 600);
+    replay.set_user_length(Some(120));
+    assert_eq!(replay.world.limits.max_frames, 600);
+    replay.clear_owner("m");
+    assert_eq!(replay.world.limits.max_frames, 120 * 60);
+    replay.set_user_length(None);
+    assert_eq!(replay.world.limits, retail);
+}
+
+#[test]
+fn a_still_prop_added_between_replay_frames_still_plays_back() {
+    use super::world::ReplayActor;
+    let mut app = App::new();
+    app.init_resource::<Replay>();
+    super::world::plugin(&mut app);
+    let step = |app: &mut App, x: f32| {
+        app.world_mut().resource_mut::<Replay>().record(pose(x), 1. / 60., false);
+        app.update();
+    };
+    step(&mut app, 0.);
+    // Tagged on a render frame that brings no new replay frame (its `Added` tick is not recorded), then never moves.
+    let bench = app.world_mut().spawn((ReplayActor { id: 11 }, Transform::from_xyz(3., 0., 0.), Visibility::Inherited)).id();
+    app.update();
+    step(&mut app, 1.);
+    step(&mut app, 2.);
+    {
+        let mut replay = app.world_mut().resource_mut::<Replay>();
+        replay.enter();
+        replay.seek(1.5 / 60.);
+    }
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(bench), Some(&Visibility::Inherited), "the still bench is drawn");
 }

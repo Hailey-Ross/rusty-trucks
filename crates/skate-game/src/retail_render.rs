@@ -1785,10 +1785,12 @@ fn advance_frame_state(
     pca: Option<Res<OceanPca>>,
     decals: Option<Res<DecalSettings>>,
     look: Option<Res<crate::water_look::WaterLookSettings>>,
+    replay: Option<Res<crate::replay::Replay>>,
     mut animation: Local<WaterAnimation>,
+    mut clock: Local<WaterClock>,
 ) {
     let look = look.map_or(crate::water_look::WaterLook::RETAIL, |l| l.active().effective());
-    let elapsed = time.elapsed_secs_f64();
+    let elapsed = clock.advance(time.delta_secs_f64(), replay.as_deref().filter(|r| r.active).map(|r| r.cursor()));
     state.clock.x = time.elapsed_secs();
     state.clock.w = decals.map_or(RETAIL_DECAL_OPACITY, |d| d.opacity.clamp(0., 1.));
     // The native routine always runs (it drives the PCA frame); the water
@@ -1838,6 +1840,27 @@ fn slow_pca(pca: &OceanPca, elapsed: f64, rate: f64) -> [Vec4; 7] {
 /// precision. `seamless_clock = false` publishes 0x82790858's restarting
 /// value instead (a jump every 10 s; never shown by retail).
 const WATER_TIME_PERIOD: f64 = 1000.0;
+
+/// The water's own clock: real time in play; during a replay it follows the playback cursor going forward only, so
+/// paused (or rewound) playback holds the water still (laptop session 2026-10-20: it kept moving while paused).
+/// Forward-only because the ocean frame counter (`WaterAnimation::presentation_frame`) never steps back.
+#[derive(Default)]
+struct WaterClock {
+    elapsed: f64,
+    cursor: Option<f64>,
+}
+
+impl WaterClock {
+    fn advance(&mut self, delta: f64, replay_cursor: Option<f64>) -> f64 {
+        self.elapsed += match (replay_cursor, self.cursor) {
+            (Some(now), Some(before)) => (now - before).max(0.0),
+            (Some(_), None) => 0.0,
+            (None, _) => delta,
+        };
+        self.cursor = replay_cursor;
+        self.elapsed
+    }
+}
 
 fn water_time(elapsed_secs: f64, rate: f64) -> f32 {
     (elapsed_secs * rate).rem_euclid(WATER_TIME_PERIOD) as f32
@@ -2326,6 +2349,19 @@ mod tests {
             assert!((tiles - tiles.round()).abs() < 1e-6, "speed {speed} is not seamless");
         }
 
+    }
+
+    #[test]
+    fn water_clock_holds_while_a_replay_is_paused() {
+        let mut clock = WaterClock::default();
+        assert_eq!(clock.advance(0.5, None), 0.5);
+        // Entering the replay, paused, rewound: still.
+        assert_eq!(clock.advance(0.5, Some(10.0)), 0.5);
+        assert_eq!(clock.advance(0.5, Some(10.0)), 0.5);
+        assert_eq!(clock.advance(0.5, Some(4.0)), 0.5);
+        // Playing forward moves it by the cursor step; back in play, real time again.
+        assert_eq!(clock.advance(0.5, Some(4.25)), 0.75);
+        assert_eq!(clock.advance(0.5, None), 1.25);
     }
 
     #[test]
