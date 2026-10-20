@@ -10,7 +10,7 @@ fn pose(x: f32) -> Snapshot {
 }
 
 #[test]
-fn rolling_window_is_thirty_seconds_with_variable_cadence() {
+fn rolling_window_is_the_retail_ninety_seconds_with_variable_cadence() {
     let mut replay = Replay::default();
     for i in 0..4000 {
         replay.record(
@@ -20,8 +20,9 @@ fn rolling_window_is_thirty_seconds_with_variable_cadence() {
         );
     }
     let (start, end) = replay.bounds();
-    assert!((end - start - 30.).abs() < 1e-6);
-    assert!(replay.frames.len() <= 1202);
+    // 5400 frames at retail's 60 per second (b345).
+    assert!((end - start - 90.).abs() < 1e-6);
+    assert!(replay.frames.len() <= 3602);
     replay.enter();
     replay.seek(-100.);
     assert_eq!(replay.cursor, start);
@@ -175,4 +176,43 @@ fn controller_replay_scrub_camera_and_exit_do_not_leak_gameplay_input() {
         app.world().resource::<ControllerInput>().mapped_actions,
         [[0.; 18]; 4]
     );
+}
+
+#[test]
+fn world_actors_play_back_from_the_recording_and_return_to_live_on_exit() {
+    use super::world::ReplayActor;
+    let mut app = App::new();
+    app.init_resource::<Replay>();
+    super::world::plugin(&mut app);
+    let joint = app.world_mut().spawn(Transform::from_xyz(0., 1., 0.)).id();
+    let car = app.world_mut().spawn((ReplayActor { id: 9 }, super::world::ReplayJoints(vec![joint]),
+        Transform::from_xyz(0., 0., 0.), Visibility::Inherited)).id();
+    let step = |app: &mut App, x: f32| {
+        app.world_mut().resource_mut::<Replay>().record(pose(x), 1. / 60., false);
+        app.update();
+    };
+    step(&mut app, 0.);
+    app.world_mut().entity_mut(car).insert(Transform::from_xyz(2., 0., 0.));
+    app.world_mut().entity_mut(joint).insert(Transform::from_xyz(0., 1., 0.).with_rotation(Quat::from_rotation_x(1.0)));
+    step(&mut app, 1.);
+    // An actor that appeared after the first frame is not drawn before it.
+    let late = app.world_mut().spawn((ReplayActor { id: 10 }, Transform::from_xyz(5., 0., 0.), Visibility::Inherited)).id();
+    step(&mut app, 2.);
+    {
+        let mut replay = app.world_mut().resource_mut::<Replay>();
+        replay.enter();
+        replay.seek(0.5 / 60.);
+    }
+    app.update();
+    let world = app.world();
+    assert!((world.get::<Transform>(car).unwrap().translation.x - 1.).abs() < 1e-4);
+    let angle = world.get::<Transform>(joint).unwrap().rotation.angle_between(Quat::from_rotation_x(0.5));
+    assert!(angle < 2e-3, "{angle}");
+    assert_eq!(world.get::<Visibility>(late), Some(&Visibility::Hidden));
+    assert_eq!(world.get::<Visibility>(car), Some(&Visibility::Inherited));
+    app.world_mut().resource_mut::<Replay>().exit();
+    app.update();
+    let world = app.world();
+    assert_eq!(world.get::<Transform>(car).unwrap().translation.x, 2.);
+    assert_eq!(world.get::<Visibility>(late), Some(&Visibility::Inherited));
 }

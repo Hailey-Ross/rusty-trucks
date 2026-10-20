@@ -7,7 +7,8 @@ use crate::{
 use bevy::prelude::*;
 use std::collections::VecDeque;
 
-const WINDOW: f64 = 30.0;
+/// Retail records one frame per 60 Hz sim step, so its 5400-frame cap is a 90 s window (b345, REPLAYREC count run).
+const RECORD_HZ: f64 = 60.0;
 const SELECT: u16 = 0x0020;
 const A: u16 = 0x1000;
 const B: u16 = 0x2000;
@@ -28,6 +29,9 @@ pub(crate) struct Replay {
     playing: bool,
     previous_buttons: u16,
     release_controls: bool,
+    /// Every other drawn actor ([`world`]), on the same clock as `frames`.
+    pub(crate) world: skate_core::replay_buffer::ReplayBuffer,
+    world_time: Option<f64>,
 }
 
 impl Replay {
@@ -38,9 +42,14 @@ impl Replay {
         let time = self.frames.back().map_or(0.0, |f| f.time + dt);
         self.frames.push_back(Frame { time, pose, cut });
         // Keep one bracketing sample at the start for fractional-time scrubs.
-        while self.frames.len() > 2 && self.frames[1].time <= time - WINDOW {
+        let window = self.window();
+        while self.frames.len() > 2 && self.frames[1].time <= time - window {
             self.frames.pop_front();
         }
+    }
+
+    fn window(&self) -> f64 {
+        f64::from(self.world.limits.max_frames) / RECORD_HZ
     }
 
     fn bounds(&self) -> (f64, f64) {
@@ -49,7 +58,7 @@ impl Replay {
             self.frames
                 .front()
                 .map_or(0.0, |f| f.time)
-                .max(end - WINDOW),
+                .max(end - self.window()),
             end,
         )
     }
@@ -122,6 +131,7 @@ impl Replay {
 pub(crate) struct ReplayPlugin;
 impl Plugin for ReplayPlugin {
     fn build(&self, app: &mut App) {
+        world::plugin(app);
         app.init_resource::<Replay>()
             .configure_sets(
                 FixedUpdate,
@@ -327,6 +337,8 @@ fn update_ui(
         node.width = percent(fraction as f32 * 100.0);
     }
 }
+
+mod world;
 
 #[cfg(test)]
 mod tests;

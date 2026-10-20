@@ -1053,6 +1053,13 @@ pub(crate) struct CarLook {
     ready: bool,
 }
 
+impl CarLook {
+    /// The wheel joints, for the replay recorder.
+    pub(crate) fn wheel_joints(&self) -> Vec<Entity> {
+        self.wheels.iter().map(|(e, _)| *e).collect()
+    }
+}
+
 /// Car materials per (source material, colours, gain), shared by cars with the same pair, and the
 /// environment cubes by asset path.
 #[derive(Resource, Default)]

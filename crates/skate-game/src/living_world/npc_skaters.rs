@@ -1124,6 +1124,13 @@ pub(crate) struct NpcPuppet {
     style: &'static str,
 }
 
+impl NpcPuppet {
+    /// The bound joints, for the replay recorder.
+    pub(crate) fn joints(&self) -> Vec<Entity> {
+        self.bindings.as_ref().map(|b| b.joints()).unwrap_or_default()
+    }
+}
+
 /// Load the look and bind it to the stock skeleton (like a remote player's look).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn present_looks(
