@@ -2413,3 +2413,22 @@ Still to port (b372 port plan): the rest of the Colliding state machine (a conta
 re-hits while down or getting up pick LyingDown / Crouched / Standing by `recovery_intervals*`, contacts blocked
 after more than 5 expiries); the reader of `[ped+0x1714]+0xD4` is not found. b372 also corrects the b156 addendum:
 LyingDown keeps the stored Begin direction, Crouched and Standing take the new hit's direction.
+Recomp measurement (2026-10-19, `.local/research/b359-ground-probe-hook-plan.md` section 9) [trace]: retail's ped probe
+length L is 1.6 m (probe settings +16, every call seen; the retry scale 4.0). A hit and the mover update's calls were
+not captured: the hook crashed the recomp during the teleport's level load and is parked for a fix.
+
+## Peds get hit again while down, and stand on the floor everywhere (2026-10-19)
+- **Knock-down state machine (b372, b373)** [code + data]: a knocked-down ped now follows retail's PedestrianColliding
+  states. A contact while down waits for the ground timer's expiry and re-arms it (stay down another
+  `ground_seconds`); a contact while getting up re-hits from the posture the get-up clip has reached
+  (`sub_8269E460`: before `lying_down_until` lying down, the fall restarted at the set's ground restart time and the
+  stored direction; before `crouched_until` the crouch clip; else the whole fall; the last two take the new hit's
+  direction and reset the expiry count); contacts are dropped once the timer has run out more than `block_after`
+  (5) times. All values per anim set from the export (`recovery_intervals*`, `Wipeout*GroundRestartTime`, crouch
+  clips), retail as defaults; `block_after` is ours as data. Log `PED_COLLIDING`. Test
+  `a_knocked_down_ped_stays_down_when_hit_again_and_is_rehit_while_getting_up`; data test checks the per-set values.
+  Not play-tested. Open: the reader of `[ped+0x1714]+0xD4`.
+- **Ground probe (b359, b358)** [trace]: the drawn ped's ground cast now uses retail's measured probe length 1.6 m
+  both ways, then the 4x retry with retail's shape (a cast up to find a ceiling, then down from below it). Before,
+  the upward reach was 0.2 m, so peds on navmesh up to 4.3 m under a road were drawn sunk; user 2026-10-19: "Peds
+  dont fucking sink into the ground.. ever.." (retail outcome). Not play-tested; `PED_FLOATING` logs any gap.
