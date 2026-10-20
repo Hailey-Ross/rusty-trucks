@@ -216,3 +216,79 @@ fn world_actors_play_back_from_the_recording_and_return_to_live_on_exit() {
     assert_eq!(world.get::<Transform>(car).unwrap().translation.x, 2.);
     assert_eq!(world.get::<Visibility>(late), Some(&Visibility::Inherited));
 }
+
+#[test]
+fn mod_markers_and_limits_are_owned_and_go_with_their_mod() {
+    let mut replay = Replay::default();
+    assert!(replay.add_marker("a", "early".into()).is_err(), "nothing recorded yet");
+    replay.record(pose(0.), 1. / 60., false);
+    replay.add_marker("a", "kickflip".into()).unwrap();
+    replay.add_marker("b", "bail".into()).unwrap();
+    for _ in 2..MAX_MARKERS {
+        replay.add_marker("b", "x".into()).unwrap();
+    }
+    assert!(replay.add_marker("a", "one too many".into()).is_err());
+    replay.set_limits("a", Some(1800), None);
+    assert_eq!(replay.world.limits.max_frames, 1800);
+    assert!((replay.window() - 30.).abs() < 1e-9);
+    // Another mod's reset does not drop a's limits; a's disable does.
+    replay.set_limits("b", None, None);
+    assert_eq!(replay.world.limits.max_frames, 1800);
+    replay.clear_owner("a");
+    assert_eq!(replay.world.limits.max_frames, 5400);
+    let state = replay.state();
+    assert_eq!(state["markers"].as_array().unwrap().len(), MAX_MARKERS - 1);
+    assert_eq!(state["max_frames"], 5400);
+    replay.clear_mods();
+    assert_eq!(replay.state()["markers"].as_array().unwrap().len(), 0);
+    // Markers leave with the window.
+    replay.add_marker("a", "old".into()).unwrap();
+    for _ in 0..(91 * 60) {
+        replay.record(pose(1.), 1. / 60., false);
+    }
+    assert_eq!(replay.state()["markers"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn a_despawned_actor_plays_back_as_a_ghost_until_it_leaves_the_window() {
+    use super::world::{ReplayActor, ReplayGhost, ReplayJoints};
+    use bevy::ecs::system::RunSystemOnce;
+    let mut app = App::new();
+    app.init_resource::<Replay>();
+    app.world_mut().resource_mut::<Replay>().world.limits.max_frames = 60;
+    super::world::plugin(&mut app);
+    let ped = app.world_mut().spawn((Transform::from_xyz(3., 0., 0.), Visibility::Inherited)).id();
+    let scene = app.world_mut().spawn((ChildOf(ped), Transform::default())).id();
+    let joint = app.world_mut().spawn((ChildOf(scene), Transform::from_xyz(0., 1., 0.))).id();
+    app.world_mut().entity_mut(ped).insert((ReplayActor { id: 1 << 56 | 5 }, ReplayJoints(vec![joint])));
+    let step = |app: &mut App| {
+        app.world_mut().resource_mut::<Replay>().record(pose(0.), 1. / 60., false);
+        app.update();
+    };
+    step(&mut app);
+    step(&mut app);
+    app.world_mut().run_system_once(move |mut commands: Commands| super::world::retire(&mut commands, ped)).unwrap();
+    assert!(app.world().get_entity(ped).is_err());
+    let ghost = app.world_mut().query_filtered::<Entity, With<ReplayGhost>>().single(app.world()).unwrap();
+    assert_eq!(app.world().get::<ChildOf>(scene).unwrap().parent(), ghost);
+    step(&mut app);
+    step(&mut app);
+    {
+        let mut replay = app.world_mut().resource_mut::<Replay>();
+        replay.enter();
+        replay.seek(0.);
+    }
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(ghost), Some(&Visibility::Inherited));
+    assert_eq!(app.world().get::<Transform>(ghost).unwrap().translation.x, 3.);
+    app.world_mut().resource_mut::<Replay>().seek(3. / 60.);
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(ghost), Some(&Visibility::Hidden));
+    app.world_mut().resource_mut::<Replay>().exit();
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(ghost), Some(&Visibility::Hidden), "hidden while live");
+    for _ in 0..200 {
+        step(&mut app);
+    }
+    assert!(app.world().get_entity(ghost).is_err() && app.world().get_entity(joint).is_err());
+}

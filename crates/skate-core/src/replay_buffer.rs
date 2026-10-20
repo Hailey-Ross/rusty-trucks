@@ -169,6 +169,11 @@ impl ReplayBuffer {
         self.bytes
     }
 
+    /// Whether `id` still has a track in the window.
+    pub fn contains(&self, id: u64) -> bool {
+        self.tracks.contains_key(&id)
+    }
+
     pub fn ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.tracks.keys().copied()
     }

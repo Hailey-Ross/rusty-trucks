@@ -23,7 +23,7 @@ pub(crate) struct ReplayJoints(pub Vec<Entity>);
 pub(super) fn plugin(app: &mut App) {
     app.init_resource::<LiveState>().add_systems(
         PostUpdate,
-        (tag_actors, refresh_joints, record, play_back).chain().before(bevy::transform::TransformSystems::Propagate),
+        (tag_actors, refresh_joints, record, drop_ghosts, play_back).chain().before(bevy::transform::TransformSystems::Propagate),
     );
 }
 
@@ -60,6 +60,60 @@ fn refresh_joints(
     }
 }
 
+/// A despawned actor's drawn scene, kept hidden under its replay id until its track leaves the window, so playback
+/// still draws actors that left the world inside the window (retail plays them back from its frames too).
+#[derive(Component)]
+pub(crate) struct ReplayGhost;
+
+/// At most this many ghosts are kept (the oldest-despawned are dropped first by their tracks leaving the window).
+pub(crate) const MAX_GHOSTS: usize = 64;
+
+/// Despawn an actor, keeping its drawn scene for the replay. Use instead of `despawn()` for anything that has a
+/// [`ReplayActor`] and [`ReplayJoints`]; anything else (or past the ghost cap) is simply despawned.
+pub(crate) fn retire(commands: &mut Commands, entity: Entity) {
+    commands.queue(move |world: &mut World| {
+        if let Some(ghost) = ghost_parts(world, entity) {
+            let (actor, joints, transform, scene) = ghost;
+            let ghost = world.spawn((Name::new("replay ghost"), ReplayGhost, actor, joints, transform, Visibility::Hidden)).id();
+            world.entity_mut(scene).insert(ChildOf(ghost));
+        }
+        if let Ok(e) = world.get_entity_mut(entity) {
+            e.despawn();
+        }
+    });
+}
+
+/// The actor's id, joints, root transform and the child that holds the joints (its loaded scene).
+fn ghost_parts(world: &mut World, entity: Entity) -> Option<(ReplayActor, ReplayJoints, Transform, Entity)> {
+    let ghosts = world.query_filtered::<(), With<ReplayGhost>>().iter(world).count();
+    let replay = world.get_resource::<Replay>()?;
+    let e = world.get_entity(entity).ok()?;
+    let (actor, joints, transform) = (*e.get::<ReplayActor>()?, e.get::<ReplayJoints>()?.clone(), *e.get::<Transform>()?);
+    if ghosts >= MAX_GHOSTS || !replay.world.contains(actor.id) {
+        return None;
+    }
+    let mut child = *joints.0.first()?;
+    loop {
+        let parent = world.get::<ChildOf>(child)?.parent();
+        if parent == entity {
+            return Some((actor, joints, transform, child));
+        }
+        child = parent;
+    }
+}
+
+/// Ghosts whose track left the window go (never during playback).
+fn drop_ghosts(mut commands: Commands, replay: Res<Replay>, ghosts: Query<(Entity, &ReplayActor), With<ReplayGhost>>) {
+    if replay.active {
+        return;
+    }
+    for (entity, actor) in &ghosts {
+        if !replay.world.contains(actor.id) {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 fn joint(t: &Transform) -> JointPose {
     JointPose { translation: t.translation.to_array(), rotation: t.rotation.to_array(), scale: t.scale.to_array() }
 }
@@ -79,7 +133,7 @@ fn record(
     mut ids: Local<HashMap<Entity, u64>>,
     mut gone: Local<Vec<u64>>,
     mut removed: RemovedComponents<ReplayActor>,
-    actors: Query<(Entity, Ref<ReplayActor>, Ref<Transform>, Option<&ReplayJoints>, Option<Ref<Visibility>>)>,
+    actors: Query<(Entity, Ref<ReplayActor>, Ref<Transform>, Option<&ReplayJoints>, Option<Ref<Visibility>>), Without<ReplayGhost>>,
     joints: Query<&Transform>,
 ) {
     gone.extend(removed.read().filter_map(|e| ids.remove(&e)));

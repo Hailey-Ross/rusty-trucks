@@ -698,7 +698,7 @@ pub(crate) fn apply_records(
         if let Some(e) = index.0.remove(&r.id) {
             // A simulated skater's loaded body goes back to the pool first (loading one costs ~220 ms).
             commands.queue(move |world: &mut World| super::npc_sim::pool_from(world, e));
-            commands.entity(e).despawn();
+            crate::replay::retire(&mut commands, e);
             events.write(NpcSkaterEvent::Despawned { id: r.id, reason: r.reason });
             info!("NPC_SKATER_DESPAWN #{} reason {:?} tick {} left {}", r.id.serial, r.reason, r.tick, index.0.len());
         }
@@ -904,7 +904,7 @@ pub(crate) fn advance(
                 despawns.write(LivingWorldDespawn(r));
             }
             if index.0.remove(&id).is_some() {
-                commands.entity(e).despawn();
+                crate::replay::retire(&mut commands, e);
                 events.write(NpcSkaterEvent::Despawned { id, reason: DespawnReason::External });
                 info!("NPC_SKATER_DESPAWN #{} reason faded out left {}", id.serial, index.0.len());
             }

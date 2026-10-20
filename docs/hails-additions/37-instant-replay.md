@@ -39,31 +39,55 @@ when the replay opened, so a replay of a line past a crowd shows a still picture
 - The player's window follows the same limit: 5400 frames at 60 per second = 90 s (was 30 s).
 
 ### Moddability and multiplayer
-- Any entity a mod gives a `ReplayActor` (and optionally `ReplayJoints`) is recorded and played back; limits are a
-  plain data struct. Mod API (`sdk.replay.*`: start / stop / marker / register_provider, cleanup on disable) is the
-  next M1 step.
+- Any entity with a `ReplayActor` (and optionally `ReplayJoints`) is recorded and played back; mod props
+  (`sdk.world.spawn_prop`) carry `PropInstance` and are recorded like map props.
+- Mod API (`sdk.replay`, capability `replay` = 1, all in `crates/skate-mods/src/api.lua`):
+  - `sdk.replay.open()` (`replay_open`): opens the replay at the newest frame; refused in multiplayer.
+  - `sdk.replay.marker(label)` (`replay_marker`): a marker at the newest frame, label 1..64 characters; at most 50
+    (retail provider id 10); markers leave with the window and the mod's markers go on disable.
+  - `sdk.replay.set_limits{max_frames, byte_budget}` (`replay_set_limits`): 60..36,000 frames, 1 MiB..1 GiB; nil
+    restores the defaults; last writer wins; the override goes when that mod is disabled.
+  - Read-only `snapshot.replay_state`: active, cursor, start, end, frames, bytes, max_frames, byte_budget, markers
+    (time, label, owner). `snapshot.replay` stays the old boolean.
+  - Still to come: a mod-side provider (record per-frame mod values, read them back during playback).
 - Ids are the stable network ids (`LivingWorldId::to_u64`, prop instance ids), keys are plain bytes with counts, so
   a recording is serialisable. Replay stays refused in multiplayer for now (unchanged).
 
 ### Files
 `crates/skate-core/src/replay_buffer.rs`, `crates/skate-core/src/replay_buffer/tests.rs`, `crates/skate-core/src/lib.rs`,
 `crates/skate-game/src/replay.rs`, `crates/skate-game/src/replay/world.rs`, `crates/skate-game/src/replay/tests.rs`,
+`crates/skate-mods/src/api.lua`, `crates/skate-mods/src/vm.rs`, `crates/skate-game/src/modding/mod.rs`,
 accessors in `animation.rs`, `living_world/npc_skaters.rs`, `living_world/peds.rs`, `living_world/vehicles.rs`.
 
 ### Verification
 - skate-core: 7 tests (quantise round trip within 2e-4 rad, keys only on change and holds across gaps, hidden before
   spawn and after despawn, nlerp midpoint, eviction at the frame cap keeping the key that holds at the window start,
   eviction by bytes with exact byte accounting, clock reset clears).
-- skate-game: the 90 s window test, and a world playback test (an actor plays back its recorded root and joint
+- skate-mods: the replay commands parse and validate (bounds refused), the Lua functions submit them, the capability
+  is set.
+- skate-game: marker cap, marker eviction with the window, limits ownership and cleanup on disable; the 90 s window
+  test, and a world playback test (an actor plays back its recorded root and joint
   mid-frame, an actor that appeared later is hidden, exit restores the live transforms and visibility).
 - Not play-tested yet.
 
+### Actors that left the world inside the window
+NPC skaters, peds and traffic cars despawn through `crate::replay::retire` instead of `despawn()` (npc_skaters.rs
+the two despawn sites, peds.rs the despawn system, vehicles.rs the despawn record and the external despawn). It
+moves the actor's loaded scene (the child that holds its recorded joints) under a hidden "ghost" root with the same
+replay id, then despawns the actor with its gameplay components. Playback draws the ghost from the track up to the
+despawn frame and hides it after; the ghost is dropped once its track leaves the window, never during playback. At
+most 64 ghosts (`MAX_GHOSTS`); past that, or when the actor was never recorded, it is simply despawned. The world
+reset on a map change keeps a plain despawn (the replay resets with the map). Test: a retired ped plays back as a
+ghost before its despawn, hides after it, stays hidden while live and goes with its track.
+
 ### Open
-- Actors that despawned inside the window are not drawn (their entities are gone); they need puppets spawned from the
-  recorded look (character, model, recipe, tints, paints).
 - Ped / NPC fade alpha, held hand props and the camera's full `CameraFrame` (shake, opacity, blur) are not recorded
   yet.
-- Playback audio: retail regenerates audio from the recorded state with "in replay" gates (research b375); ours still
-  mutes during replay.
+- Playback audio: retail records no audio and does not mute. It runs the normal audio again from the recorded state
+  (skater records, provider id 4) with "in replay" gates read through `sub_8279E180`: the master step `824D5160` sets
+  a MixMap master input in replay (checked in the recomp: it calls `8279E180`, then loads 32767), speech is blocked,
+  and a paused replay is silent (research b375). Ours still mutes during replay.
+- Retail editor cameras (for M2, research b376): ICELITE keyed values (eye, look, dutch, lens mm), lens 10..500 mm,
+  default 24; shake levels 0 / 0.35 / 1.0 / 1.0 for amplitude and frequency (`8250A6E8`).
 - The player is still recorded as full `Mat4` skin rows (about 45 MB at 90 s); moving it into the quantised buffer
   would cut that to about a fifth.

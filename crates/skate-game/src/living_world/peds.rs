@@ -855,7 +855,7 @@ pub(crate) fn apply_ped_records(
                 r.id.serial, r.reason, r.tick, at.map(|p| [p.x, p.y, p.z]), focus.map(|p| [p.x, p.y, p.z]),
                 distance.map_or("none".to_string(), |d| format!("{d:.1}"))
             );
-            commands.entity(e).despawn();
+            crate::replay::retire(&mut commands, e);
             events.write(PedEvent::Despawned { id: r.id, reason: r.reason });
         }
     }

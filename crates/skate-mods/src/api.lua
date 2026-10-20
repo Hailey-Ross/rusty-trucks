@@ -420,6 +420,21 @@ function sdk.world.spawn_prop(key, from, opts)
 end
 function sdk.world.remove_prop(key) submit{kind="world_remove_prop",key=key} end
 
+-- Instant replay (doc 37). Every drawn actor is recorded, mod props and anything a mod tags included.
+-- Read the state from snapshot.replay_state {active, cursor, start, end, frames, bytes, max_frames,
+-- byte_budget, markers = {{time, label, owner}}}.
+sdk.replay = { version = 1 }
+-- Open the replay at the newest frame (refused in multiplayer and when nothing is recorded yet).
+function sdk.replay.open() submit{kind="replay_open"} end
+-- A marker at the newest recorded frame (retail keeps up to 50, provider id 10); the mod's markers go on disable.
+function sdk.replay.marker(label) submit{kind="replay_marker",label=label} end
+-- Override the recording limits (retail 5400 frames; byte budget ours): opts.max_frames, opts.byte_budget.
+-- nil restores the defaults; the mod's override goes on disable. Last writer wins.
+function sdk.replay.set_limits(opts)
+  opts = opts or {}
+  submit{kind="replay_set_limits",max_frames=opts.max_frames,byte_budget=opts.byte_budget}
+end
+
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and
 -- skaters to the game's retail world audio (the same path engine systems use). Keys are scoped
 -- to the calling mod; 48 objects per mod, 128 in all; an object not updated for 0.5 s is parked;

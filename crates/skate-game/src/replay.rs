@@ -32,7 +32,20 @@ pub(crate) struct Replay {
     /// Every other drawn actor ([`world`]), on the same clock as `frames`.
     pub(crate) world: skate_core::replay_buffer::ReplayBuffer,
     world_time: Option<f64>,
+    /// Mod markers on the recording clock (retail provider id 10 holds up to 50).
+    markers: VecDeque<Marker>,
+    /// The mod whose `sdk.replay.set_limits` is in force (last writer wins).
+    limits_owner: Option<String>,
 }
+
+struct Marker {
+    time: f64,
+    label: String,
+    owner: String,
+}
+
+/// Retail's marker cap (provider id 10: up to 50 x 48 B, b363).
+const MAX_MARKERS: usize = 50;
 
 impl Replay {
     pub fn record(&mut self, pose: Snapshot, dt: f64, cut: bool) {
@@ -46,21 +59,86 @@ impl Replay {
         while self.frames.len() > 2 && self.frames[1].time <= time - window {
             self.frames.pop_front();
         }
+        let start = self.bounds().0;
+        while self.markers.front().is_some_and(|m| m.time < start) {
+            self.markers.pop_front();
+        }
     }
 
     fn window(&self) -> f64 {
         f64::from(self.world.limits.max_frames) / RECORD_HZ
     }
 
+    /// The scrubbable span: the player's frames, cut to the actors' window when the byte budget evicted it first.
     fn bounds(&self) -> (f64, f64) {
         let end = self.frames.back().map_or(0.0, |f| f.time);
+        let world_start = self.world.bounds().map_or(f64::MIN, |(start, _)| start);
         (
             self.frames
                 .front()
                 .map_or(0.0, |f| f.time)
-                .max(end - self.window()),
+                .max(end - self.window())
+                .max(world_start.min(end)),
             end,
         )
+    }
+
+    /// `sdk.replay.marker`: a marker at the newest frame; refused when nothing is recorded or the cap is reached.
+    pub(crate) fn add_marker(&mut self, owner: &str, label: String) -> Result<(), String> {
+        let time = self.frames.back().ok_or("replay_marker: nothing recorded yet")?.time;
+        if self.markers.len() >= MAX_MARKERS {
+            return Err(format!("replay_marker: {MAX_MARKERS} markers reached"));
+        }
+        self.markers.push_back(Marker { time, label, owner: owner.to_string() });
+        Ok(())
+    }
+
+    /// `sdk.replay.set_limits`: both absent restores the defaults.
+    pub(crate) fn set_limits(&mut self, owner: &str, max_frames: Option<u32>, byte_budget: Option<u64>) {
+        let defaults = skate_core::replay_buffer::ReplayLimits::default();
+        if max_frames.is_none() && byte_budget.is_none() {
+            if self.limits_owner.as_deref() == Some(owner) {
+                self.world.limits = defaults;
+                self.limits_owner = None;
+            }
+            return;
+        }
+        self.world.limits = skate_core::replay_buffer::ReplayLimits {
+            max_frames: max_frames.unwrap_or(defaults.max_frames),
+            byte_budget: byte_budget.map_or(defaults.byte_budget, |b| b as usize),
+        };
+        self.limits_owner = Some(owner.to_string());
+    }
+
+    /// A mod stopped: its markers and its limits go.
+    pub(crate) fn clear_owner(&mut self, owner: &str) {
+        self.markers.retain(|m| m.owner != owner);
+        self.set_limits(owner, None, None);
+    }
+
+    /// Every mod stopped.
+    pub(crate) fn clear_mods(&mut self) {
+        self.markers.clear();
+        self.world.limits = skate_core::replay_buffer::ReplayLimits::default();
+        self.limits_owner = None;
+    }
+
+    /// Read-only state for the mod snapshot (`replay_state`).
+    pub(crate) fn state(&self) -> serde_json::Value {
+        let (start, end) = self.bounds();
+        serde_json::json!({
+            "active": self.active,
+            "cursor": if self.active { self.cursor } else { end },
+            "start": start,
+            "end": end,
+            "frames": self.world.frame_count(),
+            "bytes": self.world.bytes(),
+            "max_frames": self.world.limits.max_frames,
+            "byte_budget": self.world.limits.byte_budget,
+            "markers": self.markers.iter()
+                .map(|m| serde_json::json!({"time": m.time, "label": m.label, "owner": m.owner}))
+                .collect::<Vec<_>>(),
+        })
     }
 
     pub(crate) fn enter(&mut self) {
@@ -339,6 +417,7 @@ fn update_ui(
 }
 
 mod world;
+pub(crate) use world::retire;
 
 #[cfg(test)]
 mod tests;

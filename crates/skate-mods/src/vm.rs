@@ -305,6 +305,17 @@ pub enum Command {
     },
     /// Remove a prop this mod created with `WorldSpawnProp`.
     WorldRemoveProp { key: String },
+    /// Open the instant replay at the newest frame (doc 37).
+    ReplayOpen {},
+    /// A replay marker at the newest recorded frame (retail provider id 10, up to 50).
+    ReplayMarker { label: String },
+    /// Override the replay limits; both absent restores the defaults.
+    ReplaySetLimits {
+        #[serde(default)]
+        max_frames: Option<u32>,
+        #[serde(default)]
+        byte_budget: Option<u64>,
+    },
     /// Audio extension 4 (doc 16 L2): write one input of a retail MixMap controller (`value` absent
     /// = release it: the input gets back the value before this mod's first write).
     AudioSetMixmapInput {
@@ -719,6 +730,11 @@ impl Command {
                 && yaw.is_finite() && yaw.abs() <= 1000.
                 && velocity.iter().chain(spin).all(|v| v.is_finite() && v.abs() <= 200.),
             Self::WorldRemoveProp { key } => crate::schema::valid_id(key),
+            Self::ReplayOpen {} => true,
+            Self::ReplayMarker { label } => !label.is_empty() && label.len() <= 64 && !label.chars().any(char::is_control),
+            // 1 s to 10 min at 60 frames per second; 1 MiB to 1 GiB.
+            Self::ReplaySetLimits { max_frames, byte_budget } => max_frames.is_none_or(|f| (60..=36_000).contains(&f))
+                && byte_budget.is_none_or(|b| (1 << 20..=1 << 30).contains(&b)),
             Self::WorldSetTuning { domain, patch } => crate::world_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::world_tuning::valid_patch(domain, p)),
             Self::AudioSetTuning { domain, patch } => crate::audio_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::audio_tuning::valid_patch(domain, p)),
             Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
@@ -1019,6 +1035,9 @@ fn command_kind(command: &Command) -> &'static str {
         Command::WorldUprightProp { .. } => "world_upright_prop",
         Command::WorldSpawnProp { .. } => "world_spawn_prop",
         Command::WorldRemoveProp { .. } => "world_remove_prop",
+        Command::ReplayOpen { .. } => "replay_open",
+        Command::ReplayMarker { .. } => "replay_marker",
+        Command::ReplaySetLimits { .. } => "replay_set_limits",
         Command::WorldAudioSpawn { .. } => "world_audio_spawn",
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
@@ -1384,6 +1403,7 @@ impl Vm {
             // Tuning writes at run time (`sdk.audio.set_tuning`: player / world / bus / reverb domains).
             capabilities.set("audio_tuning", 1)?;
             capabilities.set("world_tuning", 1)?;
+        capabilities.set("replay", 1)?;
             // Retail menus (sdk.menus): edit the retail menu structure, handle any entry.
             capabilities.set("retail_menus", 1)?;
             sdk.set("_native_capabilities", capabilities)?;
@@ -2593,6 +2613,13 @@ mod world_audio_tests {
             (json!({"kind":"world_spawn_prop","key":"can","from":7,"position":[1,2,3],"velocity":[400,0,0]}), false),
             (json!({"kind":"world_spawn_prop","key":"../x","from":7,"position":[1,2,3]}), false),
             (json!({"kind":"world_remove_prop","key":"can"}), true),
+            (json!({"kind":"replay_open"}), true),
+            (json!({"kind":"replay_marker","label":"kickflip"}), true),
+            (json!({"kind":"replay_marker","label":""}), false),
+            (json!({"kind":"replay_set_limits","max_frames":5400}), true),
+            (json!({"kind":"replay_set_limits"}), true),
+            (json!({"kind":"replay_set_limits","max_frames":10}), false),
+            (json!({"kind":"replay_set_limits","byte_budget":1}), false),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(c.validate(), ok, "{value}");
@@ -2611,6 +2638,11 @@ mod world_audio_tests {
                 sdk.world.upright_prop(7)
                 sdk.world.spawn_prop('can', 7, {position = {1, 2, 3}, velocity = {4, 2, 0}})
                 sdk.world.remove_prop('can')
+                assert(sdk.capabilities.replay == 1, 'replay capability')
+                sdk.replay.open()
+                sdk.replay.marker('kickflip')
+                sdk.replay.set_limits({max_frames = 1800})
+                sdk.replay.set_limits(nil)
             end
             return M
         "#).unwrap();
@@ -2620,7 +2652,9 @@ mod world_audio_tests {
         let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
         let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
         let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
-        assert_eq!(kinds, ["world_set_tuning", "world_set_tuning", "request", "world_reset_moved_props", "world_reset_prop", "world_upright_prop", "world_spawn_prop", "world_remove_prop"]);
+        assert_eq!(kinds, ["world_set_tuning", "world_set_tuning", "request", "world_reset_moved_props", "world_reset_prop", "world_upright_prop", "world_spawn_prop", "world_remove_prop",
+            "replay_open", "replay_marker", "replay_set_limits", "replay_set_limits"]);
+        assert!(matches!(&cmds[11], Command::ReplaySetLimits { max_frames: None, byte_budget: None }), "nil restores");
         assert!(cmds.iter().all(Command::validate));
         assert!(matches!(&cmds[1], Command::WorldSetTuning { patch: None, .. }), "nil restores");
         let _ = std::fs::remove_dir_all(root);

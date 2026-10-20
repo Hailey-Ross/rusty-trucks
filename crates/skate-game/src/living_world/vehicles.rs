@@ -574,7 +574,7 @@ pub(crate) fn apply_vehicle_records(
             continue;
         }
         if let Some((e, _)) = traffic.index.remove(&r.id.serial) {
-            commands.entity(e).despawn();
+            crate::replay::retire(&mut commands, e);
             traffic.cars.retain(|c| c.key != r.id.serial);
             events.write(TrafficEvent::Despawned { id: r.id, reason: r.reason });
         }
@@ -774,7 +774,7 @@ pub(crate) fn drive_traffic(
                 despawns.write(LivingWorldDespawn(r));
             }
             if let Some((e, _)) = traffic.index.remove(&key) {
-                commands.entity(e).despawn();
+                crate::replay::retire(&mut commands, e);
                 traffic.cars.retain(|c| c.key != key);
                 events.write(TrafficEvent::Despawned { id, reason: DespawnReason::External });
             }
