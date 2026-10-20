@@ -2415,7 +2415,7 @@ after more than 5 expiries); the reader of `[ped+0x1714]+0xD4` is not found. b37
 LyingDown keeps the stored Begin direction, Crouched and Standing take the new hit's direction.
 Recomp measurement (2026-10-19, `.local/research/b359-ground-probe-hook-plan.md` section 9) [trace]: retail's ped probe
 length L is 1.6 m (probe settings +16, every call seen; the retry scale 4.0). A hit and the mover update's calls were
-not captured: the hook crashed the recomp during the teleport's level load and is parked for a fix.
+not captured (the hook crashed the recomp during the teleport's level load); not needed further, since the user confirmed retail peds always stand on the floor.
 
 ## Peds get hit again while down, and stand on the floor everywhere (2026-10-19)
 - **Knock-down state machine (b372, b373)** [code + data]: a knocked-down ped now follows retail's PedestrianColliding
