@@ -824,6 +824,8 @@ pub(super) fn mixmap_frame(
         m.set_input(keys::MASTER, id, value);
     }
     m.set_input(keys::MASTER, 4, 32767);
+    // Master.in0: 32767 in replay, 0 otherwise, every pass (sub_824D5160 after the replay flag sub_8279E180).
+    m.set_input(keys::MASTER, 0, if replay.active { 32767 } else { 0 });
     for id in [1, 2, 5] {
         m.set_input(keys::MUSIC, id, 32767);
     }

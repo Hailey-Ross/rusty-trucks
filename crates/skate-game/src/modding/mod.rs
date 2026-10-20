@@ -655,6 +655,7 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         "controllers": controllers,
         "paused": world.resource::<crate::graphics_menu::Menu>().open,
         "replay": world.resource::<crate::replay::Replay>().active,
+        "replay_state": world.resource::<crate::replay::Replay>().state(),
         // Read-only frame-time statistics (`frame_timing`); null before the plugin runs.
         "frame": world.get_resource::<crate::frame_timing::FrameTiming>().map(|t| t.snapshot()),
         "camera": camera.map(|position| json!({"position": position})),
@@ -897,6 +898,7 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     world_tuning::clear_all(world);
     graphics_dynamic::clear(world);
     world_props::clear(world);
+    if let Some(mut replay) = world.get_resource_mut::<crate::replay::Replay>() { replay.clear_mods(); }
     canvas::clear_owner(world, &mut mods.canvases, None);
     detach_player(world, mods, true);
     let keys: Vec<_> = mods.graphics.keys().cloned().collect();
@@ -973,6 +975,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         world_tuning::clear_owner(world, id);
         graphics_dynamic::clear_owner(world, id);
         world_props::clear_owner(world, id);
+        if let Some(mut replay) = world.get_resource_mut::<crate::replay::Replay>() { replay.clear_owner(id); }
         volumes::clear_owner(world, mods, id);
         triggers::clear_owner(world, id);
         capture::clear_owner(world, id);
@@ -1055,6 +1058,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             world_tuning::clear_owner(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             world_props::clear_owner(world, &id);
+            if let Some(mut replay) = world.get_resource_mut::<crate::replay::Replay>() { replay.clear_owner(&id); }
             volumes::clear_owner(world, mods, &id);
             triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
@@ -1090,6 +1094,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             world_tuning::clear_owner(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             world_props::clear_owner(world, &id);
+            if let Some(mut replay) = world.get_resource_mut::<crate::replay::Replay>() { replay.clear_owner(&id); }
             volumes::clear_owner(world, mods, &id);
             triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
@@ -1217,6 +1222,14 @@ fn apply_one(
             world_props::spawn(world, id, key, from, position, yaw, velocity, spin)?
         }
         Command::WorldRemoveProp { key } => world_props::remove(world, id, &key),
+        Command::ReplayOpen {} => {
+            if world.get_resource::<crate::multiplayer::Multiplayer>().is_some_and(|n| n.active()) {
+                return Err("replay_open: refused in multiplayer".into());
+            }
+            world.resource_mut::<crate::replay::Replay>().enter();
+        }
+        Command::ReplayMarker { label } => world.resource_mut::<crate::replay::Replay>().add_marker(id, label)?,
+        Command::ReplaySetLimits { max_frames, byte_budget } => world.resource_mut::<crate::replay::Replay>().set_limits(id, max_frames, byte_budget),
         Command::WorldResetMovedProps {} => {
             if let Some(mut physics) = world.get_resource_mut::<crate::physics::GamePhysics>() {
                 physics.reset_moved_props();

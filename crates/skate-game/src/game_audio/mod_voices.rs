@@ -573,7 +573,7 @@ pub(super) fn frame(
     if let (Some(pass), Some(retail)) = (native.pending, native.mixmap.as_ref()) {
         mix.tick(retail, pass.calls);
     }
-    let silenced = super::silenced(menu.as_deref(), &replay);
+    let silenced = super::speech_silenced(menu.as_deref(), &replay);
     let dt = if silenced { 0.0 } else { time.delta_secs().clamp(0.0, 0.25) };
     let ear = listener.single().ok();
     let skater = cues.riding.board;

@@ -30,6 +30,8 @@ pub mod text_viewer;
 pub mod physics;
 pub mod player;
 pub mod point_graph;
+pub mod replay_buffer;
+pub mod replay_edit;
 pub mod riding;
 pub mod scoring;
 pub mod trigonometry;

@@ -855,7 +855,7 @@ pub(crate) fn apply_ped_records(
                 r.id.serial, r.reason, r.tick, at.map(|p| [p.x, p.y, p.z]), focus.map(|p| [p.x, p.y, p.z]),
                 distance.map_or("none".to_string(), |d| format!("{d:.1}"))
             );
-            commands.entity(e).despawn();
+            crate::replay::retire(&mut commands, e);
             events.write(PedEvent::Despawned { id: r.id, reason: r.reason });
         }
     }
@@ -1466,7 +1466,7 @@ pub(crate) fn id_order(id: LivingWorldId) -> u64 {
 #[derive(Component, Default)]
 pub(crate) struct PedPuppet {
     pub(crate) scene: Option<Entity>,
-    bindings: Option<crate::animation::AnimationStatus>,
+    pub(crate) bindings: Option<crate::animation::AnimationStatus>,
     /// Rig bones without clip data: (bone, rig parent, bind offset from the parent, native space).
     followers: Vec<(usize, usize, Mat4)>,
     lods: Vec<(Entity, u8)>,

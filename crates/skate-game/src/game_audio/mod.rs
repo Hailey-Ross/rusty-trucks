@@ -409,6 +409,8 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<crate::world_audio::WorldEmitterStats>()
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
+            .add_systems(FixedUpdate, record_replay_audio.after(skate_events::observe).after(crate::presentation::capture))
+            .add_systems(PreUpdate, feed_replay_audio.after(crate::replay::controls))
             .add_systems(
                 Update,
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
@@ -582,8 +584,37 @@ fn follow_camera(
     }
 }
 
-/// True while game sound must be silent: menu open, replay running.
+/// The player's audio step goes into the replay with the frame captured this step.
+fn record_replay_audio(cues: Res<skate_events::Cues>, replay: Option<ResMut<crate::replay::Replay>>) {
+    if let Some(mut replay) = replay.filter(|r| !r.active) {
+        replay.attach_riding(cues.raw);
+    }
+}
+
+/// During a replay the host hears the recorded steps the cursor crossed (instead of `observe`'s frozen live state).
+fn feed_replay_audio(
+    mut cues: ResMut<skate_events::Cues>,
+    replay: Option<ResMut<crate::replay::Replay>>,
+    presentation: Option<ResMut<crate::presentation::Presentation>>,
+) {
+    let Some(mut replay) = replay else { return };
+    for riding in replay.audio_steps() {
+        cues.publish(riding);
+    }
+    // A seek or rewind is a camera cut for the host (Doppler velocity reset, `native::mixmap_frame`).
+    if let Some(mut presentation) = presentation.filter(|_| replay.active && replay.jumped()) {
+        presentation.cuts += 1;
+    }
+}
+
+/// True while game sound must be silent: menu open, or a replay that is not moving forward (retail mutes a paused
+/// replay: Master.in6 with time scale 0, `sub_824D5160`, b375). A playing replay is heard from its recorded steps.
 fn silenced(menu: Option<&crate::graphics_menu::Menu>, replay: &crate::replay::Replay) -> bool {
+    menu.is_some_and(|m| m.open || m.fe_suspended) || (replay.active && !replay.audible())
+}
+
+/// Speech is silent in any replay (retail blocks speech requests in replay: `824AABD0`, `824ABA18`, b375).
+fn speech_silenced(menu: Option<&crate::graphics_menu::Menu>, replay: &crate::replay::Replay) -> bool {
     menu.is_some_and(|m| m.open || m.fe_suspended) || replay.active
 }
 

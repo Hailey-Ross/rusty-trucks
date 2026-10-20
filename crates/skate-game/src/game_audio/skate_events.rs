@@ -58,11 +58,14 @@ pub(crate) struct Cues {
     pub riding: Riding,
     /// Physics steps published since the host last took them.
     pub steps: u32,
+    /// The last published step as it was, before latching (what the replay records).
+    pub raw: Riding,
 }
 
 impl Cues {
     /// One physics step's sample: latched onto the pending one while the host has not taken it.
     pub(super) fn publish(&mut self, mut next: Riding) {
+        self.raw = next;
         if self.steps > 0 {
             latch_pulses(&self.riding, &mut next);
         }
@@ -264,7 +267,13 @@ pub(crate) fn observe(
     mut cues: ResMut<Cues>,
     mut seen: Local<Seen>,
     time: Res<Time>,
+    replay: Option<Res<crate::replay::Replay>>,
 ) {
+    // During a replay the recorded steps are published instead (`replay_audio::feed`), as retail's audio runs on
+    // the recorded presentation state (b375); the live state is frozen.
+    if replay.is_some_and(|r| r.active) {
+        return;
+    }
     let _timing = super::timing::scope(&super::timing::OBSERVE);
     // Animation events latched during the tick (physics never reads these).
     let audio = std::mem::take(&mut skater.animation_input.audio);
