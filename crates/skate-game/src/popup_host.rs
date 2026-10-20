@@ -11,6 +11,12 @@ use skate_core::fe_popup::PopupRequest;
 pub(crate) struct PopupMods {
     pub requests: Vec<(String, String, Option<PopupRequest>)>,
     pub cleared: Vec<Option<String>>,
+    /// Engine popups raised outside a menu screen (the replay's quit warning): requests with their callback id
+    /// (`engine:...`), and the choices that came back (callback id, choice index).
+    pub engine_requests: Vec<PopupRequest>,
+    pub engine_choices: Vec<(String, i32)>,
+    /// Whether the retail menu stage is up to show them (else the caller decides without a popup).
+    pub stage_ready: bool,
 }
 
 /// Callback ids of mod popups: `mod:<mod id>:<key>`.

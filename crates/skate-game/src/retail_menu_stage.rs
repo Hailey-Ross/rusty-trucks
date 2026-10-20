@@ -606,6 +606,7 @@ fn update(
     ),
 ) {
     let ready = stage.as_ref().is_some_and(|s| !s.failed) && movies.is_some() && menus.is_some();
+    popup_mods.stage_ready = ready;
     // The ported screens in this build's screen table (TU3 FE ids 56 and 45); none in tables extracted before
     // screens.
     let pause = backdrop.index(crate::fe_backdrop::PAUSE_SCREEN);
@@ -1169,6 +1170,13 @@ fn update(
                 ms.popup_dirty = true;
             }
         }
+        for request in std::mem::take(&mut popup_mods.engine_requests) {
+            ms.popups.remove_callback(&request.callback);
+            let callback = request.callback.clone();
+            let id = ms.popups.push(request);
+            info!("RETAIL_MENUS popup {id} ({callback})");
+            ms.popup_dirty = true;
+        }
         for (owner, key, request) in std::mem::take(&mut popup_mods.requests) {
             let callback = crate::popup_host::mod_callback(&owner, &key);
             ms.popup_dirty |= ms.popups.remove_callback(&callback);
@@ -1185,6 +1193,8 @@ fn update(
             ms.popup_dirty = true;
             if let Some((owner, key)) = event.callback.strip_prefix("mod:").and_then(|c| c.split_once(':')) {
                 mod_events.push((owner.to_owned(), serde_json::json!({"name": "menu_popup", "key": key, "choice": event.choice})));
+            } else if event.callback.starts_with("engine:") {
+                popup_mods.engine_choices.push((event.callback.clone(), event.choice));
             } else if event.callback == VIDEO_CALIBRATION_POPUP {
                 if let Some(c) = cal.filter(|c| ms.stack.active(*c)) {
                     let action = ms.video_cal.popup_result(event.choice as u32, &ms.video_cal_rules);

@@ -10,9 +10,27 @@ use std::collections::VecDeque;
 /// Retail records one frame per 60 Hz sim step, so its 5400-frame cap is a 90 s window (b345, REPLAYREC count run).
 const RECORD_HZ: f64 = 60.0;
 const SELECT: u16 = 0x0020;
-const A: u16 = 0x1000;
 const B: u16 = 0x2000;
-const Y: u16 = 0x8000;
+const RB: u16 = 0x0200;
+const DPAD_LEFT: u16 = 0x0004;
+const DPAD_RIGHT: u16 = 0x0008;
+/// The quit warning's callback id (engine popup channel, `popup_host::PopupMods`).
+const QUIT_POPUP: &str = "engine:replay.quit";
+/// Retail opens the replay only with more than 149 frames recorded (`8250B8F8`); read as frames of the editor's 30 fps
+/// timeline, that is 5 s (the unit is inferred, research b343 / b389).
+pub(crate) const MIN_OPEN_SECONDS: f64 = 150.0 / 30.0;
+
+/// Retail's quit warning (research b387: ID_COMMON_WARNING_TITLE / ID_REPLAY_EDITOR_QUIT, No / Yes).
+fn quit_popup() -> skate_core::fe_popup::PopupRequest {
+    skate_core::fe_popup::PopupRequest {
+        title: "ID_COMMON_WARNING_TITLE".into(),
+        description: "ID_REPLAY_EDITOR_QUIT".into(),
+        options: vec!["ID_COMMON_NO".into(), "ID_COMMON_YES".into()],
+        callback: QUIT_POPUP.into(),
+        cancelable: true,
+        ..Default::default()
+    }
+}
 
 struct Frame {
     time: f64,
@@ -48,6 +66,10 @@ pub(crate) struct Replay {
     audible: bool,
     /// How far the free camera may go from the player (m); None = retail's [`FREE_CAMERA_LEASH`]. Data, mod-settable.
     pub(crate) free_camera_leash: Option<f32>,
+    /// The quit warning is up (waiting for its answer).
+    quit_pending: bool,
+    /// Shortest recording the replay opens on (s); None = retail's [`MIN_OPEN_SECONDS`]. Data, mod-settable.
+    pub(crate) min_open_seconds: Option<f64>,
     /// The trigger scrub (retail rates as data) and its eased rate.
     pub(crate) scrub_spec: skate_core::replay_edit::ScrubSpec,
     scrub: skate_core::replay_edit::ScrubFilter,
@@ -210,6 +232,12 @@ impl Replay {
         })
     }
 
+    /// Retail's open check for Back and `sdk.replay.open`: enough recorded (`8250B8F8`).
+    pub(crate) fn can_open(&self) -> bool {
+        let (start, end) = self.bounds();
+        !self.frames.is_empty() && end - start >= self.min_open_seconds.unwrap_or(MIN_OPEN_SECONDS)
+    }
+
     pub(crate) fn enter(&mut self) {
         if self.frames.is_empty() {
             return;
@@ -232,6 +260,8 @@ impl Replay {
         self.cursor = time.clamp(start, end);
     }
 
+    /// One recorded frame back or forward (retail's editor frame step, mode 0xD; the editor binds it).
+    #[cfg_attr(not(test), allow(dead_code))]
     fn step(&mut self, direction: i32) {
         self.playing = false;
         let next = if direction > 0 {
@@ -329,6 +359,7 @@ pub(crate) fn controls(
     time: Res<Time<Real>>,
     menu: Option<Res<crate::graphics_menu::Menu>>,
     net: Option<Res<crate::multiplayer::Multiplayer>>,
+    mut popups: ResMut<crate::popup_host::PopupMods>,
 ) {
     if net.is_some_and(|n| n.active()) {
         if replay.active {replay.exit();}
@@ -338,15 +369,38 @@ pub(crate) fn controls(
     let pressed = pad.buttons & !replay.previous_buttons;
     replay.previous_buttons = pad.buttons;
     let menu_open = !crate::graphics_menu::gameplay_active(menu);
-    if !menu_open {
-        if pressed & SELECT != 0 || keys.just_pressed(KeyCode::F6) {
-            if replay.active {
+    // The quit warning's answer (No / Yes, Yes = 1).
+    for (callback, choice) in std::mem::take(&mut popups.engine_choices) {
+        if callback == QUIT_POPUP && replay.quit_pending {
+            replay.quit_pending = false;
+            if choice == 1 {
                 replay.exit();
-            } else {
+            }
+        }
+    }
+    if !menu_open {
+        let back = pressed & SELECT != 0 || keys.just_pressed(KeyCode::F6);
+        if !replay.active {
+            // Retail: Back during play opens the instant replay (`825EB998`), only with enough recorded
+            // (`8250B8F8`); a refusal is silent.
+            if back && replay.can_open() {
                 replay.enter();
             }
-        } else if replay.active && pressed & B != 0 {
-            replay.exit();
+        } else if replay.quit_pending {
+            // OURS (safety until play-tested): Back again while the warning is up leaves at once.
+            if back {
+                replay.quit_pending = false;
+                replay.exit();
+            }
+        } else if back || pressed & B != 0 {
+            // Retail: B (Finished) or Back opens the Finished menu; with nothing to save or upload that is the quit
+            // warning (ID_REPLAY_EDITOR_QUIT, No / Yes; research b387 / b389). Without the retail menu stage: leave.
+            if popups.stage_ready {
+                popups.engine_requests.push(quit_popup());
+                replay.quit_pending = true;
+            } else {
+                replay.exit();
+            }
         }
     }
     // Continue reading the UI controller while fixed gameplay ticks are gated.
@@ -362,19 +416,37 @@ pub(crate) fn controls(
             replay.release_controls = false;
         }
     }
-    if !replay.active || menu_open {
+    if !replay.active || menu_open || replay.quit_pending {
         return;
     }
     let dt = time.delta_secs().min(0.1);
-    if pressed & Y != 0 || keys.just_pressed(KeyCode::KeyC) {
+    // OURS (PC only): C toggles a free camera. Retail's instant replay has none (its cameras are the editor's);
+    // retail Y cycles the edit channel with the film DLC only, A opens the editor (not built yet).
+    if keys.just_pressed(KeyCode::KeyC) {
         replay.toggle_camera();
     }
-    if pressed & A != 0 || keys.just_pressed(KeyCode::Space) {
-        if replay.cursor >= replay.bounds().1 {
+    // Retail: RB starts / stops playback (`82C7F0A8` stops); stick or D-pad input resumes a stopped replay
+    // (`82C7FFB8`, research b386 / b387). Space is the PC key for RB.
+    let stick = pad.left.iter().chain(&pad.right).any(|v| v.abs() >= 0.18);
+    let dpad = pressed & (DPAD_LEFT | DPAD_RIGHT | 0x0001 | 0x0002) != 0;
+    if pressed & RB != 0 || keys.just_pressed(KeyCode::Space) {
+        if !replay.playing && replay.cursor >= replay.bounds().1 {
             let start = replay.bounds().0;
             replay.seek(start);
         }
         replay.playing = !replay.playing;
+    } else if !replay.playing && replay.free_camera.is_none() && (stick || dpad) && replay.cursor < replay.bounds().1 {
+        replay.playing = true;
+    }
+    // Retail: D-pad Left / Right pressed jump to the start / end (mode 5); comma / period on the keyboard.
+    if pressed & DPAD_LEFT != 0 || keys.just_pressed(KeyCode::Comma) {
+        let start = replay.bounds().0;
+        replay.seek(start);
+    }
+    if pressed & DPAD_RIGHT != 0 || keys.just_pressed(KeyCode::Period) {
+        let end = replay.bounds().1;
+        replay.seek(end);
+        replay.playing = false;
     }
     let trigger = |v: f32| ((v - 0.05) / 0.95).clamp(0.0, 1.0);
     let scrub = trigger(pad.triggers[1]) - trigger(pad.triggers[0])
@@ -395,12 +467,6 @@ pub(crate) fn controls(
         if replay.cursor >= replay.bounds().1 {
             replay.playing = false;
         }
-    }
-    if pressed & 0x0004 != 0 || keys.just_pressed(KeyCode::Comma) {
-        replay.step(-1);
-    }
-    if pressed & 0x0008 != 0 || keys.just_pressed(KeyCode::Period) {
-        replay.step(1);
     }
     let player = replay.sample().map(|(a, b, t)| blend(a.root, b.root, t).translation);
     let leash = replay.free_camera_leash.unwrap_or(FREE_CAMERA_LEASH);
@@ -465,11 +531,10 @@ fn setup_ui(mut commands: Commands) {
         });
         // Pad hints as the connected pad's glyphs (prompt_glyphs, SDL labels); keyboard hints as text.
         let hint = Color::srgb(0.75, 0.82, 0.86);
-        crate::prompt_glyphs::hint_row(panel, &[(&["L_Trigger", "R_Trigger"], "", "Scrub"), (&["DPad_Left", "DPad_Right"], "", "Frame step"),
-            (&["A"], "", "Play / pause"), (&["Y"], "", "Free camera"), (&["Back", "B"], "", "Exit")], 14., hint);
-        crate::prompt_glyphs::hint_row(panel, &[(&["Stick_Left"], "", "Move"), (&["Stick_Right"], "", "Look"), (&["L_Bumper", "R_Bumper"], "", "Down / up"),
-            (&["L3_Click"], "", "Fast (free camera)")], 14., hint);
-        panel.spawn((Text::new("Keyboard: F6  Replay   |   Arrows  Scrub   |   , / .  Frame step   |   Space  Play   |   C  Camera   |   WASD / Q / E  Move   |   RMB drag  Look"),
+        // Retail's instant replay controls (research b386 / b389).
+        crate::prompt_glyphs::hint_row(panel, &[(&["L_Trigger", "R_Trigger"], "", "Scrub"), (&["DPad_Left", "DPad_Right"], "", "Start / end"),
+            (&["R_Bumper"], "", "Play / stop"), (&["Back", "B"], "", "Finished")], 14., hint);
+        panel.spawn((Text::new("Keyboard: F6  Replay / Finished   |   Arrows  Scrub   |   , / .  Start / end   |   Space  Play   |   C  Free camera (WASD / Q / E move, RMB drag look, Shift fast)"),
             TextFont { font_size: 14., ..default() }, TextColor(hint)));
     });
 }

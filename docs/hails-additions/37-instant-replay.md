@@ -120,6 +120,28 @@ back onto the 40 m sphere around the player's recorded position at the cursor af
 world collision for the free camera (a 0.1 m sphere, 0.8 m with a world flag, x 1.3, `82682D80`) is not ported yet.
 Test: the leash keeps a camera inside 40 m and pulls a far one onto the sphere.
 
+## Instant replay controls follow retail
+
+Retail's instant replay (editor mode 5; research b386, b387, b389; main verified the open function `82610458`
+setting mode 5 and the 150-frame check) replaces our own bindings (user 2026-10-20: "make the controls follow
+retail"):
+- **Back** (View / Select; F6 on the keyboard) opens the replay, only with at least 5 s recorded (retail's 150
+  frames of the 30 fps timeline; the unit is inferred); a refusal is silent, as retail. `sdk.replay.open` uses the
+  same check (`Replay::can_open`). It no longer closes the replay.
+- **B** or **Back** in the replay: retail's Finished menu; with nothing to save or upload that is the quit warning
+  (ID_COMMON_WARNING_TITLE / ID_REPLAY_EDITOR_QUIT, No / Yes), raised on the retail menu stage through a small engine
+  popup channel (`PopupMods::engine_requests` / `engine_choices`). Yes leaves, No stays. Without the retail menu
+  stage (old installs, `SKATE3_RETAIL_MENUS=0`) B / Back leave at once. OURS, a safety until play-tested: Back again
+  while the warning is up leaves at once.
+- **RB** plays / stops (was A); stick or D-pad input resumes a stopped replay (`82C7FFB8`).
+- **D-pad Left / Right** jump to the start / end (was a one-frame step; the frame step stays for the editor).
+- **A** (retail: open the full editor) and **Y** (retail: cycle the edit channel, film DLC only) do nothing until
+  the editor exists. The free camera is PC only now (C, WASD / Q / E, right mouse; was Y on the pad): retail's
+  instant replay has no free camera.
+- Not ported: the open sound (retail UI sound 0x394015B68783BE9E), the online instant replay mode.
+Tests: the controller test (open, scrub, jump, RB, stick resume, B), the quit warning (No stays, Yes leaves) and the
+5 s minimum.
+
 ## Trigger scrub at retail's rate
 
 Retail's scrub (research b387 / b388; main verified `82610F18` reads the mode word and stores the rate at +0x34, and

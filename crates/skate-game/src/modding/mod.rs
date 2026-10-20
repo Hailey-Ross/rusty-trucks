@@ -1226,7 +1226,11 @@ fn apply_one(
             if world.get_resource::<crate::multiplayer::Multiplayer>().is_some_and(|n| n.active()) {
                 return Err("replay_open: refused in multiplayer".into());
             }
-            world.resource_mut::<crate::replay::Replay>().enter();
+            let mut replay = world.resource_mut::<crate::replay::Replay>();
+            if !replay.can_open() {
+                return Err("replay_open: not enough recorded yet".into());
+            }
+            replay.enter();
         }
         Command::ReplayMarker { label } => world.resource_mut::<crate::replay::Replay>().add_marker(id, label)?,
         Command::ReplaySetLimits { max_frames, byte_budget } => world.resource_mut::<crate::replay::Replay>().set_limits(id, max_frames, byte_budget),
