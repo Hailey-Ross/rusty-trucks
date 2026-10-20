@@ -120,8 +120,10 @@ fn controller_replay_scrub_camera_and_exit_do_not_leak_gameplay_input() {
         .init_resource::<ButtonInput<MouseButton>>()
         .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
         .init_resource::<Time<Real>>()
+        .init_resource::<crate::popup_host::PopupMods>()
         .add_systems(Update, controls);
-    for i in 0..121 {
+    // 6.7 s: over retail's 5 s minimum.
+    for i in 0..400 {
         app.world_mut()
             .resource_mut::<Replay>()
             .record(pose(i as f32), 1. / 60., false);
@@ -153,15 +155,30 @@ fn controller_replay_scrub_camera_and_exit_do_not_leak_gameplay_input() {
     tick(&mut app, 0, [255, 0], [0; 2]);
     let rewound = app.world().resource::<Replay>().cursor;
     assert!(rewound < end);
-    tick(&mut app, Y, [0; 2], [0; 2]);
-    let camera = app.world().resource::<Replay>().free_camera.unwrap();
     // Forward: the rate eases from the rewind through zero, then moves past where the rewind stopped.
     for _ in 0..16 {
-        tick(&mut app, 0, [0, 128], [32767, 0]);
+        tick(&mut app, 0, [0, 128], [0; 2]);
     }
+    assert!(app.world().resource::<Replay>().cursor > rewound);
+    // Retail: D-pad Left jumps to the start; RB plays and stops; a stick resumes a stopped replay.
+    // Let the scrub ease out (a moving scrub stops playback, as retail's rate does).
+    for _ in 0..40 {
+        tick(&mut app, 0, [0; 2], [0; 2]);
+    }
+    tick(&mut app, DPAD_LEFT, [0; 2], [0; 2]);
+    let start = app.world().resource::<Replay>().bounds().0;
+    assert_eq!(app.world().resource::<Replay>().cursor, start);
+    tick(&mut app, RB, [0; 2], [0; 2]);
+    assert!(app.world().resource::<Replay>().playing);
+    tick(&mut app, 0, [0; 2], [0; 2]);
+    tick(&mut app, RB, [0; 2], [0; 2]);
+    assert!(!app.world().resource::<Replay>().playing);
+    tick(&mut app, 0, [0; 2], [20000, 0]);
+    assert!(app.world().resource::<Replay>().playing, "a stick resumes playback");
+    tick(&mut app, DPAD_RIGHT, [0; 2], [0; 2]);
     let replay = app.world().resource::<Replay>();
-    assert!(replay.cursor > rewound);
-    assert_ne!(replay.free_camera.unwrap(), camera);
+    assert!(!replay.playing && replay.cursor == replay.bounds().1);
+    // Without the retail menu stage, B (Finished) leaves at once.
     tick(&mut app, B, [255, 0], [32767, 0]);
     assert!(!app.world().resource::<Replay>().active);
     assert_eq!(
@@ -176,7 +193,7 @@ fn controller_replay_scrub_camera_and_exit_do_not_leak_gameplay_input() {
     );
     tick(&mut app, 0, [0; 2], [0; 2]);
     assert!(!app.world().resource::<Replay>().release_controls);
-    tick(&mut app, A, [0; 2], [0; 2]);
+    tick(&mut app, 0x1000, [0; 2], [0; 2]);
     assert_ne!(
         app.world().resource::<ControllerInput>().mapped_actions,
         [[0.; 18]; 4]
@@ -419,4 +436,51 @@ fn free_camera_stays_within_retail_forty_metres_of_the_player() {
     let far = leashed(Vec3::new(110., 0., 0.), player, FREE_CAMERA_LEASH);
     assert!((far - Vec3::new(50., 0., 0.)).length() < 1e-4);
     assert_eq!(Replay::default().free_camera_leash.unwrap_or(FREE_CAMERA_LEASH), 40.);
+}
+
+#[test]
+fn retail_quit_warning_and_minimum_length() {
+    use crate::input::ControllerInput;
+    use skate_core::input::xbox::XboxState;
+    let mut app = App::new();
+    app.init_resource::<Replay>()
+        .init_resource::<ControllerInput>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
+        .init_resource::<Time<Real>>()
+        .init_resource::<crate::popup_host::PopupMods>()
+        .add_systems(Update, controls);
+    let tick = |app: &mut App, buttons| {
+        app.world_mut().resource_mut::<ControllerInput>().sample_raw_for_test(XboxState { buttons, triggers: [0; 2], left: [0; 2], right: [0; 2] });
+        app.world_mut().resource_mut::<Time<Real>>().advance_by(std::time::Duration::from_secs_f64(1. / 60.));
+        app.world_mut().run_schedule(Update);
+    };
+    // Under 5 s recorded: Back is refused silently.
+    for i in 0..200 {
+        app.world_mut().resource_mut::<Replay>().record(pose(i as f32), 1. / 60., false);
+    }
+    tick(&mut app, SELECT);
+    assert!(!app.world().resource::<Replay>().active);
+    tick(&mut app, 0);
+    for i in 200..400 {
+        app.world_mut().resource_mut::<Replay>().record(pose(i as f32), 1. / 60., false);
+    }
+    tick(&mut app, SELECT);
+    assert!(app.world().resource::<Replay>().active);
+    tick(&mut app, 0);
+    // With the retail menu stage up, B raises the quit warning; No stays, Yes leaves.
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().stage_ready = true;
+    tick(&mut app, B);
+    let request = app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_requests.pop().unwrap();
+    assert_eq!((request.description.as_str(), request.options.len()), ("ID_REPLAY_EDITOR_QUIT", 2));
+    assert!(app.world().resource::<Replay>().active);
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((QUIT_POPUP.into(), 0));
+    tick(&mut app, 0);
+    assert!(app.world().resource::<Replay>().active, "No stays in the replay");
+    tick(&mut app, SELECT);
+    tick(&mut app, 0);
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((QUIT_POPUP.into(), 1));
+    tick(&mut app, 0);
+    assert!(!app.world().resource::<Replay>().active, "Yes leaves");
 }
