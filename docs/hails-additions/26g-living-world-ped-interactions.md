@@ -1058,7 +1058,7 @@ skate-game `hand_prop_proxy_group_by_mass`, data-gated `a_thrown_can_reaches_the
 - The mood result's want flag 0x40 (`CE65`, set on the chase, tazeperp and runfromchaser results) was dropped when
   the want was raised: unsetting such a want erases the mood records and the perception entry about its target
   (`sub_82E42A58` -> `sub_82E40FF0`, research b28 / b18). Our collision record (30 s lifetime) outlived the chase.
-- `ped+5680` (the entity whose contacts the ped ignores) was not modelled: `TakeDownTargetableSuccess` (`826A4E50`)
+- (Update 2026-10-20: now modelled as `PedBrain::ignore_collisions_with`, b394.) `ped+5680` (the entity whose contacts the ped ignores) was not modelled: `TakeDownTargetableSuccess` (`826A4E50`)
   and `IgnoreCollisionsWithWantTarget` (`826A8A60`) store the target there; the contact classifier `sub_82E38400`
   resolves it (medium confidence on exactly how the classifier uses it). The takedown's own bumps counted as new
   collisions.
@@ -1100,7 +1100,7 @@ skate-game `hand_prop_proxy_group_by_mass`, data-gated `a_thrown_can_reaches_the
 
 ### Open
 - Retail clears brain `+3277` bit 0x04 at PedestrianColliding Begin / End and sets `+3196` bit 0x20 at End (meanings
-  open, not modelled). How `sub_82E38400` uses `ped+5680` exactly (ignore vs a different contact kind).
+  open, not modelled). How `sub_82E38400` uses `ped+5680` exactly (ignore vs a different contact kind). Answered 2026-10-20 (b394): a contact from that entity is dropped entirely (`82E38738` -> `82E38940` returns 0), never cleared, so a ped that took the skater down ignores that skater's bumps for good; only the physics push stays. Ours matches (laptop session 2026-10-20, #104).
 - A bench moved under a seated ped (session `game-20261012-133659`: `PED_PLUGIN_SEAT_MOVED` while ped #6 sat; the
   ped was left in the air). Retail (research `.local/research/peds/b102-moved-plugin-object-unseat.md`, main checked
   `82E3DBE0` and `motiongraph_avoid.xml`): the grab is not refused and the ped keeps its plugin and seat. The owned
@@ -2432,3 +2432,26 @@ not captured (the hook crashed the recomp during the teleport's level load); not
   both ways, then the 4x retry with retail's shape (a cast up to find a ceiling, then down from below it). Before,
   the upward reach was 0.2 m, so peds on navmesh up to 4.3 m under a road were drawn sunk; user 2026-10-19: "Peds
   dont fucking sink into the ground.. ever.." (retail outcome). Not play-tested; `PED_FLOATING` logs any gap.
+
+### Warn skipped after bump 2 (laptop session 2026-10-20, research b393; main checked the log and code)
+- Log: #281 was bumped three times (16:37:59, 16:38:00, 16:38:03) and chased on the third, count >= 3 as retail;
+  #126 the same. After bump 2 the producer picked `converse_everyone` (priority 2, presence records ahead in slot
+  order) over `skatercollisionwarn` (priority 2): the tie keeps the first hit, as retail's `82E41EB0` (`priority <
+  best`). The line was held back by our log repeat limiter, so the log looked like a first-bump chase.
+- Difference from retail: `PedBrain::busy` lacked the colliding term (`brain+3277` 0x04, `82E3BF60`), so the producer
+  ran one tick into Colliding. Change: `busy()` ORs `colliding`; PED_MOOD always logs collision results and any change
+  of result per ped. Open: retail's record slot order (`82E41060` insert, expiry erase), whether retail posts presence
+  records about other peds like ours.
+- Water bail (b392): retail has no water or respawn chase end; ours matches by code (5 m unreachable bit, 65 m escape,
+  capture within 2 m while wiped out). Open: a virtual call from the reset path; the chases-off window bit
+  (`826B4C70`, G+6332 0x04).
+
+### A slowly moved bench re-sat its ped a dozen times (laptop session 2026-10-20 11:21, b396, b219)
+- User: "after bumping the female ped near the on that attacked me and failed to reach me, she tried to resit about a
+  dozen times before giving up and walking off." Log #20: SitForever -> TargetWaypointPrecise -> EnterInteraction ->
+  SitForever ~12 times in 3 s (seat distance 0.046 to 0.052 around OnWaypoint's 0.05 m) until the bench was disabled.
+- Cause: b219's small-step carry was never ported. Retail sums a seat's steps at or under the 2.5e-5 m^2 gate into the
+  ped's root (brain `+3168`, `82E36D70`), so a slowly pushed bench carries its seated ped; ours held the body on its
+  lock while the seat crept away. (The want itself is retail: Plugin has no nearbycollisionreaction exit, b396.)
+- Change: `peds.rs` `seat_carry`: sub-threshold seat steps move the seated owner's lock and body with the seat.
+  Open: b219 plan step 3 (latched avoid ahead of the stand-up) and the `seated` test needing the SitIdleCyc clip.

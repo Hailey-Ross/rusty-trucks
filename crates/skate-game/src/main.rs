@@ -46,6 +46,7 @@ mod prompt_glyphs;
 mod popup_host;
 mod settings_host;
 mod trick_guide_host;
+mod replay_menu_host;
 mod challenge_map_host;
 mod offline_profile_host;
 mod extras_host;

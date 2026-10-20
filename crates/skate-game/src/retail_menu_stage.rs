@@ -46,6 +46,11 @@ const OPTIONS_PATH: &str = "options/options.swf";
 /// The Trick Guide template (record 29) and its path; FE screen 14's init opens it (0x82618A40).
 const TRICK_GUIDE: &str = "TrickTutorial";
 const TRICK_GUIDE_PATH: &str = "tricks/trickguide.swf";
+/// The instant replay screen's template (TU3 table 72, Replay2; the DLC's Replay3 is not ported) and its path; FE
+/// screen 12's init opens it (826102A8, b391). Opened by the engine when the replay opens, not by a menu push.
+const REPLAY: &str = "Replay2";
+const REPLAY_PATH: &str = "replay2/replay_editor2.swf";
+const REPLAY_MOVIE: &str = "source/screens/replay2/replay_editor2";
 /// The Challenge Map template (record 68) and its path; FE screen 17 (b244 / b253). The pause item that opens it.
 const CHALLENGE_MAP: &str = "ChallengeMap";
 const CHALLENGE_MAP_PATH: &str = "map/challengemap.swf";
@@ -137,6 +142,11 @@ struct MenuStage {
     /// The Trick Guide screen's AS id (retail 629) and state (empty guide = not available).
     trick_guide_id: i32,
     trick_guide: crate::trick_guide_host::TrickGuideHost,
+    /// The instant replay screen's AS id (None: no Replay2 template or movie in this install: our Bevy panel shows),
+    /// its host and whether it is shown (after its IntroComplete).
+    replay_id: Option<i32>,
+    replay_menu: crate::replay_menu_host::ReplayMenuHost,
+    replay_shown: bool,
     /// The Challenge Map screen's AS id and host (challenge_map_host).
     challenge_map_id: i32,
     challenge_map: crate::challenge_map_host::ChallengeMapHost,
@@ -523,6 +533,9 @@ fn setup(
                 crossbar_id: as_id(CROSSBAR),
                 options_id: as_id(OPTIONS),
                 trick_guide_id: as_id(TRICK_GUIDE),
+                replay_id: templates.iter().position(|n| n == REPLAY).filter(|_| movies.movies.contains_key(REPLAY_MOVIE)).map(|i| 600 + i as i32),
+                replay_menu: Default::default(),
+                replay_shown: false,
                 trick_guide_base: trick_guide.guide.clone(),
                 trick_guide_generation: 0,
                 fade: Default::default(),
@@ -595,7 +608,12 @@ fn update(
     (guide_mods, profile_mods): (Res<crate::trick_guide_host::TrickGuideMods>, Res<crate::offline_profile_host::ProfileMods>),
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>),
-    mut popup_mods: ResMut<crate::popup_host::PopupMods>,
+    // Popups; the instant replay feed and whether the retail replay screen shows (one parameter: Bevy's 16).
+    (mut popup_mods, replay_feed, mut replay_ui): (
+        ResMut<crate::popup_host::PopupMods>,
+        Option<Res<crate::replay::ReplayFeed>>,
+        Option<ResMut<crate::replay::RetailReplayUi>>,
+    ),
     // Challenge Map travel; cheats out, typed text in and the zombie flag the cheat toggles.
     (mut travel, mut cheats_out, mut unlocks_out, mut typing, living): (
         ResMut<crate::challenge_map::ChallengeMapTravel>,
@@ -647,6 +665,7 @@ fn update(
     fe.settings_titles = ms.settings_titles.clone();
     fe.settings.open = options.is_some() && ms.stack.top(Layer::Main) == options;
     fe.trick_guide = std::mem::take(&mut ms.trick_guide);
+    fe.replay_menu = std::mem::take(&mut ms.replay_menu);
     // Mods changed the guide: rebuild it over the retail one; an open screen starts over at the top.
     if guide_mods.generation != ms.trick_guide_generation && !ms.trick_guide_base.categories.is_empty() {
         ms.trick_guide_generation = guide_mods.generation;
@@ -702,6 +721,30 @@ fn update(
         let (crossbar_id, options_id, trick_id, cal_id) = (ms.crossbar_id, ms.options_id, ms.trick_guide_id, ms.video_cal_id);
         let map_id = ms.challenge_map_id;
         let profile_id = ms.offline_profile_id;
+        // The instant replay screen (FE 12 in instant mode): opened with the replay, shown after its IntroComplete
+        // (b391: retail never calls the movie's InstantDone; the screen manager's ShowScreen makes it visible), then
+        // fed every frame and told what changed (SetState 18 / 19 / 999 / 1002 / 1003); closed with the replay.
+        if let Some(replay_id) = ms.replay_id {
+            let feed = replay_feed.as_ref().map(|f| f.0.clone()).filter(|f| f.instant);
+            match (feed, fe.replay_menu.open) {
+                (Some(feed), false) => {
+                    info!("RETAIL_MENUS open {REPLAY} (FE 12, instant replay)");
+                    fe.replay_menu.reset();
+                    fe.replay_menu.open = true;
+                    fe.replay_menu.feed = feed;
+                    ms.replay_shown = false;
+                    open_screen(&mut ms.stage, REPLAY_PATH, REPLAY, &mut fe)?;
+                }
+                (Some(feed), true) => fe.replay_menu.feed = feed,
+                (None, true) => {
+                    info!("RETAIL_MENUS close {REPLAY}");
+                    fe.replay_menu.open = false;
+                    ms.replay_shown = false;
+                    close(&mut ms.stage, replay_id, &mut fe)?;
+                }
+                (None, false) => {}
+            }
+        }
         let auto =ms.auto_open && time.elapsed_secs() > 4.0;
         ms.auto_open &= !auto;
         if auto {
@@ -1205,6 +1248,25 @@ fn update(
         if std::mem::take(&mut ms.popup_dirty) {
             show_popup(&mut ms.stage, &ms.popups, &ms.popup_ids, &mut fe, &mut sounds)?;
         }
+        // The instant replay screen after this frame's movie update: shown once its intro completed, then told what
+        // changed in the replay.
+        if let Some(replay_id) = ms.replay_id.filter(|_| fe.replay_menu.open) {
+            take_call(&mut fe, &format!("Game.OnScreenLoaded({replay_id})"));
+            if !ms.replay_shown && take_call(&mut fe, &format!("Game.OnScreenIntroComplete({replay_id})")) {
+                ms.replay_shown = true;
+                ms.stage.call_path(
+                    "_global.ScreenManager.ShowScreen",
+                    vec![Value::Text(replay_id.to_string()), Value::Text("true".into())],
+                    &mut fe,
+                )?;
+            }
+            if ms.replay_shown {
+                fe.replay_menu.post_changes();
+                for state in std::mem::take(&mut fe.replay_menu.states) {
+                    set_state(&mut ms.stage, replay_id, state, &mut fe)?;
+                }
+            }
+        }
         // Video Calibration loaded (vt+108 0x8260E888): the first page; intro complete = ready.
         if let Some(c) = cal.filter(|c| ms.stack.top(Layer::Main) == Some(*c)) {
             if take_call(&mut fe, &format!("Game.OnScreenLoaded({cal_id})")) {
@@ -1400,6 +1462,10 @@ fn update(
     ms.crossbar = fe.state;
     ms.settings = fe.settings;
     ms.trick_guide = std::mem::take(&mut fe.trick_guide);
+    ms.replay_menu = std::mem::take(&mut fe.replay_menu);
+    if let Some(ui) = replay_ui.as_mut() {
+        ui.set_if_neq(crate::replay::RetailReplayUi(ms.replay_shown));
+    }
     fe.challenge_map.markers = if fe.challenge_map.open { fe.challenge_map.state.markers(fe.registry, fe.context) } else { Vec::new() };
     ms.challenge_map = std::mem::take(&mut fe.challenge_map);
     ms.offline_profile = std::mem::take(&mut fe.offline_profile);

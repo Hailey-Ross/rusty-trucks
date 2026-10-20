@@ -1260,7 +1260,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<VehicleOverrides>()
         .init_resource::<CarMaterials>()
         .add_message::<TrafficEvent>()
-        .add_systems(FixedUpdate, (load_traffic_data, apply_vehicle_records, apply_vehicle_hits, drive_traffic, log_traffic).chain().after(super::step_population))
+        .add_systems(FixedUpdate, (load_traffic_data, apply_vehicle_records, apply_vehicle_hits, drive_traffic, log_traffic).chain().after(super::step_population).distributive_run_if(crate::replay::world_live))
         .add_systems(
             FixedUpdate,
             (

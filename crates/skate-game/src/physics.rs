@@ -1077,7 +1077,8 @@ impl Plugin for PhysicsPlugin {
             .add_systems(FixedUpdate, respawn::emit_respawns.after(SimulationSet::Physics))
             .add_systems(FixedUpdate, manual_landing_log::log_manual_landings.after(SimulationSet::Physics))
             .add_systems(Update, present.in_set(FrameSet::Physics))
-            .add_systems(Update, prop_dynamics::sync_prop_transforms.after(FrameSet::Physics));
+            .add_systems(Update, prop_dynamics::sync_prop_transforms.after(FrameSet::Physics))
+            .add_systems(Update, prop_dynamics::apply_better_object_mover);
     }
 }
 

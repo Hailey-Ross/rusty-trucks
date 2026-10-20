@@ -865,7 +865,7 @@ impl Plugin for LivingWorldPlugin {
             .init_resource::<EarlyLoad>()
             .add_systems(
                 FixedUpdate,
-                (recheck_early_load, load_for_map, gather_observers, step_population, dmo_stream::stream_dmos).chain().after(crate::app::SimulationSet::Physics),
+                (recheck_early_load, load_for_map, gather_observers, step_population, dmo_stream::stream_dmos).chain().after(crate::app::SimulationSet::Physics).distributive_run_if(crate::replay::world_live),
             )
             .add_message::<crate::extras_host::CheatChanged>()
             .add_systems(Update, (apply_cheats, log_zombie_mode).chain())

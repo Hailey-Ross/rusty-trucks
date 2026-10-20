@@ -1048,10 +1048,11 @@ pub struct PedBrain {
 }
 
 impl PedBrain {
-    /// `sub_82E3BF70`: the mood producer does nothing for a busy ped. Retail ORs `brain+3277` bit
-    /// 0x04 and `*(ped+96)` (meanings open; ours: a plugin member) with the two flags.
+    /// `sub_82E3BF70`: the mood producer does nothing for a busy ped. Retail ORs the colliding flag (`brain+3277`
+    /// bit 0x04, `82E3BF60`, b316 / b393) and `*(ped+96)` (the plugin instance, b318) with the two flags. Without the
+    /// colliding term ours ran the producer one tick into Colliding (laptop session 2026-10-20, #281 / #126).
     pub fn busy(&self) -> bool {
-        self.waiting_to_react || self.reacting_to_mood || self.plugin.is_some()
+        self.waiting_to_react || self.reacting_to_mood || self.colliding || self.plugin.is_some()
     }
     /// Leaving a plugin in any way releases its waypoint: retail's slot `ped+0x1718` belongs to the plugin, and
     /// LockFirstWaypoint (`826A0580`) only locks an empty one, so a kept prop waypoint would steer the next

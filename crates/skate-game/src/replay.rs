@@ -61,6 +61,8 @@ pub(crate) struct Replay {
     markers: VecDeque<Marker>,
     /// The mod whose `sdk.replay.set_limits` is in force (last writer wins).
     limits_owner: Option<String>,
+    /// The player's Extended Replays length, s (PC overlay, not retail); None = retail's window. A mod's limits win.
+    user_seconds: Option<u32>,
     /// The cursor the audio feed last published up to, and whether it moved forward this frame.
     fed: Option<f64>,
     audible: bool,
@@ -68,6 +70,8 @@ pub(crate) struct Replay {
     pub(crate) free_camera_leash: Option<f32>,
     /// The quit warning is up (waiting for its answer).
     quit_pending: bool,
+    /// B / Back asked for the quit warning; it opens when the button is released.
+    quit_on_release: bool,
     /// Shortest recording the replay opens on (s); None = retail's [`MIN_OPEN_SECONDS`]. Data, mod-settable.
     pub(crate) min_open_seconds: Option<f64>,
     /// The trigger scrub (retail rates as data) and its eased rate.
@@ -184,9 +188,40 @@ impl Replay {
         Ok(())
     }
 
-    /// `sdk.replay.set_limits`: both absent restores the defaults.
+    /// The limits without a mod: retail's, or the player's Extended Replays length with the byte budget scaled by
+    /// the same factor (90 s of a busy world filled ~125 MB of the 128 MB budget, laptop session 2026-10-20).
+    fn base_limits(&self) -> skate_core::replay_buffer::ReplayLimits {
+        let retail = skate_core::replay_buffer::ReplayLimits::default();
+        match self.user_seconds {
+            Some(seconds) => {
+                let factor = f64::from(seconds) * RECORD_HZ / f64::from(retail.max_frames);
+                skate_core::replay_buffer::ReplayLimits {
+                    max_frames: (f64::from(seconds) * RECORD_HZ) as u32,
+                    byte_budget: (retail.byte_budget as f64 * factor) as usize,
+                }
+            }
+            None => retail,
+        }
+    }
+
+    /// Extended Replays: the player's length (None = retail). Applies at once unless a mod's limits are in force.
+    pub(crate) fn set_user_length(&mut self, seconds: Option<u32>) {
+        if self.user_seconds == seconds {
+            return;
+        }
+        self.user_seconds = seconds;
+        if self.limits_owner.is_none() {
+            self.world.limits = self.base_limits();
+        }
+        info!(
+            "REPLAY_LENGTH user={seconds:?} max_frames={} byte_budget={} mod={:?}",
+            self.world.limits.max_frames, self.world.limits.byte_budget, self.limits_owner
+        );
+    }
+
+    /// `sdk.replay.set_limits`: both absent restores the defaults (retail, or the player's Extended Replays).
     pub(crate) fn set_limits(&mut self, owner: &str, max_frames: Option<u32>, byte_budget: Option<u64>) {
-        let defaults = skate_core::replay_buffer::ReplayLimits::default();
+        let defaults = self.base_limits();
         if max_frames.is_none() && byte_budget.is_none() {
             if self.limits_owner.as_deref() == Some(owner) {
                 self.world.limits = defaults;
@@ -210,7 +245,7 @@ impl Replay {
     /// Every mod stopped.
     pub(crate) fn clear_mods(&mut self) {
         self.markers.clear();
-        self.world.limits = skate_core::replay_buffer::ReplayLimits::default();
+        self.world.limits = self.base_limits();
         self.limits_owner = None;
     }
 
@@ -246,10 +281,25 @@ impl Replay {
         self.playing = false;
         self.free_camera = None;
         self.cursor = self.bounds().1;
+        // Logs must show when a reported replay happened and what it held.
+        let (start, end) = self.bounds();
+        info!(
+            "REPLAY_OPEN span={:.1}s frames={} actors={} bytes={}",
+            end - start,
+            self.world.frame_count(),
+            self.world.ids().count(),
+            self.world.bytes()
+        );
     }
 
     fn exit(&mut self) {
+        if self.active {
+            let (start, _) = self.bounds();
+            info!("REPLAY_CLOSE at={:.1}s", self.cursor - start);
+        }
         self.active = false;
+        self.quit_pending = false;
+        self.quit_on_release = false;
         self.playing = false;
         self.free_camera = None;
         self.release_controls = true;
@@ -322,6 +372,7 @@ impl Plugin for ReplayPlugin {
         messages::track::<crate::world_audio::PedTazerEvent>(app);
         messages::track::<crate::world_audio::PedBodyFallEvent>(app);
         app.init_resource::<Replay>()
+            .add_systems(Update, apply_user_length)
             .configure_sets(
                 FixedUpdate,
                 (
@@ -338,12 +389,36 @@ impl Plugin for ReplayPlugin {
                     .after(bevy::input::InputSystems),
             )
             .add_systems(Startup, setup_ui)
-            .add_systems(Update, update_ui);
+            .init_resource::<ReplayFeed>()
+            .init_resource::<RetailReplayUi>()
+            .add_systems(Update, (publish_feed, update_ui));
     }
 }
 
 fn live(replay: Res<Replay>) -> bool {
     !replay.active
+}
+
+/// Run condition for the living world's fixed steps: frozen during a replay, as retail plays recorded data. Without
+/// it the population kept stepping: peds walked away from the frozen skater and despawned by distance while the
+/// replay was open (desktop session 2026-10-20: 26 PED_DESPAWN lines during one replay, the hit ped among them).
+/// Apps without a replay (unit tests) always run.
+impl Replay {
+    /// The playback cursor (s on the recording's clock).
+    pub(crate) fn cursor(&self) -> f64 {
+        self.cursor
+    }
+}
+
+/// The PC overlay's Extended Replays setting into the recorder.
+fn apply_user_length(menu: Option<Res<crate::graphics_menu::Menu>>, mut replay: ResMut<Replay>) {
+    if let Some(menu) = menu.filter(|m| m.is_changed()) {
+        replay.set_user_length(menu.replay_seconds());
+    }
+}
+
+pub(crate) fn world_live(replay: Option<Res<Replay>>) -> bool {
+    replay.is_none_or(|r| !r.active)
 }
 
 fn axis(value: f32) -> f32 {
@@ -393,8 +468,14 @@ pub(crate) fn controls(
                 replay.exit();
             }
         } else if back || pressed & B != 0 {
-            // Retail: B (Finished) or Back opens the Finished menu; with nothing to save or upload that is the quit
-            // warning (ID_REPLAY_EDITOR_QUIT, No / Yes; research b387 / b389). Without the retail menu stage: leave.
+            replay.quit_on_release = true;
+        }
+        // Retail: B (Finished) or Back opens the Finished menu; with nothing to save or upload that is the quit
+        // warning (ID_REPLAY_EDITOR_QUIT, No / Yes; research b387 / b389). Raised once the button is up: the press
+        // that asked for it otherwise reached the popup the next frame and cancelled it at once (desktop session
+        // 2026-10-20, log: popup 0 shown, choice -1 48 ms later). Without the retail menu stage: leave.
+        if replay.quit_on_release && pad.buttons & (B | SELECT) == 0 && !keys.pressed(KeyCode::F6) {
+            replay.quit_on_release = false;
             if popups.stage_ready {
                 popups.engine_requests.push(quit_popup());
                 replay.quit_pending = true;
@@ -539,14 +620,37 @@ fn setup_ui(mut commands: Commands) {
     });
 }
 
+/// The replay as the retail replay screen reads it (`replay_menu_host`), published every frame.
+#[derive(Resource, Default)]
+pub(crate) struct ReplayFeed(pub crate::replay_menu_host::ReplayScreenFeed);
+
+/// The retail replay screen is shown (set by `retail_menu_stage`); our Bevy panel is the fallback without it.
+#[derive(Resource, Default, PartialEq)]
+pub(crate) struct RetailReplayUi(pub bool);
+
+fn publish_feed(replay: Res<Replay>, mut feed: ResMut<ReplayFeed>) {
+    let (start, end) = replay.bounds();
+    let next = crate::replay_menu_host::ReplayScreenFeed {
+        instant: replay.active,
+        position: if end > start { (replay.cursor - start) / (end - start) } else { 1.0 },
+        playing: replay.playing,
+        panel: true,
+        length_seconds: (end - start).max(0.0).round() as u32,
+    };
+    if feed.0 != next {
+        feed.0 = next;
+    }
+}
+
 fn update_ui(
     replay: Res<Replay>,
+    retail: Res<RetailReplayUi>,
     mut roots: Query<&mut Node, With<ReplayUi>>,
     mut labels: Query<&mut Text, With<ReplayLabel>>,
     mut bars: Query<&mut Node, (With<Playhead>, Without<ReplayUi>)>,
 ) {
     for mut node in &mut roots {
-        node.display = if replay.active {
+        node.display = if replay.active && !retail.0 {
             Display::Flex
         } else {
             Display::None

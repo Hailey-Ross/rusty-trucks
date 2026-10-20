@@ -107,9 +107,12 @@ pub(crate) fn draw_ped_alerts(
     mut nodes: Query<(Entity, &PedAlertNode, &mut ImageNode, &mut Node, &mut UiTransform)>,
     fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
     overlay: Option<Res<crate::graphics_menu::Menu>>,
+    replay: Option<Res<crate::replay::Replay>>,
 ) {
     let mut shown = BTreeMap::new();
-    let hidden = alerts.hidden_by.is_some() || fe_hud.is_some_and(|f| !f.hud) || overlay.is_some_and(|m| m.overlay_visible());
+    // Gameplay HUD: off while the instant replay is open (laptop session 2026-10-20: the warning stayed over the ped).
+    let hidden = alerts.hidden_by.is_some() || fe_hud.is_some_and(|f| !f.hud) || overlay.is_some_and(|m| m.overlay_visible())
+        || replay.is_some_and(|r| r.active);
     let output = outputs.single().ok();
     if let (false, Ok((camera, pose)), Some((_, output_camera))) = (hidden, cameras.single(), output) {
         if let (Some(view), Some(screen)) = (camera.logical_viewport_size(), output_camera.logical_viewport_size()) {

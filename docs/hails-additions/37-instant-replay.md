@@ -120,6 +120,26 @@ back onto the 40 m sphere around the player's recorded position at the cursor af
 world collision for the free camera (a 0.1 m sphere, 0.8 m with a world flag, x 1.3, `82682D80`) is not ported yet.
 Test: the leash keeps a camera inside 40 m and pulls a far one onto the sphere.
 
+## Fixes from the first play test (desktop session 2026-10-20)
+
+User: "Ped held props get wonky and lose their attachpoint or just for some reason seem to float offset from the ped
+during the replay, only properly returning to their hand once you reach the end of the replay. They also slightly
+wobble in place even when the replay is paused at the end." / "the ped has dissapeared from the replay entirely and
+now i just ride over and bail on nothing".
+- **The living world kept running during the replay.** The log showed fixed steps and 26 `PED_DESPAWN reason=Distance`
+  lines while the replay was open: peds walked away from the frozen skater and despawned at 70 m, the hit ped (#3)
+  at 15:01:50 among them. Retail plays recorded data while the world waits. The living world's fixed chains
+  (population, peds, traffic, NPC skaters, ped / vehicle contacts) now run only outside a replay
+  (`replay::world_live`).
+- **Ghosts.** The cap is 256 (traffic churn could pass 64 in a 90 s window), and every ghost made or refused is logged
+  (`REPLAY_GHOST id=... joints=... ghosts=...` / `REPLAY_GHOST refused id=... reason=cap | not recorded | no joints |
+  scene not under the actor`), so a vanished actor can be traced in the log.
+- **Held hand props** were drawn every frame from the ped's live (frozen) hand while the ped played back from the
+  recording, so they floated off and wobbled with the presenter's interpolation. A held prop is now a recorded actor
+  of its own (id `5 << 56 | ped serial`, one track per ped whichever prop it holds) and plays back with its ped.
+  Still open: a held prop goes with its ped when the ped despawns, so a ghost ped has empty hands.
+Tests: the living world freezes while a replay is open (and runs in apps without a replay).
+
 ## Instant replay controls follow retail
 
 Retail's instant replay (editor mode 5; research b386, b387, b389; main verified the open function `82610458`
@@ -132,7 +152,9 @@ retail"):
   (ID_COMMON_WARNING_TITLE / ID_REPLAY_EDITOR_QUIT, No / Yes), raised on the retail menu stage through a small engine
   popup channel (`PopupMods::engine_requests` / `engine_choices`). Yes leaves, No stays. Without the retail menu
   stage (old installs, `SKATE3_RETAIL_MENUS=0`) B / Back leave at once. OURS, a safety until play-tested: Back again
-  while the warning is up leaves at once.
+  while the warning is up leaves at once. Fix 2026-10-20 (desktop session: "the close confirmation dialog [is] closed
+  instantly"; log: popup 0 shown at 14:32:45.341, choice -1 at .389): the B press that asked for the warning reached
+  the popup the next frame and cancelled it. The warning now opens when B / Back is released.
 - **RB** plays / stops (was A); stick or D-pad input resumes a stopped replay (`82C7FFB8`).
 - **D-pad Left / Right** jump to the start / end (was a one-frame step; the frame step stays for the editor).
 - **A** (retail: open the full editor) and **Y** (retail: cycle the edit channel, film DLC only) do nothing until
@@ -213,3 +235,55 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   step at marker times (speed +10 % up to 100 %, shake 0..3, brightness, contrast, saturation, tint).
 - The player is still recorded as full `Mat4` skin rows (about 45 MB at 90 s); moving it into the quantised buffer
   would cut that to about a fifth.
+
+## Laptop session 2026-10-20 (water clock, HUD message log)
+- Problem: Better Water kept moving while the replay was paused. Cause: the water shaders' clock (`retail_render.rs`
+  `advance_frame_state`) read real time. Change: `WaterClock` follows the replay cursor going forward only (paused or
+  rewound playback holds the water; forward-only because the ocean frame counter never steps back), real time in
+  play. Test `water_clock_holds_while_a_replay_is_paused`.
+- Open: after watching a takedown in the replay, a later chase message ("&@%#!!!", 16:38:09) was posted and hidden on
+  time by the central HUD runtime but never seen (user: "No, nothing showed"). Not the FE HUD flag reset, the PC
+  overlay, the replay message track or the cameras (read, not proven in game). New log line on a message's first
+  frame: `HUD_CENTRAL draw draws= hud_draws= fe_hud= overlay= hud_off= failed=` (`scoring_hud.rs`).
+
+## Extended Replays (PC overlay, not retail; user 2026-10-20)
+- Ask: "Perhaps we can add an extra option for extended length with a slider from 2 mins to 4 mins? "Extended Replays"".
+- Change: PC overlay Extras > Replay: "Extended Replays" (Retail 1:30 / On) and "Replay Length" (2:00 to 4:00, 30 s
+  steps; `graphics_menu.rs` `REPLAY_LENGTHS`, saved in the overlay settings file). `replay.rs` `set_user_length`: the
+  recorder's base limits become the player's length (frames at 60 Hz, byte budget scaled by the same factor from
+  retail's 90 s / 128 MB). A mod's `sdk.replay.set_limits` still wins; clearing it returns to the player's length.
+  Log `REPLAY_LENGTH user= max_frames= byte_budget= mod=`. Test `extended_replays_scale_the_window_and_a_mod_still_wins`.
+- Memory: 90 s of a busy world filled ~125 MB (laptop session 2026-10-20), so 4 min is ~335 MB.
+
+## Laptop session 2026-10-20 11:35 (still props, peds at a distance, ped alerts)
+- User: "During replay the bench and ped both dissapeared at the beginning of the replay but reappear when they become
+  relevant again" / "The bench kind pops back into existance when I come back during the replay and get within like
+  5-10m maybe." / "the warning over a ped is just always there during replays. it probably should be hidden."
+- Bench: a still prop records a key only on a change; its first key came from its `Added` tick, which most render
+  frames skip (no new 60 Hz replay frame), so the prop had no key until it next moved and played back hidden. Change:
+  `replay/world.rs` records any actor without a track. Test `a_still_prop_added_between_replay_frames_still_plays_back`.
+- Ped (#3, alive the whole window): `present_ped_pose` kept running its draw distance fade and LOD against the
+  camera's distance to the ped's frozen live body, so a replayed ped only drew near its live spot. Change: no
+  distance fade or LOD drop while the replay is open (every recorded ped draws at full detail).
+- Ped alerts: hidden while the replay is open (`ped_alerts.rs`), like the rest of the gameplay HUD.
+
+## Retail instant replay screen, step 1 (FE 12 Replay2 on the APT stage; b390 / b391; user 2026-10-20)
+- Ask: "then finish with the retail ui parity for the replay".
+- Setup: `tools/prepare_menu_movies.py` exports `replay2/replay_editor2` and `replay2/replay_help` (menu set version
+  11; this engine still reads 5..11, older engines refuse an 11 set, so an install refreshed with this build needs
+  the other launcher versions updated too).
+- Host `replay_menu_host.rs` answers `FEReplayMenu.*` from a per-frame `ReplayFeed` (`replay.rs`): IsInstantReplayMode,
+  Get Cursor / Playhead Position (0..1), GetEncodedLength (`ID_REPLAY_EDITOR_LENGTH` "Estimated Video Length: {0:time}";
+  NOT RETAIL YET: our m:ss for the undecoded `{0:time}`), IsEncodedLengthValid (825ADF88: under 61 s), CanSaveMedia
+  (true on PC), CanDisplayShowHide (instant), Ready.
+- Stage (`retail_menu_stage.rs`): opens Replay2 when the replay opens (the movie in the set and the template in the
+  tables, else our Bevy panel stays), shows it after its IntroComplete with ScreenManager.ShowScreen (b391: retail never
+  calls InstantDone), posts SetState 999 on cursor moves and 18 / 19 on play / stop edges, closes it with the replay.
+  The Bevy panel shows only without the retail screen (`RetailReplayUi`).
+- Found by the verify run: a first-frame panel state (1003) hid the panel ("Show" prompt), so panel / play states go
+  only on changes; which of 1002 / 1003 hides is open (the L3 toggle is not ported).
+- Verified: stage test `retail_replay_editor_opens` (loads, intro, the six natives answered, none left), host test
+  `natives_answer_from_the_feed_and_edges_become_states`, a verify screenshot with the screen drawn (timeline,
+  transport row, Instant replay bar, Estimated Video Length, A / X / B / Start prompts, Hide).
+- Next: Start = help (FE 13 ReplayHelp), L3 hide / show, the prompts' actions (A edit timeline = the editor, X photo,
+  B Finished popup with a "Save to PC" row), the `{0:time}` format, the L3 icon missing next to Hide.

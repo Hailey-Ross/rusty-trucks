@@ -525,9 +525,10 @@ fn render(
     fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
     overlay: Option<Res<crate::graphics_menu::Menu>>,
     menus: Option<Res<crate::retail_menus::RetailMenus>>,
+    mut was_showing: Local<bool>,
 ) {
     let started = std::time::Instant::now();
-    render_hud(commands, hud, meshes, materials, fe_hud, overlay, menus);
+    render_hud(commands, hud, meshes, materials, fe_hud, overlay, menus, &mut was_showing);
     crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_HUD_RENDER, started);
 }
 fn render_hud(
@@ -538,6 +539,7 @@ fn render_hud(
     fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
     overlay: Option<Res<crate::graphics_menu::Menu>>,
     menus: Option<Res<crate::retail_menus::RetailMenus>>,
+    was_showing: &mut bool,
 ) {
     let Some(mut hud) = hud else {
         return;
@@ -550,7 +552,7 @@ fn render_hud(
         .as_deref()
         .and_then(|m| crate::retail_menus::setting(m, "ID_GAMESETTINGS_HUD_TOGGLE"))
         .is_some_and(|v| skate_core::menu_values::number(&v) == 0.0);
-    let hidden = fe_hud.is_some_and(|f| !f.hud) || overlay.is_some_and(|m| m.overlay_visible()) || hud_off;
+    let hidden = fe_hud.as_ref().is_some_and(|f| !f.hud) || overlay.as_ref().is_some_and(|m| m.overlay_visible()) || hud_off;
     let draws = if hud.failed || hidden {
         Vec::new()
     } else {
@@ -576,6 +578,16 @@ fn render_hud(
         }
         _ => Vec::new(),
     };
+    // Laptop session 2026-10-20: a message posted after a replay never showed; say why on its first frame.
+    let showing = hud.central.as_ref().is_some_and(|c| c.runtime.showing());
+    if showing && !*was_showing {
+        info!(
+            "HUD_CENTRAL draw draws={} hud_draws={} fe_hud={} overlay={} hud_off={} failed={}",
+            central_draws.len(), draws.len(), fe_hud.as_ref().is_none_or(|f| f.hud), overlay.as_ref().is_some_and(|m| m.overlay_visible()),
+            hud_off, hud.central.as_ref().is_some_and(|c| c.failed)
+        );
+    }
+    *was_showing = showing;
     let hud = &mut *hud;
     apply_draws(
         &mut commands,
