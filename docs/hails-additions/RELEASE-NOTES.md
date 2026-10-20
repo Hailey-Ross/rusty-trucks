@@ -49,6 +49,7 @@ For a single run you can still use the old variables instead (`set SKATE_ZOMBIE=
 - **Guide** (the Xbox / PS / Home button), **F1** or **Esc** (keyboard) opens the menu: **MAPS** (switch maps and drop-in spots without restarting), **SKATER** (Camera angle High / Low), **GRAPHICS** (display, sound, **Frame-time counter**, **NPC draw distance**), **EXTRAS** (mods, updates), **OPT-INS** (features still being tested). The menu now looks and works like the recomp's settings screen: **B** / **Esc** goes back one level, **LB** / **RB** (or **Q** / **E**) switch category, **Y** (or **R**) resets a row, the mouse works too.
 - **Y:** step off the board. **LT** (on foot): drop the board.
 - **Hold RB** next to a bench, bin or other movable prop to grab it: the **left stick** pushes, pulls and side-steps it, the **right stick** turns you and the prop together. Your board drops when you grab. Let go of RB to drop the prop.
+- **Better Object Mover** (not retail, Esc > **EXTRAS** > Objects): lets you grab every prop, not only the ones Skate 3 gives grab handles. Off by default.
 
 ## Testing and reports
 
@@ -219,10 +220,13 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 - Rumble: a port of retail's rumble controller for SDL and XInput pads, with a mod API (`sdk.input.rumble`). Gameplay rumble events are still to come.
 - The Guide / F1 / Esc menu now looks and moves like the recomp's settings screen (blurred world, sliding highlight, category rail, button legend).
 
-**Instant replay (new, not play-tested yet)**
+**Instant replay (new)**
 - The replay now records the whole world, not just you: NPC skaters, peds, traffic and props play back as they moved, including ones that left during the recording. It keeps Skate 3's 90 seconds (was 30).
 - Replays have sound, the Skate 3 way: your rolling, pushes, grinds and landings, traffic, peds' footsteps, horns and car alarms play again from what was recorded. A paused replay is silent and speech stays off, like Skate 3.
 - **Controls are Skate 3's now:** Back (View / Select, F6) opens the replay once 5 seconds are recorded; RB plays and stops (the sticks or D-pad also start it again); the triggers scrub at Skate 3's rate (eased, a full sweep in about 7 seconds); D-pad Left / Right jump to the start / end; B or Back asks Skate 3's "quit replay?" question (Yes leaves). The free camera is on the keyboard only (C, then WASD / Q / E and the right mouse button) and stays within 40 m of your skater.
+- **Skate 3's own replay screen:** the timeline, the play / rewind / forward / start / end buttons and the Instant replay bar with its prompts and the estimated length. It needs new game files: open **Extras > Refresh Game Files** once (without them the old panel shows).
+- The world waits while you watch: peds stay put, held props stay in hands, benches and peds far from the camera show from the start, the ped warning icons hide, and the water holds still while paused.
+- **Extended Replays** (not retail, Esc > **EXTRAS** > Replay): keep 2 to 4 minutes instead of Skate 3's 90 seconds. A longer replay uses more memory (about 85 MB a minute).
 - Mods can open the replay, drop markers and change the recording length (`sdk.replay`). The replay editor (trimming, speed, effects) and video export come next.
 
 **This fork's releases**
