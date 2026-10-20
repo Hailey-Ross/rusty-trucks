@@ -780,6 +780,8 @@ pub(crate) struct PropDynamics {
     /// Pushers (actor ids, [`LOCAL_PUSHER`] for the local skater) bailing this tick (`set_bailing`): their contacts
     /// apply the bail clamp.
     bailing: Vec<u64>,
+    /// Pushers that are not a 75 kg skater (`set_actor_push_mass`): actor id, kg. Peds' body A (10 kg, b342).
+    actor_push_mass: Vec<(u64, f32)>,
 }
 
 /// First id of bodies created mid-game: ids from here up to [`PROP_GRAB_TAG`]
@@ -1043,6 +1045,7 @@ impl PropDynamics {
             grind_rails: std::collections::BTreeMap::new(),
             grinded: None,
             bailing: Vec::new(),
+            actor_push_mass: Vec::new(),
         }
     }
 
@@ -1377,6 +1380,13 @@ impl PropDynamics {
     pub(crate) fn set_bailing(&mut self, actors: &[u64]) {
         self.bailing.clear();
         self.bailing.extend_from_slice(actors);
+    }
+
+    /// The push mass of actors that are not a skater (actor id, kg), for this tick's step; any other actor pushes with
+    /// the prop's `skater_push_mass`.
+    pub(crate) fn set_actor_push_mass(&mut self, actors: &[(u64, f32)]) {
+        self.actor_push_mass.clear();
+        self.actor_push_mass.extend_from_slice(actors);
     }
 
     fn rails_of(&self, body: &PropBody) -> Option<&std::sync::Arc<[crate::grind_world::props::PropRail]>> {
@@ -2182,7 +2192,8 @@ impl PropDynamics {
                         continue;
                     };
                     let pushes = self.stats.skater_pushes;
-                    let contact = self.push_from_skater(index, volume, &manifold);
+                    let push_mass = self.actor_push_mass.iter().find(|a| a.0 == actor).map(|a| a.1);
+                    let contact = self.push_from_skater(index, volume, &manifold, push_mass);
                     if self.stats.skater_pushes > pushes {
                         self.bodies[index].pushed_by = Some(actor);
                     }
@@ -2329,6 +2340,7 @@ impl PropDynamics {
         index: usize,
         volume: &BoardWorldVolume,
         manifold: &PrimitiveContactManifold,
+        push_mass: Option<f32>,
     ) -> SkaterContact {
         let tuning = self.bodies[index].tuning;
         // The overlap nudge stops once the volume has sat inside for
@@ -2374,7 +2386,8 @@ impl PropDynamics {
         // (#15 capped only body bumps), so a board held against a prop cannot
         // keep accelerating it either.
         let mass = 1.0 / self.bodies[index].inertia.inverse_mass;
-        let reduced = mass * tuning.skater_push_mass / (tuning.skater_push_mass + mass);
+        let pusher = push_mass.unwrap_or(tuning.skater_push_mass).max(0.0);
+        let reduced = mass * pusher / (pusher + mass).max(1e-6);
         let mut amount = strongest * reduced * tuning.push_transfer;
         let cap = if matches!(
             volume.body,
@@ -4466,6 +4479,33 @@ mod tests {
         let speed = length(dynamics.bodies[0].rates.linear_velocity);
         let mass = 1.0 / dynamics.bodies[0].inertia.inverse_mass;
         assert!(speed <= 2.0 * 5.0 / mass + 1e-3, "speed {speed} for {mass} kg");
+    }
+
+    /// A bin slid toward a standing ped stops short of it: the ped's body A (group 9, 10 kg) is a pusher with its own
+    /// mass, so the prop no longer passes through peds (b342 section 7).
+    #[test]
+    fn a_sliding_bin_stops_against_a_peds_body_a() {
+        use crate::living_world::ped_body::{body_a_id, body_a_volume, PedProxy};
+        let half = [0.3, 0.45, 0.3];
+        let rest = super::super::ground::HEIGHT + 0.45;
+        let ped_x = 1.2;
+        let run = |ped: bool| {
+            let (world, mut layer, mut dynamics) = box_fixture([0., rest, 0.], half);
+            dynamics.bodies[0].rates.linear_velocity = Vector3::new(4.0, 0.0, 0.0);
+            dynamics.bodies[0].wake();
+            let proxy = PedProxy::default();
+            let id = body_a_id(3);
+            dynamics.set_actor_push_mass(&[(id, proxy.mass)]);
+            let feet = bevy::prelude::Vec3::new(ped_x, super::super::ground::HEIGHT, 0.0);
+            let volumes = if ped { vec![(id, body_a_volume(feet, bevy::prelude::Vec3::ZERO, &proxy))] } else { Vec::new() };
+            for _ in 0..90 {
+                dynamics.step_with_actors(&world, &mut layer, &[], &volumes);
+            }
+            dynamics.bodies[0].rates.position.x
+        };
+        let (free, blocked) = (run(false), run(true));
+        assert!(free > ped_x, "without the ped the bin slides past it: x {free:.2}");
+        assert!(blocked < ped_x - 0.3 && blocked < free, "the ped stops the bin: x {blocked:.2} (free {free:.2})");
     }
 
     /// A bin-sized prop resting on an NPC skater's line is knocked ahead of it (the player's push

@@ -283,6 +283,23 @@ pub struct NpcSimulatedPatch {
     /// (retail 15, 0..=100).
     pub reactions: Option<bool>,
     pub reaction_radius: Option<f32>,
+    /// AI skaters push while slower than their line (retail on): below `push_factor` x the line's speed (0..=1,
+    /// retail 0.97), each reducing condition multiplies by `push_reduce` (0..=1, retail 0.3), faster than
+    /// `push_fast_speed` m/s reduces (0..=100, retail 11), a slope under `push_downhill_slope` reduces (-10..=10,
+    /// retail -0.22), no push from `push_max_heading_deg` off the line (0..=180, retail 40); `push_right_foot` picks
+    /// RightPush (default) or LeftPush.
+    pub push: Option<bool>,
+    pub push_factor: Option<f32>,
+    pub push_reduce: Option<f32>,
+    pub push_fast_speed: Option<f32>,
+    pub push_downhill_slope: Option<f32>,
+    pub push_max_heading_deg: Option<f32>,
+    pub push_right_foot: Option<bool>,
+    /// AI skaters brake far above their line's speed (retail on): when speed x `brake_factor` (0..=1, retail 0.3)
+    /// beats the line's speed, ramping to full over `brake_ramp` m/s (0..=100, retail 0.1).
+    pub brake: Option<bool>,
+    pub brake_factor: Option<f32>,
+    pub brake_ramp: Option<f32>,
 }
 
 /// The NPC skaters' obstacle avoider (`skate_core::living_world::avoid::AvoidSettings`): every
@@ -489,6 +506,12 @@ pub struct PedBodyPatch {
     pub range: Option<f32>,
     /// Index into `parts` of the part whose speed decides the ped's reaction (retail 0, the torso).
     pub reaction_part: Option<usize>,
+    /// Body A, the movement proxy props are stopped by: `proxy` on / off (retail on), its capsule `proxy_radius` /
+    /// `proxy_half_length` (m, retail 0.3125 / 0.5375) and `proxy_mass` (kg, retail 10).
+    pub proxy: Option<bool>,
+    pub proxy_radius: Option<f32>,
+    pub proxy_half_length: Option<f32>,
+    pub proxy_mass: Option<f32>,
 }
 
 /// One capsule between two rig bones: centred at `centre` (0 = `from`, 1 = `to`), along `from -> to`; m / kg.
@@ -881,7 +904,7 @@ impl Merge for NpcSkaterPropsPatch {
 }
 impl Merge for PedBodyPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, parts, look_ahead, range, reaction_part);
+        merge_opts!(self, b; enabled, parts, look_ahead, range, reaction_part, proxy, proxy_radius, proxy_half_length, proxy_mass);
     }
 }
 impl Merge for SkaterLineChainPatch {
@@ -1023,7 +1046,7 @@ impl Merge for FreePlayPatch {
 
 impl Merge for NpcSimulatedPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, respawn_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, manual_value, bump, reactions, reaction_radius);
+        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, respawn_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, manual_value, bump, reactions, reaction_radius, push, push_factor, push_reduce, push_fast_speed, push_downhill_slope, push_max_heading_deg, push_right_foot, brake, brake_factor, brake_ramp);
     }
 }
 
@@ -1172,6 +1195,10 @@ impl LivingWorldPatch {
             })
             && self.ped_body.as_ref().is_none_or(|b| {
                 let name = |n: &str| !n.is_empty() && n.len() <= 64 && n.bytes().all(|c| c.is_ascii_graphic());
+                let proxy_ok = b.proxy_radius.is_none_or(|v| v.is_finite() && (0.01..=2.0).contains(&v))
+                    && b.proxy_half_length.is_none_or(|v| v.is_finite() && (0.0..=2.0).contains(&v))
+                    && b.proxy_mass.is_none_or(|v| v.is_finite() && (0.1..=MAX_NUMBER).contains(&v));
+                proxy_ok &&
                 b.parts.as_ref().is_none_or(|parts| parts.len() <= 8 && parts.iter().all(|p| {
                     name(&p.from) && name(&p.to) && p.centre.is_finite() && (0.0..=1.0).contains(&p.centre)
                         && p.radius.is_finite() && (0.01..=2.0).contains(&p.radius)
@@ -1215,6 +1242,12 @@ impl LivingWorldPatch {
                     && n.respawn_hold_seconds.is_none_or(|v| v.is_finite() && (0.0..=10.0).contains(&v))
                     && n.anticipation_distance.is_none_or(|v| v.is_finite() && (0.0..=50.0).contains(&v))
                     && n.anticipation_frames.is_none_or(|v| v <= 600)
+                    && [n.push_factor, n.push_reduce].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v)))
+                    && n.push_fast_speed.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v))
+                    && n.push_downhill_slope.is_none_or(|v| v.is_finite() && (-10.0..=10.0).contains(&v))
+                    && n.push_max_heading_deg.is_none_or(|v| v.is_finite() && (0.0..=180.0).contains(&v))
+                    && n.brake_factor.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+                    && n.brake_ramp.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v))
                     && n.max_crossed_nodes.is_none_or(|v| v <= 60)
                     && n.walk_arrive_distance.is_none_or(|v| v.is_finite() && (0.0..=20.0).contains(&v))
                     && n.reaction_radius.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v))
@@ -1420,6 +1453,12 @@ mod tests {
         assert!(valid_patch("living_world", &json!({"ped_brain": {"trip_kind": "Standing", "trip_direction": "FromLeft"}})));
         assert!(!valid_patch("living_world", &json!({"ped_brain": {"trip_kind": "Faceplant"}})));
         assert!(!valid_patch("living_world", &json!({"ped_brain": {"trip_direction": "frombehind"}})));
+        assert!(valid_patch("living_world", &json!({"npc_simulated": {"push": false, "push_factor": 0.9, "push_downhill_slope": -0.5, "push_right_foot": false}})));
+        assert!(!valid_patch("living_world", &json!({"npc_simulated": {"push_factor": 1.5}})));
+        assert!(!valid_patch("living_world", &json!({"npc_simulated": {"push_max_heading_deg": 200.0}})));
+        assert!(valid_patch("living_world", &json!({"ped_body": {"proxy": false, "proxy_radius": 0.4, "proxy_mass": 20.0}})));
+        assert!(!valid_patch("living_world", &json!({"ped_body": {"proxy_radius": 0.0}})));
+        assert!(!valid_patch("living_world", &json!({"ped_body": {"proxy_mass": -1.0}})));
         assert!(valid_patch("living_world", &json!({"npc_simulated": {"respawn_seconds": 3.0, "respawn_min": 0.0}})));
         assert!(!valid_patch("living_world", &json!({"npc_simulated": {"respawn_seconds": 90.0}})));
         assert!(valid_patch("living_world", &json!({"npc_simulated": {"anticipation_distance": 5.0, "anticipation_frames": 90, "max_crossed_nodes": 4}})));

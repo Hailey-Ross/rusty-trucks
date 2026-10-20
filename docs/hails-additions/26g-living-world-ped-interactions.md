@@ -2324,3 +2324,37 @@ reaction; recomp traces proposed in b317 / b318 (not run).
   Tests: `trip_reaction_names_round_trip_for_mod_data` (skate-core) and the skate-mods patch validation.
 - **Open:**
   retail's last-toucher rule; brain +0xCCD bit 0x80 (set during the failure) has no reader we know.
+## Props stop against peds: body A, the movement proxy (2026-10-19)
+
+**Problem.** Props passed through peds: a bench or bin shoved into a ped slid on as if nobody stood there. Our ped
+body (body B, three capsules in group 11) is only in the skater's solve; the prop step never saw a ped (research
+b342, `ped_body.rs`, `prop_dynamics.rs`).
+
+**Retail [code, b342; trace, main's own spawn-only recomp run].** A ped has two bodies in the world's ped pool:
+body A (group 9, one upright capsule, radius 0.3125 m, half length 0.5375 m, 10 kg, posed from the root,
+`sub_82E38400` / `sub_82E35160`) and body B (group 11, posed from the skeleton). Every pair job filters body pairs
+through one collision-type bit table (`40122C30`, width 21), which a new recomp hook (`hooks_pairtable.cpp`,
+category `pairtable`, skate3recomp research-hooks) dumped in a spawn-only run in DownTown: the decoded table is
+symmetric, and body A collides with the static map (0), cars (8) and DMOs (12..14) but never with the skater (4..7)
+or another ped (9..11); body B collides with the skater and with other peds' body B, never with the map, cars or
+DMOs. Contacts on body A of kind 1 (the ped's own plugin object) and 2 (a car) move the ped root; any other contact
+leaves the root and body A is re-posed from it next frame. Matrix: `.local/research/b342-pairtable-matrix.txt`.
+
+**Change.** `ped_body.rs`: `PedProxy` (retail defaults, `PedBodySettings::proxy`, on), `body_a_id` (bit 47, so it
+never equals a body B part id and still names the ped), `body_a_volume` (upright capsule standing on the root,
+moving with the ped). `push_ped_proxies` writes every near ped's body A to `GamePhysics::ped_prop_volumes` (its own
+list, so the NPC proxy system's clear of `actor_prop_volumes` cannot drop it); `step_props` passes them to the prop
+step after the skaters, and `PropDynamics::set_actor_push_mass` gives them their 10 kg in the pusher rule
+(`push_from_skater`), so a prop moving into a ped is slowed by a 10 kg contact every tick and stops against it. The
+skater solve keeps only body B, which matches the table (the skater never meets group 9). Mods:
+`living_world.ped_body.proxy`, `proxy_radius`, `proxy_half_length`, `proxy_mass`.
+
+**Not retail yet / open.** Retail solves body A and the prop in one shared row solve; ours uses the pusher rule the
+skater volumes use (same as skater x DMO). The capsule's height offset (`sub_82E35160`, tuning +0x2C) is not decoded
+(ours stands it on the root). Cars still push the root through `vehicle_contacts` (retail's kind 2 does it through
+body A, same outcome expected); kind 1 (the root following a ped's own plugin object) is not ported. Ped x ped
+contact stays the walker's separation (retail's 11 x 11 body B pair does not write the root either).
+
+**Tests.** `body_a_is_an_upright_root_capsule_in_group_9_with_its_own_id`, `a_sliding_bin_stops_against_a_peds_body_a`
+(a 4 m/s bin slides past the spot without the ped and stops short of it with one), skate-mods patch validation for the
+proxy keys. Not play-tested yet.

@@ -1251,8 +1251,24 @@ pub(crate) fn advance_peds(
                     // Over linked polygons only: across tile seams, never onto an unconnected
                     // layer such as a wall top (fix 17).
                     let from = body.position.to_array();
-                    let (next, mut poly, on_mesh) = constrain_move(mesh, body.nav.poly, from, to.to_array());
                     let moving = (to - body.position).length_squared() > 1e-10;
+                    // Already inside a prop's footprint (a prop that came to rest on or next to the ped, often its own
+                    // just-dropped hand prop; laptop 2026-10-19: peds walking in place for up to 29 s): every step into
+                    // the footprint was refused, so walk out toward its nearest free edge first and re-plan from there.
+                    // Ours; retail's cut mesh never has a ped inside a cut (b349).
+                    let inside = moving && mind.is_none_or(|m| !m.brain.ignore_source_collision) && obstacles.blocked(from, mesh.agent[1]);
+                    let mut to = to;
+                    if inside {
+                        if let Some(out) = obstacles.snap_out(from, mesh.agent[1] + 0.02) {
+                            let dir = (Vec3::from_array(out) - body.position).with_y(0.0);
+                            let (d, step) = (dir.length(), (to - body.position).with_y(0.0).length());
+                            if d > 1e-4 {
+                                to = body.position + dir / d * step.min(d);
+                                body.nav.repath_due = true;
+                            }
+                        }
+                    }
+                    let (next, mut poly, on_mesh) = constrain_move(mesh, body.nav.poly, from, to.to_array());
                     // Never into a prop or mod body: slide along its face or stay (fix 11). A ped in a plugin whose
                     // `DisableCollisionsWithBehaviourSource` is active ignores the plugin's own prop (its body id is the
                     // plugin prop id's low 32 bits), so it can reach a seat inside its bench.
@@ -1303,7 +1319,7 @@ pub(crate) fn advance_peds(
                             });
                             let blocker = blocker.unwrap_or_else(|| if by.is_some_and(|id| id >= MOD_BODY_OBSTACLE_BASE) { "mod body".into() } else { "-".into() });
                             info!(
-                                "PED_BLOCKED ped=#{} at=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] by={by:?} ({blocker}) near_moved_spawn={near:?} on_mesh={on_mesh} clear={clear} tick={now}",
+                                "PED_BLOCKED ped=#{} at=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] by={by:?} ({blocker}) inside={inside} near_moved_spawn={near:?} on_mesh={on_mesh} clear={clear} tick={now}",
                                 ped.id.serial, from[0], from[1], from[2], to.x, to.y, to.z,
                             );
                         }
@@ -1897,6 +1913,25 @@ pub(crate) struct PedPluginProps {
     pub settling: std::collections::BTreeSet<u64>,
 }
 
+/// Members that left the world leave their conversation; an area their leaving emptied is removed, an area nobody
+/// joined yet is kept (retail, b348). Returns (area, ped, members left) per leave.
+pub(crate) fn leave_despawned(map: &mut BTreeMap<u64, skate_core::living_world::peds::conversation::Conversation>, alive: &dyn Fn(u64) -> bool) -> Vec<(u64, u64, usize)> {
+    let mut out = Vec::new();
+    let mut emptied = Vec::new();
+    for c in map.values_mut() {
+        let gone: Vec<u64> = c.members.iter().map(|m| m.ped).filter(|&p| !alive(p)).collect();
+        for p in gone {
+            let left = c.leave(p);
+            out.push((c.id, p, c.members.len()));
+            if matches!(left, skate_core::living_world::peds::conversation::Left::Empty) {
+                emptied.push(c.id);
+            }
+        }
+    }
+    map.retain(|id, _| !emptied.contains(id));
+    out
+}
+
 /// The live conversations by id (host-owned plain data, `skate_core::living_world::peds::conversation`).
 #[derive(Resource, Default, Debug)]
 pub(crate) struct PedConversations {
@@ -2269,16 +2304,13 @@ pub(crate) fn think_peds(
         g.chasers.retain(|c| entities.contains_key(c));
     }
     chase_groups.0.retain(|chasee, g| !g.chasers.is_empty() && entities.contains_key(chasee));
-    // Conversations: members that left the world leave (an unfinished conversation aborts); an
-    // empty one is gone (every area is spawned: `82E1BD08` removes it).
-    for c in conversations.map.values_mut() {
-        let gone: Vec<u64> = c.members.iter().map(|m| m.ped).filter(|p| !entities.contains_key(p)).collect();
-        for p in gone {
-            c.leave(p);
-            info!("PED_CONVERSATION id={} leave ped={p} result=despawned members={} tick={tick}", c.id, c.members.len());
-        }
+    // Conversations: members that left the world leave (an unfinished conversation aborts); an area whose last
+    // member left is gone (`82E1D470` -> `82E1BD08`). An area nobody joined yet stays, as retail's does (b348): it
+    // can still gather passers-by and its 50 m exclusion stops the next spawn; removing it re-spawned an area every
+    // tick (DownTown frame-time run 2026-10-19: 0.4 to 1.4 s hitches).
+    for (id, p, members) in leave_despawned(&mut conversations.map, &|p| entities.contains_key(&p)) {
+        info!("PED_CONVERSATION id={id} leave ped={p} result=despawned members={members} tick={tick}");
     }
-    conversations.map.retain(|_, c| !c.members.is_empty());
     listening.retain(|p| entities.contains_key(p));
     let conversations = &mut *conversations;
     let conv_rng_seed = world_seed;
@@ -2920,6 +2952,12 @@ pub(crate) fn think_peds(
                             conversations.next_id += 1;
                             let id = conversations.next_id;
                             let mut c = skate_core::living_world::peds::conversation::Conversation::new(id, center, candidates, &conv_params, data.nav.is_some().then_some(&probe as skate_core::living_world::peds::conversation::Probe), &mut conv_rand);
+                            // No waypoints (the ground ray missed, or a waypoint off cheap navmesh): retail destroys the area
+                            // at once and offers nobody (`82E1D620`, area vfunc 6; b348).
+                            if c.waypoints.is_empty() && data.nav.is_some() {
+                                debug!("PED_CONVERSATION id={id} start ped=#{} with={partner} no waypoints (grounded={}): not spawned tick={tick}", ped.id.serial, center.is_some());
+                                continue;
+                            }
                             // The founders go through the area's offer test (`826A6CD8` -> manager slot 13 `826BFE18`, its
                             // result ignored): the starter, then the target (a ped only; a player has no participant).
                             use skate_core::living_world::peds::plugins::{conversation_qualifies, offer_conversation, OfferPed, RefusalMemory, TransferView, CONVERSATION_CLASS};
@@ -2945,7 +2983,7 @@ pub(crate) fn think_peds(
                                 conversations.pending_refusals.extend(memory.entries.iter().map(|e| (partner, e.0)));
                             }
                             info!(
-                                "PED_CONVERSATION id={id} start ped=#{} with={partner} joined={starter_joined}/{partner_joined} center=[{:.1}, {:.1}, {:.1}] dropped={} waypoints={} tick={tick}",
+                                "PED_CONVERSATION id={id} start ped=#{} with={partner} joined={starter_joined}/{partner_joined} center=[{:.1}, {:.1}, {:.1}] grounded={} waypoints={} tick={tick}",
                                 ped.id.serial, c.center[0], c.center[1], c.center[2], center.is_some(), c.waypoints.len()
                             );
                             conversations.map.insert(id, c);

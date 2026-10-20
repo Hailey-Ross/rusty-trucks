@@ -129,3 +129,18 @@ described, not copied.
   each junction approach uses (V1), the chassis / secondary tint rule of the `vehicle_chassis` shader (V3), the skid
   flag writer, the skitch grab / attach / release numbers, the vehicle bail thresholds.
   New recomp hooks (skitch, lights, connectors, vehicle bails) and a few short play sessions will measure them.
+
+## The Skyline example mod starts switched off (2026-10-19)
+
+**Problem.** Laptop session 2026-10-19 18:04: the Skyline example car (`mods/Skyline_Drive_Mod`, `examples.skyline`,
+upstream since 2026-09-11) loaded at every start without the player turning it on, spawned at the player's spawn
+point, blocked peds walking by (`PED_BLOCKED ... (mod body)`, the car is a ped navigation obstacle) and cost 2 to 3 ms
+of each fixed step (`modding::fixed`). The user: "no? i didn't turn it on at least..", then "switch skyline off both
+for our upstream pr and in hails additions".
+
+**Change.** Its `mod.json` sets `"enabled_by_default": false` (the field the dev test mods already use,
+`crates/skate-mods/src/schema.rs`), with the `mod.json` line of `SHA256SUMS.txt` updated (sums are over the LF form).
+It stays in `mods/` and can be turned on in the mod menu, through a saved preference, or for one run with
+`SKATE3_MODS_ENABLE=examples.skyline`. A player who already turned it on keeps their saved preference.
+
+**Tests.** skate-mods (106 pass); `skyline_physics` still needs the SDK example's local GLB (known, unrelated).

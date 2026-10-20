@@ -13,8 +13,10 @@
 //!   slot +92 `sub_82C48688` = orientation from the collision shape). Slot +88 `sub_82C48648`
 //!   switches the obstacle off while the object's state word `+144+4252` equals 1. That word is set
 //!   to 1 only by the component's slot 32 (`sub_82C56B00`, which also moves every collision element
-//!   of the object to collision group 13; slots 33/34 set it back to 0 with group 12 or 14); its
-//!   meaning is not decoded. It is NOT the Move Object hold: the hold's keep-alive (interface slot
+//!   of the object to collision group 13; slots 33/34 set it back to 0 with group 12 or 14). It means
+//!   "attached to a ped's hand" (b349: slot 32 is the hand attach, slot 34 `82C56C70` the release that
+//!   `82E3EBE0` calls for a drop or throw), so a ped's hand prop is no obstacle while held and a normal cut
+//!   from its release on. It is NOT the Move Object hold: the hold's keep-alive (interface slot
 //!   10 -> DMO handler slot 6 `sub_82C4C450` -> component slot 30 `sub_82C485D0`) only sets the
 //!   held bit `DMO+4464 & 0x20`, which the obstacle code never reads. So a held prop stays an
 //!   obstacle: cut while slower than 0.4 m/s, a moving avoider while faster (2026-10-08).

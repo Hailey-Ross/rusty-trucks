@@ -271,6 +271,12 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         b.look_ahead = f.look_ahead.unwrap_or(b.look_ahead);
         b.range = f.range.unwrap_or(b.range);
         b.reaction_part = f.reaction_part.unwrap_or(b.reaction_part);
+        let mut proxy = b.proxy.unwrap_or_default();
+        proxy.radius = f.proxy_radius.unwrap_or(proxy.radius);
+        proxy.half_length = f.proxy_half_length.unwrap_or(proxy.half_length);
+        proxy.mass = f.proxy_mass.unwrap_or(proxy.mass);
+        let on = f.proxy.unwrap_or(b.proxy.is_some());
+        b.proxy = on.then_some(proxy);
     }
     if let Some(m) = &p.skater_clips {
         s.skater_clips = m.clone();
@@ -334,6 +340,18 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         n.bump = f.bump.unwrap_or(n.bump);
         n.reactions.enabled = f.reactions.unwrap_or(n.reactions.enabled);
         n.reactions.radius = f.reaction_radius.unwrap_or(n.reactions.radius);
+        let t = &mut n.push;
+        t.enabled = f.push.unwrap_or(t.enabled);
+        t.factor = f.push_factor.unwrap_or(t.factor);
+        t.reduce = f.push_reduce.unwrap_or(t.reduce);
+        t.fast_speed = f.push_fast_speed.unwrap_or(t.fast_speed);
+        t.downhill_slope = f.push_downhill_slope.unwrap_or(t.downhill_slope);
+        t.max_heading_error = f.push_max_heading_deg.map_or(t.max_heading_error, f32::to_radians);
+        t.right_foot = f.push_right_foot.map(Some).unwrap_or(t.right_foot);
+        let b = &mut n.brake;
+        b.enabled = f.brake.unwrap_or(b.enabled);
+        b.factor = f.brake_factor.unwrap_or(b.factor);
+        b.ramp = f.brake_ramp.unwrap_or(b.ramp);
     }
     // After `npc_simulated`: the nested keys win over its walk-back aliases.
     macro_rules! set {

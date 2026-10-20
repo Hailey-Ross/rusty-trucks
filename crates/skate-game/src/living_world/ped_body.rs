@@ -14,8 +14,8 @@
 //! moved ahead by the ped's velocity x 1/60 s. The parts are keyframed (rebuilt from the pose, no
 //! write-back found): a finite mass for the solve, no rotation from it.
 //! NOT RETAIL YET: part 0's axis is taken as Hips -> Head (retail builds a frame from Hips' third axis
-//! and that direction, then turns it 90 degrees; which way is open); peds have no body while in a
-//! collision reaction (retail removes bodies A and B together, when is open: user session pending);
+//! and that direction, then turns it 90 degrees; which way is open); body A (retail's group-9 movement
+//! proxy, b342) is not ported, body B stays in the solve through every reaction, as retail (b203);
 //! bodies only within [`PedBodySettings::range`] of an observer (ours: posing costs time). All
 //! mod-overridable (`living_world.ped_body`).
 use bevy::prelude::*;
@@ -74,6 +74,55 @@ pub(crate) struct PedBodySettings {
     /// The part whose speed after the solve decides the ped's reaction, whichever part was touched: retail reads
     /// only part 0, the torso (`sub_82E38FB8` kind 5, `[parts]+76` with no index; b283).
     pub reaction_part: usize,
+    /// Body A, the movement proxy (group 9): the body cars and props meet (b342 section 7). `None` = off.
+    pub proxy: Option<PedProxy>,
+}
+
+/// Body A (retail `sub_82E38400`, group 9; b146 radius / half length / mass, b342): one upright capsule from the ped
+/// root. Retail pairs group 9 with the static map, cars (8) and DMOs (12..14), never with the skater or another ped
+/// (the collision-type table `40122C30`, read in the recomp, b342 section 7). Ours: props meet it through the
+/// pusher rule skater volumes use (`PropDynamics::push_from_skater`) with its mass, so a shoved bench stops against a
+/// ped; cars still push the root through `vehicle_contacts` (retail's kind 2 does it through body A). NOT RETAIL
+/// YET: the capsule's height offset (`sub_82E35160`, tuning +0x2C, not decoded; ours stands it on the root) and
+/// the root following body A for a ped's own plugin object (kind 1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PedProxy {
+    pub radius: f32,
+    pub half_length: f32,
+    /// kg.
+    pub mass: f32,
+}
+
+impl Default for PedProxy {
+    fn default() -> Self {
+        Self { radius: 0.3125, half_length: 0.5375, mass: 10.0 }
+    }
+}
+
+/// Retail group of body A.
+pub(crate) const PED_PROXY_GROUP: u32 = 9;
+/// Body A's actor id in the prop step: the part ids use bits 0..1, body A sets bit 47 (between the serial and the tag,
+/// so [`proxy_serial`] still names the ped).
+pub(crate) const PED_BODY_A_BIT: u64 = 1 << 47;
+
+pub(crate) fn body_a_id(serial: u32) -> u64 {
+    PED_PROXY_TAG | PED_BODY_A_BIT | (serial as u64) << 2
+}
+
+/// Body A as a prop-step volume: an upright capsule standing on the root, moving with the ped.
+pub(crate) fn body_a_volume(position: Vec3, velocity: Vec3, p: &PedProxy) -> skate_core::physics::board_world::BoardWorldVolume {
+    use skate_core::math::Vector3;
+    let v = |a: Vec3| Vector3::new(a.x, a.y, a.z);
+    let half = p.half_length.max(0.0);
+    let radius = p.radius.max(0.01);
+    skate_core::physics::board_world::BoardWorldVolume {
+        collision_group: PED_PROXY_GROUP,
+        // Not a board: the prop's body-bump cap applies.
+        body: skate_core::physics::board_step::CollisionBody::Attached(0),
+        primitive: skate_core::physics::world_contact::ContactPrimitive::Capsule { center: v(position + Vec3::Y * (radius + half)), axis: v(Vec3::Y), half_length: half, radius },
+        motion: skate_core::physics::board_world::VolumeMotion { linear_velocity: v(velocity), ..Default::default() },
+        material: skate_core::physics::contact::RetailContactMaterial { static_friction: 0.0, dynamic_friction: 0.0, restitution: 0.0 },
+    }
 }
 
 impl Default for PedBodySettings {
@@ -97,6 +146,7 @@ impl Default for PedBodySettings {
             look_ahead: 1.0 / 60.0,
             range: 12.0,
             reaction_part: 0,
+            proxy: Some(PedProxy::default()),
         }
     }
 }
@@ -171,7 +221,18 @@ pub(crate) fn push_ped_proxies(
     replay: Res<crate::replay::Replay>,
 ) {
     let s = &settings.ped_body;
-    if replay.active || !s.enabled || s.parts.is_empty() || data.rig.names.is_empty() {
+    physics.ped_prop_volumes.clear();
+    if replay.active || !s.enabled {
+        return;
+    }
+    // Body A for the prop step: every near ped, whether or not body B can be posed (b342).
+    if let Some(proxy) = s.proxy.as_ref() {
+        let near = |p: Vec3| observers.observers.iter().any(|o| Vec3::from_array(o.position).distance(p) <= s.range);
+        let mut a: Vec<_> = peds.iter().filter(|(_, body)| near(body.position)).map(|(ped, body)| (body_a_id(ped.id.serial), body_a_volume(body.position, body.velocity, proxy), proxy.mass)).collect();
+        a.sort_by_key(|x| x.0);
+        physics.ped_prop_volumes = a;
+    }
+    if s.parts.is_empty() || data.rig.names.is_empty() {
         return;
     }
     let bone = |name: &str| data.rig.names.iter().position(|n| n.eq_ignore_ascii_case(name));
@@ -201,6 +262,20 @@ pub(crate) fn push_ped_proxies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_a_is_an_upright_root_capsule_in_group_9_with_its_own_id() {
+        let p = PedProxy::default();
+        assert_eq!((p.radius, p.half_length, p.mass), (0.3125, 0.5375, 10.0), "b146 / b342 retail values");
+        let v = body_a_volume(Vec3::new(1.0, 2.0, 3.0), Vec3::X, &p);
+        assert_eq!(v.collision_group, 9);
+        let skate_core::physics::world_contact::ContactPrimitive::Capsule { center, axis, half_length, radius } = v.primitive else { panic!("capsule") };
+        assert!((center.y - (2.0 + 0.3125 + 0.5375)).abs() < 1e-5 && axis.y == 1.0 && half_length == 0.5375 && radius == 0.3125);
+        // Body A's id never equals a body B part id of any ped, and still names the ped.
+        let a = body_a_id(7);
+        assert!((0..4).all(|part| a != proxy_id(7, part)) && proxy_serial(a) == Some(7));
+        assert!(PedBodySettings::default().proxy.is_some(), "retail on");
+    }
 
     #[test]
     fn the_parts_turn_with_retails_capsule_inertia() {

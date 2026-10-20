@@ -70,13 +70,17 @@ pub(crate) struct SimulatedTierSettings {
     /// NPC skaters' reactions to wipeouts near them (slam / slam_b / crash speech; retail on, 15 m, research b166 /
     /// b168). Mod: `npc_simulated.reactions`, `npc_simulated.reaction_radius`.
     pub reactions: skate_core::living_world::npc_reactions::ReactionParams,
+    /// The PathController's push below the line's speed (`sub_8246B4C8`, b341; retail values). Mod: `npc_simulated.push*`.
+    pub push: skate_core::living_world::ai_push::PushSettings,
+    /// ... and its brake far above it (`sub_8246B810`, b347; retail values). Mod: `npc_simulated.brake*`.
+    pub brake: skate_core::living_world::ai_push::BrakeSettings,
 }
 
 impl Default for SimulatedTierSettings {
     fn default() -> Self {
         // `SKATE_NPC_SIM_RADIUS` (m): a test knob so an unattended run sees many switches to physics.
         let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(f32::MAX);
-        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, respawn_hold_seconds: 8.0 / 60.0, reactions: Default::default() }
+        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, respawn_hold_seconds: 8.0 / 60.0, reactions: Default::default(), push: Default::default(), brake: Default::default() }
     }
 }
 
@@ -111,6 +115,8 @@ pub(crate) struct NpcSim {
     respawn_in: Option<u32>,
     /// The node the trick dispatcher handled last (`pc+820`).
     last_node: Option<u32>,
+    /// The PathController posted its push last tick (`pc+926`; the log names a push's start once).
+    pushing: bool,
     /// Controller B while it is the active controller (`brain+104`), with the line and node it walks back to.
     walker: Option<Walker>,
     /// Retail's path projection (cursor A / B) on the line it was started for.
@@ -454,7 +460,7 @@ fn spawn_sim(
         }
         None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
+    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, pushing: false, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
     let v = place(&mut sim, target, hold_ticks)?;
     sim.handover_push = Some((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
     Ok(sim)
@@ -1404,6 +1410,52 @@ pub(crate) fn simulate(
                                 }
                             }
                         }
+                    }
+                }
+                // The push below the line's speed (`sub_8246BAA8` -> `sub_8246B4C8`, b341): ground ticks on the board,
+                // not in a hold or skitching, like the ground steer above.
+                {
+                    use skate_core::living_world::{ai_push, avoid::AvoidMode};
+                    let p = &sim.body.runtime.player_input.processed;
+                    let on_foot = p.flags_2484 & 0x0800_0000 != 0 || p.flags_2480 & 0x4 != 0;
+                    let waiting = sim.respawn_in.is_some() || sim.teleport_pending || sim.hold_ticks > 0;
+                    if let (false, false, false, true, Some(line)) = (airborne_now, on_foot, waiting, avoid.last.mode != AvoidMode::Skitch, lines.get(&replay.cursor.line)) {
+                        let t = &rules.push;
+                        let at = [deck.translation.x, deck.translation.y, deck.translation.z];
+                        let off_line = (at[0] - target.position[0]).hypot(at[2] - target.position[2]);
+                        let along = target.step;
+                        let heading_error = if along[0].hypot(along[2]) > 1e-5 { (forward[0] * along[2] - forward[2] * along[0]).atan2(forward[0] * along[0] + forward[2] * along[2]) } else { 0.0 };
+                        let w = GamePhysics::context_deck_velocity(&sim.context);
+                        let near = off_line <= t.look_ahead_distance;
+                        let (node, into) = (replay.cursor.node, replay.cursor.frame_in_segment);
+                        let input = ai_push::PushInput {
+                            speed: (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt(),
+                            target: avoid.last.shape_speed(ai_push::target_speed(target.step, off_line, t), false),
+                            category: sim.slot.category,
+                            stuck_stage: replay.avoid.controller.sub_mode,
+                            against_forward: forward[0] * along[0] + forward[1] * along[1] + forward[2] * along[2] < 0.0,
+                            heading_error,
+                            trick_frames: near.then(|| ai_push::trick_frames(line, node, into, t)).flatten(),
+                            off_board_frames: near.then(|| ai_push::off_board_frames(line, node, into, t)).flatten(),
+                            slope: ai_push::slope(target.step),
+                            mirrored: sim.body.runtime.animation.stance().1,
+                            fakie: sim.body.runtime.animation.stance().0,
+                        };
+                        // At or above the target retail brakes instead (only far above it, `sub_8246B810`).
+                        if let Some((key, magnitude)) = ai_push::brake(&input, replay.cursor.node >= 1, &rules.brake, t) {
+                            intents.push((key.to_string(), magnitude));
+                        }
+                        if let Some(push) = ai_push::push(&input, t) {
+                            if !sim.pushing {
+                                debug!("NPC_SKATER_AI_PUSH #{} node {node} speed {:.2} target {:.2} slope {:.2}", npc.id.serial, input.speed, input.target, input.slope);
+                            }
+                            sim.pushing = true;
+                            intents.extend(push.into_iter().map(|(k, v)| (k.to_string(), v)));
+                        } else {
+                            sim.pushing = false;
+                        }
+                    } else {
+                        sim.pushing = false;
                     }
                 }
                 skate_core::living_world::ai_signals::apply_skitch_mode(
