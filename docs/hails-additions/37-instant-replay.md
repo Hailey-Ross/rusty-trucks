@@ -108,6 +108,23 @@ replay" gates (research b375, b378).
 - Not yet: vehicle impact sounds (`car_alarm.rs` contact path) are not recorded. Replay speed below 100 % (M2) will
   scale `AudioState.time_scale`; whether retail's pitch follows is open.
 
+## M2 step 1: the editor model (skate-core)
+
+`crates/skate-core/src/replay_edit.rs`: clips trimmed out of the recording (30 fps timeline frames), each with its
+effect values and stepped marker lanes, and retail's length rules. Pure data, no UI yet.
+- Opens at 150 frames or more (`8250B8F8`, > 149); timeline 30 fps (`825ADD90`).
+- Encoded length = round(sum over clips of span / (speed% x 0.01) / 30 + 0.5) s, shareable at 60 s or less
+  (`825ADF88`, `cmplwi 60`).
+- Lanes with retail ranges (research b343 / b344 / b377): speed 10..100 % step 10 default 100 (slows only),
+  shake 0..3 wrapping, brightness -100..100 step 20, contrast 10..30 step 2, saturation 0..100 step 10, tint R / G /
+  B / A 0..250 step 25. The look defaults are the neutral values (OURS until retail's are read).
+- A lane's value steps at a marker (no ramp: retail writes the value at the marker and 1 ms later, `8250CC10`); a
+  marker on the same frame replaces; trimming drops markers outside the clip; at most 100 markers per lane (retail
+  refuses at 100 with "no more markers", `82613500`, research b381).
+- Data: `EditLimits` and `LaneSpec` hold every number; lanes have stable string ids (`speed`, `tint_r`, ...) for mod
+  records and saved edits. A mod may allow speeds over 100 % (ours, not retail).
+- Tests: 5 (open threshold, stepping / clamping / wrapping, stepped markers, marker cap, encoded length).
+
 ### Open
 - Ped / NPC fade alpha, held hand props and the camera's full `CameraFrame` (shake, opacity, blur) are not recorded
   yet.
