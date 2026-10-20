@@ -219,6 +219,12 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 - Rumble: a port of retail's rumble controller for SDL and XInput pads, with a mod API (`sdk.input.rumble`). Gameplay rumble events are still to come.
 - The Guide / F1 / Esc menu now looks and moves like the recomp's settings screen (blurred world, sliding highlight, category rail, button legend).
 
+**Instant replay (new, not play-tested yet)**
+- The replay (Select / F6) now records the whole world, not just you: NPC skaters, peds, traffic and props play back as they moved, including ones that left during the recording. It keeps Skate 3's 90 seconds (was 30).
+- Replays have sound, the Skate 3 way: your rolling, pushes, grinds and landings, traffic, peds' footsteps, horns and car alarms play again from what was recorded. A paused replay is silent and speech stays off, like Skate 3.
+- The triggers scrub at Skate 3's rate (eased, a full sweep in about 7 seconds), and the free camera stays within 40 m of your skater.
+- Mods can open the replay, drop markers and change the recording length (`sdk.replay`). The replay editor (trimming, speed, effects) and video export come next.
+
 **This fork's releases**
 - The release workflow builds, publishes and updates from this repository (the in-game updater follows `Hailey-Ross/rusty-trucks`), a rolling `hails-additions` build on every push, and `PLAY-WITH-LOG.bat` for session logs.
 
