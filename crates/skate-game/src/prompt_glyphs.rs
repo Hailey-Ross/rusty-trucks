@@ -76,6 +76,9 @@ pub(crate) fn known(retail: &str) -> bool {
 
 /// The prompt for a retail button name on a pad of `family` with SDL face `labels`.
 pub(crate) fn resolve(retail: &str, family: Family, labels: [PromptLabel; 4]) -> Option<Prompt> {
+    // `_hud` names the HUD-style art of the same button (the replay screen's Hide prompt asks for `L3_Click_hud`,
+    // `EnableShowHide`); the prompt is the same.
+    let retail = retail.strip_suffix("_hud").unwrap_or(retail);
     if let Some(i) = face_index(retail) {
         return Some(Prompt::Face(labels[i], family.prompt_style()));
     }
@@ -539,6 +542,8 @@ mod tests {
             "A", "B", "X", "Y", "Back", "Start", "R_Trigger", "L_Trigger", "L_Bumper", "R_Bumper", "L3_Click", "R3_Click",
             "Stick_Right_Up", "Stick_Right_Down", "Stick_Right_L", "Stick_Right_R", "Stick_Right", "DPad_Up", "DPad_Down",
             "DPad_Left", "DPad_Right", "Stick_Left_Up", "Stick_Left_Down", "Stick_Left_L", "Stick_Left_R", "Stick_Left", "DPad",
+            // The HUD-style names (the replay screen's Hide prompt).
+            "L3_Click_hud",
         ];
         let families = [
             Family::Xbox360,

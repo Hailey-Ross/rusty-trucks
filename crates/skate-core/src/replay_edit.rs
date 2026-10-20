@@ -367,6 +367,7 @@ impl ReplayEdit {
 }
 
 pub mod session;
+pub mod shake;
 
 #[cfg(test)]
 mod tests;

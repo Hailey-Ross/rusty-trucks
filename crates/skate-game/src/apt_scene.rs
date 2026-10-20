@@ -174,6 +174,13 @@ fn visit(
         // MapRenderComponent (b262 / b263, retail 825E2618 -> 8268D898): the host draws the map markers in the clip's
         // own space, centred on its origin; this placeholder carries the clip transform (the images of (0, 0), (1, 0)
         // and (0, 1)) for the stage to expand (`MAP_MARKERS`).
+        // CustomTimeline (the replay editor's strip, mCustomRender; retail dispatcher 825D4828 -> 82509B80, b403): drawn
+        // by the host in the clip's own space (x = normalised time x 817); the placeholder carries the full clip
+        // transform for the stage to expand (`REPLAY_TIMELINE`).
+        if kind == "CustomTimeline" {
+            let point = |x: f32, y: f32| transform(matrix, &Vertex { position: [x, y], uv: [0., 0.] });
+            out.push(Draw { texture: REPLAY_TIMELINE.to_owned(), fill: Fill::TextureClamped, vertices: vec![point(0., 0.), point(1., 0.), point(0., 1.)], multiply, add });
+        }
         if kind == "MapRenderComponent" {
             let point = |x: f32, y: f32| transform(matrix, &Vertex { position: [x, y], uv: [0., 0.] });
             out.push(Draw { texture: MAP_MARKERS.to_owned(), fill: Fill::TextureClamped, vertices: vec![point(0., 0.), point(1., 0.), point(0., 1.)], multiply, add });
@@ -352,3 +359,5 @@ fn last_digits(name: &str) -> Option<usize> {
 
 /// Texture key of the MapRenderComponent placeholder draw (three transformed points, expanded by the host).
 pub(crate) const MAP_MARKERS: &str = "map-markers/";
+/// The replay editor timeline placeholder (`CustomTimeline`), expanded by the stage from the replay screen's feed.
+pub(crate) const REPLAY_TIMELINE: &str = "replay-timeline/";

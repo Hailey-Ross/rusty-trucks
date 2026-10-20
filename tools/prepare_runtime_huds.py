@@ -1,4 +1,4 @@
-"""Export the HUDs, the ped chase alerts and the front-end menu movies used by the engine, as one automatic setup stage.
+"""Export the HUDs, the ped chase alerts, the replay shake clips and the front-end menu movies used by the engine, as one automatic setup stage.
 
 Only runtime manifests and referenced RGBA payloads enter the installation.
 Extraction intermediates stay in setup's conversion workspace and are removed
@@ -74,6 +74,20 @@ def prepare_in_workspace(game, assets, work):
         except CONTENT_ERRORS:
             retained=False
         note(availability,'chase-arrows',error,retained)
+    # The replay editor's camera shake clips (ICELite.bin in scene.big, research b400).
+    import prepare_replay_shake as shake
+    availability=assets/'private'/'replay-shake-availability.json'
+    try:
+        shake.prepare(game, work/'replay-shake')
+        files.update(shake.install(assets, work/'replay-shake'))
+        availability.unlink(missing_ok=True)
+    except CONTENT_ERRORS as error:
+        try:
+            shake.runtime_files(assets/'private'/'hud'/'replay-shake')
+            retained=True
+        except CONTENT_ERRORS:
+            retained=False
+        note(availability,'replay-shake',error,retained)
     print(f'Original runtime HUDs ready: {len(files)} verified files', flush=True)
     return files
 

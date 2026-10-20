@@ -51,6 +51,10 @@ const TRICK_GUIDE_PATH: &str = "tricks/trickguide.swf";
 const REPLAY: &str = "Replay2";
 const REPLAY_PATH: &str = "replay2/replay_editor2.swf";
 const REPLAY_MOVIE: &str = "source/screens/replay2/replay_editor2";
+/// The replay help (TU3 table 73, ReplayHelp; the DLC's ReplayHelp2 is not ported); FE 13, opened by Start (b391).
+const REPLAY_HELP: &str = "ReplayHelp";
+const REPLAY_HELP_PATH: &str = "replay2/replay_help.swf";
+const REPLAY_HELP_MOVIE: &str = "source/screens/replay2/replay_help";
 /// The Challenge Map template (record 68) and its path; FE screen 17 (b244 / b253). The pause item that opens it.
 const CHALLENGE_MAP: &str = "ChallengeMap";
 const CHALLENGE_MAP_PATH: &str = "map/challengemap.swf";
@@ -145,6 +149,7 @@ struct MenuStage {
     /// The instant replay screen's AS id (None: no Replay2 template or movie in this install: our Bevy panel shows),
     /// its host and whether it is shown (after its IntroComplete).
     replay_id: Option<i32>,
+    replay_help_id: Option<i32>,
     replay_menu: crate::replay_menu_host::ReplayMenuHost,
     replay_shown: bool,
     /// The Challenge Map screen's AS id and host (challenge_map_host).
@@ -534,6 +539,7 @@ fn setup(
                 options_id: as_id(OPTIONS),
                 trick_guide_id: as_id(TRICK_GUIDE),
                 replay_id: templates.iter().position(|n| n == REPLAY).filter(|_| movies.movies.contains_key(REPLAY_MOVIE)).map(|i| 600 + i as i32),
+                replay_help_id: templates.iter().position(|n| n == REPLAY_HELP).filter(|_| movies.movies.contains_key(REPLAY_HELP_MOVIE)).map(|i| 600 + i as i32),
                 replay_menu: Default::default(),
                 replay_shown: false,
                 trick_guide_base: trick_guide.guide.clone(),
@@ -725,7 +731,7 @@ fn update(
         // (b391: retail never calls the movie's InstantDone; the screen manager's ShowScreen makes it visible), then
         // fed every frame and told what changed (SetState 18 / 19 / 999 / 1002 / 1003); closed with the replay.
         if let Some(replay_id) = ms.replay_id {
-            let feed = replay_feed.as_ref().map(|f| f.0.clone()).filter(|f| f.instant);
+            let feed = replay_feed.as_ref().map(|f| f.0.clone()).filter(|f| f.active);
             match (feed, fe.replay_menu.open) {
                 (Some(feed), false) => {
                     info!("RETAIL_MENUS open {REPLAY} (FE 12, instant replay)");
@@ -738,7 +744,11 @@ fn update(
                 (Some(feed), true) => fe.replay_menu.feed = feed,
                 (None, true) => {
                     info!("RETAIL_MENUS close {REPLAY}");
+                    if let Some(help_id) = ms.replay_help_id.filter(|_| fe.replay_menu.help_open) {
+                        close(&mut ms.stage, help_id, &mut fe)?;
+                    }
                     fe.replay_menu.open = false;
+                    fe.replay_menu.help_open = false;
                     ms.replay_shown = false;
                     close(&mut ms.stage, replay_id, &mut fe)?;
                 }
@@ -1266,6 +1276,36 @@ fn update(
                     set_state(&mut ms.stage, replay_id, state, &mut fe)?;
                 }
             }
+            // The help (FE 13) over the replay screen: opened and closed with the feed; each page turn the replay
+            // asked for is a SetState(0) (`NextHelpPage`) once the help is shown.
+            if let Some(help_id) = ms.replay_help_id.filter(|_| ms.replay_shown) {
+                let host = &mut fe.replay_menu;
+                match (host.feed.help, host.help_open) {
+                    (true, false) => {
+                        info!("RETAIL_MENUS open {REPLAY_HELP} (FE 13)");
+                        host.help_open = true;
+                        host.help_shown = false;
+                        host.help_turns_posted = host.feed.help_turns;
+                        open_screen(&mut ms.stage, REPLAY_HELP_PATH, REPLAY_HELP, &mut fe)?;
+                    }
+                    (false, true) => {
+                        info!("RETAIL_MENUS close {REPLAY_HELP}");
+                        host.help_open = false;
+                        close(&mut ms.stage, help_id, &mut fe)?;
+                    }
+                    _ => {}
+                }
+                if fe.replay_menu.help_open {
+                    take_call(&mut fe, &format!("Game.OnScreenLoaded({help_id})"));
+                    if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({help_id})")) {
+                        fe.replay_menu.help_shown = true;
+                    }
+                    while fe.replay_menu.help_shown && fe.replay_menu.help_turns_posted < fe.replay_menu.feed.help_turns {
+                        fe.replay_menu.help_turns_posted += 1;
+                        set_state(&mut ms.stage, help_id, crate::replay_menu_host::HELP_NEXT_PAGE, &mut fe)?;
+                    }
+                }
+            }
         }
         // Video Calibration loaded (vt+108 0x8260E888): the first page; intro complete = ready.
         if let Some(c) = cal.filter(|c| ms.stack.top(Layer::Main) == Some(*c)) {
@@ -1667,6 +1707,81 @@ fn open_screen(stage: &mut Stage, path: &str, template: &str, fe: &mut FrontEnd)
     open_screen_on(stage, path, "screen", template, fe)
 }
 
+/// The replay editor's timeline strip (retail 82509B80 -> 82508E08 bands, 82509298 keys; b403), in the strip clip's
+/// space (x = fraction x 817): one band from y 3 to 30 (the band bottom is the clip height, [guess]) coloured by the
+/// clip's camera type, brighter while "selected" (no key under the playhead, not instant mode); one 13 x 51 key quad
+/// per key after the first, `key_glow` under the playhead (within 0.00889), `key_default` else; in the camera edit
+/// modes the key under the playhead is not drawn. Values are retail's (data, `TimelineLook`).
+fn timeline_draws(placeholder: &crate::apt_scene::Draw, feed: &crate::replay_menu_host::ReplayScreenFeed) -> Vec<crate::apt_scene::Draw> {
+    let look = TimelineLook::default();
+    let [o, px, py] = [0, 1, 2].map(|i| placeholder.vertices[i].position);
+    let at = |x: f32, y: f32, u: f32, v: f32| crate::apt_scene::Vertex {
+        position: [o[0] + x * (px[0] - o[0]) + y * (py[0] - o[0]), o[1] + x * (px[1] - o[1]) + y * (py[1] - o[1])],
+        uv: [u, v],
+    };
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32, texture: String, multiply: [f32; 4]| crate::apt_scene::Draw {
+        texture,
+        fill: placeholder.fill,
+        vertices: vec![at(x0, y0, 0., 0.), at(x1, y0, 1., 0.), at(x1, y1, 1., 1.), at(x0, y0, 0., 0.), at(x1, y1, 1., 1.), at(x0, y1, 0., 1.)],
+        multiply,
+        add: [0.0; 4],
+    };
+    let mut out = Vec::new();
+    if feed.instant {
+        return out;
+    }
+    let under = feed.keys.iter().position(|k| (k - feed.position as f32).abs() <= look.snap);
+    // Camera type by menu row (b401: rows Follow 0, Tripod 1, Game 2, Free 3 -> types 0, 1, 3, 2).
+    let kind = [0, 1, 3, 2].get(feed.camera_row as usize).copied().unwrap_or(3);
+    let selected = under.is_none();
+    let (rgb, alpha) = if selected { (look.selected[kind], look.alpha_selected) } else { (look.normal[kind], look.alpha) };
+    let a = placeholder.multiply[3];
+    out.push(quad(0.0, look.band_top, look.width, look.band_bottom, String::new(), [rgb[0], rgb[1], rgb[2], alpha * a]));
+    let camera_edit = (7..=10).contains(&feed.mode);
+    for (i, k) in feed.keys.iter().enumerate() {
+        let highlighted = under == Some(i);
+        if highlighted && camera_edit {
+            continue;
+        }
+        let x = k * look.width - 0.5;
+        let name = if highlighted { "key_glow" } else { "key_default" };
+        out.push(quad(x - look.key_size[0] / 2.0, 0.0, x + look.key_size[0] / 2.0, look.key_size[1],
+            format!("{}texture/{name}", crate::retail_menu_movies::NAMED_IMAGE_PREFIX), [1.0, 1.0, 1.0, a]));
+    }
+    out
+}
+
+/// The timeline strip's retail look (b403, 82508E08 / 82509298), data a mod may override.
+struct TimelineLook {
+    width: f32,
+    band_top: f32,
+    band_bottom: f32,
+    /// Band colours per camera type (0 Follow, 1 Tripod, 2 Free, 3 Game), normal / selected, and their alphas.
+    normal: [[f32; 3]; 4],
+    selected: [[f32; 3]; 4],
+    alpha: f32,
+    alpha_selected: f32,
+    key_size: [f32; 2],
+    /// A key within this fraction of the playhead is under it (`825084C8`).
+    snap: f32,
+}
+
+impl Default for TimelineLook {
+    fn default() -> Self {
+        Self {
+            width: 817.0,
+            band_top: 3.0,
+            band_bottom: 30.0,
+            normal: [[0.41, 0.41, 0.19], [0.12, 0.28, 0.36], [0.27, 0.40, 0.15], [0.30, 0.30, 0.35]],
+            selected: [[0.74, 0.74, 0.19], [0.29, 0.54, 0.65], [0.52, 0.72, 0.36], [0.53, 0.53, 0.53]],
+            alpha: 0.65,
+            alpha_selected: 0.85,
+            key_size: [13.0, 51.0],
+            snap: 0.00889,
+        }
+    }
+}
+
 /// OpenScreen bridge (0x82D09140): path, AS layer ("screen" unless the caller names one), the template's visible flag
 /// ("0" for every menu template here), template name.
 fn open_screen_on(stage: &mut Stage, path: &str, layer: &str, template: &str, fe: &mut FrontEnd) -> Result<(), String> {
@@ -1800,6 +1915,10 @@ fn render(
     // (the gate byte, b263).
     let mut expanded = Vec::with_capacity(draws.len());
     for draw in draws.drain(..) {
+        if draw.texture == crate::apt_scene::REPLAY_TIMELINE {
+            expanded.extend(timeline_draws(&draw, &ms.replay_menu.feed));
+            continue;
+        }
         if draw.texture != crate::apt_scene::MAP_MARKERS {
             expanded.push(draw);
             continue;
@@ -1893,4 +2012,40 @@ fn render(
         // Colour transforms in gamma space like the console front end (retail shot: near-black panel body).
         true,
     );
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+
+    /// The editor timeline (b403): a band from y 3 to 30 in the clip's space coloured by the camera, a 13 x 51
+    /// `key_default` per key, `key_glow` (and an unselected band) when the playhead is on a key; nothing in instant mode.
+    #[test]
+    fn timeline_draws_the_camera_band_and_the_keys() {
+        let v = |x: f32, y: f32| crate::apt_scene::Vertex { position: [x, y], uv: [0.0, 0.0] };
+        // The strip at (100, 50), unscaled.
+        let placeholder = crate::apt_scene::Draw {
+            texture: crate::apt_scene::REPLAY_TIMELINE.into(),
+            fill: crate::apt_scene::Fill::TextureClamped,
+            vertices: vec![v(100.0, 50.0), v(101.0, 50.0), v(100.0, 51.0)],
+            multiply: [1.0; 4],
+            add: [0.0; 4],
+        };
+        let mut feed = crate::replay_menu_host::ReplayScreenFeed { mode: 6, camera_row: 0, keys: vec![0.5], position: 0.2, ..Default::default() };
+        let draws = timeline_draws(&placeholder, &feed);
+        assert_eq!(draws.len(), 2);
+        // The band: Follow (type 0) selected colour, from x 100 to 917, y 53 to 80.
+        assert_eq!(draws[0].multiply, [0.74, 0.74, 0.19, 0.85]);
+        assert_eq!((draws[0].vertices[0].position, draws[0].vertices[2].position), ([100.0, 53.0], [917.0, 80.0]));
+        // The key at x = 0.5 x 817 - 0.5, 13 wide, 51 high.
+        assert!(draws[1].texture.ends_with("texture/key_default"));
+        assert_eq!(draws[1].vertices[0].position, [100.0 + 408.0 - 6.5, 50.0]);
+        // On the key: the glow, the band not selected (Follow normal colour).
+        feed.position = 0.5;
+        let draws = timeline_draws(&placeholder, &feed);
+        assert!(draws[1].texture.ends_with("texture/key_glow"));
+        assert_eq!(draws[0].multiply, [0.41, 0.41, 0.19, 0.65]);
+        feed.instant = true;
+        assert!(timeline_draws(&placeholder, &feed).is_empty());
+    }
 }

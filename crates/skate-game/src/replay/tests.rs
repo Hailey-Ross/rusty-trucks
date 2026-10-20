@@ -556,3 +556,58 @@ fn a_still_prop_added_between_replay_frames_still_plays_back() {
     app.update();
     assert_eq!(app.world().get::<Visibility>(bench), Some(&Visibility::Inherited), "the still bench is drawn");
 }
+
+#[test]
+fn retail_screen_keys_help_panel_and_photo() {
+    use crate::input::ControllerInput;
+    use skate_core::input::xbox::XboxState;
+    let mut app = App::new();
+    app.init_resource::<Replay>()
+        .init_resource::<ControllerInput>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
+        .init_resource::<Time<Real>>()
+        .init_resource::<crate::popup_host::PopupMods>()
+        .insert_resource(RetailReplayUi(true))
+        .add_systems(Update, controls);
+    let tick = |app: &mut App, buttons| {
+        app.world_mut().resource_mut::<ControllerInput>().sample_raw_for_test(XboxState { buttons, triggers: [0; 2], left: [0; 2], right: [0; 2] });
+        app.world_mut().resource_mut::<Time<Real>>().advance_by(std::time::Duration::from_secs_f64(1. / 60.));
+        app.world_mut().run_schedule(Update);
+    };
+    for i in 0..400 {
+        app.world_mut().resource_mut::<Replay>().record(pose(i as f32), 1. / 60., false);
+    }
+    app.world_mut().resource_mut::<Replay>().enter();
+    // L3 hides and shows the panel.
+    tick(&mut app, L3);
+    tick(&mut app, 0);
+    assert!(app.world().resource::<Replay>().panel_hidden);
+    tick(&mut app, L3);
+    tick(&mut app, 0);
+    assert!(!app.world().resource::<Replay>().panel_hidden);
+    // Start opens the help; A turns the page; B closes it without asking to quit.
+    tick(&mut app, START);
+    tick(&mut app, 0);
+    assert!(app.world().resource::<Replay>().help_open);
+    tick(&mut app, A);
+    tick(&mut app, 0);
+    assert_eq!(app.world().resource::<Replay>().help_turns, 1);
+    tick(&mut app, B);
+    tick(&mut app, 0);
+    let replay = app.world().resource::<Replay>();
+    assert!(!replay.help_open && replay.active && !replay.quit_pending);
+    assert!(app.world().resource::<crate::popup_host::PopupMods>().engine_requests.is_empty());
+    // X asks to save a photo; Yes requests the capture, the replay stays open and stopped.
+    app.world_mut().resource_mut::<Replay>().playing = true;
+    tick(&mut app, X);
+    tick(&mut app, 0);
+    let request = app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_requests.pop().unwrap();
+    assert_eq!(request.description, "ID_REPLAY_EDITOR_POPUP_PHOTOSAVE");
+    assert_eq!(app.world().resource::<Replay>().photo, Photo::Confirm);
+    assert!(!app.world().resource::<Replay>().playing);
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((PHOTO_POPUP.into(), 1));
+    tick(&mut app, 0);
+    assert_eq!(app.world().resource::<Replay>().photo, Photo::Capture);
+}

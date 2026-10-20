@@ -14,11 +14,89 @@ const B: u16 = 0x2000;
 const RB: u16 = 0x0200;
 const DPAD_LEFT: u16 = 0x0004;
 const DPAD_RIGHT: u16 = 0x0008;
+const START: u16 = 0x0010;
+const L3: u16 = 0x0040;
+const A: u16 = 0x1000;
+const LB: u16 = 0x0100;
+const DPAD_UP: u16 = 0x0001;
+const DPAD_DOWN: u16 = 0x0002;
 /// The quit warning's callback id (engine popup channel, `popup_host::PopupMods`).
 const QUIT_POPUP: &str = "engine:replay.quit";
+const PHOTO_POPUP: &str = "engine:replay.photo";
+const PHOTO_DONE_POPUP: &str = "engine:replay.photo_saved";
+const X: u16 = 0x4000;
 /// Retail opens the replay only with more than 149 frames recorded (`8250B8F8`); read as frames of the editor's 30 fps
 /// timeline, that is 5 s (the unit is inferred, research b343 / b389).
 pub(crate) const MIN_OPEN_SECONDS: f64 = 150.0 / 30.0;
+
+/// Retail X (Take Photo, `826147C8`, b386): stop, then a confirm popup (callback `82614940`). NOT RETAIL YET: the
+/// popup's title and options are ours (Take Photo / Save Photo?, No / Yes); the strings are retail's.
+fn photo_popup() -> skate_core::fe_popup::PopupRequest {
+    skate_core::fe_popup::PopupRequest {
+        title: "ID_REPLAYEDITOR_TAKE_PHOTO".into(),
+        description: "ID_REPLAY_EDITOR_POPUP_PHOTOSAVE".into(),
+        options: vec!["ID_COMMON_NO".into(), "ID_COMMON_YES".into()],
+        callback: PHOTO_POPUP.into(),
+        cancelable: true,
+        ..Default::default()
+    }
+}
+
+fn photo_saved_popup() -> skate_core::fe_popup::PopupRequest {
+    skate_core::fe_popup::PopupRequest {
+        title: "ID_REPLAYEDITOR_TAKE_PHOTO".into(),
+        description: "ID_REPLAY_EDITOR_SAVE_PHOTO_COMPLETE".into(),
+        options: vec!["ID_COMMON_OK".into()],
+        callback: PHOTO_DONE_POPUP.into(),
+        cancelable: true,
+        ..Default::default()
+    }
+}
+
+/// The photo flow: asked (confirm popup up), then the capture is requested once Yes was chosen.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum Photo {
+    #[default]
+    Idle,
+    Confirm,
+    Capture,
+}
+
+/// Where photos go: `SKATE_PHOTO_DIR`, else `Pictures\Skate 3 Rust` in the user's profile (ours on PC; retail saves
+/// to My Media).
+fn photo_path() -> std::path::PathBuf {
+    let dir = std::env::var_os("SKATE_PHOTO_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join("Pictures").join("Skate 3 Rust")
+    });
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    dir.join(format!("photo-{stamp}.png"))
+}
+
+/// Saves the world image (no UI: `graphics_menu::SceneTarget`) once a photo was confirmed.
+fn take_photo(
+    mut commands: Commands,
+    mut replay: ResMut<Replay>,
+    target: Option<Res<crate::graphics_menu::SceneTarget>>,
+    mut popups: ResMut<crate::popup_host::PopupMods>,
+) {
+    if replay.photo != Photo::Capture {
+        return;
+    }
+    replay.photo = Photo::Idle;
+    let Some(target) = target else { return };
+    let path = photo_path();
+    if let Some(dir) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            warn!("REPLAY_PHOTO could not create {}: {e}", dir.display());
+            return;
+        }
+    }
+    info!("REPLAY_PHOTO saving {} at {:.2}s", path.display(), replay.cursor);
+    commands
+        .spawn(bevy::render::view::screenshot::Screenshot::image(target.0.clone()))
+        .observe(bevy::render::view::screenshot::save_to_disk(path));
+    popups.engine_requests.push(photo_saved_popup());
+}
 
 /// Retail's quit warning (research b387: ID_COMMON_WARNING_TITLE / ID_REPLAY_EDITOR_QUIT, No / Yes).
 fn quit_popup() -> skate_core::fe_popup::PopupRequest {
@@ -50,6 +128,20 @@ pub(crate) struct Replay {
     frames: VecDeque<Frame>,
     pub active: bool,
     pub free_camera: Option<Transform>,
+    /// The panel is hidden (retail L3: kHideEditor / kShowEditor), the help screen is open (retail Start: FE 13) and
+    /// how many help page turns were asked (A); all reset when the replay opens.
+    pub panel_hidden: bool,
+    pub help_open: bool,
+    pub help_turns: u32,
+    /// The Take Photo flow (retail X).
+    pub(crate) photo: Photo,
+    /// The editor (A from the instant replay); None = instant replay.
+    pub(crate) editor: Option<editor::Editor>,
+    /// Retail's shake clips (setup: `private/hud/replay-shake/replay_shake.json`); empty until a refresh adds them,
+    /// which leaves the Shake row without effect.
+    pub(crate) shake_clips: std::sync::Arc<skate_core::replay_edit::shake::ShakeClips>,
+    /// The shake levels (retail's by default; data).
+    pub(crate) shake_levels: Option<[Option<skate_core::replay_edit::shake::ShakeLevel>; 4]>,
     cursor: f64,
     playing: bool,
     previous_buttons: u16,
@@ -113,7 +205,7 @@ impl Replay {
     }
 
     /// The scrubbable span: the player's frames, cut to the actors' window when the byte budget evicted it first.
-    fn bounds(&self) -> (f64, f64) {
+    pub(crate) fn bounds(&self) -> (f64, f64) {
         let end = self.frames.back().map_or(0.0, |f| f.time);
         let world_start = self.world.bounds().map_or(f64::MIN, |(start, _)| start);
         (
@@ -280,6 +372,11 @@ impl Replay {
         self.active = true;
         self.playing = false;
         self.free_camera = None;
+        self.panel_hidden = false;
+        self.help_open = false;
+        self.help_turns = 0;
+        self.photo = Photo::Idle;
+        self.editor = None;
         self.cursor = self.bounds().1;
         // Logs must show when a reported replay happened and what it held.
         let (start, end) = self.bounds();
@@ -298,6 +395,7 @@ impl Replay {
             info!("REPLAY_CLOSE at={:.1}s", self.cursor - start);
         }
         self.active = false;
+        self.editor = None;
         self.quit_pending = false;
         self.quit_on_release = false;
         self.playing = false;
@@ -388,10 +486,10 @@ impl Plugin for ReplayPlugin {
                     .after(crate::input::poll_controllers)
                     .after(bevy::input::InputSystems),
             )
-            .add_systems(Startup, setup_ui)
+            .add_systems(Startup, (setup_ui, load_shake))
             .init_resource::<ReplayFeed>()
             .init_resource::<RetailReplayUi>()
-            .add_systems(Update, (publish_feed, update_ui));
+            .add_systems(Update, (publish_feed, update_ui, take_photo));
     }
 }
 
@@ -417,6 +515,191 @@ fn apply_user_length(menu: Option<Res<crate::graphics_menu::Menu>>, mut replay: 
     }
 }
 
+/// The editor's own keys (research b386, modes 6 / 2 / 0xB); true = the frame's input is used up. RB plays from the
+/// cursor (from the in point when at the out point), LB held trims with the sticks, the D-pad released drops /
+/// removes markers and jumps to the in / out points, A opens the effects menu (Up / Down row, Left / Right value, B
+/// back to the timeline).
+fn editor_controls(
+    replay: &mut Replay,
+    pressed: u16,
+    released: u16,
+    pad: &crate::input::RawInput,
+    keys: &ButtonInput<KeyCode>,
+    dt: f32,
+) -> bool {
+    use skate_core::replay_edit::session::EditorMode;
+    let cursor = replay.cursor;
+    let playing = replay.playing;
+    // The current view and the skater root, for a new camera key (the recorded camera, or the clip's camera).
+    let view_root = replay.sample().map(|(a, b, t)| (blend(a.camera, b.camera, t), blend(a.root, b.root, t)));
+    // Decided with the editor borrowed, applied to the replay after.
+    let mut seek: Option<f64> = None;
+    let mut play: Option<bool> = None;
+    let Some(editor) = replay.editor.as_mut() else { return false };
+    let used = match editor.session.mode {
+        EditorMode::Effects => {
+            let rows = editor::EFFECT_ROWS.len();
+            if pressed & DPAD_UP != 0 || keys.just_pressed(KeyCode::ArrowUp) {
+                editor.row = (editor.row + rows - 1) % rows;
+            }
+            if pressed & DPAD_DOWN != 0 || keys.just_pressed(KeyCode::ArrowDown) {
+                editor.row = (editor.row + 1) % rows;
+            }
+            let step = i32::from(pressed & DPAD_RIGHT != 0 || keys.just_pressed(KeyCode::ArrowRight))
+                - i32::from(pressed & DPAD_LEFT != 0 || keys.just_pressed(KeyCode::ArrowLeft));
+            if step != 0 {
+                editor.adjust_row(cursor, step);
+            }
+            if pressed & B != 0 || keys.just_pressed(KeyCode::Escape) {
+                editor.session.mode = EditorMode::Timeline;
+            }
+            // A on a basic camera row: that camera from the current view, then its key edit mode (b401).
+            if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
+                if let (Some((mode, _)), Some((view, root))) = (camera_key::CameraKey::edit_mode_and_state(editor.row), view_root) {
+                    let view = camera_key::pose(&editor.camera, &root).unwrap_or(view);
+                    if let Some(key) = camera_key::key_from_view(editor.row, &view, &root) {
+                        editor.camera = key;
+                        editor.session.mode = match mode {
+                            7 => EditorMode::FollowKey,
+                            8 => EditorMode::TripodKey,
+                            9 => EditorMode::GameKey,
+                            _ => EditorMode::FreeKey,
+                        };
+                    }
+                }
+            }
+            true
+        }
+        // The camera key edit modes (7 / 8 / 9 / 10): the sticks and D-pad edit the key, A commits (b386).
+        EditorMode::FollowKey | EditorMode::TripodKey | EditorMode::GameKey | EditorMode::FreeKey => {
+            let dpad = |plus: u16, minus: u16| f32::from(pad.buttons & plus != 0) - f32::from(pad.buttons & minus != 0);
+            let input = camera_key::CameraInput {
+                turn: Vec2::new(axis(pad.left[0]), axis(pad.left[1])),
+                move_: Vec2::new(axis(pad.right[0]), axis(pad.right[1])),
+                height: dpad(DPAD_UP, DPAD_DOWN),
+                zoom: dpad(DPAD_RIGHT, DPAD_LEFT),
+            };
+            let rules = editor.camera_rules;
+            let mut lens = editor.lens;
+            camera_key::edit(&mut editor.camera, &mut lens, input, &rules, dt);
+            editor.lens = lens;
+            if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
+                editor.session.mode = EditorMode::Timeline;
+            }
+            true
+        }
+        EditorMode::Trim => {
+            if pad.buttons & LB == 0 && !keys.pressed(KeyCode::KeyL) {
+                editor.session.mode = EditorMode::Timeline;
+            } else {
+                editor.trim_sticks(axis(pad.left[0]), axis(pad.right[0]), dt);
+                seek = Some(editor.trim_cursor());
+            }
+            true
+        }
+        _ if pressed & LB != 0 || keys.just_pressed(KeyCode::KeyL) => {
+            play = Some(false);
+            editor.session.mode = EditorMode::Trim;
+            true
+        }
+        _ if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) => {
+            play = Some(false);
+            editor.row = editor::GAME_CAMERA_ROW;
+            editor.session.mode = EditorMode::Effects;
+            true
+        }
+        _ => {
+            if released & DPAD_DOWN != 0 || keys.just_pressed(KeyCode::KeyM) {
+                if let Err(e) = editor.drop_marker(cursor) {
+                    info!("REPLAY_EDITOR marker refused: {e:?}");
+                }
+            }
+            if released & DPAD_UP != 0 || keys.just_pressed(KeyCode::KeyN) {
+                editor.remove_marker(cursor);
+            }
+            let (start, end) = editor.heads();
+            if released & DPAD_LEFT != 0 || keys.just_pressed(KeyCode::Comma) {
+                seek = Some(editor.skip(cursor, false));
+            }
+            if released & DPAD_RIGHT != 0 || keys.just_pressed(KeyCode::Period) {
+                seek = Some(editor.skip(cursor, true));
+                play = Some(false);
+            }
+            if pressed & RB != 0 || keys.just_pressed(KeyCode::Space) {
+                if !playing && (cursor >= end || cursor < start) {
+                    seek = Some(start);
+                }
+                play = Some(!playing);
+                true
+            } else {
+                false
+            }
+        }
+    };
+    if let Some(t) = seek {
+        replay.seek(t);
+    }
+    if let Some(p) = play {
+        replay.playing = p;
+    }
+    used
+}
+
+/// Reads the shake clips setup exported (`tools/prepare_replay_shake.py`); a missing file leaves shake off.
+fn load_shake(config: Option<Res<crate::config::Config>>, mut replay: ResMut<Replay>) {
+    let Some(config) = config else { return };
+    let path = config.asset_root.join("private/hud/replay-shake/replay_shake.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        info!("REPLAY_SHAKE no clips ({}): the Shake row has no effect until Refresh Game Files", path.display());
+        return;
+    };
+    let parsed = (|| -> Option<skate_core::replay_edit::shake::ShakeClips> {
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        (v["format"] == "skate3-replay-shake" && v["version"] == 1).then_some(())?;
+        let clips = v["clips"].as_array()?.iter().map(|c| {
+            c.as_array().into_iter().flatten().filter_map(|k| {
+                let k = k.as_array()?;
+                let mut out = [0.0f32; 6];
+                for (o, x) in out.iter_mut().zip(k) {
+                    *o = x.as_f64()? as f32;
+                }
+                Some(out)
+            }).collect()
+        }).collect();
+        Some(skate_core::replay_edit::shake::ShakeClips { key_rate: v["key_rate"].as_f64().unwrap_or(30.0) as f32, clips })
+    })();
+    match parsed {
+        Some(clips) => {
+            info!("REPLAY_SHAKE {} clips", clips.clips.iter().filter(|c| !c.is_empty()).count());
+            replay.shake_clips = std::sync::Arc::new(clips);
+        }
+        None => warn!("REPLAY_SHAKE unreadable {}", path.display()),
+    }
+}
+
+impl Replay {
+    /// The editor's camera shake at the cursor (the shake lane's level, timed from the in point), in camera space.
+    /// OURS: the quaternion is normalised (retail's is not, `82C8AF50`).
+    /// The editor's camera at the cursor: the clip's camera key posed on the skater root, and its lens (vertical FOV,
+    /// radians); None = the recorded camera at its own lens.
+    pub(crate) fn editor_camera(&self, root: &Transform) -> (Option<Transform>, Option<f32>) {
+        let Some(editor) = self.editor.as_ref() else { return (None, None) };
+        let lens = (editor.lens != editor.camera_rules.lens_default || editor.camera != camera_key::CameraKey::Game)
+            .then(|| camera_key::lens_fov(editor.lens));
+        (camera_key::pose(&editor.camera, root), lens)
+    }
+
+    pub(crate) fn shake(&self) -> Option<Transform> {
+        let editor = self.editor.as_ref()?;
+        let level = editor.lane_value(skate_core::replay_edit::Lane::Shake, self.cursor);
+        let levels = self.shake_levels.unwrap_or_else(skate_core::replay_edit::shake::retail_levels);
+        let level = levels.get(usize::try_from(level).ok()?).copied().flatten();
+        let t = self.cursor - editor.heads().0;
+        let (q, p) = skate_core::replay_edit::shake::sample(&self.shake_clips, level, t)?;
+        Some(Transform::from_translation(Vec3::from_array(p)).with_rotation(Quat::from_xyzw(q[0], q[1], q[2], q[3]).normalize()))
+    }
+}
+
 pub(crate) fn world_live(replay: Option<Res<Replay>>) -> bool {
     replay.is_none_or(|r| !r.active)
 }
@@ -435,6 +718,7 @@ pub(crate) fn controls(
     menu: Option<Res<crate::graphics_menu::Menu>>,
     net: Option<Res<crate::multiplayer::Multiplayer>>,
     mut popups: ResMut<crate::popup_host::PopupMods>,
+    retail_ui: Option<Res<RetailReplayUi>>,
 ) {
     if net.is_some_and(|n| n.active()) {
         if replay.active {replay.exit();}
@@ -442,7 +726,9 @@ pub(crate) fn controls(
     }
     let pad = input.raw_input();
     let pressed = pad.buttons & !replay.previous_buttons;
+    let released = replay.previous_buttons & !pad.buttons;
     replay.previous_buttons = pad.buttons;
+    let effects = replay.editor.as_ref().is_some_and(|e| e.session.mode == skate_core::replay_edit::session::EditorMode::Effects);
     let menu_open = !crate::graphics_menu::gameplay_active(menu);
     // The quit warning's answer (No / Yes, Yes = 1).
     for (callback, choice) in std::mem::take(&mut popups.engine_choices) {
@@ -452,6 +738,21 @@ pub(crate) fn controls(
                 replay.exit();
             }
         }
+        if callback == PHOTO_POPUP && replay.photo == Photo::Confirm {
+            replay.photo = if choice == 1 { Photo::Capture } else { Photo::Idle };
+        }
+    }
+    // Retail help (FE 13 over the replay screen): A turns the page, B or Start closes it; nothing else reaches the
+    // replay meanwhile. Needs the retail screen (no help without it).
+    if replay.active && replay.help_open && !menu_open {
+        if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
+            replay.help_turns += 1;
+        }
+        if pressed & (B | START) != 0 || keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace) {
+            replay.help_open = false;
+        }
+        input.discard_gameplay();
+        return;
     }
     if !menu_open {
         let back = pressed & SELECT != 0 || keys.just_pressed(KeyCode::F6);
@@ -467,7 +768,7 @@ pub(crate) fn controls(
                 replay.quit_pending = false;
                 replay.exit();
             }
-        } else if back || pressed & B != 0 {
+        } else if (back || pressed & B != 0) && !effects {
             replay.quit_on_release = true;
         }
         // Retail: B (Finished) or Back opens the Finished menu; with nothing to save or upload that is the quit
@@ -497,7 +798,7 @@ pub(crate) fn controls(
             replay.release_controls = false;
         }
     }
-    if !replay.active || menu_open || replay.quit_pending {
+    if !replay.active || menu_open || replay.quit_pending || replay.photo != Photo::Idle {
         return;
     }
     let dt = time.delta_secs().min(0.1);
@@ -506,9 +807,41 @@ pub(crate) fn controls(
     if keys.just_pressed(KeyCode::KeyC) {
         replay.toggle_camera();
     }
+    // Retail: X takes a photo (CanSaveMedia; ours: always on PC, with the retail screen); P on the keyboard.
+    if (pressed & X != 0 || keys.just_pressed(KeyCode::KeyP)) && retail_ui.as_ref().is_some_and(|r| r.0) {
+        replay.playing = false;
+        replay.photo = Photo::Confirm;
+        popups.engine_requests.push(photo_popup());
+        return;
+    }
+    // Retail: Start opens the help (FE 13, research b389 / b391), only with the retail screen (`retail_ui`).
+    if (pressed & START != 0) && retail_ui.as_ref().is_some_and(|r| r.0) {
+        replay.help_open = true;
+        return;
+    }
+    // Retail: L3 hides / shows the panel (kHideEditor / kShowEditor; the movie's Hide / Show prompt follows). H on
+    // the keyboard. With our free camera on, L3 stays its speed modifier.
+    if (pressed & L3 != 0 && replay.free_camera.is_none()) || keys.just_pressed(KeyCode::KeyH) {
+        replay.panel_hidden = !replay.panel_hidden;
+    }
+    // Retail: A with the panel shown leaves the instant replay for the editor's timeline (`82613988`; mode 6), only
+    // with the retail screen and a recording of at least 5 s (150 timeline frames). Enter on the keyboard.
+    if replay.editor.is_none() {
+        if (pressed & A != 0 || keys.just_pressed(KeyCode::Enter)) && !replay.panel_hidden && retail_ui.as_ref().is_some_and(|r| r.0) {
+            let (start, end) = replay.bounds();
+            replay.editor = editor::Editor::open(start, end, Default::default());
+            if replay.editor.is_some() {
+                replay.playing = false;
+                info!("REPLAY_EDITOR open at={:.1}s", replay.cursor - start);
+            }
+            return;
+        }
+    } else if editor_controls(&mut replay, pressed, released, &pad, &keys, dt) {
+        return;
+    }
     // Retail: RB starts / stops playback (`82C7F0A8` stops); stick or D-pad input resumes a stopped replay
     // (`82C7FFB8`, research b386 / b387). Space is the PC key for RB.
-    let stick = pad.left.iter().chain(&pad.right).any(|v| v.abs() >= 0.18);
+    let stick = replay.editor.is_none() && pad.left.iter().chain(&pad.right).any(|v| v.abs() >= 0.18);
     let dpad = pressed & (DPAD_LEFT | DPAD_RIGHT | 0x0001 | 0x0002) != 0;
     if pressed & RB != 0 || keys.just_pressed(KeyCode::Space) {
         if !replay.playing && replay.cursor >= replay.bounds().1 {
@@ -519,12 +852,13 @@ pub(crate) fn controls(
     } else if !replay.playing && replay.free_camera.is_none() && (stick || dpad) && replay.cursor < replay.bounds().1 {
         replay.playing = true;
     }
-    // Retail: D-pad Left / Right pressed jump to the start / end (mode 5); comma / period on the keyboard.
-    if pressed & DPAD_LEFT != 0 || keys.just_pressed(KeyCode::Comma) {
+    // Retail: D-pad Left / Right pressed jump to the start / end (mode 5; the editor's timeline jumps on release,
+    // `editor_controls`); comma / period on the keyboard.
+    if replay.editor.is_none() && (pressed & DPAD_LEFT != 0 || keys.just_pressed(KeyCode::Comma)) {
         let start = replay.bounds().0;
         replay.seek(start);
     }
-    if pressed & DPAD_RIGHT != 0 || keys.just_pressed(KeyCode::Period) {
+    if replay.editor.is_none() && (pressed & DPAD_RIGHT != 0 || keys.just_pressed(KeyCode::Period)) {
         let end = replay.bounds().1;
         replay.seek(end);
         replay.playing = false;
@@ -543,9 +877,12 @@ pub(crate) fn controls(
         let cursor = replay.cursor + f64::from(moved) * (end - start);
         replay.seek(cursor);
     } else if replay.playing {
-        let cursor = replay.cursor + f64::from(dt);
+        // The editor plays the clip at its speed lane and stops at the out point (mode 1 -> 6).
+        let rate = replay.editor.as_ref().map_or(1.0, |e| e.speed(replay.cursor));
+        let end = replay.editor.as_ref().map_or(replay.bounds().1, |e| e.heads().1);
+        let cursor = (replay.cursor + f64::from(dt) * rate).min(end);
         replay.seek(cursor);
-        if replay.cursor >= replay.bounds().1 {
+        if replay.cursor >= end {
             replay.playing = false;
         }
     }
@@ -631,11 +968,21 @@ pub(crate) struct RetailReplayUi(pub bool);
 fn publish_feed(replay: Res<Replay>, mut feed: ResMut<ReplayFeed>) {
     let (start, end) = replay.bounds();
     let next = crate::replay_menu_host::ReplayScreenFeed {
-        instant: replay.active,
+        active: replay.active,
+        instant: replay.active && replay.editor.is_none(),
         position: if end > start { (replay.cursor - start) / (end - start) } else { 1.0 },
         playing: replay.playing,
-        panel: true,
+        panel: !replay.panel_hidden,
         length_seconds: (end - start).max(0.0).round() as u32,
+        help: replay.active && replay.help_open,
+        help_turns: replay.help_turns,
+        mode: replay.editor.as_ref().map_or(5, |e| e.mode()),
+        camera_row: replay.editor.as_ref().map_or(editor::GAME_CAMERA_ROW as u32, |e| e.camera.row() as u32),
+        keys: replay.editor.as_ref().map_or_else(Vec::new, |e| e.key_fractions()),
+        heads: replay.editor.as_ref().map_or((0, 0), |e| e.head_frames()),
+        row: replay.editor.as_ref().map_or(0, |e| e.row as u32),
+        speed: replay.editor.as_ref().map_or(100, |e| e.lane_value(skate_core::replay_edit::Lane::Speed, replay.cursor)),
+        shake: replay.editor.as_ref().map_or(0, |e| e.lane_value(skate_core::replay_edit::Lane::Shake, replay.cursor)),
     };
     if feed.0 != next {
         feed.0 = next;
@@ -650,7 +997,7 @@ fn update_ui(
     mut bars: Query<&mut Node, (With<Playhead>, Without<ReplayUi>)>,
 ) {
     for mut node in &mut roots {
-        node.display = if replay.active && !retail.0 {
+        node.display = if replay.active && !retail.0 && !replay.panel_hidden {
             Display::Flex
         } else {
             Display::None
@@ -684,6 +1031,8 @@ fn update_ui(
 }
 
 mod components;
+pub(crate) mod camera_key;
+pub(crate) mod editor;
 mod messages;
 mod world;
 pub(crate) use world::retire;

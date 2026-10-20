@@ -583,8 +583,10 @@ impl Menu {
     }
 }
 
+/// The image the world renders into (the presentation camera shows it); the replay's photos capture it, so they
+/// hold the world without any UI.
 #[derive(Resource)]
-struct SceneTarget(Handle<Image>);
+pub(crate) struct SceneTarget(pub(crate) Handle<Image>);
 #[derive(Resource)]
 struct FramePacer(Instant);
 #[derive(Component)]
