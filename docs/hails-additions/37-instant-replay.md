@@ -138,6 +138,19 @@ effect values and stepped marker lanes, and retail's length rules. Pure data, no
 - Tests: 6 (open threshold, stepping / clamping / wrapping, stepped markers, marker cap, marker spacing, encoded
   length).
 
+## M3 step 1: the look lanes as a colour matrix override (skate-core)
+
+`ReplayEdit::look_at(clip, frame, base)` turns a clip's look lanes into what the screen uses: the world grade's
+colour matrix record with the lanes' terms replaced, plus an RGBA tint overlay. Retail (research b380): the lane
+consumers (`82686DF0` brightness, `82687FD8` contrast, `826888B8` saturation) write an override copy of the world
+colour block that the post FX update uses instead of the base while set (main checked `82686DF0` stores the near and
+far add terms at +0x7C00 / +0x7C40); brightness is the matrix add term on R, G, B; the values replace, never
+multiply; lane 6 is a separate RGBA screen tint. Our `colour_matrix::build` takes the same roles as retail's builder
+`827F13D8`, so the override record goes straight into it. A lane at its neutral default keeps the world's term
+(OURS: when retail counts a lane as set is not read), so zombie mode's grade stays under an untouched replay. Not
+wired to the renderer yet (M3 step 2, with the editor UI). Test: untouched lanes keep the grade; greyscale,
+brightness and contrast replace both bands; a tint marker shows from its frame.
+
 ### Open
 - Ped / NPC fade alpha, held hand props and the camera's full `CameraFrame` (shake, opacity, blur) are not recorded
   yet.

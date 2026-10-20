@@ -16,6 +16,8 @@
 //!
 //! Every limit is data ([`EditLimits`], [`LaneSpec`]) so a mod can change them (for example allow speeds over 100 %).
 
+use crate::colour_matrix::ColourMatrixRecord;
+
 /// The effect lanes, in retail's lane order after the camera lane (0). Stable ids: [`Lane::id`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Lane {
@@ -153,6 +155,14 @@ pub struct Clip {
     pub markers: [Vec<(u32, i32)>; 9],
 }
 
+/// A clip's look at one frame: the colour matrix record to build ([`crate::colour_matrix::build`]) and the RGBA
+/// screen tint overlay.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReplayLook {
+    pub record: ColourMatrixRecord,
+    pub tint: [f32; 4],
+}
+
 /// The edit: clips in play order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReplayEdit {
@@ -262,6 +272,34 @@ impl ReplayEdit {
     /// The effect value (editor value x the lane's scale), e.g. speed 50 -> 0.5.
     pub fn effect_at(&self, clip: usize, lane: Lane, frame: u32) -> Option<f32> {
         self.value_at(clip, lane, frame).map(|v| v as f32 * self.limits.lanes[lane.index()].scale)
+    }
+
+    /// The look at `frame`: the world grade `base` with the clip's look lanes replacing their terms (retail's
+    /// consumers `82686DF0` / `82687FD8` / `826888B8` write an override copy of the world colour block, research b380):
+    /// brightness = the add term on R, G, B, contrast, saturation, in both bands (retail's far band takes the near
+    /// saturation). A lane at its neutral default leaves the world's term (OURS: when retail counts a lane as set is
+    /// not read). Plus the tint lanes as an RGBA screen overlay (0 alpha = none).
+    pub fn look_at(&self, clip: usize, frame: u32, base: &ColourMatrixRecord) -> Option<ReplayLook> {
+        let set = |lane: Lane| {
+            let v = self.value_at(clip, lane, frame)?;
+            let spec = self.limits.lanes[lane.index()];
+            (v != spec.default).then_some(v as f32 * spec.scale)
+        };
+        let mut record = *base;
+        for band in [&mut record.near, &mut record.far] {
+            if let Some(b) = set(Lane::Brightness) {
+                band.add = [b; 3];
+            }
+            if let Some(c) = set(Lane::Contrast) {
+                band.contrast = c;
+            }
+            if let Some(s) = set(Lane::Saturation) {
+                band.saturation = s;
+            }
+        }
+        let tint = [Lane::TintR, Lane::TintG, Lane::TintB, Lane::TintA]
+            .map(|l| self.effect_at(clip, l, frame).unwrap_or(0.0));
+        Some(ReplayLook { record, tint })
     }
 
     /// Retail's encoded length in seconds: each clip's span stretched by its speed, at the timeline rate, rounded.

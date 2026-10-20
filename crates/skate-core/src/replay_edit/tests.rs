@@ -99,3 +99,37 @@ fn replay_editor_encoded_length_follows_retail_formula() {
     assert!(!edit.can_share());
     assert_eq!(edit.add_clip(5, 5), Err(EditError::EmptySpan));
 }
+
+#[test]
+fn replay_look_replaces_the_world_grade_terms_it_sets() {
+    use crate::colour_matrix::{ColourMatrixRecord, apply, build};
+    let mut edit = ReplayEdit::default();
+    let clip = edit.add_clip(0, 1000).unwrap();
+    let mut base = ColourMatrixRecord::default();
+    base.near.add = [0.05; 3];
+    base.far.saturation = 0.5;
+    // Untouched lanes keep the world's grade.
+    let look = edit.look_at(clip, 10, &base).unwrap();
+    assert_eq!(look.record, base);
+    assert_eq!(look.tint, [0.0; 4]);
+    // Saturation 0 (greyscale) replaces both bands; brightness +40 is the add term; contrast 20 = x2.
+    for _ in 0..10 {
+        edit.adjust(clip, Lane::Saturation, -1).unwrap();
+    }
+    edit.adjust(clip, Lane::Brightness, 1).unwrap();
+    edit.adjust(clip, Lane::Brightness, 1).unwrap();
+    for _ in 0..5 {
+        edit.adjust(clip, Lane::Contrast, 1).unwrap();
+    }
+    let look = edit.look_at(clip, 10, &base).unwrap();
+    assert_eq!(look.record.near.saturation, 0.0);
+    assert_eq!(look.record.far.saturation, 0.0);
+    assert!((look.record.near.add[0] - 0.4).abs() < 1e-6 && (look.record.far.add[2] - 0.4).abs() < 1e-6);
+    assert!((look.record.near.contrast - 2.0).abs() < 1e-6);
+    let grey = apply(&build(&look.record.near), [1.0, 0.0, 0.0]);
+    assert!((grey[0] - grey[1]).abs() < 1e-5 && (grey[1] - grey[2]).abs() < 1e-5, "{grey:?}");
+    // A tint marker shows from its frame on.
+    edit.set_marker(clip, Lane::TintA, 500, 250).unwrap();
+    assert_eq!(edit.look_at(clip, 499, &base).unwrap().tint[3], 0.0);
+    assert!((edit.look_at(clip, 500, &base).unwrap().tint[3] - 250.0 / 255.0).abs() < 1e-6);
+}
