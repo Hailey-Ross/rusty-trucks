@@ -18,7 +18,14 @@ struct Frame {
     time: f64,
     pose: Snapshot,
     cut: bool,
+    /// The player's audio step of this frame (`Cues::raw`): playback publishes it again, as retail's audio runs on
+    /// the recorded skater state (provider id 4, b375).
+    riding: Option<crate::game_audio::skate_events::Riding>,
 }
+
+/// At most this many recorded audio steps go to the host in one frame (a fast scrub merges the rest's pulses into
+/// these, like the host's own step cap).
+const MAX_FED_STEPS: usize = 8;
 
 #[derive(Resource, Default)]
 pub(crate) struct Replay {
@@ -36,6 +43,11 @@ pub(crate) struct Replay {
     markers: VecDeque<Marker>,
     /// The mod whose `sdk.replay.set_limits` is in force (last writer wins).
     limits_owner: Option<String>,
+    /// The cursor the audio feed last published up to, and whether it moved forward this frame.
+    fed: Option<f64>,
+    audible: bool,
+    /// The cursor jumped (entered, rewound, or skipped more than [`MAX_FED_STEPS`]): the host's camera velocity resets.
+    jumped: bool,
 }
 
 struct Marker {
@@ -53,7 +65,7 @@ impl Replay {
             return;
         }
         let time = self.frames.back().map_or(0.0, |f| f.time + dt);
-        self.frames.push_back(Frame { time, pose, cut });
+        self.frames.push_back(Frame { time, pose, cut, riding: None });
         // Keep one bracketing sample at the start for fractional-time scrubs.
         let window = self.window();
         while self.frames.len() > 2 && self.frames[1].time <= time - window {
@@ -81,6 +93,58 @@ impl Replay {
                 .max(world_start.min(end)),
             end,
         )
+    }
+
+    /// The player's audio step for the newest frame (once per frame, after the capture).
+    pub(crate) fn attach_riding(&mut self, riding: crate::game_audio::skate_events::Riding) {
+        if let Some(frame) = self.frames.back_mut().filter(|f| f.riding.is_none()) {
+            frame.riding = Some(riding);
+        }
+    }
+
+    /// The recorded audio steps the cursor crossed going forward since the last call, oldest first; a jump back
+    /// gives the step at the cursor without its one-step pulses (a reverse scrub replays no push). Nothing while the
+    /// cursor stands still: then [`Replay::audible`] is false and the game sound is muted (retail mutes a paused
+    /// replay).
+    pub(crate) fn audio_steps(&mut self) -> Vec<crate::game_audio::skate_events::Riding> {
+        if !self.active {
+            self.fed = None;
+            self.audible = false;
+            return Vec::new();
+        }
+        let cursor = self.cursor;
+        let previous = self.fed.replace(cursor);
+        self.audible = previous.is_some_and(|p| cursor > p);
+        self.jumped = previous.is_none_or(|p| cursor < p);
+        let Some(previous) = previous.filter(|p| *p != cursor) else { return Vec::new() };
+        if cursor < previous {
+            let at = self.frames.partition_point(|f| f.time <= cursor).saturating_sub(1);
+            return self.frames.get(at).and_then(|f| f.riding).map(|mut r| {
+                r.audio.push_trigger = false;
+                vec![r]
+            }).unwrap_or_default();
+        }
+        let from = self.frames.partition_point(|f| f.time <= previous);
+        let to = self.frames.partition_point(|f| f.time <= cursor);
+        let steps: Vec<_> = self.frames.range(from..to).filter_map(|f| f.riding).collect();
+        if steps.len() <= MAX_FED_STEPS {
+            return steps;
+        }
+        // Keep the newest steps; the skipped ones' pushes land on the first one kept.
+        self.jumped = true;
+        let (skipped, kept) = steps.split_at(steps.len() - MAX_FED_STEPS);
+        let mut kept = kept.to_vec();
+        kept[0].audio.push_trigger |= skipped.iter().any(|r| r.audio.push_trigger);
+        kept
+    }
+
+    pub(crate) fn jumped(&self) -> bool {
+        self.jumped
+    }
+
+    /// The replay moved forward this frame (its sound plays); false while paused or rewinding.
+    pub(crate) fn audible(&self) -> bool {
+        self.audible
     }
 
     /// `sdk.replay.marker`: a marker at the newest frame; refused when nothing is recorded or the cap is reached.
@@ -239,7 +303,7 @@ fn axis(value: f32) -> f32 {
     value.signum() * ((value.abs() - 0.18) / 0.82).clamp(0.0, 1.0)
 }
 
-fn controls(
+pub(crate) fn controls(
     mut replay: ResMut<Replay>,
     mut input: ResMut<crate::input::ControllerInput>,
     keys: Res<ButtonInput<KeyCode>>,

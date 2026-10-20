@@ -80,13 +80,29 @@ most 64 ghosts (`MAX_GHOSTS`); past that, or when the actor was never recorded, 
 reset on a map change keeps a plain despawn (the replay resets with the map). Test: a retired ped plays back as a
 ghost before its despawn, hides after it, stays hidden while live and goes with its track.
 
+### Playback audio: the recorded skater state plays again
+Retail records no audio and does not mute: its normal audio runs on the recorded presentation state, with "in
+replay" gates (research b375, b378).
+- Recording: every player frame keeps the audio step `observe` published that physics step (`Cues::raw`, the
+  `Riding` record with the full retail `AudioState`; one choke point, every player audio system reads `Cues`).
+- Playback: `observe` stops publishing the frozen live state; the feed (`feed_replay_audio`, PreUpdate after the
+  replay controls) publishes the recorded steps the cursor crossed going forward, so the host hears rolling, grinds,
+  pushes, landings and bails again, at the steps they happened (one-step pulses merge like a live multi-step frame).
+  A fast scrub sends at most 8 steps per frame and keeps the skipped pushes; a rewind sends the step at the cursor
+  without its pulses.
+- Gates: a replay that stands still (paused) is silent, as retail's paused replay (Master.in6 at time scale 0);
+  speech stays silent in any replay (retail blocks speech requests in replay); Master.in0 is written every pass, 32767
+  in replay and 0 otherwise (checked in the recomp: `sub_824D5160` after the replay flag `sub_8279E180` writes
+  input 0 with 32767 or 0), so the retail MixMap swaps the Hall of Meat slow-motion ducks for the replay duck.
+- Seeks and rewinds count as camera cuts for the host (Doppler velocity reset).
+- Not yet: the world actors' audio state (traffic engines, ped feet, NPC skaters' own audio) and their one-shots
+  (horns, alarms, body falls) are not recorded, so those sources hold their last live state during playback.
+  Replay speed below 100 % (M2) will scale `AudioState.time_scale`; whether retail's pitch follows is open.
+
 ### Open
 - Ped / NPC fade alpha, held hand props and the camera's full `CameraFrame` (shake, opacity, blur) are not recorded
   yet.
-- Playback audio: retail records no audio and does not mute. It runs the normal audio again from the recorded state
-  (skater records, provider id 4) with "in replay" gates read through `sub_8279E180`: the master step `824D5160` sets
-  a MixMap master input in replay (checked in the recomp: it calls `8279E180`, then loads 32767), speech is blocked,
-  and a paused replay is silent (research b375). Ours still mutes during replay.
+- World actors' audio during playback (see above).
 - Retail editor cameras (for M2, research b376): ICELITE keyed values (eye, look, dutch, lens mm), lens 10..500 mm,
   default 24; shake levels 0 / 0.35 / 1.0 / 1.0 for amplitude and frequency (`8250A6E8`).
 - The player is still recorded as full `Mat4` skin rows (about 45 MB at 90 s); moving it into the quantised buffer

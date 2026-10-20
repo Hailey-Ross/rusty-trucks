@@ -292,3 +292,41 @@ fn a_despawned_actor_plays_back_as_a_ghost_until_it_leaves_the_window() {
     }
     assert!(app.world().get_entity(ghost).is_err() && app.world().get_entity(joint).is_err());
 }
+
+#[test]
+fn playback_publishes_the_recorded_audio_steps_the_cursor_crosses() {
+    use crate::game_audio::skate_events::Riding;
+    let mut replay = Replay::default();
+    for i in 0..30 {
+        replay.record(pose(i as f32), 1. / 60., false);
+        let mut riding = Riding { speed: i as f32, ..Riding::default() };
+        riding.audio.push_trigger = i == 3;
+        replay.attach_riding(riding);
+        // A second attach in the same frame does not replace the frame's step.
+        replay.attach_riding(Riding { speed: -1., ..Riding::default() });
+    }
+    replay.enter();
+    replay.seek(0.);
+    assert!(replay.audio_steps().is_empty(), "entering publishes nothing");
+    assert!(replay.jumped() && !replay.audible());
+    replay.seek(4. / 60.);
+    let steps = replay.audio_steps();
+    assert_eq!(steps.iter().map(|r| r.speed).collect::<Vec<_>>(), [1., 2., 3., 4.]);
+    assert!(steps[2].audio.push_trigger && replay.audible() && !replay.jumped());
+    assert!(replay.audio_steps().is_empty() && !replay.audible(), "paused is silent");
+    // Rewind: the step at the cursor, without its push.
+    replay.seek(3. / 60.);
+    let back = replay.audio_steps();
+    assert_eq!(back.len(), 1);
+    assert!(back[0].speed == 3. && !back[0].audio.push_trigger && replay.jumped() && !replay.audible());
+    // A fast scrub keeps the newest steps and the skipped push.
+    replay.seek(2. / 60.);
+    replay.audio_steps();
+    replay.seek(20. / 60.);
+    let fast = replay.audio_steps();
+    assert_eq!(fast.len(), MAX_FED_STEPS);
+    assert_eq!(fast.last().unwrap().speed, 20.);
+    assert!(fast[0].audio.push_trigger && replay.jumped());
+    replay.exit();
+    assert!(replay.audio_steps().is_empty() && !replay.audible());
+}
