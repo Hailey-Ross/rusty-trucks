@@ -48,6 +48,9 @@ pub(crate) struct Replay {
     audible: bool,
     /// How far the free camera may go from the player (m); None = retail's [`FREE_CAMERA_LEASH`]. Data, mod-settable.
     pub(crate) free_camera_leash: Option<f32>,
+    /// The trigger scrub (retail rates as data) and its eased rate.
+    pub(crate) scrub_spec: skate_core::replay_edit::ScrubSpec,
+    scrub: skate_core::replay_edit::ScrubFilter,
     /// The cursor jumped (entered, rewound, or skipped more than [`MAX_FED_STEPS`]): the host's camera velocity resets.
     jumped: bool,
 }
@@ -281,6 +284,8 @@ impl Plugin for ReplayPlugin {
         components::track::<crate::world_audio::PedAudio>(app);
         components::track::<crate::world_audio::NpcSkaterAudio>(app);
         components::track::<crate::world_audio::AudioVelocity>(app);
+        // The NPC skaters' and peds' fade (spawn fade-in, leave fade, camera-distance fade).
+        components::track::<crate::living_world::npc_skaters::NpcFade>(app);
         // Their one-shot sounds (speech stays out: retail blocks speech in replay).
         messages::track::<crate::world_audio::VehicleHorn>(app);
         messages::track::<crate::world_audio::VehicleAlarm>(app);
@@ -375,12 +380,14 @@ pub(crate) fn controls(
     let scrub = trigger(pad.triggers[1]) - trigger(pad.triggers[0])
         + f32::from(keys.pressed(KeyCode::ArrowRight))
         - f32::from(keys.pressed(KeyCode::ArrowLeft));
-    if pad.triggers.iter().any(|v| *v > 0.05)
-        || keys.pressed(KeyCode::ArrowLeft)
-        || keys.pressed(KeyCode::ArrowRight)
-    {
+    // Retail's scrub: eased, at most 0.005 of the recording per console frame (`ScrubSpec`, research b387 / b388);
+    // a moving scrub stops playback, and it eases out after the triggers are released.
+    let spec = replay.scrub_spec;
+    let moved = replay.scrub.step(&spec, scrub.clamp(-1.0, 1.0), dt);
+    if moved != 0.0 {
         replay.playing = false;
-        let cursor = replay.cursor + f64::from(scrub * dt * 4.0);
+        let (start, end) = replay.bounds();
+        let cursor = replay.cursor + f64::from(moved) * (end - start);
         replay.seek(cursor);
     } else if replay.playing {
         let cursor = replay.cursor + f64::from(dt);

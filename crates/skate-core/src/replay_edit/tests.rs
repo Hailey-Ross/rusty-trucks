@@ -133,3 +133,50 @@ fn replay_look_replaces_the_world_grade_terms_it_sets() {
     assert_eq!(edit.look_at(clip, 499, &base).unwrap().tint[3], 0.0);
     assert!((edit.look_at(clip, 500, &base).unwrap().tint[3] - 250.0 / 255.0).abs() < 1e-6);
 }
+
+#[test]
+fn retail_trigger_scrub_eases_in_caps_and_is_frame_rate_independent() {
+    let spec = ScrubSpec::default();
+    // Full trigger for one second: eases in, then 0.005 of the recording per console frame.
+    let mut a = ScrubFilter::default();
+    let first = a.step(&spec, 1.0, 1.0 / 30.0);
+    assert!((first - 0.00125).abs() < 1e-7, "{first}");
+    let mut moved = first;
+    for _ in 1..30 {
+        moved += a.step(&spec, 1.0, 1.0 / 30.0);
+    }
+    assert!(moved > 0.12 && moved < 0.15, "{moved}");
+    assert!((a.rate - 0.005).abs() < 1e-5);
+    // The same second at 144 fps moves the same distance.
+    let mut b = ScrubFilter::default();
+    let fast: f32 = (0..144).map(|_| b.step(&spec, 1.0, 1.0 / 144.0)).sum();
+    assert!((fast - moved).abs() < 1e-4, "{fast} vs {moved}");
+    // Released: the rate decays into the dead band and stops.
+    for _ in 0..60 {
+        a.step(&spec, 0.0, 1.0 / 30.0);
+    }
+    assert_eq!(a.rate, 0.0);
+    assert_eq!(a.step(&spec, 0.0, 1.0 / 30.0), 0.0);
+}
+
+#[test]
+fn replay_editor_session_follows_retail_mode_transitions() {
+    use super::session::{EditorAction, EditorMode, EditorSession, key};
+    let mut s = EditorSession::instant();
+    assert_eq!(s.mode, EditorMode::Instant);
+    // Instant replay: D-pad jumps to the ends, A opens the timeline.
+    assert_eq!(s.press(key::DPAD_LEFT_PRESSED), Some(EditorAction::JumpToStart));
+    assert_eq!(s.press(key::B), None, "B is not bound in instant mode");
+    assert_eq!(s.press(key::A), Some(EditorAction::OpenTimeline));
+    assert_eq!(s.mode, EditorMode::Timeline);
+    // LB held trims until it is released.
+    assert_eq!(s.press(key::LB), Some(EditorAction::TrimStart));
+    assert_eq!(s.mode, EditorMode::Trim);
+    assert_eq!(s.press(key::LB_RELEASED), Some(EditorAction::TrimEnd));
+    assert_eq!(s.mode, EditorMode::Timeline);
+    // RB plays to the clip's end, then back to the timeline; B opens Finished.
+    assert_eq!(s.press(key::RB), Some(EditorAction::Play));
+    s.playback_ended();
+    assert_eq!(s.mode, EditorMode::Timeline);
+    assert_eq!(s.press(key::B), Some(EditorAction::Finished));
+}

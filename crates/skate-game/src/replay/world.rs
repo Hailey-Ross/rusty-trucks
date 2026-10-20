@@ -74,7 +74,19 @@ pub(crate) fn retire(commands: &mut Commands, entity: Entity) {
     commands.queue(move |world: &mut World| {
         if let Some(ghost) = ghost_parts(world, entity) {
             let (actor, joints, transform, scene) = ghost;
-            let ghost = world.spawn((Name::new("replay ghost"), ReplayGhost, actor, joints, transform, Visibility::Hidden)).id();
+            // The fade goes with the scene: playback writes the recorded alpha and `present_fade` draws it on the
+            // ghost's meshes (a skater that faded out before leaving would otherwise stay invisible).
+            use crate::living_world::npc_skaters::{NpcFade, NpcFadeMaterials};
+            let fade = world.get::<NpcFade>(entity).copied();
+            let materials = world.entity_mut(entity).take::<NpcFadeMaterials>();
+            let mut ghost = world.spawn((Name::new("replay ghost"), ReplayGhost, actor, joints, transform, Visibility::Hidden));
+            if let Some(fade) = fade {
+                ghost.insert(fade);
+            }
+            if let Some(materials) = materials {
+                ghost.insert(materials);
+            }
+            let ghost = ghost.id();
             world.entity_mut(scene).insert(ChildOf(ghost));
         }
         if let Ok(e) = world.get_entity_mut(entity) {

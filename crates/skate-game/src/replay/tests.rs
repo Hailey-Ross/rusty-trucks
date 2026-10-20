@@ -148,12 +148,17 @@ fn controller_replay_scrub_camera_and_exit_do_not_leak_gameplay_input() {
         "held View must not toggle repeatedly"
     );
     let end = app.world().resource::<Replay>().cursor;
+    // The scrub moves on whole console frames (1/30 s = two of these ticks) and eases in (ScrubSpec).
+    tick(&mut app, 0, [255, 0], [0; 2]);
     tick(&mut app, 0, [255, 0], [0; 2]);
     let rewound = app.world().resource::<Replay>().cursor;
     assert!(rewound < end);
     tick(&mut app, Y, [0; 2], [0; 2]);
     let camera = app.world().resource::<Replay>().free_camera.unwrap();
-    tick(&mut app, 0, [0, 128], [32767, 0]);
+    // Forward: the rate eases from the rewind through zero, then moves past where the rewind stopped.
+    for _ in 0..16 {
+        tick(&mut app, 0, [0, 128], [32767, 0]);
+    }
     let replay = app.world().resource::<Replay>();
     assert!(replay.cursor > rewound);
     assert_ne!(replay.free_camera.unwrap(), camera);
@@ -267,10 +272,13 @@ fn a_despawned_actor_plays_back_as_a_ghost_until_it_leaves_the_window() {
     };
     step(&mut app);
     step(&mut app);
+    let fade = crate::living_world::npc_skaters::NpcFade { alpha: 0.25, ..Default::default() };
+    app.world_mut().entity_mut(ped).insert(fade);
     app.world_mut().run_system_once(move |mut commands: Commands| super::world::retire(&mut commands, ped)).unwrap();
     assert!(app.world().get_entity(ped).is_err());
     let ghost = app.world_mut().query_filtered::<Entity, With<ReplayGhost>>().single(app.world()).unwrap();
     assert_eq!(app.world().get::<ChildOf>(scene).unwrap().parent(), ghost);
+    assert_eq!(app.world().get::<crate::living_world::npc_skaters::NpcFade>(ghost), Some(&fade), "the fade goes with the scene");
     step(&mut app);
     step(&mut app);
     {

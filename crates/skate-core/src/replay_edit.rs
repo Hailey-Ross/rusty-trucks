@@ -155,6 +155,53 @@ pub struct Clip {
     pub markers: [Vec<(u32, i32)>; 9],
 }
 
+/// Retail's trigger scrub, data driven. Per console frame (`frame_hz`, the 360's ~30 fps): target = (RT - LT) x
+/// `max_rate`, the rate moves `smoothing` of the way to it, clamps to +-`max_rate`, and stops inside the dead band;
+/// the playhead moves by the rate as a fraction of the whole recording (`82610F18` -> `825071B8` -> `82C7EF90`,
+/// research b387 / b388).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrubSpec {
+    pub max_rate: f32,
+    pub smoothing: f32,
+    pub dead_target: f32,
+    pub dead_rate: f32,
+    pub frame_hz: f32,
+}
+
+impl Default for ScrubSpec {
+    fn default() -> Self {
+        Self { max_rate: 0.005, smoothing: 0.25, dead_target: 1.0e-5, dead_rate: 1.0e-4, frame_hz: 30.0 }
+    }
+}
+
+/// The scrub's state; [`ScrubFilter::step`] runs whole console frames, so any engine frame rate gives the same
+/// movement.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScrubFilter {
+    pub rate: f32,
+    carry: f32,
+}
+
+impl ScrubFilter {
+    /// Advance by `dt` seconds with the trigger axis `axis` (RT - LT, -1..1); returns how far the playhead moves, as
+    /// a fraction of the recording.
+    pub fn step(&mut self, spec: &ScrubSpec, axis: f32, dt: f32) -> f32 {
+        self.carry += dt.clamp(0.0, 0.25) * spec.frame_hz;
+        let target = axis.clamp(-1.0, 1.0) * spec.max_rate;
+        let mut moved = 0.0;
+        // A frame due up to float error counts now (144 steps of 30/144 sum to 29.9999...).
+        while self.carry >= 1.0 - 1.0e-4 {
+            self.carry -= 1.0;
+            self.rate = (self.rate + (target - self.rate) * spec.smoothing).clamp(-spec.max_rate, spec.max_rate);
+            if target.abs() < spec.dead_target && self.rate.abs() <= spec.dead_rate {
+                self.rate = 0.0;
+            }
+            moved += self.rate;
+        }
+        moved
+    }
+}
+
 /// A clip's look at one frame: the colour matrix record to build ([`crate::colour_matrix::build`]) and the RGBA
 /// screen tint overlay.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -318,6 +365,8 @@ impl ReplayEdit {
         self.encoded_seconds() <= self.limits.share_max_seconds
     }
 }
+
+pub mod session;
 
 #[cfg(test)]
 mod tests;

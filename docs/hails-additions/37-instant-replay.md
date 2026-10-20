@@ -77,7 +77,10 @@ moves the actor's loaded scene (the child that holds its recorded joints) under 
 replay id, then despawns the actor with its gameplay components. Playback draws the ghost from the track up to the
 despawn frame and hides it after; the ghost is dropped once its track leaves the window, never during playback. At
 most 64 ghosts (`MAX_GHOSTS`); past that, or when the actor was never recorded, it is simply despawned. The world
-reset on a map change keeps a plain despawn (the replay resets with the map). Test: a retired ped plays back as a
+reset on a map change keeps a plain despawn (the replay resets with the map). The actor's fade (`NpcFade`, spawn
+fade-in, leave fade, the peds' camera-distance fade) is recorded like the audio components and moves to the ghost
+with its fade materials, so a skater that faded out before leaving plays back at its recorded alpha instead of
+staying invisible. Test: a retired ped plays back as a
 ghost before its despawn, hides after it, stays hidden while live and goes with its track.
 
 ### Playback audio: the recorded skater state plays again
@@ -117,6 +120,18 @@ back onto the 40 m sphere around the player's recorded position at the cursor af
 world collision for the free camera (a 0.1 m sphere, 0.8 m with a world flag, x 1.3, `82682D80`) is not ported yet.
 Test: the leash keeps a camera inside 40 m and pulls a far one onto the sphere.
 
+## Trigger scrub at retail's rate
+
+Retail's scrub (research b387 / b388; main verified `82610F18` reads the mode word and stores the rate at +0x34, and
+`825071B8` passes it to the playhead step `82C7EF90`): per console frame the target is (RT - LT) x 0.005, the rate
+moves 0.25 of the way to it, clamps to +-0.005, and stops in a dead band (target < 1e-5 and rate <= 1e-4); the
+playhead moves by the rate as a fraction of the WHOLE recording, so a full sweep takes about 6.7 s whatever the
+length (at most 0.15 of the recording per second). Ours moved a flat 4 s of recording per second, with no easing.
+Now `skate_core::replay_edit::ScrubFilter` / `ScrubSpec` (data) run whole 30 Hz console frames (the same movement at
+any engine frame rate) and the replay controls use it: a moving scrub stops playback, and it eases out after the
+triggers are released. The keyboard arrows count as full triggers. Tests: ease-in, cap, release to zero, 30 vs 144
+fps give the same distance; the controller test now ticks whole console frames.
+
 ## M2 step 1: the editor model (skate-core)
 
 `crates/skate-core/src/replay_edit.rs`: clips trimmed out of the recording (30 fps timeline frames), each with its
@@ -138,6 +153,19 @@ effect values and stepped marker lanes, and retail's length rules. Pure data, no
 - Tests: 6 (open threshold, stepping / clamping / wrapping, stepped markers, marker cap, marker spacing, encoded
   length).
 
+## M2 step 2: editor session and key bindings (skate-core)
+
+`skate_core::replay_edit::session`: retail's editor modes (the values of `[DAT_83067084]+0x30`: 1 playback, 2 trim,
+5 instant, 6 timeline, 7 / 8 / 9 / 10 camera key edit, 11 effects) and a binding table (mode, FE key index, action,
+next mode) with retail's proven bindings as the default (research b386 / b387 / b389; `826127B8` input handler,
+`82610458` opens mode 5 from Back during play): instant A -> timeline, D-pad Left / Right pressed jump to the ends;
+timeline B Finished, X photo, RB play (back to the timeline at the clip's end), LB held trims until released, L3
+panel, released D-pad Up / Down remove / drop a marker, Left / Right jump to the ends, Start help; effects Up / Down
+item, Left / Right value, B commits. Unproven transitions (camera key edit entry, modes 0xC / 0xD) are left out. The
+table is data a mod can replace. Not wired to the game yet: our current replay controls keep working until the
+FE 12 host lands (retail differences listed in the plan: Back opens only, B opens Finished, D-pad jumps, 150-frame
+minimum). Test: retail's mode transitions.
+
 ## M3 step 1: the look lanes as a colour matrix override (skate-core)
 
 `ReplayEdit::look_at(clip, frame, base)` turns a clip's look lanes into what the screen uses: the world grade's
@@ -152,9 +180,9 @@ wired to the renderer yet (M3 step 2, with the editor UI). Test: untouched lanes
 brightness and contrast replace both bands; a tint marker shows from its frame.
 
 ### Open
-- Ped / NPC fade alpha, held hand props and the camera's full `CameraFrame` (shake, opacity, blur) are not recorded
-  yet.
-- World one-shot sounds and ghosts' audio during playback (see above).
+- Held hand props are not recorded. (The camera frame's opacity / blur / shake are not used by the renderer, so the
+  recorded transform and FOV are all playback needs.)
+- Ghosts' audio and vehicle impact sounds during playback (see above).
 - The replay look lanes (M3, research b379 / b380): lane 3 brightness (colour matrix add term), lane 4 contrast,
   lane 5 saturation, all near and far, replacing the world colour block while set; lane 6 an RGBA screen-tint
   overlay. Our `colour_matrix::build` takes the same argument roles as retail's builder `827F13D8`.
