@@ -1487,7 +1487,12 @@ ped is not yet displaced by the push (b144 found no root write-back; open).
 data test `a_ped_body_is_solid_to_the_skater` (DownTown, standing skater): a ped closing at 1.4 m/s reaches group-11
 force 1.30 and no wipeout; at 9 m/s 20.61 and a wipeout at tick 8 (the ordinary region thresholds).
 
-**Open.** The b144 trace (per-part shapes and masses, remove / add around a knock-down, whether the push moves the ped);
+Answered 2026-10-19 (b368, `.local/research/b368-ped-push-aside.md`, after b217) [code]: retail writes nothing from
+the solve back to the ped or its NavPower bot (body B is keyframed from the bones every frame; the contact callback
+`82E38FB8` and `8269E170` only pick the reaction and its direction; the bot is resynced to the ped, never the other
+way). The ped is moved by the reaction clip's root motion [trace b217: stumble 0.25 to 1.1 m over 0.7 to 1.2 s,
+knock-down 1.6 m over ~1.06 s], which ours already does (`peds.rs`, the walker applies the clip's root translation).
+**Open.** The b144 trace (per-part shapes and masses, remove / add around a knock-down);
 a session (does it feel solid, do fast and mid-trick hits bail, does the ped's reaction still fire).
 
 ## Speech: the start delay and the stream gap (2026-10-16)
@@ -2383,3 +2388,28 @@ contact stays the walker's separation (retail's 11 x 11 body B pair does not wri
 **Tests.** `body_a_is_an_upright_root_capsule_in_group_9_with_its_own_id`, `a_sliding_bin_stops_against_a_peds_body_a`
 (a 4 m/s bin slides past the spot without the ped and stops short of it with one), skate-mods patch validation for the
 proxy keys. Not play-tested yet.
+
+## A seated or prop-using ped can be knocked over by the skater (2026-10-19)
+Research b371 (`.local/research/b371-ped-reaction-retrigger.md`) [code]: our contact gate already let a ped through
+while its plugin or taunt clip played (retail skips a skater contact only while the ped is in a collision reaction),
+but the hit then called the animation player's `react`, which refuses while any reaction runs, and plugin and taunt
+clips run as reactions. So a ped on a bench, at an ATM or in a taunt was never knocked over or stumbled.
+Change: in that case the hit uses `interrupt` (the path the Avoid graph's SitJump already takes) and ends the plugin
+or taunt clip's state. Not play-tested. Also from b371: stumble re-trigger needs no change (ours 0.80 s minimum, median
+1.33 s in 47 laptop gaps; retail samples 0.93, 1.30, 2.10 s); retail's anim-set timer (`ground_seconds`, 1.5 s, 0.5 s
+for security01) drives only the knock-down's ground state machine (re-armed by a contact at expiry, ground
+re-reactions, blocked after 5 expiries), which ours does not have yet (follow-up, ped physics todo).
+
+## A knocked-down ped gets up at retail's time (2026-10-19)
+Research b372 (`.local/research/b372-ped-knockdown-state-machine.md`) [code + data]: retail's knock-down Begin
+(`sub_8269DA00`) starts the anim set's ground timer (`ground_seconds`, 1.5 s; 0.5 s for security01) with the fall,
+and `sub_8269E058` posts the `Recover` intent when it runs out; the motion graph holds the ground cycle until then. So
+the get-up comes at the later of the fall clip's end (0.967 s) and 1.5 s after the hit: about 0.53 s on the ground.
+Ours counted the 1.5 s from the start of the ground cycle, keeping a ped down about 0.97 s too long.
+Change: `PedAnimPlayer` counts the ground time over the whole reaction (`anim.rs`), test
+`a_knock_down_falls_lies_for_the_ground_time_gets_up_and_walks_on` updated (get-up 1.5 s after the hit). Plugin
+holds (infinite time, released by `release_hold`) are unchanged. Not play-tested.
+Still to port (b372 port plan): the rest of the Colliding state machine (a contact at expiry re-arms the timer,
+re-hits while down or getting up pick LyingDown / Crouched / Standing by `recovery_intervals*`, contacts blocked
+after more than 5 expiries); the reader of `[ped+0x1714]+0xD4` is not found. b372 also corrects the b156 addendum:
+LyingDown keeps the stored Begin direction, Crouched and Standing take the new hit's direction.

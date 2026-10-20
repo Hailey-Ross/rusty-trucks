@@ -1132,7 +1132,23 @@ pub(crate) fn advance_peds(
                     events.write(PedEvent::ContactStored { id: ped.id, kind, direction, closing, toucher });
                 } else if let Some(((kind, direction, closing), toucher)) = contact {
                     let steps =skate_core::living_world::peds::skater_contact::reaction_steps(kind, direction);
-                    if body.player.react(set, steps, set.collision.ground_seconds) {
+                    // A plugin or taunt clip runs as a reaction, which `react` refuses; retail knocks such a ped over
+                    // (only its collision reaction gates the contact, see above), so the hit replaces that clip (b371).
+                    let started = if clip_reaction {
+                        let hit = body.player.interrupt(set, steps, set.collision.ground_seconds);
+                        if hit {
+                            if body.plugin_motion.state == TauntClip::Playing {
+                                body.plugin_motion.state = TauntClip::Done;
+                            }
+                            if body.taunt == TauntClip::Playing {
+                                body.taunt = TauntClip::Done;
+                            }
+                        }
+                        hit
+                    } else {
+                        body.player.react(set, steps, set.collision.ground_seconds)
+                    };
+                    if started {
                         info!("PED_SKATER_CONTACT ped=#{} by={toucher} kind={} direction={} closing={closing:.2} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, kind.name(), direction.name(), body.position.x, body.position.y, body.position.z);
                         events.write(PedEvent::Hit { id: ped.id, kind, direction, closing, toucher });
                     }

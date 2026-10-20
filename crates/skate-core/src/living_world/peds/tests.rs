@@ -412,9 +412,11 @@ fn a_knock_down_falls_lies_for_the_ground_time_gets_up_and_walks_on() {
     let first = |c: &str| log.iter().position(|(_, x)| x == c).unwrap_or_else(|| panic!("{c} never played"));
     let (fall, ground, getup) = (first("FALL"), first("GROUND"), first("GETUP"));
     assert!(fall < ground && ground < getup);
-    // The fall clip is 1 s; the ground cycle lasts the set's ground time (1.5 s at 60 Hz).
+    // The fall clip is 1 s; retail's ground time (1.5 s) counts from the hit (b372), so the get-up starts
+    // 1.5 s after it and the ground cycle lasts about 0.5 s.
+    assert!((89..=91).contains(&(getup - fall)), "get-up {} frames after the hit", getup - fall);
     let ground_frames = getup - ground;
-    assert!((89..=91).contains(&ground_frames), "{ground_frames} frames on the ground");
+    assert!((28..=32).contains(&ground_frames), "{ground_frames} frames on the ground");
     assert!(log[..getup].iter().all(|(s, _)| *s == Locomotion::Reaction), "no walking while reacting");
     assert!(log.iter().skip(getup).any(|(s, _)| *s != Locomotion::Reaction), "back to locomotion after the get-up");
     assert_eq!(p.reaction_anim(), None);
