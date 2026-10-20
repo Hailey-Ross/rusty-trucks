@@ -220,9 +220,9 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 - The Guide / F1 / Esc menu now looks and moves like the recomp's settings screen (blurred world, sliding highlight, category rail, button legend).
 
 **Instant replay (new, not play-tested yet)**
-- The replay (Select / F6) now records the whole world, not just you: NPC skaters, peds, traffic and props play back as they moved, including ones that left during the recording. It keeps Skate 3's 90 seconds (was 30).
+- The replay now records the whole world, not just you: NPC skaters, peds, traffic and props play back as they moved, including ones that left during the recording. It keeps Skate 3's 90 seconds (was 30).
 - Replays have sound, the Skate 3 way: your rolling, pushes, grinds and landings, traffic, peds' footsteps, horns and car alarms play again from what was recorded. A paused replay is silent and speech stays off, like Skate 3.
-- The triggers scrub at Skate 3's rate (eased, a full sweep in about 7 seconds), and the free camera stays within 40 m of your skater.
+- **Controls are Skate 3's now:** Back (View / Select, F6) opens the replay once 5 seconds are recorded; RB plays and stops (the sticks or D-pad also start it again); the triggers scrub at Skate 3's rate (eased, a full sweep in about 7 seconds); D-pad Left / Right jump to the start / end; B or Back asks Skate 3's "quit replay?" question (Yes leaves). The free camera is on the keyboard only (C, then WASD / Q / E and the right mouse button) and stays within 40 m of your skater.
 - Mods can open the replay, drop markers and change the recording length (`sdk.replay`). The replay editor (trimming, speed, effects) and video export come next.
 
 **This fork's releases**
