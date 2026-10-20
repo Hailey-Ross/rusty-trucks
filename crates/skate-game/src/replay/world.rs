@@ -128,7 +128,7 @@ fn transform(p: &JointPose) -> Transform {
 
 /// One frame per new player frame (one per sim step), after every presenter drew this frame.
 #[allow(clippy::type_complexity)]
-fn record(
+pub(super) fn record(
     mut replay: ResMut<Replay>,
     mut ids: Local<HashMap<Entity, u64>>,
     mut gone: Local<Vec<u64>>,

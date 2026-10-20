@@ -95,15 +95,28 @@ replay" gates (research b375, b378).
   in replay and 0 otherwise (checked in the recomp: `sub_824D5160` after the replay flag `sub_8279E180` writes
   input 0 with 32767 or 0), so the retail MixMap swaps the Hall of Meat slow-motion ducks for the replay duck.
 - Seeks and rewinds count as camera cuts for the host (Doppler velocity reset).
-- Not yet: the world actors' audio state (traffic engines, ped feet, NPC skaters' own audio) and their one-shots
-  (horns, alarms, body falls) are not recorded, so those sources hold their last live state during playback.
-  Replay speed below 100 % (M2) will scale `AudioState.time_scale`; whether retail's pitch follows is open.
+- World actors: `replay/components.rs` records each actor's audio components with it, on change, keyed by the
+  replay id: `TrafficAudio` (engine, speed, load, horn, skid), `PedAudio` (feet, speech state), `NpcSkaterAudio`
+  (the NPC's full audio record) and `AudioVelocity`. During playback the value holding at the cursor is written back
+  in PreUpdate, before the audio host reads it, and the live values return on exit. Any `Component + Clone +
+  PartialEq` can be tracked the same way (`components::track`). Ghosts (actors that despawned inside the window) are
+  drawn but stay silent: an audio component on a hidden ghost would make it audible during live play.
+- One-shots: `replay/messages.rs` records the bridge's one-shot messages with their frame time (`VehicleHorn`,
+  `VehicleAlarm`, `PedTazerEvent`, `PedBodyFallEvent`) and writes each again once when the playback cursor crosses
+  its time going forward (not on a rewind). NPC reactions and ped speech stay out (speech, blocked in retail's
+  replay). Any `Message + Clone` can be tracked the same way (`messages::track`).
+- Not yet: vehicle impact sounds (`car_alarm.rs` contact path) are not recorded. Replay speed below 100 % (M2) will
+  scale `AudioState.time_scale`; whether retail's pitch follows is open.
 
 ### Open
 - Ped / NPC fade alpha, held hand props and the camera's full `CameraFrame` (shake, opacity, blur) are not recorded
   yet.
-- World actors' audio during playback (see above).
-- Retail editor cameras (for M2, research b376): ICELITE keyed values (eye, look, dutch, lens mm), lens 10..500 mm,
-  default 24; shake levels 0 / 0.35 / 1.0 / 1.0 for amplitude and frequency (`8250A6E8`).
+- World one-shot sounds and ghosts' audio during playback (see above).
+- The replay look lanes (M3, research b379 / b380): lane 3 brightness (colour matrix add term), lane 4 contrast,
+  lane 5 saturation, all near and far, replacing the world colour block while set; lane 6 an RGBA screen-tint
+  overlay. Our `colour_matrix::build` takes the same argument roles as retail's builder `827F13D8`.
+- Retail editor cameras (for M2, research b376 / b377): ICELITE keyed values (eye, look, dutch, lens mm), lens
+  10..500 mm, default 24; shake levels 0 / 0.35 / 1.0 / 1.0 for amplitude and frequency (`8250A6E8`); effect lanes
+  step at marker times (speed +10 % up to 100 %, shake 0..3, brightness, contrast, saturation, tint).
 - The player is still recorded as full `Mat4` skin rows (about 45 MB at 90 s); moving it into the quantised buffer
   would cut that to about a fifth.

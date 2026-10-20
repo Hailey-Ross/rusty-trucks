@@ -330,3 +330,76 @@ fn playback_publishes_the_recorded_audio_steps_the_cursor_crosses() {
     replay.exit();
     assert!(replay.audio_steps().is_empty() && !replay.audible());
 }
+
+#[test]
+fn world_actor_audio_state_follows_the_recording_and_returns_on_exit() {
+    use super::world::ReplayActor;
+    use crate::world_audio::AudioVelocity;
+    let mut app = App::new();
+    app.init_resource::<Replay>();
+    super::world::plugin(&mut app);
+    super::components::track::<AudioVelocity>(&mut app);
+    let car = app.world_mut().spawn((ReplayActor { id: 2 << 56 | 7 }, Transform::default(), AudioVelocity(Vec3::X))).id();
+    let step = |app: &mut App| {
+        app.world_mut().resource_mut::<Replay>().record(pose(0.), 1. / 60., false);
+        app.update();
+    };
+    step(&mut app);
+    step(&mut app);
+    app.world_mut().entity_mut(car).insert(AudioVelocity(Vec3::Y * 5.));
+    step(&mut app);
+    // Unchanged values are not stored again.
+    assert_eq!(super::components::value_at::<AudioVelocity>(app.world(), 2 << 56 | 7, 1.5 / 60.), Some(AudioVelocity(Vec3::X)));
+    {
+        let mut replay = app.world_mut().resource_mut::<Replay>();
+        replay.enter();
+        replay.seek(1. / 60.);
+    }
+    app.update();
+    assert_eq!(app.world().get::<AudioVelocity>(car), Some(&AudioVelocity(Vec3::X)));
+    app.world_mut().resource_mut::<Replay>().seek(2. / 60.);
+    app.update();
+    assert_eq!(app.world().get::<AudioVelocity>(car), Some(&AudioVelocity(Vec3::Y * 5.)));
+    app.world_mut().resource_mut::<Replay>().seek(0.);
+    app.update();
+    app.world_mut().resource_mut::<Replay>().exit();
+    app.update();
+    assert_eq!(app.world().get::<AudioVelocity>(car), Some(&AudioVelocity(Vec3::Y * 5.)), "live value back");
+}
+
+#[test]
+fn one_shot_sounds_fire_again_when_playback_crosses_them() {
+    use crate::world_audio::VehicleHorn;
+    #[derive(Resource, Default)]
+    struct Heard(Vec<u8>);
+    let mut app = App::new();
+    app.init_resource::<Replay>().init_resource::<Heard>().add_message::<VehicleHorn>();
+    super::messages::track::<VehicleHorn>(&mut app);
+    app.add_systems(Update, |mut r: MessageReader<VehicleHorn>, mut heard: ResMut<Heard>| {
+        heard.0.extend(r.read().map(|h| h.kind));
+    });
+    let step = |app: &mut App, horn: Option<u8>| {
+        app.world_mut().resource_mut::<Replay>().record(pose(0.), 1. / 60., false);
+        if let Some(kind) = horn {
+            app.world_mut().write_message(VehicleHorn { vehicle: Entity::PLACEHOLDER, kind, seconds: 1. });
+        }
+        app.update();
+    };
+    step(&mut app, None);
+    step(&mut app, Some(4));
+    step(&mut app, None);
+    app.world_mut().resource_mut::<Heard>().0.clear();
+    {
+        let mut replay = app.world_mut().resource_mut::<Replay>();
+        replay.enter();
+        replay.seek(0.);
+    }
+    app.update();
+    app.world_mut().resource_mut::<Replay>().seek(2. / 60.);
+    app.update();
+    app.update();
+    assert_eq!(app.world().resource::<Heard>().0, [4], "once, when the cursor passed it");
+    app.world_mut().resource_mut::<Replay>().seek(0.);
+    app.update();
+    assert_eq!(app.world().resource::<Heard>().0, [4], "not on a rewind");
+}

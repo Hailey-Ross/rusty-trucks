@@ -274,6 +274,16 @@ pub(crate) struct ReplayPlugin;
 impl Plugin for ReplayPlugin {
     fn build(&self, app: &mut App) {
         world::plugin(app);
+        // The world actors' audio state follows the recording (b378 channels A1..A3).
+        components::track::<crate::world_audio::TrafficAudio>(app);
+        components::track::<crate::world_audio::PedAudio>(app);
+        components::track::<crate::world_audio::NpcSkaterAudio>(app);
+        components::track::<crate::world_audio::AudioVelocity>(app);
+        // Their one-shot sounds (speech stays out: retail blocks speech in replay).
+        messages::track::<crate::world_audio::VehicleHorn>(app);
+        messages::track::<crate::world_audio::VehicleAlarm>(app);
+        messages::track::<crate::world_audio::PedTazerEvent>(app);
+        messages::track::<crate::world_audio::PedBodyFallEvent>(app);
         app.init_resource::<Replay>()
             .configure_sets(
                 FixedUpdate,
@@ -480,6 +490,8 @@ fn update_ui(
     }
 }
 
+mod components;
+mod messages;
 mod world;
 pub(crate) use world::retire;
 
