@@ -99,7 +99,7 @@ pub(crate) const FRAME_STATE: Handle<ShaderStorageBuffer> =
 // ---------------------------------------------------------------------------
 
 /// Per-material shading constants. Byte layout must match `WorldParams` in
-/// `retail_material_bindings.wgsl`: thirteen `vec4<f32>`, 208 bytes.
+/// `retail_material_bindings.wgsl`: seventeen `vec4<f32>`, 272 bytes.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct WorldParams {
     /// family, texture flags, alpha cutoff (-1 for opaque), exposure
@@ -117,10 +117,13 @@ pub(crate) struct WorldParams {
     /// x: per-material decal strength (retail 1.0 for every decal).
     pub decal: Vec4,
     pub water: [Vec4; 4],
+    /// Better Water fountains (family 30, not retail): the donor's `water` rows
+    /// (see [`bind_fountain_donor`]); zero = no donor.
+    pub fountain: [Vec4; 4],
 }
 
 impl WorldParams {
-    pub(crate) const SIZE: usize = 13 * 16;
+    pub(crate) const SIZE: usize = 17 * 16;
 
     fn encode(&self, out: &mut Vec<u8>) {
         for row in [
@@ -137,6 +140,10 @@ impl WorldParams {
             self.water[1],
             self.water[2],
             self.water[3],
+            self.fountain[0],
+            self.fountain[1],
+            self.fountain[2],
+            self.fountain[3],
         ] {
             for component in row.to_array() {
                 out.extend_from_slice(&component.to_le_bytes());
@@ -239,7 +246,7 @@ impl Default for WorldShadowSettings {
     }
 }
 
-/// Shared frame state, matching `FrameState` in the bindings module: 336 bytes.
+/// Shared frame state, matching `FrameState` in the bindings module: 368 bytes.
 ///
 /// `shadow.w` gates every dynamic-shadow read in the world shader. Shadows are
 /// out of scope for v1 (RFC 1 D5), so it stays zero and the shader never touches
@@ -259,6 +266,9 @@ pub(crate) struct FrameStateData {
     pub water_tint: Vec4,
     /// Water look ocean swells (family 31, not retail): x slope amplitude (0 = off), y wavelength (m), z speed (m/s).
     pub ocean_swell: Vec4,
+    /// Water look fountains (family 30, not retail): x metres per basin wave tile (0 = off), y basin calming
+    /// floor, z cascade foam, w the cascade clock (`water_time` at `cascade_rate`).
+    pub fountain: Vec4,
     /// Retail world constant `g_ViewDotLight`, shared by every draw (bound by
     /// name hash 0xE552F1C3 in `sub_826DD6B8` to `*(0x83083C60)+0x44370`),
     /// written each frame by `advance_view_dot_light` from `ViewDotLightParams`.
@@ -281,6 +291,7 @@ impl Default for FrameStateData {
             water_look: Vec4::ZERO,
             water_tint: Vec4::ZERO,
             ocean_swell: Vec4::ZERO,
+            fountain: Vec4::ZERO,
             view_dot_light: RETAIL_VIEW_DOT_LIGHT,
             traffic_lights: [Vec4::ZERO; 2],
         }
@@ -335,7 +346,7 @@ impl ViewDotLightParams {
 }
 
 impl FrameStateData {
-    const SIZE: usize = 22 * 16;
+    const SIZE: usize = 23 * 16;
 
     /// Turns the world's dynamic-shadow reads on with `floor` as the lightest
     /// value a dynamic shadow can leave on the baked world (see
@@ -344,13 +355,13 @@ impl FrameStateData {
         self.shadow = floor.clamp(Vec3::ZERO, Vec3::ONE).extend(1.);
     }
 
-    /// The rows in shader order (shadow, clock, PCA, slow PCA, water look, tint and ocean swell, view-dot-light, traffic lights).
+    /// The rows in shader order (shadow, clock, PCA, slow PCA, water look, tint, ocean swell and fountain, view-dot-light, traffic lights).
     fn rows(&self) -> impl Iterator<Item = Vec4> + '_ {
         std::iter::once(self.shadow)
             .chain(std::iter::once(self.clock))
             .chain(self.pca)
             .chain(self.pca_slow)
-            .chain([self.water_look, self.water_tint, self.ocean_swell])
+            .chain([self.water_look, self.water_tint, self.ocean_swell, self.fountain])
             .chain(std::iter::once(self.view_dot_light))
             .chain(self.traffic_lights)
     }
@@ -372,7 +383,7 @@ impl FrameStateData {
             .chain(std::iter::once(self.clock))
             .chain(self.pca)
             .chain(self.pca_slow)
-            .chain([self.water_look, self.water_tint, self.ocean_swell])
+            .chain([self.water_look, self.water_tint, self.ocean_swell, self.fountain])
             .chain(std::iter::once(self.view_dot_light))
             .chain(self.traffic_lights)
         {
@@ -1051,6 +1062,7 @@ impl MaterialTable {
         let mut unsupported_shaders = std::collections::BTreeMap::<String, usize>::new();
         let mut families = std::collections::BTreeMap::<u32, usize>::new();
         let mut water = Vec::with_capacity(map.materials.len());
+        let mut flowing = Vec::with_capacity(map.materials.len());
         for material in &map.materials {
             let definition = material
                 .retail_definition
@@ -1069,6 +1081,7 @@ impl MaterialTable {
             }
             *families.entry(definition.family).or_default() += 1;
             water.push(definition.family == 33);
+            flowing.push(definition.family == 30);
             requests.push(Some(Request::new(
                 material,
                 &definition,
@@ -1079,13 +1092,16 @@ impl MaterialTable {
             )));
         }
         // decal.y: area of the water body, for the water look's body calming
-        // (water_bodies.rs; unused by the retail program).
+        // (water_bodies.rs; unused by the retail program). Flowing water (family 30) is grouped on its own,
+        // so the large bodies keep their areas, for the fountain basins' calming.
         let areas = crate::water_bodies::body_areas(&map.geometry.vertices, &map.geometry.indices, &water);
-        for (request, area) in requests.iter_mut().zip(&areas) {
+        let flowing_areas = crate::water_bodies::body_areas(&map.geometry.vertices, &map.geometry.indices, &flowing);
+        for ((request, area), flowing_area) in requests.iter_mut().zip(&areas).zip(&flowing_areas) {
+            let area = area.max(*flowing_area);
             if let Some(request) = request
-                && *area > 0.
+                && area > 0.
             {
-                request.params.decal.y = *area;
+                request.params.decal.y = area;
             }
         }
         // One line per table (logs must diagnose props / car shadows: which shader family each
@@ -1126,6 +1142,9 @@ impl MaterialTable {
                 "{rescaled} world textures fall outside the {PAGE_CLASSES} most common sizes and were rescaled to the nearest page"
             );
         }
+
+        // After page sizing, so the donor's extra demand leaves the retail page layout as it was.
+        bind_fountain_donor(&mut requests);
 
         // Pass 3: pack materials into slabs, sealing a slab when a page fills.
         let mut table = Self {
@@ -1394,6 +1413,7 @@ impl Request {
                 // for mods is frame_state.clock.w (`DecalSettings`).
                 decal: Vec4::new(1., 0., 0., 0.),
                 water,
+                fountain: [Vec4::ZERO; 4],
             },
             class,
             channels: [
@@ -1407,6 +1427,31 @@ impl Request {
                 environment,
             ],
         }
+    }
+}
+
+/// Better Water fountains (water_look.rs `fountain_water`, not retail): every family 30 material whose
+/// detail, macro and decal slots are empty gets the map's largest family 33 body (the donor) bound there:
+/// its normal in macro, its `normal2` in detail, its diffuse in decal, all repeating, and its `water` rows
+/// in `fountain`. Bound at load whatever the look, so the toggle stays a run-time switch; the presence
+/// flags in `mode.y` stay as authored, so the retail program never reads these slots.
+fn bind_fountain_donor(requests: &mut [Option<Request>]) {
+    let donor = requests
+        .iter()
+        .flatten()
+        .filter(|r| r.params.mode.x == 33. && r.channels[2].is_some() && r.channels[3].is_some())
+        .max_by(|a, b| a.params.decal.y.total_cmp(&b.params.decal.y))
+        .map(|r| (r.channels, r.params.water));
+    let Some((channels, rows)) = donor else { return };
+    let repeat = |channel: Option<Channel>| channel.map(|c| Channel { usage: Usage::REPEAT, ..c });
+    for request in requests.iter_mut().flatten().filter(|r| r.params.mode.x == 30.) {
+        if request.channels[3..6].iter().any(Option::is_some) {
+            continue;
+        }
+        request.channels[3] = repeat(channels[3]);
+        request.channels[4] = repeat(channels[2]);
+        request.channels[5] = repeat(channels[0]);
+        request.params.fountain = rows;
     }
 }
 
@@ -1768,6 +1813,7 @@ fn advance_frame_state(
     );
     state.water_tint = Vec3::from_array(look.reflection_tint).extend(look.flowing_lane());
     state.ocean_swell = look.ocean_swell_row().into();
+    state.fountain = look.fountain_row(water_time(elapsed, f64::from(look.cascade_rate))).into();
 }
 
 /// The PCA frame at `rate` x the retail 30 Hz, blended linearly between
@@ -2202,11 +2248,47 @@ mod tests {
     }
 
     #[test]
+    fn fountains_borrow_the_largest_still_water_without_touching_retail_flags() {
+        let channel = |id| Some(Channel { id, usage: Usage::CLAMP, cube: false });
+        let request = |family: u32, area: f32, channels: [Option<Channel>; 8]| {
+            let mut params = WorldParams::default();
+            params.mode = Vec4::new(family as f32, 0b1_0101 as f32, -1., 2.5);
+            params.decal.y = area;
+            params.water = [Vec4::splat(family as f32); 4];
+            Some(Request { params, class: RenderClass::new(false, false, false), channels })
+        };
+        let still = |d, n, n2| [channel(d), None, channel(n), channel(n2), None, None, None, None];
+        let flowing = [channel(30), channel(31), channel(32), None, None, None, None, None];
+        let mut requests = vec![
+            request(33, 100., still(1, 2, 3)),
+            request(33, 5000., still(4, 5, 6)),
+            request(30, 50., flowing),
+            // A flowing material that authored a detail map keeps it.
+            request(30, 50., [channel(30), None, channel(32), channel(40), None, None, None, None]),
+            None,
+        ];
+        bind_fountain_donor(&mut requests);
+        let fountain = requests[2].as_ref().unwrap();
+        assert_eq!(fountain.channels.map(|c| c.map(|c| c.id)), [Some(30), Some(31), Some(32), Some(6), Some(5), Some(4), None, None]);
+        assert!(fountain.channels[3..6].iter().flatten().all(|c| c.usage == Usage::REPEAT));
+        assert_eq!(fountain.params.fountain, [Vec4::splat(33.); 4]);
+        assert_eq!(fountain.params.mode.y, 0b1_0101 as f32, "presence flags stay as authored");
+        let authored = requests[3].as_ref().unwrap();
+        assert_eq!(authored.params.fountain, [Vec4::ZERO; 4]);
+        assert_eq!(authored.channels[4].map(|c| c.id), None);
+
+        // No still water in the map: nothing to borrow.
+        let mut requests = vec![request(30, 50., flowing)];
+        bind_fountain_donor(&mut requests);
+        assert_eq!(requests[0].as_ref().unwrap().params.fountain, [Vec4::ZERO; 4]);
+    }
+
+    #[test]
     fn gpu_struct_sizes_match_the_shader() {
         let mut bytes = Vec::new();
         WorldParams::default().encode(&mut bytes);
         assert_eq!(bytes.len(), WorldParams::SIZE);
-        assert_eq!(WorldParams::SIZE, 208);
+        assert_eq!(WorldParams::SIZE, 272);
 
         let mut bytes = Vec::new();
         MaterialSlots::default().encode(&mut bytes);

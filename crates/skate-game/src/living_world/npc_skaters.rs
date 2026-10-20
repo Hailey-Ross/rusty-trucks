@@ -1614,16 +1614,22 @@ pub(crate) fn backwards_line(id: LivingWorldId, character: &str, line: &ReplayLi
 
 /// Logs NPC skaters whose drawn heading opposes their travel (always on, rate limited per NPC to
 /// one line per [`BACKWARDS_LOG_TICKS`]), so a reported "rides backwards" can be found in the log.
-pub(crate) fn log_backwards(state: Res<PopulationState>, npcs: Query<(&NpcSkater, &NpcReplay)>, mut last: Local<BTreeMap<LivingWorldId, u64>>) {
+pub(crate) fn log_backwards(state: Res<PopulationState>, npcs: Query<(&NpcSkater, &NpcReplay, Option<&super::npc_sim::NpcSim>)>, mut last: Local<BTreeMap<LivingWorldId, u64>>) {
     let tick = state.world.tick();
     let lines = npc_lines(&state);
-    last.retain(|id, _| npcs.iter().any(|(n, _)| n.id == *id));
-    for (npc, replay) in &npcs {
-        let (Some(s), Some(line)) = (replay.last.as_ref(), lines.get(&replay.cursor.line)) else { continue };
-        if s.line != replay.cursor.line {
-            continue;
-        }
-        let Some(text) = backwards_line(npc.id, &npc.character, line, &replay.cursor, s) else { continue };
+    last.retain(|id, _| npcs.iter().any(|(n, _, _)| n.id == *id));
+    for (npc, replay, sim) in &npcs {
+        // A simulated NPC is drawn from its body, never from the cursor's sample (b352).
+        let text = if let Some(sim) = sim {
+            super::npc_sim::backwards_line(npc.id, &npc.character, sim)
+        } else {
+            let (Some(s), Some(line)) = (replay.last.as_ref(), lines.get(&replay.cursor.line)) else { continue };
+            if s.line != replay.cursor.line {
+                continue;
+            }
+            backwards_line(npc.id, &npc.character, line, &replay.cursor, s)
+        };
+        let Some(text) = text else { continue };
         let due = last.get(&npc.id).is_none_or(|t| tick < *t || tick >= t + BACKWARDS_LOG_TICKS);
         if due {
             last.insert(npc.id, tick);

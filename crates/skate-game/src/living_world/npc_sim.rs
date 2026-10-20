@@ -106,6 +106,33 @@ impl SimulatedTierSettings {
 /// the respawn (`sub_8246EE30`).
 pub(crate) const WIPEOUT_BIT: u32 = 0x0004_0000;
 
+/// The `NPC_SKATER_BACKWARDS` line for a simulated NPC, `None` when it is not riding backwards. It is drawn from its
+/// own body, not the replay cursor's ghost (b352: 161 ghost lines in session 2026-10-19 18:04 were all sim NPCs), so
+/// this reads the body: effective board forward more than 135 deg from the deck velocity at 1 m/s or more (the
+/// replay check's diagnostic threshold), with the body's retail fakie bit (`82BB2330`; a fakie rider is not wrong).
+pub(crate) fn backwards_line(id: super::LivingWorldId, character: &str, sim: &NpcSim) -> Option<String> {
+    let forward = GamePhysics::context_effective_forward(&sim.context);
+    let velocity = GamePhysics::context_deck_velocity(&sim.context);
+    let speed = (velocity[0] * velocity[0] + velocity[2] * velocity[2]).sqrt();
+    let yaw = |v: [f32; 3]| v[0].atan2(v[2]);
+    let off = (yaw(forward) - yaw(velocity) + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    if speed < 1. || off.abs() <= 135f32.to_radians() {
+        return None;
+    }
+    let p = GamePhysics::context_deck(&sim.context).translation;
+    Some(format!(
+        "NPC_SKATER_BACKWARDS #{} {character} tier sim heading {:.0} velocity_yaw {:.0} off {:.0} deg {speed:.1} m/s riding_fakie {} pos {:.1} {:.1} {:.1}",
+        id.serial,
+        yaw(forward).to_degrees(),
+        yaw(velocity).to_degrees(),
+        off.abs().to_degrees(),
+        sim.body.runtime.animation.packet.riding_fakie,
+        p.x,
+        p.y,
+        p.z,
+    ))
+}
+
 /// A simulated NPC skater's own physics and runtime.
 #[derive(Component)]
 pub(crate) struct NpcSim {

@@ -60,6 +60,20 @@ pub(crate) struct WaterLook {
     pub ocean_swell_length: f32,
     /// Speed of the longest swell (m/s); the others move at the deep-water speed for their length.
     pub ocean_swell_speed: f32,
+    /// Fountains (family 30) look like the large water, scaled down (user 2026-10-19: "in better water mode, water
+    /// fountains ... should use the same water physics/shader and material as the larger bodies of water, just
+    /// scaled down so it looks good as a fountain"): flat basins take the map's largest family 33 body's waves
+    /// and textures (`retail_render::bind_fountain_donor`) in world space; steep cascades keep their own flow.
+    pub fountain_water: bool,
+    /// Metres per basin wave tile (the fine wave layer).
+    pub fountain_tile: f32,
+    /// Least wave strength on small basins (0..1), so body calming does not flatten them.
+    pub fountain_waves: f32,
+    /// Cascade scroll speed relative to retail, at the retail surface speed whatever the ripple scale ("water
+    /// flowing down the drop offs should look more like water flowing").
+    pub cascade_rate: f32,
+    /// White foam on cascades from the two flow layers; 0 = none.
+    pub cascade_foam: f32,
 }
 
 impl WaterLook {
@@ -79,6 +93,11 @@ impl WaterLook {
         ocean_swell: 0.,
         ocean_swell_length: 40.,
         ocean_swell_speed: 7.9,
+        fountain_water: false,
+        fountain_tile: 4.,
+        fountain_waves: 0.,
+        cascade_rate: 1.,
+        cascade_foam: 0.,
     };
 
     fn apply(&mut self, patch: &WaterLookPatch) {
@@ -97,6 +116,19 @@ impl WaterLook {
         if let Some(v) = patch.ocean_swell { self.ocean_swell = v; }
         if let Some(v) = patch.ocean_swell_length { self.ocean_swell_length = v; }
         if let Some(v) = patch.ocean_swell_speed { self.ocean_swell_speed = v; }
+        if let Some(v) = patch.fountain_water { self.fountain_water = v; }
+        if let Some(v) = patch.fountain_tile { self.fountain_tile = v; }
+        if let Some(v) = patch.fountain_waves { self.fountain_waves = v; }
+        if let Some(v) = patch.cascade_rate { self.cascade_rate = v; }
+        if let Some(v) = patch.cascade_foam { self.cascade_foam = v; }
+    }
+
+    /// `FrameState.fountain`: tile (m), calming floor, foam and the cascade clock `clock`; all zero = off.
+    pub fn fountain_row(&self, clock: f32) -> [f32; 4] {
+        if !self.fountain_water {
+            return [0.; 4];
+        }
+        [self.fountain_tile.max(0.5), self.fountain_waves.clamp(0., 1.), self.cascade_foam.max(0.), clock]
     }
 
     /// `FrameState.water_tint.w`: the flowing water's ripple scale, 0 = the look stays off flowing water.
@@ -134,6 +166,11 @@ impl Default for WaterLook {
             ocean_swell: 0.05,
             ocean_swell_length: 40.,
             ocean_swell_speed: 7.9,
+            fountain_water: true,
+            fountain_tile: 4.,
+            fountain_waves: 0.5,
+            cascade_rate: 1.5,
+            cascade_foam: 0.6,
         }
     }
 }
@@ -260,6 +297,28 @@ mod tests {
         assert_eq!(s.active().effective().ocean_swell_row()[..2], [0., 80.]);
         s.clear_owner(Some("calm-sea"));
         assert!(s.active().effective().ocean_swell_row()[0] > 0.);
+    }
+
+    #[test]
+    fn fountains_only_with_better_water_and_mods_can_set_them() {
+        assert_eq!(WaterLook::RETAIL.fountain_row(5.), [0.; 4], "off: retail flowing water, retail clock");
+        assert_eq!(WaterLook::RETAIL.cascade_rate, 1.);
+        assert_eq!(WaterLook::default().effective().fountain_row(5.), [0.; 4], "Better Water off by default");
+        let on = WaterLook { enabled: true, ..WaterLook::default() }.effective();
+        assert_eq!(on.fountain_row(5.), [4., 0.5, 0.6, 5.]);
+        assert!(on.cascade_rate > 1.);
+        let mut s = WaterLookSettings::new(WaterLook { enabled: true, ..WaterLook::default() }, PathBuf::from("unused/water-look.json"));
+        let patch = WaterLookPatch { fountain_tile: Some(8.), cascade_foam: Some(0.), ..Default::default() };
+        assert!(patch.validate());
+        assert!(!WaterLookPatch { fountain_tile: Some(0.), ..Default::default() }.validate());
+        assert!(!WaterLookPatch { fountain_waves: Some(2.), ..Default::default() }.validate());
+        assert!(!WaterLookPatch { cascade_rate: Some(-1.), ..Default::default() }.validate());
+        s.patch("fountains", Some(patch)).unwrap();
+        assert_eq!(s.active().effective().fountain_row(1.), [8., 0.5, 0., 1.]);
+        s.patch("fountains", Some(WaterLookPatch { fountain_water: Some(false), ..Default::default() })).unwrap();
+        assert_eq!(s.active().effective().fountain_row(1.), [0.; 4]);
+        s.clear_owner(Some("fountains"));
+        assert_eq!(s.active().effective().fountain_row(1.)[0], 4.);
     }
 
     #[test]

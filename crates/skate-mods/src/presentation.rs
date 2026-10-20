@@ -171,11 +171,25 @@ pub struct WaterLookPatch {
     pub ocean_swell_length: Option<f32>,
     /// Speed of the longest swell in m/s.
     pub ocean_swell_speed: Option<f32>,
+    /// Fountain basins take the large water's waves, scaled down (retail off).
+    pub fountain_water: Option<bool>,
+    /// Metres per basin wave tile.
+    pub fountain_tile: Option<f32>,
+    /// Least wave strength on small basins, 0..1 (retail 0).
+    pub fountain_waves: Option<f32>,
+    /// Cascade scroll speed relative to retail (retail 1).
+    pub cascade_rate: Option<f32>,
+    /// Foam on cascades, 0 = none (retail none).
+    pub cascade_foam: Option<f32>,
 }
 impl WaterLookPatch {
     pub fn validate(&self) -> bool {
         let ok = |v: Option<f32>, lo: f32, hi: f32| v.is_none_or(|v| range(v, lo, hi));
         ok(self.ripple_scale, 0.1, 16.0)
+            && ok(self.fountain_tile, 0.5, 100.0)
+            && ok(self.fountain_waves, 0.0, 1.0)
+            && ok(self.cascade_rate, 0.0, 8.0)
+            && ok(self.cascade_foam, 0.0, 2.0)
             && ok(self.flowing_ripple_scale, 0.1, 16.0)
             && ok(self.shallow_splash, 0.0, 2.0)
             && ok(self.ocean_swell, 0.0, 0.3)

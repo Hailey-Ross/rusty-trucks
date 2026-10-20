@@ -212,12 +212,17 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         // Flowing water (family 30, University's fountains) gets the look's ripple scale (water_tint.w), blur and
         // tint when it is on; 0 = the retail flowingwater_defaultPS.
         let flow=fam==30u && frame_state.water_tint.w>0.0;
+        // Water look fountains (frame_state.fountain, not retail): flowing water scrolls on the cascade clock
+        // (fountain.w), and the scroll follows the ripple scale so the surface keeps retail's speed.
+        let cascade=fam==30u && frame_state.fountain.x>0.0;
+        let tc=select(t,frame_state.fountain.w,cascade);
         // Convert to original UVs for scale/scroll, then back to flipped rows.
         let raw_uv=vec2<f32>(i.uv.x,1.0-i.uv.y);
         // water_defaultPS 11..13: c20 * c21.x, times the look's ripple scale.
         let uv_scale=select(select(1.0,frame_state.water_tint.w,flow),p.water[3].x*look.x,fam==33u);
-        let uv1=raw_uv*p.water[2].xy*uv_scale+p.water[1].xy*t;
-        let uv2=raw_uv*p.water[2].zw*uv_scale+p.water[1].zw*t;
+        let sk=select(1.0,uv_scale,cascade);
+        let uv1=raw_uv*p.water[2].xy*uv_scale+p.water[1].xy*tc*sk;
+        let uv2=raw_uv*p.water[2].zw*uv_scale+p.water[1].zw*tc*sk;
         // The double V flip cancels, so per-axis scaling is all that carries over.
         let s1=p.water[2].xy*uv_scale;
         let s2=p.water[2].zw*uv_scale;
@@ -284,6 +289,56 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             d*=d;
             vn=water_n;
         }
+        // Water look fountains: flat family 30 pixels (basins) take the map's large-water program, with the
+        // donor's PCA textures (macro = normal, detail = normal2, decal = diffuse) and rows (p.fountain, bound
+        // by retail_render::bind_fountain_donor) in world space at fountain.x metres per tile; steep pixels
+        // (cascades) keep their own flow and gain foam. Blended by slope so stepped fountains do not seam.
+        var mult=p.water[0].y;
+        var spec_floor=p.water[3].y;
+        var spec_power=p.water[3].z;
+        var foam=0.0;
+        if cascade {
+            let steep=1.0-smoothstep(0.55,0.8,abs(normalize(i.world_normal).y));
+            foam=steep*frame_state.fountain.z*saturate(n1.b*2.0-1.0+0.5*(n2.r-0.5));
+            if steep<1.0 && p.fountain[0].y>0.0 {
+                let q=p.fountain;
+                let tile=frame_state.fountain.x;
+                let ratio=q[2].xy/max(q[2].zw,vec2<f32>(1e-6));
+                let fine=i.world_position.xz/tile;
+                let fu1=fine*ratio+q[1].xy*t;
+                let fu2=fine+q[1].zw*t;
+                let gf1=bindings::Gradients(dp1.xz*ratio/tile,dp2.xz*ratio/tile);
+                let gf2=bindings::Gradients(dp1.xz/tile,dp2.xz/tile);
+                let b1=bindings::sample_macro_map(slot,fu1,gf1)*2.0-1.0;
+                let b2=bindings::sample_macro_map(slot,fu2,gf2)*2.0-1.0;
+                let e1=bindings::sample_detail_map(slot,fu1,gf1)*2.0-1.0;
+                let e2=bindings::sample_detail_map(slot,fu2,gf2)*2.0-1.0;
+                let mean=frame_state.pca_slow[0].xzy;
+                let pb1=vec3<f32>(dot(b1,frame_state.pca_slow[1])+dot(e1,frame_state.pca_slow[2])+mean.x,
+                    dot(b1,frame_state.pca_slow[5])+dot(e1,frame_state.pca_slow[6])+mean.y,
+                    dot(b1,frame_state.pca_slow[3])+dot(e1,frame_state.pca_slow[4])+mean.z);
+                let pb2=vec3<f32>(dot(b2,frame_state.pca_slow[1])+dot(e2,frame_state.pca_slow[2])+mean.x,
+                    dot(b2,frame_state.pca_slow[5])+dot(e2,frame_state.pca_slow[6])+mean.y,
+                    dot(b2,frame_state.pca_slow[3])+dot(e2,frame_state.pca_slow[4])+mean.z);
+                let first=vec3<f32>((pb2.x*2.0-1.0)*q[0].z,1.0+2.0*(pb2.y-1.0)*q[0].z,(pb2.z*2.0-1.0)*q[0].z);
+                let second=vec3<f32>((pb1.x*2.0-1.0)*q[0].w,1.0+2.0*(pb1.y-1.0)*q[0].w,(pb1.z*2.0-1.0)*q[0].w);
+                let up=vec3<f32>(0.0,1.0,0.0);
+                // Body calming as on the large water, but never below the look's fountain floor.
+                let size=select(1.0,max(frame_state.fountain.y,saturate(log2(max(p.decal.y,1.0)/100.0)/log2(40.0))),frame_state.water_look.w>0.5);
+                let basin_n=normalize(2.0*up+2.0*(first-up)*(0.6+0.4*size)+(second-up)*2.0*size*size);
+                let refract=second*inverseSqrt(max(dot(second,second),1e-12));
+                let ds=1.0/(tile*4.0);
+                let duv=i.world_position.xz*ds+0.02*refract.xz;
+                var bd=bindings::sample_decal_map(slot,duv,bindings::Gradients(dp1.xz*ds,dp2.xz*ds)).rgb;
+                bd*=bd;
+                water_n=normalize(mix(basin_n,water_n,steep));
+                vn=mix(basin_n,vn,steep);
+                d=mix(bd,d,steep);
+                mult=mix(q[0].y,mult,steep);
+                spec_floor=mix(q[3].y,spec_floor,steep);
+                spec_power=mix(q[3].z,spec_power,steep);
+            }
+        }
         let water_lm_uv=i.uv_b+0.01*vn.xz*vec2<f32>(1.0,-1.0);
         // water_defaultPS 96..99 and flowingwater_defaultPS 60..63, 67..70.
         let wlm=bindings::sample_lightmap_box(slot,water_lm_uv);
@@ -301,9 +356,9 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         }
         let kd=dot(water_n,vec3<f32>(0.58*sign(sun.x),0.62*sign(sun.y),0.39))*2.39562;
         var wm=vec2<f32>(0.0);
-        if (flags & 16u)!=0u { wm=saturate(bindings::sample_specular_map(slot,sample_uv,g).xz-p.water[3].y); }
+        if (flags & 16u)!=0u { wm=saturate(bindings::sample_specular_map(slot,sample_uv,g).xz-spec_floor); }
         let reflected_light=2.0*water_n*dot(water_n,sun)-sun;
-        let ks=pow(max(saturate(dot(vd,reflected_light)),1e-6),p.water[3].z);
+        let ks=pow(max(saturate(dot(vd,reflected_light)),1e-6),spec_power);
         var spec=ks*wm.x*vec3<f32>(2.1,1.8,1.5)*saturate(lml.g-0.1);
         if (flags & 64u)!=0u {
             let rv=vd-2.0*water_n*dot(vd,water_n);
@@ -317,8 +372,8 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             let lum=0.3*saturate(4.0*wm.y-2.6);
             spec+=cube*tint*(lml.g+lum*(1.0-lml.g))*wm.y*1.5;
         }
-        lin=(lml*kd*d+spec)*p.water[0].y;
-        alpha=max(spec.g,p.water[3].w);
+        lin=(lml*kd*d+spec)*mult+foam*lml*0.6;
+        alpha=max(max(spec.g,p.water[3].w),foam);
     } else if fam == 9u || fam == 10u {
         // tree_defaultPS / treeanimate_defaultPS 6..7: max(lm, g_ViewDotLight.y) * g_ViewDotLight.x.
         lin = d * max(lm*lm,vec3<f32>(frame_state.view_dot_light.y)) * frame_state.view_dot_light.x;

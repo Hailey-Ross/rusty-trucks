@@ -185,7 +185,8 @@ end
 function sdk.graphics.remove(key) submit{kind="graphics_remove",key=key} end
 function sdk.graphics.set_visible(key, visible) submit{kind="graphics_visibility",key=key,visible=visible and true or false} end
 -- Water look layer (ripple_scale, reflection_blur, reflection_tint, third_wave, body_calming, wave_rate,
--- scroll_rate, seamless_clock, enabled); nil restores the player's look. One mod at a time; released on disable.
+-- scroll_rate, seamless_clock, flowing_water, flowing_ripple_scale, shallow_splash, ocean_swell, ocean_swell_length,
+-- ocean_swell_speed, fountain_water, fountain_tile, fountain_waves, cascade_rate, cascade_foam, enabled); nil restores the player's look. One mod at a time; released on disable.
 function sdk.graphics.water_look(patch) submit{kind="water_look",patch=patch} end
 -- Extension 3: procedural mesh buffers and scene lights. No gameplay semantics.
 function sdk.graphics.mesh_buffer(key, opts)

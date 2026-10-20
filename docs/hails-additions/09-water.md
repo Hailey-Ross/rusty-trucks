@@ -1157,3 +1157,48 @@ Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes 
   the Tanker spawn.
 - **Open:** University's reservoir uses the same material family, so it gets the same calm swells; if that looks
   wrong there, gate by body size like family 33's calming.
+
+## Better Water: fountains like the large water, flowing cascades, 2026-10-19
+
+- **Ask (2026-10-19):** the user: "in better water mode, water fountains (like the one I end my session next to) should
+  use the same water physics/shader and material as the larger bodies of water, just scaled down so it looks good as a
+  fountain. water flowing down the drop offs should look more like water flowing", and later: "yes, but other
+  fountains that use the same water materials for other fountains should get the same treatment."
+- **Which water [data, research b350 `.local/research/b350-fountain-water-plan.md`]:** the session ended at University
+  [344.6, 69.0, -293.9], the north end of fountain U1 (x 339..343, z -330..-283): basins and 15 vertical cascade quads,
+  all `water.flowing` (family 30). Same family: University U2 (x 448..452, next to a `water.default` pool) and
+  DownTown's stepped fountains D1 to D3 and canal channels (`water.flowingalpha`). Industrial and the parks have none.
+- **Cause [code, main verified]:** family 30 never runs the PCA wave block (`retail_world.wgsl`, `if fam==33u`) and has
+  no `normal2` texture; and the look slowed cascades to a quarter of retail: the flowing ripple scale (2) tiled the
+  texture twice as densely without scaling the scroll, and `scroll_rate` 0.5 halved the clock (`water_look.rs`
+  defaults; the scroll rows are retail's `water.flowing` (0, -0.2, 0, -0.1) per second).
+- **Change (look layer, not retail):**
+  - `retail_render::bind_fountain_donor`: at load, every family 30 material with empty detail, macro and decal slots
+    gets the map's largest family 33 body (the donor: DownTown's canal `water.alpha`, University's `water.default`
+    pool) bound there (its normal, `normal2` and diffuse, repeating) and its `water` rows in a new `WorldParams.fountain`
+    (17 rows now). Bound after page sizing and with the presence flags as authored, so the retail program and page
+    layout are unchanged. Family 30 bodies also get an area (`decal.y`, grouped apart from family 33).
+  - Frame-state row `fountain` (tile metres, calming floor, foam, cascade clock) from new `WaterLook` keys
+    `fountain_water` (Better Water on), `fountain_tile` 4 m, `fountain_waves` 0.5, `cascade_rate` 1.5, `cascade_foam`
+    0.6. Retail look: row zero, so family 30 runs exactly as before.
+  - Shader: with the row on, the slope of each family 30 pixel picks the look. Flat pixels (basins) run the large
+    water's PCA program on the donor's textures and rows in world space (xz / tile), with body calming never below
+    `fountain_waves`, the donor's diffuse, multiplier and specular power. Steep pixels (cascades) keep retail's own
+    textures and downhill UVs, scroll on the cascade clock with the scroll scaled by the ripple scale (so the surface
+    moves at retail speed x `cascade_rate`), and gain white foam from the two flow layers. The two blend over the lip.
+  - "Physics" is read as the moving waves: the basins already use retail's water collision and are shallow; gameplay
+    stays retail for every player.
+- **Mods:** `sdk.graphics.water_look` keys `fountain_water`, `fountain_tile` (0.5 to 100), `fountain_waves` (0 to 1),
+  `cascade_rate` (0 to 8), `cascade_foam` (0 to 2); released on disable like the other keys.
+- **Verification:** `fountains_only_with_better_water_and_mods_can_set_them` (`water_look`),
+  `fountains_borrow_the_largest_still_water_without_touching_retail_flags` (`retail_render`), the struct size and
+  naga validation tests. Not play-tested: the numbers are starting values for the user's eyes at U1.
+- **Retail checks (b356, `.local/research/b356-flowing-water-speed-and-specular.md`):** no per-material flowing speed
+  [data: `flowingwater_defaultPS` / `flowingwateralpha_defaultPS` take only `m_params` c11..c14 and
+  `g_fAnimationTime`; the 42 water materials carry no scalars]; "VERYSLOW" is a name only (its speed comes from UV
+  density, and two of the three are not slower). Every family 30 / 33 material has a specular mask: University
+  fountains a plain white one (about 0.9 after the floor), University's donor pool `pool_S` (patterned, mean about
+  0.61), all of DownTown `pool_S_30per` (flat, about 0.18). So DownTown basins already match their donor; University
+  basins reflect about 1.5x the pool and without its pattern.
+- **Open:** a mod-chosen donor (load-time key); whether University basins should take the donor's mask too (a look
+  choice for the user's eyes, not retail).
