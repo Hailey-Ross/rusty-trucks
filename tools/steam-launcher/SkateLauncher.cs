@@ -90,7 +90,9 @@ class BuildView {
             try { if (LogPath != null) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)); file = new StreamWriter(LogPath, false, new UTF8Encoding(false)); } } catch { file = null; }
             return true;
         }
-        if (raw.StartsWith("LAUNCHER_BUILD\tend\t")) { Active = false; Ended = true; End = DateTime.Now; Ok = raw.EndsWith("\t0"); if (file != null) file.Flush(); return true; }
+        // The log closes when the build ends, not when the job does: a game session follows a build in the same job, and
+        // an open log blocked the after-session send (laptop 2026-10-19).
+        if (raw.StartsWith("LAUNCHER_BUILD\tend\t")) { Active = false; Ended = true; End = DateTime.Now; Ok = raw.EndsWith("\t0"); Close(); return true; }
         if (!Active) return false;
         // launcher.ps1 names who holds the build folder (BUILDING-<id>.txt or a cargo process) before cargo blocks.
         if (raw.StartsWith("LAUNCHER_BUILD\twait\t")) { var f = raw.Split('\t'); WaitWho = f.Length > 3 ? f[3] : null; Note("holder: " + WaitWho); return true; }
@@ -294,6 +296,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         var args = new List<string>(direct);
         if (showLast) args.Add("--after-update");
         Process child;
+        SkateLauncher.ReleaseInstance();
         try { child = Process.Start(new ProcessStartInfo(exe, string.Join(" ", args.ConvertAll(a => "\"" + a + "\"").ToArray())) { UseShellExecute = false }); } catch { return false; }
         tick.Stop(); Hide();
         child.EnableRaisingEvents = true;
@@ -1055,6 +1058,14 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
 }
 
 static class SkateLauncher {
+    // One launcher per folder (laptop 2026-10-19: two windows were open by accident; one held its build log open and
+    // the after-session send failed). The self-update restart releases it before starting the new window.
+    public static System.Threading.Mutex Instance;
+    public static void ReleaseInstance() {
+        if (Instance == null) return;
+        try { Instance.ReleaseMutex(); } catch { }
+        Instance.Dispose(); Instance = null;
+    }
     [STAThread]
     static void Main(string[] argv) {
         Application.EnableVisualStyles();
@@ -1067,6 +1078,18 @@ static class SkateLauncher {
             form.Snapshot(argv[1], argv.Length > 2 ? argv[2] : "main", sw, sh);
             return;
         }
+        string folder = Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory).TrimEnd('\\').ToLowerInvariant().Replace('\\', '/');
+        bool first;
+        Instance = new System.Threading.Mutex(true, "Local\\SkateLauncher-" + folder, out first);
+        if (!first) {
+            // Already running: bring its window to the front instead of opening a second one.
+            int me = Process.GetCurrentProcess().Id;
+            foreach (var name in new[] { "SkateLauncher", "SkateLauncher.old" })
+                foreach (var other in Process.GetProcessesByName(name))
+                    if (other.Id != me && other.MainWindowHandle != IntPtr.Zero && Native.IsWindowVisible(other.MainWindowHandle)) { Native.Front(other.MainWindowHandle); return; }
+            return;
+        }
         Application.Run(new LauncherForm(argv));
+        ReleaseInstance();
     }
 }

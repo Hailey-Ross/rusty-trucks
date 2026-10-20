@@ -93,6 +93,11 @@ function Invoke-Setup {
     else { Write-Host "Could not reach \\$mainPc\$share or \\$ip\$share yet (main PC off, wrong password?). Logs stay here until it works." }
 }
 
+# True when nobody holds the file open for writing (open for reading, sharing only reads).
+function Test-Readable([string]$Path) {
+    try { $s = [IO.File]::Open($Path, 'Open', 'Read', 'Read'); $s.Dispose(); return $true } catch { return $false }
+}
+
 function Send-Pending {
     $c = Read-Config
     if (-not $c) { Write-Host 'Not set up: run with -Setup.'; return }
@@ -120,6 +125,11 @@ function Send-Pending {
         })
     }
     $pending = @($files | Where-Object { -not $sent[$_.FullName] })
+    # A file another process still writes (a second launcher's open build log, laptop 2026-10-19) cannot be copied or
+    # zipped: it waits for the next send instead of failing the whole send.
+    $busy = @($pending | Where-Object { -not $_.PSIsContainer -and -not (Test-Readable $_.FullName) })
+    foreach ($f in $busy) { Write-Host "Skipped $($f.Name): still open in another program; it goes with the next send." }
+    $pending = @($pending | Where-Object { $busy -notcontains $_ })
     if ($pending.Count -eq 0) { Write-Host 'Nothing new to send.'; return }
     try {
         $server = Connect-Share $c
@@ -135,6 +145,7 @@ function Send-Pending {
         }
         Write-Host "All sent to $target"
     } catch {
+        $script:ShareError = "share: $($_.Exception.Message)"
         Write-Host "Could not send to $target ($($_.Exception.Message))."
         $left = @($pending | Where-Object { -not (Select-String -Path $sentFile -SimpleMatch $_.FullName -Quiet -ErrorAction SilentlyContinue) })
         # A recomp session with the captured game sound (audio.f32) never goes to the public repository: it waits
@@ -186,7 +197,7 @@ function Send-ToGitHub($c, $files) {
         foreach ($f in $files) { Add-Content -Path $sentFile -Value $f.FullName }
         Write-Host "Sent $($files.Count) file(s) to GitHub instead: $url"
     } catch {
-        Write-Host "GitHub fallback failed too ($($_.Exception.Message)). The logs stay in logs\ and go with the next send."
+        Write-Host "GitHub fallback failed too ($($_.Exception.Message)). The logs stay in logs\ and go with the next send.$(if ($script:ShareError) { " (First the $($script:ShareError))" })"
     } finally {
         Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
     }

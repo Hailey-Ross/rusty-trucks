@@ -177,6 +177,9 @@ build of `<id>`), `list`.
 
 ## Notes
 
+- One launcher per folder: starting it again (a second Steam shortcut, a double click) brings the open window to the front
+  instead of opening a second one. The build log closes when the build ends, and the after-session send skips a file
+  another program still writes (it goes with the next send) and keeps the share's error next to the fallback's.
 - A build that has to wait for another build of the same folder (a shell build, a second window, a dev `cargo`) shows
   **WAITING** with who holds it (`BUILDING-<id>.txt` in the state folder, or the cargo process) and for how long; **B**
   twice (Esc on a keyboard) cancels it. The build log gets `[launcher ...] waiting / waited / cancelled` lines.
