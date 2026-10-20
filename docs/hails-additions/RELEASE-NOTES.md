@@ -227,7 +227,10 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 - **Skate 3's own replay screen:** the timeline, the play / rewind / forward / start / end buttons and the Instant replay bar with its prompts and the estimated length. It needs new game files: open **Extras > Refresh Game Files** once (without them the old panel shows).
 - The world waits while you watch: peds stay put, held props stay in hands, benches and peds far from the camera show from the start, the ped warning icons hide, and the water holds still while paused.
 - **Extended Replays** (not retail, Esc > **EXTRAS** > Replay): keep 2 to 4 minutes instead of Skate 3's 90 seconds. A longer replay uses more memory (about 85 MB a minute).
-- Mods can open the replay, drop markers and change the recording length (`sdk.replay`). The replay editor (trimming, speed, effects) and video export come next.
+- **Start** opens Skate 3's help for the replay, **L3** hides the panel, **X** saves a photo of the world (no menus or HUD) to your Pictures folder (Skate 3 Rust).
+- **The editor (A, not play-tested yet):** Edit timeline: hold LB and use the sticks to trim, D-pad Down / Up drop / remove markers, Left / Right skip between them, RB plays at the clip's speed. A again opens the Pro Edit Menu: Speed, Shake (Skate 3's own handheld camera clips) and the Follow, Tripod, Game and Free cameras. The timeline shows the camera band and your markers.
+- Shake needs new game files: open **Extras > Refresh Game Files** once (until then the Shake row does nothing).
+- Mods can open the replay, drop markers and change the recording length (`sdk.replay`). Still to come: the Advanced cameras, the look effects and video export (Save to PC).
 
 **This fork's releases**
 - The release workflow builds, publishes and updates from this repository (the in-game updater follows `Hailey-Ross/rusty-trucks`), a rolling `hails-additions` build on every push, and `PLAY-WITH-LOG.bat` for session logs.
