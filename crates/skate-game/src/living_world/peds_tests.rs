@@ -1085,3 +1085,21 @@ fn a_new_map_install_continues_the_id_serials() {
     state.install("B", 2, &settings, loaded());
     assert_eq!(state.world.state(skate_core::living_world::Kind::Pedestrian).next_serial(), 8);
 }
+
+/// An area nobody joined stays (so its 50 m exclusion stops the next spawn), an area whose last member despawned goes
+/// (retail `82E1D470` -> `82E1BD08`; b348; the DownTown loop of 2026-10-19 re-spawned an area every tick).
+#[test]
+fn a_never_joined_conversation_area_is_kept_and_an_emptied_one_removed() {
+    use skate_core::living_world::peds::conversation::{Conversation, ConversationParams};
+    let params = ConversationParams::default();
+    let mut zero = || 0.0f32;
+    let mut map = BTreeMap::new();
+    map.insert(1, Conversation::new(1, Some([0.0, 0.0, 0.0]), Vec::new(), &params, None, &mut zero));
+    let mut joined = Conversation::new(2, Some([100.0, 0.0, 0.0]), Vec::new(), &params, None, &mut zero);
+    joined.members.push(skate_core::living_world::peds::conversation::Member { ped: 7, entity: "teen_female".into(), in_position: false });
+    map.insert(2, joined);
+    let out = leave_despawned(&mut map, &|p| p != 7);
+    assert_eq!(out, vec![(2, 7, 0)]);
+    assert!(map.contains_key(&1), "the never-joined area stays");
+    assert!(!map.contains_key(&2), "the area its last member left is removed");
+}

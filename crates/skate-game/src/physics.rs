@@ -132,6 +132,10 @@ pub(crate) struct GamePhysics {
     /// id. Rewritten each tick before the solve by `living_world::npc_skaters::push_proxies`
     /// (NPC skater body + board, doc 26 fix 19); empty when nothing fills it.
     pub(crate) actor_prop_volumes: Vec<(u64, BoardWorldVolume)>,
+    /// Near peds' body A for the dynamic prop step: (body A id, volume, push mass kg), sorted by id. Rewritten each
+    /// tick by `living_world::ped_body::push_ped_proxies` (b342); its own list, so the NPC proxy system clearing
+    /// [`Self::actor_prop_volumes`] cannot drop it.
+    pub(crate) ped_prop_volumes: Vec<(u64, BoardWorldVolume, f32)>,
     pub(crate) network_active: bool,
     pub(crate) network_contacts: usize,
     clock: clock::SimulationClock,
@@ -414,7 +418,16 @@ impl GamePhysics {
         };
         // The bail clamp's gate: the local skater in a wipeout (retail's actor byte is not decoded; b208).
         dynamics.set_bailing(if self.board_wiping_out { &[prop_dynamics::LOCAL_PUSHER] } else { &[] });
-        dynamics.step_with_actors(&self.world, layer, volumes, &self.actor_prop_volumes);
+        // Peds' body A after the skaters (b342): it pushes with its own mass.
+        let masses: Vec<(u64, f32)> = self.ped_prop_volumes.iter().map(|(id, _, mass)| (*id, *mass)).collect();
+        dynamics.set_actor_push_mass(&masses);
+        if self.ped_prop_volumes.is_empty() {
+            dynamics.step_with_actors(&self.world, layer, volumes, &self.actor_prop_volumes);
+        } else {
+            let mut others = self.actor_prop_volumes.clone();
+            others.extend(self.ped_prop_volumes.iter().map(|(id, v, _)| (*id, *v)));
+            dynamics.step_with_actors(&self.world, layer, volumes, &others);
+        }
         // Each prop's retail collision type on its query meshes (heavy 12 / light 14 / held 13), which the on-foot
         // walker's queries filter.
         dynamics.for_each_collision_type(self.prop_carry.held(), |instance, collision_type| {
@@ -754,6 +767,7 @@ impl GamePhysics {
             network_proxies: network::Proxies::default(),
             npc_sim_proxy_mark: None,
             actor_prop_volumes: Vec::new(),
+            ped_prop_volumes: Vec::new(),
             network_active: false,
             network_contacts: 0,
             clock: clock::SimulationClock::default(),
@@ -796,6 +810,7 @@ impl GamePhysics {
             network_proxies: self.network_proxies.clone(),
             npc_sim_proxy_mark: None,
             actor_prop_volumes: self.actor_prop_volumes.clone(),
+            ped_prop_volumes: self.ped_prop_volumes.clone(),
             network_active: self.network_active,
             network_contacts: 0,
             clock: parts.clock,
@@ -830,6 +845,7 @@ impl GamePhysics {
     pub(crate) fn sync_npc_worker(&self, worker: &mut GamePhysics) {
         worker.network_proxies.clone_from(&self.network_proxies);
         worker.actor_prop_volumes.clone_from(&self.actor_prop_volumes);
+        worker.ped_prop_volumes.clone_from(&self.ped_prop_volumes);
         worker.network_active = self.network_active;
         worker.world.reshare(&self.world);
         worker.prop_layer = self.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::share);

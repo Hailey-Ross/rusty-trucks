@@ -1184,3 +1184,47 @@ plans fail at the same spots (nodes 69 and 36).
   source.
 - **Open:** whether a retail AI skater plays a push while the board path speeds it up (who posts RightPush for AI
   skaters: Ghidra or a short recomp trace at the library spawn); the board path's share of each change in the line.
+
+## AI skaters push when slower than their line (2026-10-19)
+
+**Problem.** Laptop session 2026-10-19 16:11 (USER-ASKS 112): an NPC skater sped up uphill without pushing. b338
+found the speed-up is retail's board path pulling toward the recorded line speed; the open question was whether
+retail also plays a push there.
+
+**Retail (research b341; main checked the four intent keys in `sub_8246B4C8` and the push writer and caller as
+Ghidra pseudocode) [code].** The PathController's board tick `sub_8246BAA8` (called from `sub_8246FA30` on the
+ground branch, not in the air) computes the target speed (the recorded step x 60, floored at 4.0 m/s when more than
+2.0 m off the line, then the avoider's shaping `sub_82470830`). Below it the push writer `sub_8246B4C8` posts
+`RightPush` or `LeftPush`, `NewPush` and `Pushing`, all 1.0, into the same intent map the pad listener fills, so the
+graph plays the player's push. Gates: no push in trick categories 4 / 7 / 10 / 12, at stuck stage 4, when the line
+points against the board's forward, or with a heading error of 40 degrees or more. The factor is 0.97 of the target
+(0.3 when a start-trick node is under 40 recorded frames ahead and the skater is above 2 m/s), times 0.3 each for an
+off-board node under 60 frames ahead, a slope under -0.22, and a speed above 11 m/s. No timer: it re-posts every tick
+while the condition holds. So retail glides on fast lines (the b338 University case, 14 m/s against a 19 m/s line,
+posts no push in retail either) and pushes on slow ones, where ours posted nothing.
+
+**Change.** `skate-core` `living_world/ai_push.rs`: `PushSettings` (retail defaults), `target_speed`, `slope`,
+`frames_to` / `trick_frames` / `off_board_frames` and the pure `push` decision. `npc_sim.rs` posts its intents after
+the ground steer on ground ticks on the board, outside a hold, a respawn wait and skitching; the debug line
+`NPC_SKATER_AI_PUSH` names where a push run starts. Mods: `npc_simulated.push`, `push_factor`, `push_reduce`,
+`push_fast_speed`, `push_downhill_slope`, `push_max_heading_deg`, `push_right_foot`.
+
+**Foot and brake (b347; main checked both getters in the recomp code) [code].** The foot: `RightPush` when the
+SkaterAnim component's (`0x82453410`, "ISkaterAnim") stance-mirror bit (slot +0x1C `82B97140`, flags bit 30) differs
+from its riding-fakie bit (slot +0x0C `82B970D8`, bit 29): regular forward pushes right, goofy forward left, fakie
+flips it; ours reads the same two bits (`SkaterAnimation::stance()`), `push_right_foot` is only a mod override now.
+At or above the target the brake writer `sub_8246B810` posts `Brake` (`ManualBrake` in a manual, category 8) only
+when speed x 0.3 (0.12 with an off-board node ahead; x 0.4 uphill above 0.22) beats the target, the line cursor is
+past its first node and the heading error is under 40 degrees, with a magnitude ramped to 1 over 0.1 m/s; between
+the target and that it glides (`ai_push::brake`, `BrakeSettings`; mods `npc_simulated.brake`, `brake_factor`,
+`brake_ramp`). Tests `the_foot_follows_stance_and_fakie_like_retail`, `brakes_only_far_above_the_target_with_a_ramp`.
+
+**Not retail yet / open.** The slope uses the recorded step as the second point (retail passes the recorded
+position and a second point; inferred). The 0.99 factor of `sub_824681D8() == 23` (mode not decoded) is not ported.
+Whether the graph's push adds speed on top of the board path for an AI skater as for the player is expected (shared
+graph) but not traced.
+
+**Tests.** `ai_push` (skate-core): `pushes_below_the_factor_and_glides_near_the_target`,
+`fast_lines_glide_up_to_the_recorded_speed`, `gates_and_reductions_follow_retail`,
+`target_speed_floors_far_off_the_line_and_slope_is_rise_over_run`; skate-mods patch validation for the push keys.
+Not play-tested yet.
