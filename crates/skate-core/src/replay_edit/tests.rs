@@ -54,13 +54,31 @@ fn replay_editor_lanes_step_at_markers_without_ramps() {
 #[test]
 fn replay_editor_refuses_markers_past_the_retail_cap() {
     let mut edit = ReplayEdit::default();
-    let clip = edit.add_clip(0, 1000).unwrap();
-    for frame in 0..100 {
-        edit.set_marker(clip, Lane::Brightness, frame, 20).unwrap();
+    // Span 10000: markers 90 frames apart clear the 0.0089 spacing (89 frames).
+    let clip = edit.add_clip(0, 10_000).unwrap();
+    for k in 1..=100 {
+        edit.set_marker(clip, Lane::Brightness, 90 * k, 20).unwrap();
     }
-    assert_eq!(edit.set_marker(clip, Lane::Brightness, 500, 20), Err(EditError::NoMoreMarkers));
-    // Replacing an existing marker still works at the cap.
-    assert_eq!(edit.set_marker(clip, Lane::Brightness, 5, 40), Ok(()));
+    assert_eq!(edit.clips[clip].markers[Lane::Brightness.index()].len(), 100);
+    assert_eq!(edit.set_marker(clip, Lane::Brightness, 9500, 20), Err(EditError::NoMoreMarkers));
+    // Editing the marker at the cursor still works at the cap.
+    assert_eq!(edit.set_marker(clip, Lane::Brightness, 95, 40), Ok(()));
+    assert_eq!(edit.value_at(clip, Lane::Brightness, 90), Some(40));
+}
+
+#[test]
+fn replay_editor_keeps_retail_marker_spacing() {
+    let mut edit = ReplayEdit::default();
+    // Span 1000: 0.0089 = 8.9 frames.
+    let clip = edit.add_clip(0, 1000).unwrap();
+    assert_eq!(edit.set_marker(clip, Lane::Shake, 5, 1), Err(EditError::TooClose));
+    assert_eq!(edit.set_marker(clip, Lane::Shake, 995, 1), Err(EditError::TooClose));
+    edit.set_marker(clip, Lane::Shake, 500, 1).unwrap();
+    // Within 8 frames of it is the same marker (at the cursor): its value changes, no second marker.
+    edit.set_marker(clip, Lane::Shake, 506, 2).unwrap();
+    assert_eq!(edit.clips[clip].markers[Lane::Shake.index()], [(500, 2)]);
+    edit.set_marker(clip, Lane::Shake, 520, 3).unwrap();
+    assert_eq!(edit.clips[clip].markers[Lane::Shake.index()].len(), 2);
 }
 
 #[test]

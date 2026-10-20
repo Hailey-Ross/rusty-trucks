@@ -122,6 +122,10 @@ pub struct EditLimits {
     pub share_max_seconds: u32,
     /// Markers per lane (retail refuses at 100: `82613500`).
     pub max_markers_per_lane: usize,
+    /// A key within this fraction of the clip from the cursor is "at the cursor", and no key goes this close to
+    /// the clip's ends (retail 0.0089 of the normalised timeline, 0x822428EC / 0.9911 at 0x822F8F74, `825084C8`,
+    /// research b382; the unit, the clip span, is inferred).
+    pub marker_spacing: f32,
     pub lanes: [LaneSpec; 9],
 }
 
@@ -132,6 +136,7 @@ impl Default for EditLimits {
             timeline_fps: 30.0,
             share_max_seconds: 60,
             max_markers_per_lane: 100,
+            marker_spacing: 0.0089,
             lanes: LANES.map(LaneSpec::retail),
         }
     }
@@ -162,6 +167,8 @@ pub enum EditError {
     /// Retail's "no more markers" popup (`ID_REPLAY_EDITOR_NO_MORE_MARKERS`).
     NoMoreMarkers,
     OutsideClip,
+    /// Too close to the clip's in / out point (retail's error sound, `82612C28`).
+    TooClose,
 }
 
 impl ReplayEdit {
@@ -207,21 +214,34 @@ impl ReplayEdit {
         Ok(*v)
     }
 
-    /// Set a lane's value from `frame` on. A marker on the same frame is replaced.
+    /// Set a lane's value from `frame` on. A marker within the spacing of `frame` is "at the cursor" and takes the
+    /// value; a new marker needs room from the clip's ends and the lane below its cap (retail plays its error sound
+    /// and adds nothing otherwise).
     pub fn set_marker(&mut self, clip: usize, lane: Lane, frame: u32, value: i32) -> Result<(), EditError> {
         let spec = self.limits.lanes[lane.index()];
         let cap = self.limits.max_markers_per_lane;
+        let spacing = self.limits.marker_spacing;
         let c = self.clips.get_mut(clip).ok_or(EditError::NoClip)?;
         if !(c.start..c.end).contains(&frame) {
             return Err(EditError::OutsideClip);
         }
+        let span = (c.end - c.start) as f32;
+        let near = (spacing * span).floor() as u32;
         let value = value.clamp(spec.min, spec.max);
         let markers = &mut c.markers[lane.index()];
-        match markers.binary_search_by_key(&frame, |m| m.0) {
-            Ok(i) => markers[i].1 = value,
-            Err(_) if markers.len() >= cap => return Err(EditError::NoMoreMarkers),
-            Err(i) => markers.insert(i, (frame, value)),
+        if let Some(m) = markers.iter_mut().find(|m| m.0.abs_diff(frame) <= near) {
+            m.1 = value;
+            return Ok(());
         }
+        let at = (frame - c.start) as f32 / span;
+        if at <= spacing || at >= 1.0 - spacing {
+            return Err(EditError::TooClose);
+        }
+        if markers.len() >= cap {
+            return Err(EditError::NoMoreMarkers);
+        }
+        let i = markers.partition_point(|m| m.0 < frame);
+        markers.insert(i, (frame, value));
         Ok(())
     }
 

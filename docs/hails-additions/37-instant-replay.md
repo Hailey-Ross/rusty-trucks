@@ -108,6 +108,15 @@ replay" gates (research b375, b378).
 - Not yet: vehicle impact sounds (`car_alarm.rs` contact path) are not recorded. Replay speed below 100 % (M2) will
   scale `AudioState.time_scale`; whether retail's pitch follows is open.
 
+## The free camera stays within 40 m of the player
+
+Retail's replay free camera is pulled back when it is farther than 40 m from the player (per-frame limits step
+`82683680` -> `82682CB0`, constant at 0x821EB794; research b381). Ours flew anywhere. Now the free camera is projected
+back onto the 40 m sphere around the player's recorded position at the cursor after each move
+(`replay.rs` `leashed`, `FREE_CAMERA_LEASH`; `Replay::free_camera_leash` overrides it, data for a mod). Retail's
+world collision for the free camera (a 0.1 m sphere, 0.8 m with a world flag, x 1.3, `82682D80`) is not ported yet.
+Test: the leash keeps a camera inside 40 m and pulls a far one onto the sphere.
+
 ## M2 step 1: the editor model (skate-core)
 
 `crates/skate-core/src/replay_edit.rs`: clips trimmed out of the recording (30 fps timeline frames), each with its
@@ -120,10 +129,14 @@ effect values and stepped marker lanes, and retail's length rules. Pure data, no
   B / A 0..250 step 25. The look defaults are the neutral values (OURS until retail's are read).
 - A lane's value steps at a marker (no ramp: retail writes the value at the marker and 1 ms later, `8250CC10`); a
   marker on the same frame replaces; trimming drops markers outside the clip; at most 100 markers per lane (retail
-  refuses at 100 with "no more markers", `82613500`, research b381).
+  refuses at 100 with "no more markers", `82613500`, research b381). A marker within 0.0089 of the clip span from
+  an existing one is "at the cursor" (setting a value edits that marker), and no marker goes within 0.0089 of the
+  clip's in / out points (`825084C8`, constants 0x822428EC and 0.9911 at 0x822F8F74; research b382; that the
+  normalised unit is the clip span is inferred).
 - Data: `EditLimits` and `LaneSpec` hold every number; lanes have stable string ids (`speed`, `tint_r`, ...) for mod
   records and saved edits. A mod may allow speeds over 100 % (ours, not retail).
-- Tests: 5 (open threshold, stepping / clamping / wrapping, stepped markers, marker cap, encoded length).
+- Tests: 6 (open threshold, stepping / clamping / wrapping, stepped markers, marker cap, marker spacing, encoded
+  length).
 
 ### Open
 - Ped / NPC fade alpha, held hand props and the camera's full `CameraFrame` (shake, opacity, blur) are not recorded

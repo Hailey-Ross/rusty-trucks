@@ -46,6 +46,8 @@ pub(crate) struct Replay {
     /// The cursor the audio feed last published up to, and whether it moved forward this frame.
     fed: Option<f64>,
     audible: bool,
+    /// How far the free camera may go from the player (m); None = retail's [`FREE_CAMERA_LEASH`]. Data, mod-settable.
+    pub(crate) free_camera_leash: Option<f32>,
     /// The cursor jumped (entered, rewound, or skipped more than [`MAX_FED_STEPS`]): the host's camera velocity resets.
     jumped: bool,
 }
@@ -393,6 +395,8 @@ pub(crate) fn controls(
     if pressed & 0x0008 != 0 || keys.just_pressed(KeyCode::Period) {
         replay.step(1);
     }
+    let player = replay.sample().map(|(a, b, t)| blend(a.root, b.root, t).translation);
+    let leash = replay.free_camera_leash.unwrap_or(FREE_CAMERA_LEASH);
     if let Some(camera) = replay.free_camera.as_mut() {
         let (mut yaw, mut pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
         yaw -= axis(pad.right[0]) * dt * 2.0;
@@ -416,7 +420,20 @@ pub(crate) fn controls(
             3.0
         };
         camera.translation += (heading * Vec3::new(x, 0.0, -z) + Vec3::Y * y) * dt * speed;
+        if let Some(player) = player {
+            camera.translation = leashed(camera.translation, player, leash);
+        }
     }
+}
+
+/// Retail's replay free camera is pulled back when it is farther than 40 m from the player (`82683680` ->
+/// `82682CB0`, research b381).
+pub(crate) const FREE_CAMERA_LEASH: f32 = 40.0;
+
+/// `camera` pulled onto the sphere of `radius` around `player` when it is outside it.
+fn leashed(camera: Vec3, player: Vec3, radius: f32) -> Vec3 {
+    let offset = camera - player;
+    if offset.length() > radius { player + offset.normalize_or_zero() * radius } else { camera }
 }
 
 #[derive(Component)]

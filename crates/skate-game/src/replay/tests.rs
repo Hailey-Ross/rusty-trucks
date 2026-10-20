@@ -403,3 +403,12 @@ fn one_shot_sounds_fire_again_when_playback_crosses_them() {
     app.update();
     assert_eq!(app.world().resource::<Heard>().0, [4], "not on a rewind");
 }
+
+#[test]
+fn free_camera_stays_within_retail_forty_metres_of_the_player() {
+    let player = Vec3::new(10., 0., 0.);
+    assert_eq!(leashed(Vec3::new(20., 0., 0.), player, FREE_CAMERA_LEASH), Vec3::new(20., 0., 0.));
+    let far = leashed(Vec3::new(110., 0., 0.), player, FREE_CAMERA_LEASH);
+    assert!((far - Vec3::new(50., 0., 0.)).length() < 1e-4);
+    assert_eq!(Replay::default().free_camera_leash.unwrap_or(FREE_CAMERA_LEASH), 40.);
+}
