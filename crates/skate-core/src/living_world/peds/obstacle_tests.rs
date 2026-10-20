@@ -315,3 +315,24 @@ fn a_standing_skater_is_a_moving_avoider_unless_the_ped_ignores_skaters() {
     // Mod switch.
     o.set_params(ObstacleParams { skaters: false, ..ObstacleParams::default() });
 }
+
+/// A prop that comes to rest with a ped inside its grown footprint (its own dropped hand prop, laptop 2026-10-19): a step
+/// toward the nearest free point (`snap_out`) is allowed, a step on through the middle is not (the walker then walks
+/// the ped out first, `peds.rs`, b349).
+#[test]
+fn a_ped_inside_a_fresh_cut_can_walk_out_toward_the_nearest_free_point() {
+    let mut o = NavObstacles::new(ObstacleParams::default());
+    // A dropped can: tiny box raised to the 0.2 m minimum half extent, resting at the origin.
+    let can = ObstacleInput { half_extents: [0.04, 0.06, 0.04], ..bin(9, 0.0, 0.0) };
+    assert!(o.update(&[can]));
+    let radius = 0.35;
+    let ped = [0.3, 0.0, 0.1];
+    assert!(o.blocked(ped, radius), "the ped stands inside the grown footprint");
+    let out = o.snap_out(ped, radius + 0.02).expect("a free point within the snap distance");
+    assert!(!o.blocked(out, radius));
+    let dir = [out[0] - ped[0], out[2] - ped[2]];
+    let len = dir[0].hypot(dir[1]);
+    let step = [ped[0] + dir[0] / len * 0.05, 0.0, ped[2] + dir[1] / len * 0.05];
+    assert!(o.step_ok(ped, step, radius), "walking out is allowed");
+    assert!(!o.step_ok(ped, [0.25, 0.0, 0.08], radius), "walking further in is not");
+}

@@ -1251,8 +1251,24 @@ pub(crate) fn advance_peds(
                     // Over linked polygons only: across tile seams, never onto an unconnected
                     // layer such as a wall top (fix 17).
                     let from = body.position.to_array();
-                    let (next, mut poly, on_mesh) = constrain_move(mesh, body.nav.poly, from, to.to_array());
                     let moving = (to - body.position).length_squared() > 1e-10;
+                    // Already inside a prop's footprint (a prop that came to rest on or next to the ped, often its own
+                    // just-dropped hand prop; laptop 2026-10-19: peds walking in place for up to 29 s): every step into
+                    // the footprint was refused, so walk out toward its nearest free edge first and re-plan from there.
+                    // Ours; retail's cut mesh never has a ped inside a cut (b349).
+                    let inside = moving && mind.is_none_or(|m| !m.brain.ignore_source_collision) && obstacles.blocked(from, mesh.agent[1]);
+                    let mut to = to;
+                    if inside {
+                        if let Some(out) = obstacles.snap_out(from, mesh.agent[1] + 0.02) {
+                            let dir = (Vec3::from_array(out) - body.position).with_y(0.0);
+                            let (d, step) = (dir.length(), (to - body.position).with_y(0.0).length());
+                            if d > 1e-4 {
+                                to = body.position + dir / d * step.min(d);
+                                body.nav.repath_due = true;
+                            }
+                        }
+                    }
+                    let (next, mut poly, on_mesh) = constrain_move(mesh, body.nav.poly, from, to.to_array());
                     // Never into a prop or mod body: slide along its face or stay (fix 11). A ped in a plugin whose
                     // `DisableCollisionsWithBehaviourSource` is active ignores the plugin's own prop (its body id is the
                     // plugin prop id's low 32 bits), so it can reach a seat inside its bench.
@@ -1303,7 +1319,7 @@ pub(crate) fn advance_peds(
                             });
                             let blocker = blocker.unwrap_or_else(|| if by.is_some_and(|id| id >= MOD_BODY_OBSTACLE_BASE) { "mod body".into() } else { "-".into() });
                             info!(
-                                "PED_BLOCKED ped=#{} at=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] by={by:?} ({blocker}) near_moved_spawn={near:?} on_mesh={on_mesh} clear={clear} tick={now}",
+                                "PED_BLOCKED ped=#{} at=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] by={by:?} ({blocker}) inside={inside} near_moved_spawn={near:?} on_mesh={on_mesh} clear={clear} tick={now}",
                                 ped.id.serial, from[0], from[1], from[2], to.x, to.y, to.z,
                             );
                         }

@@ -491,3 +491,30 @@ not checked against its seat geometry).
   collision; a recomp trace of two walking peds meeting would settle it); a standing ped pushed off its spot
   (mode 0: path home after 0.455 m and 2.0 s, b335) is not ported; whether walking ambient peds run the still timer
   at all (b325 never saw it fire).
+
+## Peds walking in place next to a dropped prop (2026-10-19)
+
+**Problem.** Laptop session 2026-10-19 18:04, user: "Every now and again I see one just walking in place for a moment
+before stopping and changing course", and later "they were not next to the prop always". The log: `PED_BLOCKED` with
+small dropped hand props (a pop can, a purse, a water bottle, a phone, a coffee cup, 0.3 to 0.8 m away; 4 of 5 were the
+ped's own just-released prop) and one ped stuck about 29 s against a garbage can (0.64 m from its centre), each step
+going about 0.03 m toward it.
+
+**Retail (research b349) [code].** A ped's hand prop is an ordinary DMO. While it is in the hand its obstacle-off word
+(component +0x109C, set by the attach slot `82C56B00`, cleared by the release `82C56C70`) keeps it out of the cuts
+(`82C48648`); from the release frame on it is a normal DMO cut (half extents at least 0.2 m, `82C477B0`) for every ped,
+the dropper too. Retail peds re-plan on the cut mesh, snap their destination out of a cut within 0.5 m and slide along
+cut edges; they are never inside a cut. Ours already matches the hand-prop rule (a held prop is not a prop body, a
+released one is listed by `obstacle_boxes`).
+
+**Root cause (ours).** A ped standing inside a footprint grown by its radius (a prop came to rest next to it) gets every
+step refused: `step_ok_ignoring` only allows steps away from the footprint centre, `resolve_step_ignoring` finds no
+slide from inside, `detour` leaves the leg, so the path keeps aiming through the prop and the walk clip plays in place.
+
+**Change (ours, for retail's outcome).** The walker (`peds.rs`) checks whether the ped stands inside a footprint (not
+while its plugin ignores its own prop); if so it steps toward the nearest free point (`NavObstacles::snap_out`, within
+0.5 m) at its walking pace and re-plans from there. `PED_BLOCKED` gains `inside=`. Test
+`a_ped_inside_a_fresh_cut_can_walk_out_toward_the_nearest_free_point`. Not play-tested yet.
+
+**Open.** What NavPower does with an agent a new cut covers (a recomp hook on the release `82E3EBE0` and the first
+cut `82C477B0`, following the dropper for 2 s, would show it).
