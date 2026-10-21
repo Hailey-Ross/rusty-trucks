@@ -667,6 +667,8 @@ fn setup(
     let size = settings.internal_size(window.physical_size());
     let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
     image.sampler = ImageSampler::linear();
+    // The replay's photos and Save to PC read this image back (a copy source; rendering is unchanged).
+    image.texture_descriptor.usage |= bevy::render::render_resource::TextureUsages::COPY_SRC;
     let target = images.add(image);
     for camera in &cameras {
         commands.entity(camera).insert((

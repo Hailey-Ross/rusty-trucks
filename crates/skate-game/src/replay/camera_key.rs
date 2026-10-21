@@ -3,8 +3,8 @@
 //! Game is the recorded gameplay camera with only the lens to change. Controls run per console frame (30 Hz) with
 //! retail's caps (`82C826D0`, `82509558`). Every limit and rate is data ([`CameraRules`]).
 //!
-//! NOT RETAIL YET: one key per clip (retail keys live on the ICELITE camera channel; whether a basic camera holds one
-//! pose for the clip is not proven, b402), the skater root as both of retail's objects 2 / 4 (eye / look objects), the
+//! A basic camera is one pose for the whole clip: its setup clears the channel's keys and the sampler holds the live
+//! value without keys (b404, `82C89A50`); keyed poses are the Advanced cameras'. NOT RETAIL YET: the skater root as both of retail's objects 2 / 4 (eye / look objects), the
 //! pad mapping (retail's axis table `[pad+0xC]+4` is unread), and the lens to field of view (a 24 mm high film gate).
 use bevy::prelude::*;
 

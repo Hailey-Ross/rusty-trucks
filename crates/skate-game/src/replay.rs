@@ -25,6 +25,8 @@ const QUIT_POPUP: &str = "engine:replay.quit";
 const PHOTO_POPUP: &str = "engine:replay.photo";
 const PHOTO_DONE_POPUP: &str = "engine:replay.photo_saved";
 const X: u16 = 0x4000;
+/// The fe record retail plays when the instant replay opens (key 0x394015B68783BE9E; data, a mod may remap it).
+const OPEN_SOUND: &str = "editor_select";
 /// Retail opens the replay only with more than 149 frames recorded (`8250B8F8`); read as frames of the editor's 30 fps
 /// timeline, that is 5 s (the unit is inferred, research b343 / b389).
 pub(crate) const MIN_OPEN_SECONDS: f64 = 150.0 / 30.0;
@@ -137,6 +139,8 @@ pub(crate) struct Replay {
     pub(crate) photo: Photo,
     /// The editor (A from the instant replay); None = instant replay.
     pub(crate) editor: Option<editor::Editor>,
+    /// A "Save to PC" export is rendering: the cursor is the exporter's, the controls are off.
+    pub(crate) exporting: bool,
     /// Retail's shake clips (setup: `private/hud/replay-shake/replay_shake.json`); empty until a refresh adds them,
     /// which leaves the Shake row without effect.
     pub(crate) shake_clips: std::sync::Arc<skate_core::replay_edit::shake::ShakeClips>,
@@ -403,7 +407,7 @@ impl Replay {
         self.release_controls = true;
     }
 
-    fn seek(&mut self, time: f64) {
+    pub(crate) fn seek(&mut self, time: f64) {
         let (start, end) = self.bounds();
         self.cursor = time.clamp(start, end);
     }
@@ -489,7 +493,8 @@ impl Plugin for ReplayPlugin {
             .add_systems(Startup, (setup_ui, load_shake))
             .init_resource::<ReplayFeed>()
             .init_resource::<RetailReplayUi>()
-            .add_systems(Update, (publish_feed, update_ui, take_photo));
+            .init_resource::<export_run::ReplayExport>()
+            .add_systems(Update, (publish_feed, update_ui, take_photo, export_run::drive));
     }
 }
 
@@ -719,7 +724,13 @@ pub(crate) fn controls(
     net: Option<Res<crate::multiplayer::Multiplayer>>,
     mut popups: ResMut<crate::popup_host::PopupMods>,
     retail_ui: Option<Res<RetailReplayUi>>,
+    mut sounds: MessageWriter<crate::ui_audio::FrontendSound>,
+    mut export: Option<ResMut<export_run::ReplayExport>>,
 ) {
+    if replay.exporting || export.as_ref().is_some_and(|e| e.busy()) {
+        input.discard_gameplay();
+        return;
+    }
     if net.is_some_and(|n| n.active()) {
         if replay.active {replay.exit();}
         return;
@@ -736,6 +747,19 @@ pub(crate) fn controls(
             replay.quit_pending = false;
             if choice == 1 {
                 replay.exit();
+            }
+        }
+        // The Finished menu (ours on PC): 0 Save to PC (the export), 1 Exit (retail's Exit = the quit, b387).
+        if callback == export_run::FINISHED_POPUP && replay.quit_pending {
+            replay.quit_pending = false;
+            match choice {
+                0 => {
+                    if let Some(export) = export.as_mut() {
+                        export.choose();
+                    }
+                }
+                1 => replay.exit(),
+                _ => {}
             }
         }
         if callback == PHOTO_POPUP && replay.photo == Photo::Confirm {
@@ -761,6 +785,9 @@ pub(crate) fn controls(
             // (`8250B8F8`); a refusal is silent.
             if back && replay.can_open() {
                 replay.enter();
+                // Retail plays UI sound 0x394015B68783BE9E as it opens (`825EB998`, b389): the fe record
+                // `editor_select`.
+                sounds.write(crate::ui_audio::FrontendSound::named(OPEN_SOUND));
             }
         } else if replay.quit_pending {
             // OURS (safety until play-tested): Back again while the warning is up leaves at once.
@@ -778,7 +805,9 @@ pub(crate) fn controls(
         if replay.quit_on_release && pad.buttons & (B | SELECT) == 0 && !keys.pressed(KeyCode::F6) {
             replay.quit_on_release = false;
             if popups.stage_ready {
-                popups.engine_requests.push(quit_popup());
+                // With the exporter: the Finished menu (Save to PC / Exit); without it retail's quit warning (not
+                // signed in, b387).
+                popups.engine_requests.push(if export.is_some() { export_run::finished_popup() } else { quit_popup() });
                 replay.quit_pending = true;
             } else {
                 replay.exit();
@@ -1033,6 +1062,8 @@ fn update_ui(
 mod components;
 pub(crate) mod camera_key;
 pub(crate) mod editor;
+pub(crate) mod export;
+pub(crate) mod export_run;
 mod messages;
 mod world;
 pub(crate) use world::retire;

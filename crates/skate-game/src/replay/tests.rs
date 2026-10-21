@@ -121,6 +121,7 @@ fn controller_replay_scrub_camera_and_exit_do_not_leak_gameplay_input() {
         .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
         .init_resource::<Time<Real>>()
         .init_resource::<crate::popup_host::PopupMods>()
+        .add_message::<crate::ui_audio::FrontendSound>()
         .add_systems(Update, controls);
     // 6.7 s: over retail's 5 s minimum.
     for i in 0..400 {
@@ -452,6 +453,7 @@ fn retail_quit_warning_and_minimum_length() {
         .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
         .init_resource::<Time<Real>>()
         .init_resource::<crate::popup_host::PopupMods>()
+        .add_message::<crate::ui_audio::FrontendSound>()
         .add_systems(Update, controls);
     let tick = |app: &mut App, buttons| {
         app.world_mut().resource_mut::<ControllerInput>().sample_raw_for_test(XboxState { buttons, triggers: [0; 2], left: [0; 2], right: [0; 2] });
@@ -470,6 +472,9 @@ fn retail_quit_warning_and_minimum_length() {
     }
     tick(&mut app, SELECT);
     assert!(app.world().resource::<Replay>().active);
+    // Retail's open sound (`editor_select`, b389).
+    let sounds = app.world().resource::<bevy::ecs::message::Messages<crate::ui_audio::FrontendSound>>();
+    assert!(sounds.iter_current_update_messages().any(|m| *m == crate::ui_audio::FrontendSound::named(OPEN_SOUND)));
     tick(&mut app, 0);
     // With the retail menu stage up, B raises the quit warning; No stays, Yes leaves.
     app.world_mut().resource_mut::<crate::popup_host::PopupMods>().stage_ready = true;
@@ -570,6 +575,7 @@ fn retail_screen_keys_help_panel_and_photo() {
         .init_resource::<Time<Real>>()
         .init_resource::<crate::popup_host::PopupMods>()
         .insert_resource(RetailReplayUi(true))
+        .add_message::<crate::ui_audio::FrontendSound>()
         .add_systems(Update, controls);
     let tick = |app: &mut App, buttons| {
         app.world_mut().resource_mut::<ControllerInput>().sample_raw_for_test(XboxState { buttons, triggers: [0; 2], left: [0; 2], right: [0; 2] });
@@ -610,4 +616,44 @@ fn retail_screen_keys_help_panel_and_photo() {
     app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((PHOTO_POPUP.into(), 1));
     tick(&mut app, 0);
     assert_eq!(app.world().resource::<Replay>().photo, Photo::Capture);
+}
+
+#[test]
+fn the_finished_menu_offers_save_to_pc_and_exit() {
+    use crate::input::ControllerInput;
+    use skate_core::input::xbox::XboxState;
+    let mut app = App::new();
+    app.init_resource::<Replay>()
+        .init_resource::<ControllerInput>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
+        .init_resource::<Time<Real>>()
+        .init_resource::<crate::popup_host::PopupMods>()
+        .init_resource::<export_run::ReplayExport>()
+        .add_message::<crate::ui_audio::FrontendSound>()
+        .add_systems(Update, controls);
+    let tick = |app: &mut App, buttons| {
+        app.world_mut().resource_mut::<ControllerInput>().sample_raw_for_test(XboxState { buttons, triggers: [0; 2], left: [0; 2], right: [0; 2] });
+        app.world_mut().resource_mut::<Time<Real>>().advance_by(std::time::Duration::from_secs_f64(1. / 60.));
+        app.world_mut().run_schedule(Update);
+    };
+    for i in 0..400 {
+        app.world_mut().resource_mut::<Replay>().record(pose(i as f32), 1. / 60., false);
+    }
+    app.world_mut().resource_mut::<Replay>().enter();
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().stage_ready = true;
+    tick(&mut app, B);
+    tick(&mut app, 0);
+    let request = app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_requests.pop().unwrap();
+    assert_eq!(request.options, vec![export_run::SAVE_TO_PC.to_owned(), "ID_REPLAYEDITOR_EXIT".to_owned()]);
+    // Cancel stays; Exit leaves.
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((export_run::FINISHED_POPUP.into(), skate_core::fe_popup::CHOICE_CANCEL));
+    tick(&mut app, 0);
+    assert!(app.world().resource::<Replay>().active);
+    tick(&mut app, B);
+    tick(&mut app, 0);
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((export_run::FINISHED_POPUP.into(), 1));
+    tick(&mut app, 0);
+    assert!(!app.world().resource::<Replay>().active);
 }

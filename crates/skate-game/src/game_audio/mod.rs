@@ -30,7 +30,7 @@ pub(crate) mod mod_audio;
 pub(crate) mod mod_rules;
 pub(crate) mod mod_voices;
 pub(crate) mod mod_world;
-mod native;
+pub(crate) mod native;
 mod npc_skaters;
 mod player_audio;
 mod random_programs;
