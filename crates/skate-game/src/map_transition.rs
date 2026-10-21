@@ -55,12 +55,17 @@ enum Phase {
     Requested(Entry),
     Loading { entry: Entry, progress: Arc<AtomicU8>, job: JoinHandle<Result<PreparedWorld, String>> },
     // Let extraction see the committed scene before releasing the pause menu.
-    Publishing { frames: u8, notice: String },
+    // `resume` is false after a failed change reloaded the map that was live.
+    Publishing { frames: u8, notice: String, resume: bool },
 }
 #[derive(Resource)]
-pub(crate) struct MapTransition { phase: Phase }
+pub(crate) struct MapTransition {
+    phase: Phase,
+    /// While a failed map change reloads the map that was live: why it failed.
+    restoring: Option<String>,
+}
 impl Default for MapTransition {
-    fn default() -> Self { Self { phase: Phase::Idle } }
+    fn default() -> Self { Self { phase: Phase::Idle, restoring: None } }
 }
 impl MapTransition {
     pub fn busy(&self) -> bool { !matches!(self.phase, Phase::Idle) }
@@ -143,14 +148,13 @@ fn scheduled_map_change(
 }
 
 fn start(world: &mut World, entry: Entry) -> Result<Phase, String> {
-    // Release the live world's visuals before the new map is read and decoded.
-    // A map change used to stack the new map's whole decoded pixel set and
-    // every page it builds on top of the old world, which is what ran the
-    // Switch heap out (findings 19 §6.3, doc 58 §3.3). A load that then fails
-    // leaves the skater, physics and menu in place but the old world's
-    // visuals gone; the alternative was an allocation failure that aborts the
-    // game outright.
+    // Release the live world's visuals and collision before the new map is read
+    // and decoded. A map change used to build the new map on top of the old
+    // world, which ran the Switch heap out (findings 19 §6.3, doc 58 §3.3); the
+    // collision alone is 243 MiB for Downtown. If the new map then fails to
+    // load, `poll` reloads the map that was live.
     crate::map_render::MapAssets::retire(world);
+    world.resource_mut::<GamePhysics>().release_map_geometry()?;
     let config = world.resource::<Config>();
     let root = config.asset_root.clone();
     let difficulty = config.difficulty;
@@ -228,11 +232,11 @@ fn poll(world: &mut World) {
     if !ready { return; }
     let phase = std::mem::replace(&mut world.resource_mut::<MapTransition>().phase, Phase::Idle);
     let next = match phase {
-        Phase::Requested(entry) => match start(world, entry) {
-            Ok(phase) => phase,
-            Err(error) => { failed(world, error); Phase::Idle }
-        },
-        Phase::Loading { job, .. } => match job.join().unwrap_or_else(|_| Err("Map loader failed unexpectedly".into())) {
+        Phase::Requested(entry) => {
+            let label = entry.label.clone();
+            start(world, entry).unwrap_or_else(|error| failed(world, &label, error))
+        }
+        Phase::Loading { job, entry, .. } => match job.join().unwrap_or_else(|_| Err("Map loader failed unexpectedly".into())) {
             Ok(prepared) => {
                 let mut notice = commit(world, prepared);
                 let config = world.resource::<Config>();
@@ -244,14 +248,20 @@ fn poll(world: &mut World) {
                         Err(error) => notice.push_str(&format!(" Could not save default: {error}")),
                     }
                 }
-                Phase::Publishing { frames: 3, notice }
+                match world.resource_mut::<MapTransition>().restoring.take() {
+                    // Back on the map that was live; the menu stays open on why.
+                    Some(failure) => Phase::Publishing { frames: 3, notice: format!("{failure}\n{notice}"), resume: false },
+                    None => Phase::Publishing { frames: 3, notice, resume: true },
+                }
             }
-            Err(error) => { failed(world, error); Phase::Idle }
+            Err(error) => failed(world, &entry.label, error),
         },
-        Phase::Publishing { frames, notice } if frames > 0 => Phase::Publishing { frames: frames - 1, notice },
-        Phase::Publishing { notice, .. } => {
-            world.resource_mut::<crate::graphics_menu::Menu>().transition_finished(notice, true);
-            world.resource_mut::<Time<Virtual>>().unpause();
+        Phase::Publishing { frames, notice, resume } if frames > 0 => Phase::Publishing { frames: frames - 1, notice, resume },
+        Phase::Publishing { notice, resume, .. } => {
+            world.resource_mut::<crate::graphics_menu::Menu>().transition_finished(notice, resume);
+            if resume {
+                world.resource_mut::<Time<Virtual>>().unpause();
+            }
             Phase::Idle
         }
         Phase::Idle => Phase::Idle,
@@ -259,10 +269,37 @@ fn poll(world: &mut World) {
     world.resource_mut::<MapTransition>().phase = next;
 }
 
-fn failed(world: &mut World, error: String) {
-    warn!("MAP_TRANSITION_FAILED {error}");
-    world.resource_mut::<crate::graphics_menu::Menu>()
-        .transition_finished(format!("Could not load map: {error}\nThe previous world's visuals were released to make room for it. Choose another map or Resume."), false);
+/// Loading `label` failed. `start` released the live map's visuals and collision
+/// first, so the change goes back to that map; if reloading it is what failed,
+/// the menu stays open on both errors.
+fn failed(world: &mut World, label: &str, error: String) -> Phase {
+    let live = Entry { label: world.resource::<CurrentMap>().name.clone(), path: world.resource::<Config>().map_path.clone() };
+    let outcome = after_failure(&mut world.resource_mut::<MapTransition>().restoring, live, label, error);
+    match outcome {
+        Ok(live) => {
+            warn!("MAP_TRANSITION_FAILED {}; reloading {}",
+                world.resource::<MapTransition>().restoring.as_deref().unwrap_or_default(), live.label);
+            Phase::Requested(live)
+        }
+        Err(message) => {
+            warn!("MAP_TRANSITION_FAILED {message}");
+            world.resource_mut::<crate::graphics_menu::Menu>()
+                .transition_finished(format!("{message}\nChoose another map."), false);
+            Phase::Idle
+        }
+    }
+}
+
+/// The map to reload after loading `label` failed (`live`, once), or, when that
+/// reload is what failed, the message to leave the menu on.
+fn after_failure(restoring: &mut Option<String>, live: Entry, label: &str, error: String) -> Result<Entry, String> {
+    match restoring.take() {
+        None => {
+            *restoring = Some(format!("Could not load {label}: {error}"));
+            Ok(live)
+        }
+        Some(failure) => Err(format!("{failure}\nReloading {label} failed too: {error}")),
+    }
 }
 
 fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
