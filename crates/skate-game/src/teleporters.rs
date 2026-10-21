@@ -10,8 +10,9 @@
 //! (`82864038` -> skater `825926F8`, the actor-reset chain `request_manual` ports, b423); another map goes through the
 //! map transition first (`828646E0`: far when the target world differs), as Challenge Map teleports do.
 //!
-//! NOT RETAIL YET: the prompt is our own text line (the action overlay movie is not ported); without the retail menu
-//! stage the confirm is skipped. Mods add or replace teleporters with `sdk.triggers.teleporter` (modding/triggers.rs).
+//! The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, state 2 with the title; research
+//! b426) on the menu stage; our own text line stands in when the stage or the movie is missing (sets exported before
+//! the movie), and then the confirm is skipped too. Mods add or replace teleporters with `sdk.triggers.teleporter` (modding/triggers.rs).
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use skate_data::trigger_volumes::TriggerVolumeRecord;
@@ -96,7 +97,7 @@ pub(crate) struct Teleporters {
     /// Used teleporters not yet delivered to Lua mods (`teleporter_used`, drained by the mod runtime).
     pub mod_queue: Vec<TeleporterUsed>,
     /// SKATE_VERIFY_TELEPORTER=<id> (with a verification capture): start in that teleporter's volume and press for
-    /// the player once (no popup), so the run's capture shows the arrival.
+    /// the player once (no popup), so the run's capture shows the arrival (SKATE_VERIFY_TELEPORTER_PROMPT=1: no press).
     verify: Option<(String, bool)>,
 }
 
@@ -250,7 +251,8 @@ fn prompt(
     let pressed = show && !modifier && input.dpad_up_pressed() && teleporters.last_batch != input.consumed_batches;
     teleporters.last_batch = input.consumed_batches;
     if let (Some((id, done)), Some(t)) = (teleporters.verify.as_mut(), current.as_ref()) {
-        if !*done && *id == t.id && show {
+        // SKATE_VERIFY_TELEPORTER_PROMPT=1: stay in the volume without pressing (the capture shows the prompt).
+        if !*done && *id == t.id && show && std::env::var("SKATE_VERIFY_TELEPORTER_PROMPT").as_deref() != Ok("1") {
             *done = true;
             info!("SKATE_VERIFY_TELEPORTER {id} pressed");
             used.write(TeleporterUsed { body: crate::trigger_volumes::PLAYER.into(), teleporter: t.id.clone(), exit: 0 });
@@ -265,8 +267,12 @@ fn prompt(
             used.write(TeleporterUsed { body: crate::trigger_volumes::PLAYER.into(), teleporter: t.id.clone(), exit: 0 });
         }
     }
+    // The prompt: retail's action overlay (state 2 with the title) when the stage has it, else our text line.
+    let shown = show && !pressed;
+    popups.signup_title = shown.then(|| current.as_ref().map(|t| t.title.clone().or_else(|| t.title_id.clone())
+        .unwrap_or_else(|| t.id.clone()))).flatten();
     let line = lines.iter().next();
-    match (show && !pressed, line) {
+    match (shown && !popups.signup_ready, line) {
         (true, None) => {
             let text = prompt_text(current.as_ref().expect("shown with a teleporter"));
             commands.spawn((PromptLine, GlobalZIndex(5), Node { position_type: PositionType::Absolute, bottom: percent(18),

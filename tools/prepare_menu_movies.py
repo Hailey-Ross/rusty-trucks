@@ -70,6 +70,9 @@ MENU_ROOTS = (
     # ReplayHelp, FE screen 13); research b385 / b390 / b391.
     'source/screens/replay2/replay_editor2',
     'source/screens/replay2/replay_help',
+    # The action overlay (template 59 SignUpHUD): the teleporter prompt (state 2, research b421 / b426). Optional for
+    # the engine: a set without it keeps the teleporter's text line, so the set version stays.
+    'source/screens/hud2/actionoverlay2',
     'source/screens/main3dhud',
     'source/helper/screenmanager',
     'source/helper/screentransitionmanager',
