@@ -153,7 +153,7 @@ data. Open: no recomp trace confirms retail plays the SkateSchool bed there.
 - The DLC maps' display names (the DLC language tables), trigger volumes and `.ems` audio.
 - The movie's own constants for kUpdateMode / kRefreshTint / kReplayMode_* (from our export of replay_editor3).
 
-## DLC maps, part 1: conversion, starts, skies, audio (2026-10-20, uncommitted)
+## DLC maps, part 1: conversion, starts, skies, audio (2026-10-20)
 
 - Jobs (`dlc.map_jobs`, `install.py`): one map job per DLC district stream that holds a whole map (`<D>_Sim.xst` and
   Sim cells; the Art Gallery proxy has neither and is left out), label = the stream folder without `DIST_` /
