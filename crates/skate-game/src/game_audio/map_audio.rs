@@ -358,7 +358,7 @@ pub(crate) mod tests {
         let dir = std::env::temp_dir().join(format!("skate-map-audio-sidecar-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut map = crate::map_transition::CurrentMap { path: Some(dir.join("MyMap.skate")), name: "My map".into(), spawn: [0.0; 3], heading: 0.0, generation: 1, audio_tag: None };
+        let mut map = crate::map_transition::CurrentMap { path: Some(dir.join("MyMap.skate")), name: "My map".into(), spawn: [0.0; 3], heading: 0.0, generation: 1, audio_tag: None, layout: None };
         assert!(own_definition(&map).is_none(), "no sidecar, no tag");
         std::fs::write(dir.join("MyMap.audio.json"), r#"{"district": "DownTown", "emitters": [{"position": [0, 0, 0], "extent": [3, 3, 3], "kind": 5, "reverb": "BEEFC8E3DE04FBAE"}]}"#).unwrap();
         let (def, source) = own_definition(&map).unwrap();

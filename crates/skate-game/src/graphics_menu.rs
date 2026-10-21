@@ -1588,7 +1588,7 @@ mod tests {
         Menu {
             open: true, fe_suspended: false, selected: 1000, settings: GraphicsSettings::default(),
             path: PathBuf::new(), difficulty: Difficulty::Easy, custom:Tuning::default(), custom_defaults:Tuning::default(), custom_apply:false, custom_dirty:false, status: String::new(),
-            maps: (0..40).map(|i| crate::map_library::Entry { label: format!("Map {i}"), path: None }).collect(),
+            maps: (0..40).map(|i| crate::map_library::Entry { label: format!("Map {i}"), path: None, world: None }).collect(),
             selected_map: 0, multiplayer: false, browser: false, network_page: 0, browser_count: 0, daylight: false, section: 0, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
             view: default(),
         }
@@ -1667,7 +1667,7 @@ mod tests {
         assert_eq!(m.page(), m.rows(), "no headers in the multiplayer pages");
         m.select_section(0);
         m.maps[0].path = Some(PathBuf::from("University.skate"));
-        m.destinations = vec![crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), matrix: Some([[0.;4];4]) }];
+        m.destinations = vec![crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), world: None, matrix: Some([[0.;4];4]) }];
         m.map_detail = true;
         assert_eq!(m.page(), vec![50, 51, 910, 1_000_000]);
     }
@@ -1685,7 +1685,7 @@ mod tests {
             .insert_resource(images)
             .insert_resource(Menu {
                 open: false, selected: 0,
-                maps: vec![crate::map_library::Entry { label: "Test world".into(), path: None }],
+                maps: vec![crate::map_library::Entry { label: "Test world".into(), path: None, world: None }],
                 ..menu()
             })
             .add_systems(Update, apply);
@@ -1748,8 +1748,8 @@ mod tests {
         assert_eq!(menu.rows(), (1000..1040).collect::<Vec<_>>());
         menu.maps[0].path = Some(PathBuf::from("University.skate"));
         menu.destinations = vec![
-            crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), matrix: Some([[0.;4];4]) },
-            crate::teleport_menu::Destination { id: "dt".into(), name: "Downtown".into(), map: "DownTown".into(), matrix: Some([[0.;4];4]) },
+            crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), world: None, matrix: Some([[0.;4];4]) },
+            crate::teleport_menu::Destination { id: "dt".into(), name: "Downtown".into(), map: "DownTown".into(), world: None, matrix: Some([[0.;4];4]) },
         ];
         menu.map_detail = true;
         assert_eq!(menu.rows(), vec![50,51,1_000_000]);

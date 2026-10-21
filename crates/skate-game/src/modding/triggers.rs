@@ -146,7 +146,7 @@ pub(super) fn set_teleporter(world: &mut World, owner: &str, key: String, option
             matrix: [[c, 0., -s, 0.], [0., 1., 0., 0.], [s, 0., c, 0.], [e.position[0], e.position[1], e.position[2], 1.]] }
     }).collect();
     let teleporter = crate::teleporters::Teleporter { id: key, map, volume_id: volume, volume: None, title_id: None,
-        title: options.title, exits };
+        title: options.title, exits, layout: None };
     world.resource_mut::<crate::teleporters::Teleporters>().mods.insert(slot, teleporter);
     Ok(())
 }

@@ -123,8 +123,10 @@ def template_collision(raw, table, at):
     Chain (research dmo-physics-collision.md section 2): tInstance +132 -> EB000A link, +8 -> 0x00040006 (assembly
     definition), +112 -> root volume 0x00080001 (type 6 aggregate) -> 0x00080002 array of 96 B volumes; a type 6
     entry whose child is a 0x00080006 ClusteredMesh carries the triangles with their RW edge codes and surfaces (the
-    decoder the map collision uses). Primitive volumes (boxes etc.) are not exported yet. Six templates point the
-    link at another section kind; those return None and keep the render mesh."""
+    decoder the map collision uses). Primitive volumes (boxes etc.) are not exported yet. The other link form,
+    20 bytes (0, count, 12, volume index..., 0), names root volumes directly with no assembly (research b437: the
+    skate.Park rails and fences; likely the DMO templates that used to resolve to nothing). None = no ClusteredMesh
+    found; the caller keeps the render mesh."""
     def u32(offset):
         return struct.unpack_from('>I', raw, offset)[0]
     def kind(index):
@@ -132,7 +134,17 @@ def template_collision(raw, table, at):
     link = u32(at+132)
     if kind(link) != 0xEB000A:
         return None
-    assembly = u32(table[link][0]+8)
+    base, _, size, _, _, _ = table[link]
+    if size >= 16 and 1 <= u32(base+4) < 0xFFFFFFFF and u32(base+8) == 12:
+        # The other link form (research b437; the skate.Park rails and fences): (0, count, 12, volume index..., 0),
+        # the list at +12 naming root volumes directly, no assembly.
+        shapes = [collision_from_volume(raw, table, u32(base+12+4*i)) for i in range(u32(base+4))
+                  if 12+4*i+4 <= size and kind(u32(base+12+4*i)) == 0x00080001]
+        shapes = [s for s in shapes if s]
+        if not shapes:
+            return None
+        return {key: [v for s in shapes for v in s[key]] for key in ('triangles', 'edges', 'surfaces')}
+    assembly = u32(base+8)
     if kind(assembly) != 0x00040006:
         return None
     root = u32(table[assembly][0]+112)
@@ -384,14 +396,25 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
             if key in placements and placements[key] != item:
                 raise ValueError('Conflicting DMO locator '+key)
             placements[key] = item
-    report = dict(map=district['map_name'], instances=[], unresolved=[], simulation='initial placement only',
-                  types={}, grab_splines={}, grind_splines={}, collision={}, hotpoints={}, hotpoint_classes={}, plugin_props=[])
     # Ped plugin hotpoints per template (parkassets.big, `hotpoint_data`), written by prepare_catalog beside the catalog.
     hotpoint_file = Path(catalog_path).parent/'hotpoints.json' if catalog_path is not None else None
     hotpoint_table = json.loads(hotpoint_file.read_text()) if hotpoint_file is not None and hotpoint_file.is_file() else {}
+    report = write_placements(district['map_name'], district['district_name'], placements.values(), templates, textures,
+                              output, hotpoint_table)
+    return len(report['instances']), len(report['unresolved'])
+
+
+def write_placements(map_name, district_name, placements, templates, textures, output, hotpoint_table=None, **extra):
+    """Write `placements` (instance_id, template_id, matrix, name) of `templates` as a render-only MOBJ package at
+    `output` plus its `.json` sidecar (instances, per-template collision / rails / types); returns the sidecar.
+    The district movable props and the skate.Park pieces (park_layout.py) share it; `extra` joins the sidecar."""
+    hotpoint_table = hotpoint_table or {}
+    report = dict(map=map_name, instances=[], unresolved=[], simulation='initial placement only',
+                  types={}, grab_splines={}, grind_splines={}, collision={}, hotpoints={}, hotpoint_classes={}, plugin_props=[])
+    report.update(extra)
     with tempfile.TemporaryDirectory(prefix='skate-dmo-') as work:
         root = Path(work); models = []; records = []; used = set(); positions = {}
-        for item in placements.values():
+        for item in placements:
             template = templates.get(item['template_id'])
             if template is None:
                 report['unresolved'].append(item)
@@ -428,7 +451,7 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
                 report['hotpoint_classes'] = hotpoint_table['classes']
                 report['plugin_props'].extend(hotpoint_props(item['instance_id'], key, transform, hotpoint_table['hotpoints'][key], hotpoint_table['classes']))
         if models:
-            manifest = dict(map_name=district['map_name'], district_name=district['district_name'],
+            manifest = dict(map_name=map_name, district_name=district_name,
                 models=models, textures={key:textures[key] for key in sorted(used)},
                 normal_texture_policy=dict(excluded_texture_ids=[]), grind_splines=[])
             (root/'manifest.json').write_text(json.dumps(manifest))
@@ -444,7 +467,7 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
             output.unlink(missing_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.with_suffix('.json').write_text(json.dumps(report, indent=2))
-    return len(report['instances']), len(report['unresolved'])
+    return report
 
 
 def prepare_catalog(game_root, work):

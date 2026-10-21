@@ -707,14 +707,16 @@ impl GamePhysics {
             settings.step.simulation,
             BoardMotion::Active,
         );
+        // The skate.Park layout the map was loaded with (park_layout.rs): fixed pieces in the static world and rails.
+        let pieces = map.and_then(|map| crate::park_layout::load_pieces(asset_root, map));
         let world = match map {
-            Some(map) => crate::skate_world::collision_world(map, settings.floor_material)?,
+            Some(map) => crate::skate_world::collision_world_with(map, settings.floor_material, pieces.as_ref())?,
             None => terrain.world(settings.floor_material),
         };
         let prop_layer = map.and_then(|map| {
-            crate::skate_world::load_prop_layer(
+            crate::skate_world::load_map_prop_layer(
                 asset_root,
-                &map.name,
+                map,
                 settings.floor_material,
                 prop_dynamics::prop_simulation(settings.step.simulation),
             )
@@ -726,8 +728,10 @@ impl GamePhysics {
         // Phase 4: apply the saved layout sidecar over the authored poses.
         let mut prop_carry = prop_carry::PropCarry::default();
         if let (Some(map), Some(layer), Some(dynamics)) = (map, prop_layer.as_mut(), prop_dynamics.as_mut()) {
-            let path = prop_layout::path(asset_root, &map.name);
-            if let Some(layout) = prop_layout::load(&path, &map.name) {
+            // A skate.Park layout's movable pieces keep their own saved poses (keyed by the layout; ours).
+            let (_, _, name) = crate::skate_world::prop_files(asset_root, map);
+            let path = prop_layout::path(asset_root, &name);
+            if let Some(layout) = prop_layout::load(&path, &name) {
                 for pose in layout.values() {
                     let origin = Vector3::new(pose.origin[0], pose.origin[1], pose.origin[2]);
                     let basis = skate_core::math::Basis3 { columns: pose.basis };
@@ -745,7 +749,10 @@ impl GamePhysics {
         prop_carry.set_base_tuning(settings.move_object);
         let grind_world = std::sync::Arc::new(if map.is_none() && terrain == ground::Terrain::Course {
             crate::grind_world::StaticProvider::authored(&crate::grind_world::test_rails())?
-        } else { crate::grind_world::StaticProvider::new(map)? });
+        } else {
+            let provider = crate::grind_world::StaticProvider::new(map)?;
+            match &pieces { Some(pieces) => provider.with_pieces(&pieces.rails)?, None => provider }
+        });
         if let Some(map) = map {
             eprintln!(
                 "SKATE_GRIND_READY splines={} primitives={}",

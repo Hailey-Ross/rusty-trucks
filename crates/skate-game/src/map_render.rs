@@ -238,7 +238,7 @@ impl PreparedScene {
         // the renderer rewrite.
         if self.retail {
             if let Some((props, objects)) =
-                crate::skate_world::load_prop_package(asset_root, &map.name)
+                crate::skate_world::load_map_prop_package(asset_root, map)
             {
                 crate::skate_world::spawn_instances(
                     &props,
@@ -250,6 +250,24 @@ impl PreparedScene {
                     &mut self.world_materials,
                     &mut self.images,
                     &mut self.params,
+                    false,
+                );
+            }
+            // The skate.Park layout the map was loaded with (park_layout.rs): its placed pieces, fixed.
+            // NOT RETAIL YET: drawn with the fallback shading; the environmentpark shaders and the per-piece tint are
+            // research b433 (tint multiplies the linear albedo).
+            if let Some((pieces, objects)) = crate::park_layout::load_package(asset_root, map) {
+                crate::skate_world::spawn_instances(
+                    &pieces,
+                    &objects,
+                    &tuning,
+                    &environment,
+                    &mut self.commands,
+                    &mut self.meshes,
+                    &mut self.world_materials,
+                    &mut self.images,
+                    &mut self.params,
+                    true,
                 );
             }
         }

@@ -7,6 +7,9 @@ pub(crate) struct Destination {
     pub id: String,
     pub name: String,
     pub map: String,
+    /// The location's world row (megapark_full -> dist_megapark_full): a skate.Park world places its layout.
+    #[serde(default)]
+    pub world: Option<String>,
     pub matrix: Option<[[f32; 4]; 4]>,
 }
 #[derive(Deserialize)]

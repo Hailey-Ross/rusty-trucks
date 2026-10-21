@@ -35,6 +35,7 @@ Each document stands alone. File paths are relative to the repository root.
 | 36 | [The two known upstream test failures](36-known-test-failures.md) | Tests (Rust) | Fix, branch `fix/known-test-failures` (upstream #63, folded into #52 2026-10-17): the group 8 impact test placed the car's contact on the ground plane (filtered on foot) and the pipeline fingerprint test gave a changed group no recorded outputs; fixtures fixed, refusal checks added, no engine change |
 | 37 | [Instant replay: record every actor, 90 s window](37-instant-replay.md) | Game (Rust) | In progress, branch `world/replay`: every drawn actor (NPC skaters, peds, traffic, props, mod actors) recorded as retail's quantised local joint rotations and played back instead of freezing; retail's 5400-frame (90 s) window. Not play-tested |
 | 38 | [DLC support: the player's own Skate 3 DLC packages](38-dlc-support.md) | Setup (Python) + Game (Rust) | In progress, branch `world/replay` (PR #52): STFS reader, DLC folder input, the Create pack's replay editor movie and text exported; DLC maps next. Not play-tested |
+| 39 | [skate.Park layouts: the Full / Basic worlds place their pieces](39-skatepark-layouts.md) | Setup (Python) + Game (Rust) | In progress, branch `world/replay` (PR #52 item 9): static pieces with collision and rails, Challenge Map Full / Empty rows; park shaders and movable pieces next. Not play-tested |
 
 ## Environment used for verification
 

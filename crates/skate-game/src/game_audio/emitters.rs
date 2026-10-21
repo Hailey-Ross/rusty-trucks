@@ -824,7 +824,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(native);
         world.insert_resource(library);
-        world.insert_resource(crate::map_transition::CurrentMap { path: None, name: "Test world".into(), spawn: [0.0; 3], heading: 0.0, generation: 0, audio_tag: None });
+        world.insert_resource(crate::map_transition::CurrentMap { path: None, name: "Test world".into(), spawn: [0.0; 3], heading: 0.0, generation: 0, audio_tag: None, layout: None });
         world.init_resource::<super::super::map_audio::MapAudio>();
         world.init_resource::<super::super::AudioContent>();
         world.init_resource::<super::super::mod_audio::AudioApi>();

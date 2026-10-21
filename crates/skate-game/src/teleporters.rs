@@ -44,6 +44,10 @@ pub(crate) struct Teleporter {
     #[serde(default)]
     pub title: Option<String>,
     pub exits: Vec<Exit>,
+    /// A skate.Park layout's teleporter (setup park_layout.py, research b438): armed only while the map was loaded
+    /// with that layout (park_layout.rs).
+    #[serde(default)]
+    pub layout: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -60,7 +64,32 @@ pub(crate) fn load(assets: &Path) -> Result<Vec<Teleporter>, String> {
     if file.format != "skate3rust.teleporters" || file.version != 1 {
         return Err(format!("{}: unsupported {} v{}", path.display(), file.format, file.version));
     }
-    Ok(file.teleporters.into_iter().filter(valid).collect())
+    let mut all = file.teleporters;
+    all.extend(load_park(assets));
+    Ok(all.into_iter().filter(valid).collect())
+}
+
+/// The skate.Park layouts' teleporters (setup park_layout.py `layout_teleporters`, research b438), each with its
+/// layout; none when setup wrote none.
+fn load_park(assets: &Path) -> Vec<Teleporter> {
+    #[derive(Deserialize)]
+    struct Park {
+        version: u32,
+        teleporters: Vec<Teleporter>,
+    }
+    let path = crate::park_layout::directory(assets).join("teleporters.json");
+    let Ok(bytes) = std::fs::read(&path) else { return Vec::new() };
+    match serde_json::from_slice::<Park>(&bytes) {
+        Ok(park) if park.version == 1 => park.teleporters.into_iter().filter(|t| t.layout.is_some()).collect(),
+        Ok(park) => {
+            warn!("SKATE_TELEPORTERS {}: version {} not supported", path.display(), park.version);
+            Vec::new()
+        }
+        Err(error) => {
+            warn!("SKATE_TELEPORTERS {}: {error}", path.display());
+            Vec::new()
+        }
+    }
 }
 
 fn valid(t: &Teleporter) -> bool {
@@ -92,6 +121,8 @@ pub(crate) struct Teleporters {
     pub mods: std::collections::BTreeMap<(String, String), Teleporter>,
     /// The teleporter whose volume the local skater is inside.
     pub inside: Option<String>,
+    /// The loaded map's skate.Park layout (CurrentMap::layout), for the layout teleporters.
+    pub layout: Option<String>,
     pub phase: Phase,
     last_batch: u64,
     /// Used teleporters not yet delivered to Lua mods (`teleporter_used`, drained by the mod runtime).
@@ -104,7 +135,8 @@ pub(crate) struct Teleporters {
 impl Teleporters {
     /// Every armed teleporter: retail's, then mods' (a mod's teleporter with a retail id replaces it).
     pub(crate) fn armed(&self, map: Option<&Path>) -> Vec<&Teleporter> {
-        let on_map = |t: &&Teleporter| map.is_some_and(|p| crate::teleport_menu::same_map(p, &t.map));
+        let on_map = |t: &&Teleporter| map.is_some_and(|p| crate::teleport_menu::same_map(p, &t.map))
+            && (t.layout.is_none() || t.layout == self.layout);
         let mods: Vec<&Teleporter> = self.mods.values().filter(on_map).collect();
         let mut armed: Vec<&Teleporter> = self.retail.iter().filter(on_map).filter(|t| !mods.iter().any(|m| m.id == t.id)).collect();
         armed.extend(mods);
@@ -177,6 +209,7 @@ fn arm(
     }
     teleporters.generation = Some(map.generation);
     teleporters.inside = None;
+    teleporters.layout = map.layout.clone();
     teleporters.phase = Phase::Waiting;
     if teleporters.retail.is_empty() {
         teleporters.retail = load(&config.asset_root).unwrap_or_else(|e| {
@@ -226,6 +259,7 @@ fn prompt(
     for e in exited.read().filter(|e| e.body == crate::trigger_volumes::PLAYER) {
         if teleporters.by_volume(path.as_deref(), &e.volume).map(|t| t.id.clone()) == teleporters.inside {
             teleporters.inside = None;
+    teleporters.layout = map.layout.clone();
         }
     }
     for e in entered.read().filter(|e| e.body == crate::trigger_volumes::PLAYER) {
@@ -337,7 +371,7 @@ mod tests {
         m[3] = [1.0, 2.0, 3.0, 1.0];
         Teleporter { id: "tele_world_to_stadium".into(), map: "University".into(), volume_id: "2c701706002605aa".into(),
             volume: None, title_id: Some("ID_TELE_WORLD_TO_STADIUM_PARK".into()), title: Some("Enter Stadium \u{a9}Park".into()),
-            exits: (0..exits).map(|i| Exit { map: "MegaPark".into(), locator: format!("dest_{i}"), matrix: m }).collect() }
+            exits: (0..exits).map(|i| Exit { map: "MegaPark".into(), locator: format!("dest_{i}"), matrix: m }).collect(), layout: None }
     }
 
     #[test]
@@ -358,6 +392,16 @@ mod tests {
         assert_eq!(confirm_popup(&t).options.len(), 3);
         assert_eq!(chosen_exit(&t, 2), Some(2));
         assert_eq!(chosen_exit(&t, 3), None);
+    }
+
+    #[test]
+    fn a_park_teleporter_is_armed_only_with_its_layout() {
+        let mut all = Teleporters::default();
+        all.retail = vec![Teleporter { id: "skpk:ZenPlaza_Full:0".into(), layout: Some("ZenPlaza_Full".into()), ..teleporter(1) }];
+        let path = std::path::PathBuf::from("maps/University.skate");
+        assert!(all.armed(Some(&path)).is_empty(), "the Empty world places no teleporter");
+        all.layout = Some("ZenPlaza_Full".into());
+        assert_eq!(all.armed(Some(&path)).len(), 1);
     }
 
     #[test]

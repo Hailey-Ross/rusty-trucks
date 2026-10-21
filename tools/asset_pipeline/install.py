@@ -626,6 +626,20 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             except CONTENT_ERRORS as error:
                 (stage/'assets/private/teleporters.json').unlink(missing_ok=True)
                 note(private/'map-status'/'teleporters-availability.json','Teleporters',error,report=report)
+            # skate.Park layouts (park_layout.py, research b424 / b425 / b431): the pieces each park world places on
+            # its stream, from the disc and the packs (a pack's recipe, models and textures after the disc's).
+            try:
+                from .park_layout import Sources,export as write_park_layouts,world_layouts,teleporter_roles
+                from .dlc import merged
+                from .environment import Collections
+                park_bigs=dlc_packages.extract_bigs(dlc_folder,work/'dlc',lambda paths:any(p.lower().startswith(('data/skatepark/','data/content/recipe/','data/content/static/')) for p in paths)) if dlc_jobs else []
+                sources=Sources([BigArchive(game_root/'data/big/miscload.big'),BigArchive(game_root/'data/content/parkassets.big'),*map(BigArchive,park_bigs)])
+                shutil.rmtree(stage/'assets/private/park-layouts',ignore_errors=True)
+                park_rows=Collections(merged(converted,list(dlc_vaults)))
+                write_park_layouts(sources,world_layouts(park_rows),stage/'assets/private/park-layouts',report,teleporter_roles(park_rows))
+            except CONTENT_ERRORS as error:
+                shutil.rmtree(stage/'assets/private/park-layouts',ignore_errors=True)
+                note(private/'map-status'/'park-layouts-availability.json','skate.Park layouts',error,report=report)
         report('Validating installed runtime inputs')
         validate('TEST_WORLD')
         if validator is not None:validator.close()

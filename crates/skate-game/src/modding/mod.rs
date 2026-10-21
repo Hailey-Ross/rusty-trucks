@@ -2154,7 +2154,7 @@ mod startup_ground_tests {
     fn the_startup_ground_is_handed_to_the_first_tick_and_releases_the_loading_screen() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(crate::map_transition::CurrentMap { path: None, name: "Test".into(), spawn: [0.0; 3], heading: 0.0, generation: 3, audio_tag: None });
+        app.insert_resource(crate::map_transition::CurrentMap { path: None, name: "Test".into(), spawn: [0.0; 3], heading: 0.0, generation: 3, audio_tag: None, layout: None });
         let mut startup = crate::startup_loading::StartupLoading::new();
         startup.hold("mod_ground", "Building the world");
         app.insert_resource(startup);

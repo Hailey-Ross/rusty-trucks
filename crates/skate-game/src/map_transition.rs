@@ -27,13 +27,16 @@ pub(crate) struct CurrentMap {
     /// The map's own audio definition: its `AUDO` extension (schema 1, UTF-8 JSON;
     /// `game_audio::map_audio`), if it has one.
     pub audio_tag: Option<Arc<[u8]>>,
+    /// The skate.Park layout the map was loaded with (park_layout.rs), if any.
+    pub layout: Option<String>,
 }
 impl CurrentMap {
     fn from_package(path: Option<PathBuf>, map: Option<&skate_data::skate_map::SkateMap>) -> Self {
         Self { path, name: map.map_or_else(|| "Test world".into(), |m| m.name.clone()),
             spawn: map.map_or([0., crate::physics::ground::HEIGHT, 0.], |m| m.spawn),
             heading: map.map_or(0., |m| m.heading), generation: 0,
-            audio_tag: map.and_then(|m| m.extensions.iter().find(|e| e.tag == *b"AUDO" && e.schema == 1)).map(|e| Arc::from(&e.payload[..])) }
+            audio_tag: map.and_then(|m| m.extensions.iter().find(|e| e.tag == *b"AUDO" && e.schema == 1)).map(|e| Arc::from(&e.payload[..])),
+            layout: map.and_then(crate::park_layout::layout_of).map(str::to_owned) }
     }
 }
 
@@ -113,7 +116,7 @@ fn scripted_switch(time: Res<Time<Real>>, mut transition: ResMut<MapTransition>,
     }
     *done = true;
     info!("SKATE_MAP_SWITCH requesting {} after {:.1} s", path.display(), time.elapsed_secs());
-    transition.request(Entry { label: path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned()), path: Some(path.clone()) });
+    transition.request(Entry { label: path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned()), path: Some(path.clone()), world: None });
 }
 
 /// `<seconds>:<path>` (the path may hold ':' itself, e.g. a drive letter).
@@ -137,7 +140,11 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
     let job = std::thread::Builder::new().name("map-loader".into()).spawn(move || {
         let _span = info_span!("load_map_transition").entered();
         let started = Instant::now();
-        let map = info_span!("read_map").in_scope(|| selected.path.as_deref().map(skate_data::skate_map::SkateMap::load).transpose())?;
+        let mut map = info_span!("read_map").in_scope(|| selected.path.as_deref().map(skate_data::skate_map::SkateMap::load).transpose())?;
+        // The world row's skate.Park layout rides on the loaded map for the render and physics builders.
+        if let Some(map) = map.as_mut() {
+            crate::park_layout::attach(map, &root, selected.world.as_deref());
+        }
         let map_fingerprint = crate::config::map_fingerprint(selected.path.as_deref())?;
         let read_time = started.elapsed();
         let validation_started = Instant::now();
