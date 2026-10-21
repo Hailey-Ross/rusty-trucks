@@ -370,3 +370,37 @@ MegaPark and landed at (67.2, 0.03, -134.3) on its exit locator (67.3, 0.2, -134
 "Leave Stadium skate.Park" prompt up; Hawaiian Dream `teleport_dwmc_01` landed at (-8.0, 39.4, 64.3) on the Fun Track
 (exit (-8.0, 40.3, 64.6)). The confirm popup and the D-pad Up press itself are not play-tested yet. Tests: setup 251,
 skate-game 862, skate-mods 106, skate-data pass.
+
+## Importing DLC: the start-up check sees new packs (2026-10-21, laptop session)
+
+### Problem
+On the laptop (hails-additions aba07209), Tools > Import DLC copied the 8 packs and Tools > Refresh game files right
+after said "GAME_FILES current: nothing to refresh": nothing was converted. Only a manual setup run with
+`SKATE3_DLC_DIR` set converted them, and that run removed the installation the launcher's own copy linked to.
+
+### Root cause
+The game's check (`asset_check.rs`), which both Refresh game files and Extras > Refresh Game Files go through, never
+looked at the DLC folder. Setup knew (the DLC identity joins the hud, maps, environment and audio versions), but it
+only runs when the check already found something out of date.
+
+### Change
+- Setup records what the DLC folder held: `installation.json` `dlc_files` (every file as `relative/path|size`,
+  `tools/asset_pipeline/dlc.py` `listing`).
+- The game's check resolves the DLC folder by setup's rules (`SKATE3_DLC_DIR`, the folder setup last used, a `dlc`
+  folder next to the game folder setup read, and new: a `dlc` folder next to this game copy) and compares its listing
+  with `dlc_files`. A pack added or removed reports the hud group (`ASSET_CHECK hud: DLC packages changed since
+  setup`), so Refresh game files and the in-game Extras > Refresh Game Files run setup, which rebuilds every group
+  whose DLC identity changed. An installation from before the listing that already read a DLC folder stays current;
+  one that never read one is reported once a folder has files.
+- Release ZIP: put the packages in a `dlc` folder next to `skate3rust.exe`; the next start offers the refresh. No
+  variable needed.
+- Launcher (hails-additions): Import DLC converts the new packs at once (it runs Refresh game files itself), and
+  `launcher.ps1 tool-dlc -Path <folder or file>` imports without the dialogs (scripts, the second PC). Files that are
+  not Skate 3 DLC packages, such as a title update, are skipped and named as such.
+
+### Verification
+skate-game `dlc_packs_added_after_setup_offer_the_refresh` (added, unchanged, removed, older installs, a `dlc` folder
+next to the game) and the other asset check tests (6); setup `test_dlc` (7, new
+`test_a_dlc_folder_next_to_the_game_copy_and_its_listing`). The launcher's non-interactive import was run on a temp
+folder with one real pack and one other file (1 added and 1 skipped, then 1 already there; a missing path refused).
+Not yet run end to end: the launcher's import followed by its automatic refresh on a fresh copy.
