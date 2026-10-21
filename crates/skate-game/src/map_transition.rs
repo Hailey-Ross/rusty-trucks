@@ -91,6 +91,7 @@ impl Plugin for MapTransitionPlugin {
             .add_message::<WorldChanged>()
             .add_systems(PreUpdate, poll.in_set(MapTransitionSet).after(crate::graphics_menu::MenuInput)
                 .before(crate::input::poll_controllers))
+            .add_systems(Update, scheduled_map_change)
             .configure_sets(FixedUpdate, (
                 crate::app::SimulationSet::Input, crate::app::SimulationSet::Controls,
                 crate::app::SimulationSet::Physics,
@@ -98,7 +99,58 @@ impl Plugin for MapTransitionPlugin {
     }
 }
 
-fn start(world: &World, entry: Entry) -> Result<Phase, String> {
+/// `env SKATE_MAP_CHANGE=<map name>@<seconds>` (options.txt `env` line): requests a map change
+/// that many seconds after the first frame, once. The emulator harness can't reliably drive the
+/// menu with timed key presses, and a map change is the case the memory log has to catch
+/// (findings 57 §4.5). `<map name>` is a stem under the installation's `maps/`, case-insensitive.
+fn scheduled_map_change(
+    config: Res<Config>,
+    mut transition: ResMut<MapTransition>,
+    mut fired: Local<Option<(String, f32, std::time::Instant, bool)>>,
+) {
+    if fired.is_none() {
+        let spec = std::env::var("SKATE_MAP_CHANGE").ok().filter(|s| !s.is_empty());
+        *fired = spec.and_then(|spec| {
+            let (name, secs) = spec.rsplit_once('@')?;
+            let secs = secs.trim().parse::<f32>().ok()?;
+            Some((name.trim().to_string(), secs, std::time::Instant::now(), false))
+        });
+        if let Some((name, secs, _, _)) = fired.as_ref() {
+            eprintln!("[Skate] SKATE_MAP_CHANGE={name}@{secs}s armed");
+        }
+    }
+    // Wall clock, not Time<Virtual>: the emulator's start-up menu pauses virtual time, and
+    // the point is to fire a fixed real time after the first frame.
+    let Some(state) = fired.as_mut() else { return };
+    if state.3 || state.2.elapsed().as_secs_f32() < state.1 {
+        return;
+    }
+    state.3 = true;
+    let (name, fired_at) = (state.0.clone(), state.2.elapsed().as_secs_f32());
+    let root = config.asset_root.clone();
+    let entry = crate::map_library::discover(&root)
+        .into_iter()
+        .find(|e| e.path.as_ref().is_some_and(|p| {
+            p.file_stem().is_some_and(|s| s.eq_ignore_ascii_case(&name))
+        }));
+    match entry {
+        Some(entry) => {
+            eprintln!("[Skate] SKATE_MAP_CHANGE firing {fired_at:.1}s after arming: {:?}", entry.path);
+            transition.request(entry);
+        }
+        None => eprintln!("[Skate] SKATE_MAP_CHANGE: no map named {name} under {}", root.parent().unwrap_or(&root).join("maps").display()),
+    }
+}
+
+fn start(world: &mut World, entry: Entry) -> Result<Phase, String> {
+    // Release the live world's visuals before the new map is read and decoded.
+    // A map change used to stack the new map's whole decoded pixel set and
+    // every page it builds on top of the old world, which is what ran the
+    // Switch heap out (findings 19 §6.3, doc 58 §3.3). A load that then fails
+    // leaves the skater, physics and menu in place but the old world's
+    // visuals gone; the alternative was an allocation failure that aborts the
+    // game outright.
+    crate::map_render::MapAssets::retire(world);
     let config = world.resource::<Config>();
     let root = config.asset_root.clone();
     let difficulty = config.difficulty;
@@ -210,14 +262,17 @@ fn poll(world: &mut World) {
 fn failed(world: &mut World, error: String) {
     warn!("MAP_TRANSITION_FAILED {error}");
     world.resource_mut::<crate::graphics_menu::Menu>()
-        .transition_finished(format!("Could not load map: {error}\nPrevious world retained. Choose another map or Resume."), false);
+        .transition_finished(format!("Could not load map: {error}\nThe previous world's visuals were released to make room for it. Choose another map or Resume."), false);
 }
 
 fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
     let publication_started = Instant::now();
     prepared.metadata.generation = world.resource::<CurrentMap>().generation + 1;
-    // All fallible decoding/validation/construction finished before this point.
-    // No simulation system can observe a mixture of the two worlds.
+    // The live world's visuals were already released when the transition
+    // started, to make room for the new map's decode; this is the idempotent
+    // safety net for a world that was never retired. All fallible
+    // decoding/validation/construction finished before this point, so no
+    // simulation system can observe a mixture of the two worlds.
     crate::map_render::MapAssets::retire(world);
     prepared.scene.publish(world);
     crate::camera::set_world_environment(world, prepared.retail);

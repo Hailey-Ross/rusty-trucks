@@ -20,8 +20,10 @@ use std::sync::Mutex;
 use bevy::prelude::*;
 
 /// Bump when the page bytes change for the same source textures: the resampling, the mip chain,
-/// the BC3 encoder or its parameters, or the layout (retail_render.rs `PageFormat`).
-const VERSION: u32 = 1;
+/// the BC3 encoder or its parameters, or the layout (retail_render.rs `PageFormat`). Version 2
+/// also moved the key's texture identity from decoded pixels to compressed payloads, which
+/// changes what a cached entry means (findings 58 §3.6).
+const VERSION: u32 = 2;
 const MAGIC: [u8; 8] = *b"SK8PAGE\0";
 const HEADER: usize = 40;
 /// Read and write in pieces this size.
@@ -179,7 +181,7 @@ pub(crate) fn hash(seed: u64, bytes: &[u8]) -> u64 {
 }
 
 /// A page's key: `params` (its size, levels, format, layer count) and its layers' source textures
-/// in order, each `(width, height, rgba)`, hashed on `workers` threads.
+/// in order, each `(width, height, compressed payload)`, hashed on `workers` threads.
 pub(crate) fn key(params: &[u64], layers: &[(u32, u32, &[u8])], workers: usize) -> u64 {
     let mut hashes = vec![0u64; layers.len()];
     {

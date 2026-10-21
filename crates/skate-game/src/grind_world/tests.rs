@@ -63,7 +63,7 @@ fn provider_keeps_both_header_guids_and_source_rail_identity() {
     }).collect();
     let map = SkateMap {
         version: 14, name: "metadata fixture".into(), spawn: [0.; 3], heading: 0.,
-        environment: vec![], materials: vec![], textures: vec![],
+        environment: vec![], materials: vec![], textures: vec![], texture_blocks: vec![],
         geometry: Geometry { vertices: vec![], indices: vec![], collision: vec![] },
         rails: rails.into(), doors: vec![], lights: vec![], routes: vec![],
         extensions: vec![Extension { tag: *b"WMET", schema: 1,

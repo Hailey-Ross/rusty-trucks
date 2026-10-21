@@ -179,7 +179,16 @@ impl PreparedScene {
     }
 
     /// Worker-thread body. Builds all geometry, materials and images for the map.
-    pub(crate) fn prepare(&mut self, map: Option<&SkateMap>, asset_root: &Path) {
+    ///
+    /// The package keeps its texture payloads compressed; the material table decompresses
+    /// each one as it uploads the page layer that needs it, which is what keeps a map change
+    /// from holding the old world, the new map's whole decoded pixel set and every page at
+    /// once (findings 58 §3.6).
+    pub(crate) fn prepare(
+        &mut self,
+        map: Option<&SkateMap>,
+        asset_root: &Path,
+    ) {
         let Some(map) = map else {
             crate::world::spawn_test_world(&mut self.commands, &mut self.meshes, &mut self.standard);
             return;

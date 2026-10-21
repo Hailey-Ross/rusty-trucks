@@ -35,6 +35,8 @@
 //!     `SKATE_SHADOW_FILTER`, `SKATE_DRAW_DISTANCE`, `SKATE_WORLD_SHADOWS`), skate_world.rs's
 //!     `SKATE_VERTEX_PACKING=0` (the world's standard vertex attributes) and
 //!     `SKATE_WORLD_ORDER=centroid` (the world's old triangle order), both for comparing,
+//!     map_transition.rs's `SKATE_MAP_CHANGE=<map name>@<seconds>` (request a map change that
+//!     many seconds after the first frame, once, for measuring a map change's memory),
 //!     page_cache.rs's `SKATE_PAGE_CACHE=0` (build the texture pages at every launch) and
 //!     `SKATE_PAGE_CACHE_VERIFY=1` (build them anyway and compare them with the cached copy),
 //!     game_audio's `SKATE_AUDIO_EARLY_LOAD=0` (load the start-up sounds in the first frame,

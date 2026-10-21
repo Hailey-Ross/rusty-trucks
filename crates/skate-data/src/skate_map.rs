@@ -2,7 +2,6 @@
 //! SK8R15/Source/tools/blender_owned_map/SKATE_FORMAT.md and
 //! owned/world/src/owned_map_package.cpp. No geometry or physics is inferred.
 use std::{io::Read, path::Path, time::Instant};
-mod texture_decode;
 mod storage_v15;
 
 #[derive(Debug, PartialEq)]
@@ -14,7 +13,12 @@ pub struct SkateMap {
     /// Authored environment fields in wire order (12, 14, or 45 floats).
     pub environment: Vec<f32>,
     pub materials: Vec<Material>,
+    /// Compressed pixel payloads, parallel to `textures`. The renderer decodes each
+    /// one through [`SkateMap::decode_texture`] as it uploads the page layer that
+    /// needs it, so a map change never holds the whole decoded pixel set at once
+    /// (findings 58 §3.6).
     pub textures: Vec<Texture>,
+    pub texture_blocks: Vec<TextureBlock>,
     pub geometry: Geometry,
     pub rails: Vec<Rail>,
     pub doors: Vec<Door>,
@@ -43,13 +47,22 @@ pub struct Material {
     /// Complete v12+ retail definition bytes; distinct from portable PBR fields.
     pub retail_definition: Option<Vec<u8>>,
 }
+/// A map texture's metadata. Pixels live in the map's `texture_blocks` and are
+/// decompressed on demand, never stored here.
 #[derive(Debug, PartialEq)]
 pub struct Texture {
     pub name: String,
     pub width: u32,
     pub height: u32,
     pub color_space: u32,
-    pub rgba: Vec<u8>,
+}
+/// One texture's compressed payload, owned so it outlives the file buffer the
+/// parser borrowed. `expected` is the decoded RGBA8 length.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextureBlock {
+    pub expected: usize,
+    pub method: u32,
+    pub bytes: Vec<u8>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vertex {
@@ -218,99 +231,26 @@ impl<'a> Reader<'a> {
     fn stored(&mut self, expected: usize) -> Result<Vec<u8>, String> {
         self.stored_block(expected)?.decode()
     }
-    fn geometry(
+    /// Geometry stored inline in the file (v1-8 maps, door records): the three sections are
+    /// contiguous, so they are borrowed rather than copied.
+    fn inline_geometry(
         &mut self,
         counts: [u32; 3],
         materials: usize,
         version: u8,
     ) -> Result<Geometry, String> {
-        let [nv, ni, nc] = counts;
-        self.check_count(nv, if version >= 12 { 56 } else { 44 })?;
-        let vertices: Vec<Vertex> = (0..nv)
-            .map(|_| {
-                Ok(Vertex {
-                    position: self.floats()?,
-                    normal: self.floats()?,
-                    uv: self.floats()?,
-                    lightmap_uv: self.floats()?,
-                    material: self.u()?,
-                    decal_uv: if version >= 12 {
-                        Some(self.floats()?)
-                    } else {
-                        None
-                    },
-                    tangent_frame: if version >= 12 {
-                        Some(self.take(4)?.try_into().unwrap())
-                    } else {
-                        None
-                    },
-                })
-            })
-            .collect::<Result<_, String>>()?;
-        self.check_count(ni, 4)?;
-        let indices: Vec<u32> = (0..ni).map(|_| self.u()).collect::<Result<_, _>>()?;
-        self.check_count(nc, if version >= 11 { 48 } else { 44 })?;
-        let collision: Vec<Collision> = (0..nc)
-            .map(|_| {
-                let points = [self.floats()?, self.floats()?, self.floats()?];
-                let surface = self.u()?;
-                let material = self.u()?;
-                let native_edges = if version >= 11 {
-                    let bytes = self.take(4)?;
-                    if bytes[3] != 0 {
-                        Some(bytes[..3].try_into().unwrap())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-                Ok(Collision {
-                    points,
-                    surface,
-                    material,
-                    native_edges,
-                })
-            })
-            .collect::<Result<_, String>>()?;
-        let valid_material = |id: u32| id > 0 && id as usize <= materials;
-        if vertices.iter().any(|v| !valid_material(v.material))
-            || collision
-                .iter()
-                .any(|v| !valid_material(v.material) || v.surface == 0)
-        {
-            return Err("SKATE invalid material/surface reference".into());
-        }
-        if indices.len() % 3 != 0 || indices.iter().any(|&i| i as usize >= vertices.len()) {
-            return Err("SKATE invalid triangle indices".into());
-        }
-        for tri in indices.chunks_exact(3) {
-            if tri
-                .iter()
-                .any(|&i| vertices[i as usize].material != vertices[tri[0] as usize].material)
-            {
-                return Err("SKATE triangle mixes materials".into());
-            }
-        }
-        for tri in &collision {
-            let [a, b, c] = tri.points;
-            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-            let cross = [
-                u[1] * v[2] - u[2] * v[1],
-                u[2] * v[0] - u[0] * v[2],
-                u[0] * v[1] - u[1] * v[0],
-            ];
-            let area = cross.iter().map(|x| x * x).sum::<f32>();
-            if !area.is_finite() || area <= 0. {
-                return Err("SKATE degenerate collision triangle".into());
-            }
-        }
-        Ok(Geometry {
-            vertices,
-            indices,
-            collision,
-        })
+        let vsize = counts[0] as usize * if version >= 12 { 56 } else { 44 };
+        let isize_bytes = counts[1] as usize * 4;
+        let csize = counts[2] as usize * if version >= 11 { 48 } else { 44 };
+        parse_geometry(
+            [
+                (counts[0], self.take(vsize)?),
+                (counts[1], self.take(isize_bytes)?),
+                (counts[2], self.take(csize)?),
+            ],
+            materials,
+            version,
+        )
     }
 }
 /// Borrow compressed payloads while scanning; decompression does not mutate
@@ -323,7 +263,10 @@ impl StoredBlock<'_> {
         let decoded = match method {
             0 => bytes.to_vec(),
             1 => {
-                let mut result = Vec::with_capacity(expected.min(8 * 1024 * 1024));
+                // The decoded size is known, so the buffer is allocated once at its final
+                // length: doubling from a smaller start would hold the old and new buffers at
+                // once, and a 140 MiB vertex block grows past 256 MiB doing it (findings 58 §3.6).
+                let mut result = Vec::with_capacity(expected);
                 let mut decoder = flate2::read::ZlibDecoder::new(bytes);
                 decoder
                     .by_ref()
@@ -336,7 +279,7 @@ impl StoredBlock<'_> {
                 result
             }
             2 => {
-                let mut result = Vec::with_capacity(expected.min(8 * 1024 * 1024));
+                let mut result = Vec::with_capacity(expected);
                 zstd::stream::read::Decoder::new(bytes)
                     .map_err(|e| e.to_string())?
                     .take(expected as u64 + 1)
@@ -352,6 +295,112 @@ impl StoredBlock<'_> {
         }
         Ok(decoded)
     }
+}
+
+/// Parses the three geometry sections from their own buffers: decompressed blocks for v9+,
+/// borrowed file slices for v1-8. Concatenating them into one growing Vec would hold the old
+/// and new buffers at once (findings 58 §3.6).
+fn parse_geometry(
+    sections: [(u32, &[u8]); 3],
+    materials: usize,
+    version: u8,
+) -> Result<Geometry, String> {
+    let [(nv, vertices), (ni, indices), (nc, collision)] = sections;
+    let mut r = Reader { bytes: vertices, at: 0 };
+    r.check_count(nv, if version >= 12 { 56 } else { 44 })?;
+    let vertices: Vec<Vertex> = (0..nv)
+        .map(|_| {
+            Ok(Vertex {
+                position: r.floats()?,
+                normal: r.floats()?,
+                uv: r.floats()?,
+                lightmap_uv: r.floats()?,
+                material: r.u()?,
+                decal_uv: if version >= 12 {
+                    Some(r.floats()?)
+                } else {
+                    None
+                },
+                tangent_frame: if version >= 12 {
+                    Some(r.take(4)?.try_into().unwrap())
+                } else {
+                    None
+                },
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    let mut r = Reader { bytes: indices, at: 0 };
+    r.check_count(ni, 4)?;
+    let indices: Vec<u32> = (0..ni).map(|_| r.u()).collect::<Result<_, _>>()?;
+    let mut r = Reader { bytes: collision, at: 0 };
+    r.check_count(nc, if version >= 11 { 48 } else { 44 })?;
+    let collision: Vec<Collision> = (0..nc)
+        .map(|_| {
+            let points = [r.floats()?, r.floats()?, r.floats()?];
+            let surface = r.u()?;
+            let material = r.u()?;
+            let native_edges = if version >= 11 {
+                let bytes = r.take(4)?;
+                if bytes[3] != 0 {
+                    Some(bytes[..3].try_into().unwrap())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            Ok(Collision {
+                points,
+                surface,
+                material,
+                native_edges,
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    let valid_material = |id: u32| id > 0 && id as usize <= materials;
+    if vertices.iter().any(|v| !valid_material(v.material))
+        || collision
+            .iter()
+            .any(|v| !valid_material(v.material) || v.surface == 0)
+    {
+        return Err("SKATE invalid material/surface reference".into());
+    }
+    if indices.len() % 3 != 0 || indices.iter().any(|&i| i as usize >= vertices.len()) {
+        return Err("SKATE invalid triangle indices".into());
+    }
+    for tri in indices.chunks_exact(3) {
+        if tri
+            .iter()
+            .any(|&i| vertices[i as usize].material != vertices[tri[0] as usize].material)
+        {
+            return Err("SKATE triangle mixes materials".into());
+        }
+    }
+    for tri in &collision {
+        let [a, b, c] = tri.points;
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cross = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        let area = cross.iter().map(|x| x * x).sum::<f32>();
+        if !area.is_finite() || area <= 0. {
+            return Err("SKATE degenerate collision triangle".into());
+        }
+    }
+    Ok(Geometry {
+        vertices,
+        indices,
+        collision,
+    })
+}
+
+/// Decompresses one texture payload.
+pub fn decode_block(block: &TextureBlock) -> Result<Vec<u8>, String> {
+    StoredBlock { expected: block.expected, method: block.method, bytes: &block.bytes }
+        .decode()
 }
 /// The map fingerprint's starting value: the fingerprint is 64-bit FNV-1a over the whole `.skate`
 /// file, `fingerprint_update(FINGERPRINT_START, &file)`.
@@ -408,26 +457,26 @@ impl SkateMap {
             map.name, disk.as_millis(), parse_started.elapsed().as_millis(), data.len());
         Ok((map, hashed.map(|(hash, _)| hash)))
     }
+
+    /// Decodes a package. Texture payloads stay compressed; the renderer decompresses
+    /// each one through [`SkateMap::decode_texture`] as it needs it (findings 58 §3.6).
     pub fn parse(data: &[u8]) -> Result<Self, String> {
-        // std's `available_parallelism` is `Unsupported` on Horizon, which made this one worker
-        // (67 s of texture decoding for University on Ryujinx). Homebrew there may run on three
-        // cores (Ryujinx) or four (Atmosphère's loader); three workers suit both.
-        #[cfg(target_os = "horizon")]
-        let workers = 3;
-        #[cfg(not(target_os = "horizon"))]
-        let workers = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
-        Self::parse_with_decode_workers(data, workers)
+        Self::parse_inner(data, true)
     }
-    /// Data tools can request one worker for reproducible serial comparisons.
-    /// The decoder caps concurrency at eight and skips threading for small maps.
-    pub fn parse_with_decode_workers(data: &[u8], workers: usize) -> Result<Self, String> {
-        Self::parse_inner(data, workers, true)
+
+    /// Decompresses one texture's RGBA8 pixels. The renderer calls this per page layer, so a
+    /// map change never holds the whole decoded pixel set at once (findings 58 §3.6).
+    pub fn decode_texture(&self, index: usize) -> Result<Vec<u8>, String> {
+        let Some(block) = self.texture_blocks.get(index) else {
+            return Err(format!("SKATE texture block index {index} out of range"));
+        };
+        decode_block(block)
     }
 
     /// Decode a supplemental presentation package without requiring collision.
     /// Playable map loading continues to use `parse`/`load`.
     pub fn parse_render_only(data: &[u8]) -> Result<Self, String> {
-        let map = Self::parse_inner(data, 4, false)?;
+        let map = Self::parse_inner(data, false)?;
         if !map.geometry.collision.is_empty() || !map.rails.is_empty()
             || !map.doors.is_empty() || !map.lights.is_empty() || !map.routes.is_empty()
             || map.extensions.iter().any(|e| e.tag != *b"WMET")
@@ -436,7 +485,7 @@ impl SkateMap {
         }
         Ok(map)
     }
-    fn parse_inner(data: &[u8], workers: usize, require_collision: bool) -> Result<Self, String> {
+    fn parse_inner(data: &[u8], require_collision: bool) -> Result<Self, String> {
         let parse_started = Instant::now();
         let mut r = Reader { bytes: data, at: 0 };
         let magic = r.take(8)?;
@@ -581,7 +630,7 @@ impl SkateMap {
         let texture_started = Instant::now();
         r.check_count(counts[1], 20)?;
         let mut textures = Vec::new();
-        let mut texture_blocks: Vec<StoredBlock<'_>> = Vec::new();
+        let mut texture_blocks: Vec<TextureBlock> = Vec::new();
         for _ in 0..counts[1] {
             let name = r.string()?;
             let width = r.u()?;
@@ -592,45 +641,40 @@ impl SkateMap {
             }
             let expected = width as usize * height as usize * 4;
             let block = if version >= 9 {
-                r.stored_block(expected)?
+                let StoredBlock { expected, method, bytes } = r.stored_block(expected)?;
+                TextureBlock { expected, method, bytes: bytes.to_vec() }
             } else {
                 let bytes = r.u()? as usize;
                 if bytes != expected {
                     return Err("Invalid SKATE embedded texture size".into());
                 }
-                StoredBlock { expected, method: 0, bytes: r.take(bytes)? }
+                TextureBlock { expected, method: 0, bytes: r.take(bytes)?.to_vec() }
             };
             let block = if version >= 15 && block.method == 11 {
-                let index = u32::from_le_bytes(block.bytes.try_into()
+                let index = u32::from_le_bytes(block.bytes[..4].try_into()
                     .map_err(|_| "Invalid SKATE texture reference size")?) as usize;
-                let source = *texture_blocks.get(index).ok_or("Invalid SKATE forward texture reference")?;
+                let source = texture_blocks.get(index).ok_or("Invalid SKATE forward texture reference")?;
                 if source.expected != expected { return Err("SKATE texture reference size mismatch".into()); }
-                source
+                source.clone()
             } else { block };
             texture_blocks.push(block);
-            textures.push(Texture {
-                name,
-                width,
-                height,
-                color_space,
-                rgba: Vec::new(),
-            });
+            textures.push(Texture { name, width, height, color_space });
         }
-        let texture_workers = texture_decode::decode(&mut textures, &texture_blocks, workers)?;
         let texture_time = texture_started.elapsed();
         let geometry_started = Instant::now();
-        let geometry_counts = [counts[2], counts[3], counts[4]];
         let geometry = if version >= 9 {
-            let mut bytes = r.stored(counts[2] as usize * if version >= 12 { 56 } else { 44 })?;
-            bytes.extend(r.stored(counts[3] as usize * 4)?);
-            bytes.extend(r.stored(counts[4] as usize * if version >= 11 { 48 } else { 44 })?);
-            Reader {
-                bytes: &bytes,
-                at: 0,
-            }
-            .geometry(geometry_counts, materials.len(), version)?
+            // Each block decompresses into its own exact-size buffer; concatenating the three
+            // into one growing Vec would hold the old and new buffers at once (findings 58 §3.6).
+            let vertices = r.stored_block(counts[2] as usize * if version >= 12 { 56 } else { 44 })?.decode()?;
+            let indices = r.stored_block(counts[3] as usize * 4)?.decode()?;
+            let collision = r.stored_block(counts[4] as usize * if version >= 11 { 48 } else { 44 })?.decode()?;
+            parse_geometry(
+                [(counts[2], vertices.as_slice()), (counts[3], indices.as_slice()), (counts[4], collision.as_slice())],
+                materials.len(),
+                version,
+            )?
         } else {
-            r.geometry(geometry_counts, materials.len(), version)?
+            r.inline_geometry([counts[2], counts[3], counts[4]], materials.len(), version)?
         };
         let geometry_time = geometry_started.elapsed();
         if materials.is_empty()
@@ -694,7 +738,7 @@ impl SkateMap {
                 friction,
                 restitution,
                 surface,
-                geometry: r.geometry(counts, materials.len(), version)?,
+                geometry: r.inline_geometry(counts, materials.len(), version)?,
             });
         }
         r.check_count(counts[7], 64)?;
@@ -769,8 +813,8 @@ impl SkateMap {
                 data.len() - r.at
             ));
         }
-        eprintln!("MAP_DECODE_TIMING name={:?} textures_ms={} texture_workers={} geometry_ms={} extensions_ms={} total_ms={}",
-            name, texture_time.as_millis(), texture_workers, geometry_time.as_millis(),
+        eprintln!("MAP_DECODE_TIMING name={:?} textures_ms={} geometry_ms={} extensions_ms={} total_ms={}",
+            name, texture_time.as_millis(), geometry_time.as_millis(),
             extension_started.elapsed().as_millis(), parse_started.elapsed().as_millis());
         Ok(Self {
             version,
@@ -780,6 +824,7 @@ impl SkateMap {
             environment,
             materials,
             textures,
+            texture_blocks,
             geometry,
             rails,
             doors,

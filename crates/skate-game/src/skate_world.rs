@@ -1065,6 +1065,8 @@ mod tests {
         let path = std::path::PathBuf::from(
             std::env::var("SKATE_BUDGET_MAP").expect("SKATE_BUDGET_MAP"),
         );
+        // The package keeps its texture payloads compressed; the table decompresses each
+        // one per page layer (findings 58 §3.6).
         let map = skate_data::skate_map::SkateMap::load(&path).unwrap();
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
@@ -1072,6 +1074,7 @@ mod tests {
         world.init_resource::<Assets<StandardMaterial>>();
         world.init_resource::<Assets<crate::retail_render::WorldMaterial>>();
         world.init_resource::<Assets<bevy::render::storage::ShaderStorageBuffer>>();
+        world.init_resource::<Assets<crate::retail_sky::SkyMaterial>>();
         let mut scene = crate::map_render::PreparedScene::new(&world);
         let started = std::time::Instant::now();
         scene.prepare(Some(&map), &root);

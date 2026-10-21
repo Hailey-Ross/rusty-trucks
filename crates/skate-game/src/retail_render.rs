@@ -30,7 +30,7 @@ use bevy::{
     },
     shader::{ShaderDefVal, ShaderRef},
 };
-use skate_data::skate_map::SkateMap;
+use skate_data::skate_map::{SkateMap, Texture, TextureBlock};
 use std::collections::{BTreeMap, HashMap};
 
 use crate::map_render::AssetSink;
@@ -1401,20 +1401,23 @@ impl Usage {
     };
 }
 
-/// Deduplicates textures by content so identical pixels share one layer.
-/// Returns a lookup from 1-based source id to canonical 1-based id, with 0
-/// meaning "no texture" in both directions.
-fn canonical_texture_ids(textures: &[skate_data::skate_map::Texture]) -> Vec<u32> {
-    let mut seen: HashMap<(u32, u32, u32, &[u8]), u32> = HashMap::new();
+/// Deduplicates textures by compressed payload so identical uploads share one layer.
+/// Keying on the compressed bytes, not the pixels, is what lets a page-cache hit skip
+/// decompression entirely (findings 58 §3.6). Returns a lookup from 1-based source id to
+/// canonical 1-based id, with 0 meaning "no texture" in both directions.
+fn canonical_texture_ids(textures: &[Texture], blocks: &[TextureBlock]) -> Vec<u32> {
+    let mut seen: HashMap<(u32, u32, u32, u32, &[u8]), u32> = HashMap::new();
     let mut ids = vec![0; textures.len() + 1];
     for (index, texture) in textures.iter().enumerate() {
         let id = index as u32 + 1;
+        let block = &blocks[index];
         ids[index + 1] = *seen
             .entry((
                 texture.width,
                 texture.height,
                 texture.color_space,
-                texture.rgba.as_slice(),
+                block.method,
+                block.bytes.as_slice(),
             ))
             .or_insert(id);
     }
@@ -1589,6 +1592,9 @@ impl MaterialTable {
         usize::from(self.slabs)
     }
 
+    /// Builds the table from the package's materials. The package keeps its texture payloads
+    /// compressed; pixels are decompressed per page layer during upload and dropped, so the
+    /// whole decoded set never exists at once (findings 58 §3.6).
     pub(crate) fn build(
         map: &SkateMap,
         tuning: &MaterialTuning,
@@ -1598,7 +1604,8 @@ impl MaterialTable {
         buffers: &mut impl AssetSink<ShaderStorageBuffer>,
     ) -> Self {
         let _span = info_span!("build_material_table").entered();
-        let canonical = canonical_texture_ids(&map.textures);
+        let (textures, blocks) = (&map.textures, &map.texture_blocks);
+        let canonical = canonical_texture_ids(textures, blocks);
 
         // Pass 1: decode every material into a definition plus the channel
         // texture ids it wants, so page sizing can see the whole demand.
@@ -1627,7 +1634,7 @@ impl MaterialTable {
                 tuning,
                 sky,
                 &canonical,
-                map,
+                textures,
             )));
         }
         if unsupported > 0 {
@@ -1644,7 +1651,7 @@ impl MaterialTable {
                 if channel.cube {
                     continue;
                 }
-                let texture = &map.textures[channel.id as usize - 1];
+                let texture = &textures[channel.id as usize - 1];
                 *demand.entry((texture.width, texture.height)).or_default() += 1;
             }
         }
@@ -1671,7 +1678,9 @@ impl MaterialTable {
         }
         log_world_features(&features);
 
-        // Pass 3: pack materials into slabs, sealing a slab when a page fills.
+        // Pass 3: pack materials into slabs, sealing a slab when a page fills. Packing runs
+        // to completion before anything uploads, so every slab's page sizes are the map-wide
+        // ones chosen in pass 2.
         let mut table = Self {
             entries: vec![None; map.materials.len()],
             materials: HashMap::new(),
@@ -1680,26 +1689,30 @@ impl MaterialTable {
             fetch: FetchBuffers { vertices: buffers.reserve(), triangles: buffers.reserve() },
             marks: buffers.reserve(),
         };
+        let mut packed: Vec<Slab> = Vec::new();
         let mut slab = Slab::new(&page_sizes);
         for (source, request) in requests.iter().enumerate() {
             let Some(request) = request else { continue };
-            if !slab.fits(request, map) {
-                table.seal(slab, map, tuning, materials, images, buffers);
-                slab = Slab::new(&page_sizes);
+            if !slab.fits(request, textures) {
+                packed.push(std::mem::replace(&mut slab, Slab::new(&page_sizes)));
             }
             // `seal` is what increments the count, so the slab being filled is
             // always the next index.
-            let entry = slab.insert(request, map, table.slabs);
+            let entry = slab.insert(request, textures, u16::try_from(packed.len()).unwrap_or(u16::MAX));
             table.entries[source] = Some(entry);
         }
-        table.seal(slab, map, tuning, materials, images, buffers);
+        packed.push(slab);
+        for slab in packed {
+            table.seal(slab, textures, blocks, tuning, materials, images, buffers);
+        }
         table
     }
 
     fn seal(
         &mut self,
         slab: Slab,
-        map: &SkateMap,
+        textures: &[Texture],
+        blocks: &[TextureBlock],
         tuning: &MaterialTuning,
         materials: &mut impl AssetSink<WorldMaterial>,
         images: &mut impl AssetSink<Image>,
@@ -1731,13 +1744,13 @@ impl MaterialTable {
         ));
 
         let pages = std::array::from_fn(|class| {
-            slab.upload_page(class, map, tuning.compressed_pages, (usize::from(index), tuning.page_cache.as_ref()), images)
+            slab.upload_page(class, textures, blocks, tuning.compressed_pages, (usize::from(index), tuning.page_cache.as_ref()), images)
         });
         // A class with no textures gets a placeholder page, which nothing samples.
         let page_sizes = std::array::from_fn(|class| {
             slab.pages.get(class).map_or([1, 1], |page| [page.width, page.height])
         });
-        let cubes = slab.upload_cubes(map, images);
+        let cubes = slab.upload_cubes(textures, blocks, images);
         let shadow_groups: &[bool] = if crate::render_options::world_shadow_split() {
             &[false, true]
         } else {
@@ -1825,14 +1838,14 @@ impl Request {
         tuning: &MaterialTuning,
         sky: &crate::retail_sky::SkyEnvironment,
         canonical: &[u32],
-        map: &SkateMap,
+        textures: &[Texture],
     ) -> Self {
         let lookup = |id: u32, cube: bool| -> Option<u32> {
             let id = *canonical.get(id as usize)?;
             if id == 0 {
                 return None;
             }
-            let texture = &map.textures[id as usize - 1];
+            let texture = &textures[id as usize - 1];
             // Older .skate exports contain only face zero. Never treat those as
             // a cube: six stacked faces is the only valid encoding.
             if cube && texture.height != texture.width * 6 {
@@ -2024,7 +2037,7 @@ impl Slab {
 
     /// Layer capacity is the only reason to seal a slab: the page *sizes* are
     /// chosen once for the whole map and every slab shares them.
-    fn fits(&self, request: &Request, map: &SkateMap) -> bool {
+    fn fits(&self, request: &Request, textures: &[Texture]) -> bool {
         let mut needed = [0usize; PAGE_CLASSES];
         let mut counted: Vec<u32> = Vec::new();
         for channel in request.channels.iter().flatten() {
@@ -2033,7 +2046,7 @@ impl Slab {
                 continue;
             }
             counted.push(channel.id);
-            let texture = &map.textures[channel.id as usize - 1];
+            let texture = &textures[channel.id as usize - 1];
             if let Some(class) = self.class_for(texture.width, texture.height) {
                 needed[class] += 1;
             }
@@ -2044,7 +2057,7 @@ impl Slab {
             .all(|(class, page)| page.layers.len() + needed[class] <= MAX_PAGE_LAYERS)
     }
 
-    fn insert(&mut self, request: &Request, map: &SkateMap, slab: u16) -> MaterialEntry {
+    fn insert(&mut self, request: &Request, textures: &[Texture], slab: u16) -> MaterialEntry {
         let index = self.params.len() as u32;
         let mut slots = MaterialSlots::default();
         for (channel_index, channel) in request.channels.iter().enumerate() {
@@ -2063,7 +2076,7 @@ impl Slab {
                 slots.0[channel_index] = pack_slot(0, layer, true);
                 continue;
             }
-            let texture = &map.textures[channel.id as usize - 1];
+            let texture = &textures[channel.id as usize - 1];
             let Some(class) = self.class_for(texture.width, texture.height) else {
                 continue;
             };
@@ -2097,7 +2110,8 @@ impl Slab {
     fn upload_page(
         &self,
         class: usize,
-        map: &SkateMap,
+        textures: &[Texture],
+        blocks: &[TextureBlock],
         compressed: bool,
         (slab, cache): (usize, Option<&crate::page_cache::PageCache>),
         images: &mut impl AssetSink<Image>,
@@ -2114,7 +2128,7 @@ impl Slab {
         let rgba8 = PageFormat::Rgba8.layer_len(width, height, levels) * page.layers.len();
         let mut cached = None;
         if let Some(cache) = cache.filter(|_| format == PageFormat::Bc3) {
-            let key = page_key(page, map, format, levels);
+            let key = page_key(page, textures, blocks, format, levels);
             let hashed = started.elapsed().as_millis();
             match cache.read(slab, class, key, layer_len * page.layers.len()) {
                 Ok(bytes) if !cache.verify() => {
@@ -2149,12 +2163,15 @@ impl Slab {
                 std::sync::Mutex::new(page.layers.iter().zip(bytes.chunks_exact_mut(layer_len)));
             let work = || loop {
                 let Some((&id, out)) = jobs.lock().unwrap().next() else { break };
-                let texture = &map.textures[id as usize - 1];
+                let texture = &textures[id as usize - 1];
+                // Decompressed here, per layer, and dropped when this iteration ends: the map's
+                // whole decoded pixel set never exists at once (findings 58 §3.6).
+                let decoded = decode_block(&blocks[id as usize - 1]);
                 let resampled;
                 let rgba = if texture.width == width && texture.height == height {
-                    &texture.rgba
+                    &decoded
                 } else {
-                    resampled = resample(&texture.rgba, texture.width, texture.height, width, height);
+                    resampled = resample(&decoded, texture.width, texture.height, width, height);
                     &resampled
                 };
                 let chain;
@@ -2208,21 +2225,21 @@ impl Slab {
         ))
     }
 
-    fn upload_cubes(&self, map: &SkateMap, images: &mut impl AssetSink<Image>) -> Handle<Image> {
+    fn upload_cubes(&self, textures: &[Texture], blocks: &[TextureBlock], images: &mut impl AssetSink<Image>) -> Handle<Image> {
         let Some(&first) = self.cubes.first() else {
             return placeholder_cube(images);
         };
-        let size = map.textures[first as usize - 1].width;
+        let size = textures[first as usize - 1].width;
         let kept = self
             .cubes
             .iter()
-            .filter(|&&id| map.textures[id as usize - 1].width == size)
+            .filter(|&&id| textures[id as usize - 1].width == size)
             .count();
         let mut bytes = Vec::with_capacity(kept * 6 * mip_chain_len(size, size));
         let mut levels = 1;
         let mut faces = 0;
         for &id in &self.cubes {
-            let texture = &map.textures[id as usize - 1];
+            let texture = &textures[id as usize - 1];
             if texture.width != size {
                 // A cube array shares one face size. Mismatches are rare enough
                 // to drop rather than rescale; the slot still reads as present,
@@ -2233,7 +2250,7 @@ impl Slab {
                 );
                 continue;
             }
-            let (chain, count) = mip_chain(&texture.rgba, size, size, 6);
+            let (chain, count) = mip_chain(&decode_block(&blocks[id as usize - 1]), size, size, 6);
             levels = count;
             bytes.extend_from_slice(&chain);
             faces += 6;
@@ -2258,15 +2275,17 @@ impl Slab {
     }
 }
 
-/// The page cache's key for `page` (page_cache.rs `key`): its source textures, and its size,
-/// mip levels, format and layer count.
-fn page_key(page: &Page, map: &SkateMap, format: PageFormat, levels: u32) -> u64 {
+/// The page cache's key for `page` (page_cache.rs `key`): its source textures' compressed
+/// payloads, and its size, mip levels, format and layer count. Compressed rather than decoded:
+/// decompression is deterministic, and hashing the payload is what lets a cache hit skip
+/// decompressing the page's textures at all (findings 58 §3.6).
+fn page_key(page: &Page, textures: &[Texture], blocks: &[TextureBlock], format: PageFormat, levels: u32) -> u64 {
     let layers: Vec<(u32, u32, &[u8])> = page
         .layers
         .iter()
         .map(|&id| {
-            let texture = &map.textures[id as usize - 1];
-            (texture.width, texture.height, texture.rgba.as_slice())
+            let texture = &textures[id as usize - 1];
+            (texture.width, texture.height, blocks[id as usize - 1].bytes.as_slice())
         })
         .collect();
     let params = [
@@ -2278,6 +2297,16 @@ fn page_key(page: &Page, map: &SkateMap, format: PageFormat, levels: u32) -> u64
         page.layers.len() as u64,
     ];
     crate::page_cache::key(&params, &layers, page_workers())
+}
+
+/// Decompresses one texture payload for a single page layer. A corrupt payload cannot be
+/// recovered mid-upload, and the map already passed validation, so this aborts the process
+/// with the decoder's message rather than unwinding through the asset sink.
+fn decode_block(block: &TextureBlock) -> Vec<u8> {
+    skate_data::skate_map::decode_block(block).unwrap_or_else(|error| {
+        eprintln!("SKATE world texture decode failed: {error}");
+        std::process::abort();
+    })
 }
 
 /// `format` is a UNORM format, `Rgba8Unorm` or `PageFormat`'s BC3: retail world textures are
@@ -2814,20 +2843,25 @@ mod tests {
 
     #[test]
     fn identical_textures_share_one_layer() {
-        let texture = |name: &str, color_space, pixel| skate_data::skate_map::Texture {
+        let texture = |name: &str, color_space| skate_data::skate_map::Texture {
             name: name.into(),
             width: 1,
             height: 1,
             color_space,
-            rgba: vec![pixel, 0, 0, 255],
+        };
+        let block = |pixel| skate_data::skate_map::TextureBlock {
+            expected: 4,
+            method: 0,
+            bytes: vec![pixel, 0, 0, 255],
         };
         let textures = vec![
-            texture("first", 1, 30),
-            texture("duplicate", 1, 30),
-            texture("linear", 0, 30),
-            texture("different", 1, 31),
+            texture("first", 1),
+            texture("duplicate", 1),
+            texture("linear", 0),
+            texture("different", 1),
         ];
-        assert_eq!(canonical_texture_ids(&textures), [0, 1, 1, 3, 4]);
+        let blocks = vec![block(30), block(30), block(30), block(31)];
+        assert_eq!(canonical_texture_ids(&textures, &blocks), [0, 1, 1, 3, 4]);
     }
 
     #[test]

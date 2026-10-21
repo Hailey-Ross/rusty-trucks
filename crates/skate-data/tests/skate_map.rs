@@ -185,7 +185,7 @@ fn reads_all_documented_versions_without_moving_geometry() {
         assert_eq!(map.heading, 1.);
         assert_eq!(map.geometry.vertices[2].position, [1., 0., 0.]);
         assert_eq!(map.geometry.collision[0].surface, 99);
-        assert_eq!(map.textures[0].rgba, [255, 128, 64, 255]);
+        assert_eq!(map.decode_texture(0).unwrap(), [255, 128, 64, 255]);
         assert_eq!(map.materials[0].audio, if version == 1 { 3 } else { 42 });
         assert_eq!(map.materials[0].physics, if version == 1 { 1 } else { 4 });
         assert_eq!(map.rails[0].points.len(), 2);
@@ -221,7 +221,9 @@ fn v15_texture_references_preserve_order_and_reject_forward_or_wrong_size() {
     data.splice(texture_end..texture_end, references);
     let map = SkateMap::parse(&data).unwrap();
     assert_eq!(map.textures.len(), 3);
-    assert!(map.textures.iter().all(|t| t.rgba == [255, 128, 64, 255]));
+    assert_eq!(map.texture_blocks.len(), 3);
+    assert!(map.texture_blocks.iter().all(|b| b.expected == 4));
+    assert!(map.texture_blocks.iter().enumerate().all(|(i, _)| map.decode_texture(i).unwrap() == [255, 128, 64, 255]));
     let reference = texture_end + (metadata_end - start) + 8;
     data[reference..reference + 4].copy_from_slice(&1u32.to_le_bytes());
     assert!(SkateMap::parse(&data).unwrap_err().contains("forward texture reference"));
