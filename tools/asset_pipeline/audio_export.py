@@ -318,9 +318,10 @@ def random_sets(collections: list[dict], attributes: dict[int, dict], names: lis
     return listed, banks
 
 
-def emitters(files: BigArchive, attributes: dict[int, dict] | None = None) -> tuple[dict, set[str]]:
+def emitters(files: BigArchive, attributes: dict[int, dict] | None = None, extra=()) -> tuple[dict, set[str]]:
     """Every `.ems` file's records with their sound's attributes and bank (None
-    when the disc has no such bank), and the banks placed by sound emitters."""
+    when the disc has no such bank), and the banks placed by sound emitters. `extra`: the player's DLC map packs'
+    BIGs, whose `data/audio/*.ems` (e.g. DLC_Maloof.ems) place disc banks (b414)."""
     attributes = attributes or {}
     banks = {}
     by_file = {Path(e.path).name.lower(): Path(e.path).name for e in files.entries}
@@ -331,11 +332,17 @@ def emitters(files: BigArchive, attributes: dict[int, dict] | None = None) -> tu
             for key in {Path(name).stem, Path(name).stem.lower()}:
                 banks[name_id(key)] = name
     listed, placed = {}, set()
-    for entry in sorted(files.entries, key=lambda e: e.path):
+    sources = [(files, e) for e in sorted(files.entries, key=lambda e: e.path)]
+    for pack in extra:
+        sources += [(pack, e) for e in sorted(pack.entries, key=lambda e: e.path)
+                    if e.path.replace('\\', '/').lower().startswith('data/audio/')]
+    for archive, entry in sources:
         if not entry.path.endswith('.ems'):
             continue
         stem = Path(entry.path).stem
-        records = ems_emitters(files.read(entry))
+        if stem in listed:
+            continue
+        records = ems_emitters(archive.read(entry))
         for record in records:
             sound = dict(attributes.get(record['sound_id'], {}))
             named = sound.pop('bank_file', '')
@@ -357,17 +364,20 @@ def emitters(files: BigArchive, attributes: dict[int, dict] | None = None) -> tu
 AUDIO_REGION_LAYERS = ('audio_emitters', 'audio_ambience', 'audio_reverb')
 
 
-def regions(game_root: Path, work: Path) -> dict:
+def regions(game_root: Path, work: Path, dlc_jobs=()) -> dict:
     """Each map's audio region layers from its district streams:
-    {map: {layer: [{box, nodes, keys (16 hex digits)}]}}."""
+    {map: {layer: [{box, nodes, keys (16 hex digits)}]}}. `dlc_jobs` (asset_pipeline.dlc.load): the DLC maps' streams,
+    keyed by their map label like the disc's (b414)."""
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/university/tools/vanilla_map_extraction/tools'))
     from skate3_streams import read_atoc, read_sfil
     out = {}
-    for archive in sorted((game_root/'data/content').glob('worldDIST_*.big')):
-        district = archive.stem.removeprefix('worldDIST_')
+    sources = [(a, a.stem.removeprefix('worldDIST_'), None) for a in sorted((game_root/'data/content').glob('worldDIST_*.big'))]
+    sources += [(j['archive'], j['label'], ('data/content/world/stream/' + j['district'] + '/').lower()) for j in dlc_jobs]
+    for archive, district, folder_prefix in sources:
         big = BigArchive(archive)
-        index = next((e for e in big.entries if e.path.endswith('_Sim.xst')), None)
+        streamed = [e for e in big.entries if folder_prefix is None or e.path.replace('\\', '/').lower().startswith(folder_prefix)]
+        index = next((e for e in streamed if e.path.endswith('_Sim.xst')), None)
         if index is None:
             continue
         folder = work/'regions'/district
@@ -376,7 +386,7 @@ def regions(game_root: Path, work: Path) -> dict:
         records = read_atoc(folder/'index.xst')
         by_id = {r.asset_id: r for r in records}
         layers, seen = {}, set()
-        for entry in big.entries:
+        for entry in streamed:
             name = Path(entry.path).name
             if not (name.startswith('cSim_') and name.endswith('.xsf')):
                 continue
@@ -1140,7 +1150,7 @@ def splice_trees(files: BigArchive, output: Path, banks) -> dict:
     return out
 
 
-def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report, log) -> dict:
+def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report, log, dlc_jobs=(), dlc_vaults=()) -> dict:
     """Write private/audio/** and private/audio/audio_manifest.json; return the manifest."""
     audio_root = game_root/'data/audio'
     output = private/'audio'
@@ -1198,12 +1208,16 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     files = BigArchive(audio_root/'audiofiles.big')
     by_name = {Path(e.path).name: e for e in files.entries}
     collections, record_names = _collections(game_root, work)
+    # The player's DLC map packs (b414): their rows join the disc's (a DLC row never replaces one).
+    if dlc_vaults:
+        from .dlc import merged
+        collections = merged({'collections': collections}, list(dlc_vaults))['collections']
     manifest['grain_player'] = grain_tuning(collections)
     manifest['player_tuning'] = player_tuning(collections)
     manifest['bus_tuning'] = bus_tuning(collections)
     manifest['frontend'] = frontend_sounds(collections)
     attributes = emitter_attributes(collections)
-    manifest['emitters'], placed = emitters(files, attributes)
+    manifest['emitters'], placed = emitters(files, attributes, [BigArchive(a) for a in sorted({j['archive'] for j in dlc_jobs})])
     by_file = {Path(e.path).name.lower(): Path(e.path).name for e in files.entries}
     manifest['random_sets'], random_banks = random_sets(collections, attributes, record_names, by_file)
     placed |= random_banks
@@ -1215,7 +1229,7 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     placed |= set(WORLD_BANKS)
     manifest['world_tuning'] = world_tuning(collections, record_names, (private/'stock', game_root))
     report('Reading audio regions')
-    manifest['regions'] = regions(game_root, work)
+    manifest['regions'] = regions(game_root, work, dlc_jobs)
     for bank in BANKS + tuple(sorted(placed - set(BANKS))):
         if bank not in by_name:
             raise KeyError(f'sound bank {bank} is missing from the disc')

@@ -42,17 +42,55 @@ def _texture(textures, guid):
     return texture
 
 
-def convert(game_root, assets, converted):
+def _sky(collections, row, read, mdl_parser, rx2_parser):
+    """A world's sky: its environment, dome texture, sun gradient and mesh (raises when it does not resolve)."""
+    env = world_environment(collections, row['key'])
+    raw = read(row, 'data/content/'+env['sky_model']+'.rx2')
+    model = mdl_parser.parse_rx2(raw)
+    table = rx2_parser.RX2File(raw)
+    table.parse()
+    channels = _material(raw, table)
+    textures = rx2_parser.parse_rx2(read(row, 'data/content/'+env['sky_textures']+'.rx2'))
+    diffuse = _texture(textures, channels['diffuse'])
+    sun = _texture(textures, channels['specular'])
+    shader = next(p.value for p in model.materials if p.kind == 'AttribulatorMaterialName')
+    env.update(sky_parameters(collections, shader))
+    env['fog_frame'] = fog_parameters(env['fog'])
+    if len(model.meshes) != 1 or model.meshes[0].uvs is None:
+        raise ValueError('Unexpected sky mesh layout')
+    mesh = model.meshes[0]
+    if len(sun.rgba) != sun.width*sun.height*4 or sun.height != 16:
+        raise ValueError('Unexpected sky sun-gradient dimensions')
+    return env, diffuse, sun, mesh
+
+
+def convert(game_root, assets, converted, dlc_vaults=()):
+    """Every disc world with a worldDIST_<D>.big, plus the worlds of the player's DLC map packs (`dlc_vaults`,
+    asset_pipeline.dlc.load): a DLC sky is read from its own pack first, then from miscload.big (b417)."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/utt'))
     import mdl_parser
     import rx2_parser
-    collections = Collections(converted)
+    from .dlc import merged, stream_districts
+    collections = Collections(merged(converted, list(dlc_vaults)))
     archive = BigArchive(game_root/'data/big/miscload.big')
     entries = {e.path: e for e in archive.entries}
+    packs = {}
+    for v in dlc_vaults:
+        if v['vault'] not in packs:
+            pack = BigArchive(v['big'])
+            packs[v['vault']] = (pack, {e.path.replace('\\', '/'): e for e in pack.entries})
+    def read(row, path):
+        pack = packs.get(row.get('vault'))
+        if pack and path in pack[1]:
+            return pack[0].read(pack[1][path])
+        return archive.read(entries[path])
     output = assets/'private/native-skies'
     output.mkdir(parents=True, exist_ok=True)
     available = {p.stem.removeprefix('world') for p in (game_root/'data/content').glob('worldDIST_*.big')}
+    for pack, paths in packs.values():
+        available |= set(stream_districts(paths))
     count = 0
+    skipped = []
     for (cls, _), row in collections.rows.items():
         if cls != key_hash('world'):
             continue
@@ -60,24 +98,18 @@ def convert(game_root, assets, converted):
                            if key_hash(k) == key_hash('WorldStream')), None)
         if own_stream not in available:
             continue
-        name = own_stream.removeprefix('DIST_')
-        env = world_environment(collections, row['key'])
-        raw = archive.read(entries['data/content/'+env['sky_model']+'.rx2'])
-        model = mdl_parser.parse_rx2(raw)
-        table = rx2_parser.RX2File(raw)
-        table.parse()
-        channels = _material(raw, table)
-        textures = rx2_parser.parse_rx2(archive.read(entries['data/content/'+env['sky_textures']+'.rx2']))
-        diffuse = _texture(textures, channels['diffuse'])
-        sun = _texture(textures, channels['specular'])
-        shader = next(p.value for p in model.materials if p.kind == 'AttribulatorMaterialName')
-        env.update(sky_parameters(collections, shader))
-        env['fog_frame'] = fog_parameters(env['fog'])
-        if len(model.meshes) != 1 or model.meshes[0].uvs is None:
-            raise ValueError('Unexpected sky mesh layout')
-        mesh = model.meshes[0]
-        if len(sun.rgba) != sun.width*sun.height*4 or sun.height != 16:
-            raise ValueError('Unexpected sky sun-gradient dimensions')
+        # The map's label (asset_pipeline.dlc.map_jobs: the stream folder without DIST_ / Dist_).
+        name = own_stream[5:] if own_stream.lower().startswith('dist_') else own_stream
+        try:
+            sky = _sky(collections, row, read, mdl_parser, rx2_parser)
+        except (KeyError, ValueError) as error:
+            if not row.get('vault'):
+                raise
+            # NOT RETAIL YET: Hawaiian Dream's "sky" model is no sky material (retail swaps in a multi-mesh copy built
+            # into the executable, b419); that map gets no authored sky until it is ported.
+            skipped.append(f"{row['key']} ({error!r})")
+            continue
+        env, diffuse, sun, mesh = sky
         (output/(name+'.rgba')).write_bytes(diffuse.rgba)
         (output/(name+'.sun.rgba')).write_bytes(sun.rgba)
         (output/(name+'.json')).write_text(json.dumps({
@@ -90,6 +122,8 @@ def convert(game_root, assets, converted):
         count += 1
     if not count:
         raise ValueError('No authored world skies resolved')
+    if skipped:
+        print('DLC worlds without a resolvable sky: ' + ', '.join(skipped), flush=True)
     return count
 
 

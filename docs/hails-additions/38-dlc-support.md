@@ -152,3 +152,40 @@ data. Open: no recomp trace confirms retail plays the SkateSchool bed there.
 - Whether DLC maps stay or go when the DLC folder is removed (user decision).
 - The DLC maps' display names (the DLC language tables), trigger volumes and `.ems` audio.
 - The movie's own constants for kUpdateMode / kRefreshTint / kReplayMode_* (from our export of replay_editor3).
+
+## DLC maps, part 1: conversion, starts, skies, audio (2026-10-20)
+
+- Jobs (`dlc.map_jobs`, `install.py`): one map job per DLC district stream that holds a whole map (`<D>_Sim.xst` and
+  Sim cells; the Art Gallery proxy has neither and is left out), label = the stream folder without `DIST_` /
+  `Dist_`, the pack as `source` in `maps.json`; `map_job.py --district --label --source`, `convert_map` extracts only
+  that stream from the pack BIG; disc jobs unchanged. Only packs carrying maps change the maps / environment / audio
+  groups' versions. The user's packs give 7 maps: MaloofMoneyCupDLC, DLC_DW_MegaCompund (Hawaiian Dream),
+  SanitariumDLC (After Dark), AGPark and Zen (San Van), BackLotParkDLC and DownTownSkateParkNightDLC (Create pack);
+  all seven converted (2 to 18 s each) and passed the game's `--check-assets` in a test stage.
+- Vaults (`dlc.vaults` / `dlc.load`): each pack's collection vaults (the `.vlt` / `.bin` pairs directly in `data/db/`)
+  converted with the disc's schema, rows tagged with their vault, plus the pack's global locators and, for names
+  those lack, each stream's own `<D>_Sim.loc` (XML LocationTable). Written to `private/stock/dlc/` for the engine,
+  which merges them after the disc's rows (`skate-data` `Collections::load`, test
+  `dlc_rows_add_to_the_disc_rows_and_inherit_from_them`).
+- Starts (`map_starts.py`): DLC rows resolve their text against their own `.bin`; every DLC map gets its authored
+  start (Maloof `Z_MaloofMCNYC_Start` at (0.56, 0.16, -43.42) facing -pi, as b412 read; Zen `Fn_Start_Zen`,
+  DownTown night `Z_SP_DT_Start`, both from the streams' `_Sim.loc`); the disc's ten starts are unchanged. Each
+  district now tries its candidates in order (world start locator, then the fe_locations rows) and skips a locator
+  still at the identity matrix (never placed): Art Gallery's world start `z_ArtGallery` is such an entry in
+  `DIST_AGPark_Sim.loc` (no floor below; the map check warned), so it starts at its fe location
+  `freeskate_artgallery_locator` (-24.4, 51.2, -46.0) from the pack's global locators (ours: which of the two retail
+  uses for a fresh visit is not traced; test `test_an_unplaced_world_start_falls_through_to_the_fe_location`).
+- Skies (`sky.py`): DLC worlds offered, each model read from its own pack first; MaloofMoneyCupDLC, AGPark and Zen
+  get skies; the disc's 30 sky files are byte-identical. Sanatorium and the Create pack lots name render locations
+  no vault holds: retail's lookup (TU3 0x82B6DE10) returns nothing and 0x827950A8 then selects `default` (research
+  b419), so `environment.world_environment` does the same and those maps get their skies. NOT RETAIL YET: Hawaiian
+  Dream's "sky" is no sky material (retail swaps in a multi-mesh copy built into the executable); it gets none yet.
+- Map names (`map_names.py`, wired in `install.py`): every map in `maps.json` gets `display` (its Skate 3 name) and
+  `name_id`; the engine's lists show `display` (`map_library.rs`). Rule (ours, no retail screen lists maps by
+  stream): the `map_category` row keyed like the world row, else the world row's own name, resolved in the disc's
+  English table and the packs' own; text with font glyphs or none falls back to the label in words. Per the retail
+  data: MegaPark = "Stadium", StartPark = "PCU Training", IndustrialSkatePark = "Team HQ", AGPark = "The Art
+  Gallery", SanitariumDLC = "After Dark". Test `test_map_names`.
+- Audio (`audio_export.py`): the DLC rows join the disc's, the packs' `.ems` (7 files; Maloof's places the 7 disc loop
+  banks b414 listed) and every DLC district's region layers keyed by label; the disc's 23 `.ems` are unchanged.
+  Not yet: the new DLC beds and banks (After Dark `24_dlc_ambience`, the Create pack `25_dlc_ambience`, b418).

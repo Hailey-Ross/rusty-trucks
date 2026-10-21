@@ -1461,7 +1461,12 @@ unhandled: {:?}", game.calls, stage.unhandled());
             stage.update(16.0, &movies, &mut game).unwrap();
         }
         let rows = game.challenge_map.state.rows(&registry, &context);
-        assert_eq!(rows.len(), 7, "the seven location folders");
+        // The disc's seven location folders first; an install with DLC packs lists their locations after them
+        // (the packs' own map_listing rows in private/stock/dlc).
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(&labels[..7.min(labels.len())], ["ID_DISTRICT_DOWNTOWN", "ID_DISTRICT_INDUSTRY", "ID_DISTRICT_UNIVERSITY",
+            "ID_LOCATION_SKATESCHOOL", "ID_MAP_FILTER_SKATE_PARK", "ID_CHALLENGE_OTL_MMCP_01_TITLE", "ID_WORLD_BLACKBOXPARK"],
+            "the seven location folders");
         // SetState 33 loads the default map into an image slot (b262: mDefaultMapImage.LoadRX2Texture); the
         // ImageRenderComponent quad draws that slot, which resolves to the set's map1024 picture (version 7).
         let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();

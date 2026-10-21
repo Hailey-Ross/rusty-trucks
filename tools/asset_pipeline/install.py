@@ -252,29 +252,34 @@ def extract(archive,destination,entries=None):
     data.extract_entries(data.entries if entries is None else [e for e in data.entries if entries(e)],destination)
     return data
 
-def convert_map(archive,work,maps,stage,game_exe,log,report):
+def convert_map(archive,work,maps,stage,game_exe,log,report,district=None,label=None,source=None):
+    """One map from `archive`. Disc maps: worldDIST_<D>.big gives the stream folder and label. DLC maps name both
+    (one pack BIG can hold several districts) and their source pack (research b415)."""
     timings={};started=time.perf_counter()
+    name=label or archive.stem
     def finished(phase):
         nonlocal started
         now=time.perf_counter();timings[phase]=round(now-started,3);started=now
-        report(f'{archive.stem}: {phase} {timings[phase]:.3f}s')
+        report(f'{name}: {phase} {timings[phase]:.3f}s')
     map_tools=TOOLS/'vendor/university/tools/vanilla_map_extraction/tools'
     sys.path.insert(0,str(map_tools))
     from prepare_hawaiian_dream import prepare
     from prepare_university import EXCLUDED_NORMAL_TEXTURE_IDS
     from build_retail_collision_archive import build_archive
     from .map_writer import write as write_map, SpawnSelector
-    district=archive.stem.removeprefix('world')
-    label=district.removeprefix('DIST_')
+    district=district or archive.stem.removeprefix('world')
+    label=label or district.removeprefix('DIST_')
     district_work=work/district
-    extract(archive,district_work/'raw')
+    # A DLC pack's BIG also holds its menus, audio and other districts: only this district's stream is needed.
+    folder=('data/content/world/stream/'+district+'/').lower()
+    extract(archive,district_work/'raw',(lambda e:e.path.replace('\\','/').lower().startswith(folder)) if source else None)
     finished('extract')
     stream=district_work/'raw/data/content/world/stream'/district
     if not stream.is_dir():raise RuntimeError('Missing district stream '+str(stream))
     spawn=SpawnSelector(district)
     manifest_path=prepare(stream_directory=stream,output_root=district_work/'intermediate',
         utt_root=TOOLS/'vendor/utt',district_name=district,map_name=label,
-        package_name='Skate 3 owned disc',cache_format='skate3-rust-map-v1',
+        package_name='Skate 3 owned DLC' if source else 'Skate 3 owned disc',cache_format='skate3-rust-map-v1',
         # Smaller parks keep their textures in Pres rather than a Tex stream.
         texture_stream_names=('Tex',) if any(stream.glob('cTex_*.xsf')) else (),
         excluded_normal_texture_ids=EXCLUDED_NORMAL_TEXTURE_IDS,raw_texture_cache=True,
@@ -331,6 +336,7 @@ def convert_map(archive,work,maps,stage,game_exe,log,report):
     report(f'{label}: placed {placed} authored DMO instances, {unresolved} unresolved templates')
     # Validation runs in the parent (_install, MapValidator) as each map finishes.
     entry={'name':label,'path':'maps/'+final.name,'sha256':digest(final)}
+    if source:entry['source']=source
     remove_intermediate(district_work,work)
     finished('hash_and_cleanup')
     entry['phase_seconds']=timings
@@ -361,6 +367,12 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
     if dlc_identity:
         target_versions['hud']=target_versions['hud']+'+dlc:'+dlc_identity
         report(f'DLC packages found in {dlc_folder}')
+    # Only packs that carry map streams change the maps group (b415): a menu-only pack never reconverts the maps.
+    dlc_maps_identity=dlc_packages.signature(dlc_folder,dlc_packages.has_maps) if dlc_identity else ''
+    if dlc_maps_identity:
+        # The map packs also carry their worlds' skies and audio (b414 / b417).
+        for group in ('maps','environment','audio'):
+            target_versions[group]=target_versions[group]+'+dlc:'+dlc_maps_identity
     groups=changed_groups(previous[1].get('pipelines',{}),target_versions) if previous else set(GROUPS)
     source=str((iso if iso is not None else game_root).resolve())
     if game_root is None and iso is not None:
@@ -468,10 +480,18 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             exports.hud(game_root,stage,work,report,log,dlc=dlc_folder if dlc_identity else None)
         if 'character' in groups:
             exports.character(game_root,stage,work,report,log,converted)
+        # The player's DLC map packs: their map jobs and collection vaults, read once for the groups that use them.
+        dlc_jobs,dlc_vaults=[],[]
+        if dlc_maps_identity and groups&{'environment','maps','audio'}:
+            from .optional_content import CONTENT_ERRORS as DLC_ERRORS
+            try:
+                dlc_jobs,dlc_vaults=dlc_packages.load(dlc_folder,game_root,work)
+            except DLC_ERRORS as error:
+                report(f'DLC maps unavailable ({error})')
         if 'environment' in groups:
-            exports.environment(game_root,stage,work,report,log,converted,game_exe)
+            exports.environment(game_root,stage,work,report,log,converted,game_exe,dlc_vaults)
         if 'audio' in groups:
-            exports.audio(game_root,stage,work,report,log,base/'tools')
+            exports.audio(game_root,stage,work,report,log,base/'tools',dlc_jobs,dlc_vaults)
         if 'livingworld' in groups:
             exports.livingworld(game_root,stage,work,report,log,converted)
         if 'maps' in groups:
@@ -511,11 +531,20 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             return None
         validate('TEST_WORLD')
         if 'maps' in groups:
-            archives=list((game_root/'data/content').glob('worldDIST_*.big'))
-            archives.sort(key=lambda p:(p.stem!='worldDIST_University',p.name.lower()))
+            # Map jobs: every disc worldDIST_<D>.big, then each district stream in the player's DLC packs (b415).
+            jobs=[{'archive':a,'district':None,'label':a.stem.removeprefix('worldDIST_'),'source':None}
+                  for a in (game_root/'data/content').glob('worldDIST_*.big')]
+            jobs+=[j for j in dlc_jobs if not any(j['label'].lower()==k['label'].lower() for k in jobs)]
+            jobs.sort(key=lambda j:(j['label']!='University',j['label'].lower()))
             from .map_starts import prepare as map_starts
+            # The DLC packs' collection rows and locators (b412): their maps' authored starts, and for the engine
+            # (map lists, map audio) beside the disc's collections in private/stock/dlc.
+            if dlc_vaults:
+                rows=private/'stock/dlc';rows.mkdir(parents=True,exist_ok=True)
+                for v in dlc_vaults:
+                    (rows/(v['vault']+'-collections.json')).write_text(json.dumps(v['converted']),encoding='utf-8')
             try:
-                starts=map_starts(game_root,converted)
+                starts=map_starts(game_root,converted,dlc_vaults)
             except CONTENT_ERRORS as error:
                 starts={}
                 report(f'Authored map starts unavailable ({error}); using geometric spawns')
@@ -527,36 +556,36 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             if finalize and overlap_customiser(workers):
                 report('Preparing the character customiser alongside the maps')
                 customiser=Background(lambda:finalize(stage),'customiser')
-            report(f'Converting {len(archives)} maps with {workers} workers')
-            def map_job(archive):
-                result=work/(archive.stem+'.json')
-                with (stage/(archive.stem+'-conversion.log')).open('w',encoding='utf-8') as map_log:
-                    run(task(TOOLS/'asset_pipeline/map_job.py','--archive',archive,'--stage',stage,
-                             '--game-exe',game_exe,'--result',result),map_log,report)
+            report(f'Converting {len(jobs)} maps with {workers} workers')
+            def map_job(job):
+                result=work/(job['label']+'.json')
+                named=[] if job['source'] is None else ['--district',job['district'],'--label',job['label'],'--source',job['source']]
+                with (stage/(job['label']+'-conversion.log')).open('w',encoding='utf-8') as map_log:
+                    run(task(TOOLS/'asset_pipeline/map_job.py','--archive',job['archive'],'--stage',stage,
+                             '--game-exe',game_exe,'--result',result,*named),map_log,report)
                 return json.loads(result.read_text(encoding='utf-8'))
             completed={}
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 # Start the expensive districts together so one does not
                 # remain queued behind a string of small parks.
-                futures={pool.submit(map_job,a):a for a in sorted(archives,key=lambda p:-p.stat().st_size)}
+                futures={pool.submit(map_job,j):j for j in sorted(jobs,key=lambda j:-j['archive'].stat().st_size)}
                 for future in as_completed(futures):
-                    archive=futures[future]
+                    label=futures[future]['label']
                     try:
-                        completed[archive.name]=future.result()
+                        completed[label]=future.result()
                         # Validate while the remaining maps keep converting.
-                        checked=validate(stage/completed[archive.name]['path'])
+                        checked=validate(stage/completed[label]['path'])
                     except CONTENT_ERRORS as error:
-                        completed.pop(archive.name,None)
-                        label=archive.stem.removeprefix('worldDIST_')
+                        completed.pop(label,None)
                         (maps/(label+'.skate')).unlink(missing_ok=True)
                         props=private/'native-props'/(label+'.skate')
                         if props.is_dir():remove_intermediate(props,private)
                         note(private/'map-status'/(label+'-availability.json'),label,error,report=report)
                         continue
-                    (private/'map-status'/(completed[archive.name]['name']+'-availability.json')).unlink(missing_ok=True)
-                    record_validation(private,completed[archive.name],checked,report)
-                    report(f"Converted {len(completed)}/{len(archives)} maps: {completed[archive.name]['name']}")
-            catalog=[completed[a.name] for a in archives if a.name in completed]
+                    (private/'map-status'/(completed[label]['name']+'-availability.json')).unlink(missing_ok=True)
+                    record_validation(private,completed[label],checked,report)
+                    report(f"Converted {len(completed)}/{len(jobs)} maps: {completed[label]['name']}")
+            catalog=[completed[j['label']] for j in jobs if j['label'] in completed]
             if previous:
                 # An absent/failed source district may still have a usable old
                 # converted copy. Validate its bytes AND load with this engine.
@@ -577,6 +606,18 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 for old in json.loads((previous[0]/'maps.json').read_text()):
                     if old['path'] not in valid_paths:(stage/old['path']).unlink(missing_ok=True)
             if not catalog:raise RuntimeError('No playable map could be prepared or recovered. Restore at least one worldDIST_*.big archive beside default.xex and retry; the previous installation has been kept.')
+            # Each map's Skate 3 name for the lists (map_names.py; user 2026-10-20: retail names for every map).
+            try:
+                from .map_names import names as map_names,disc_language
+                text=disc_language(game_root,work/'map-names')
+                for archive in sorted({j['archive'] for j in dlc_jobs}):
+                    for label,value in dlc_packages.language(BigArchive(archive)).items():text.setdefault(label,value)
+                named=map_names(converted,dlc_vaults,text)
+            except CONTENT_ERRORS as error:
+                named={}
+                report(f'Map names unavailable ({error}); the lists show file names')
+            for item in catalog:
+                if item['name'] in named:item.update(display=named[item['name']]['name'],name_id=named[item['name']]['name_id'])
         report('Validating installed runtime inputs')
         validate('TEST_WORLD')
         if validator is not None:validator.close()
