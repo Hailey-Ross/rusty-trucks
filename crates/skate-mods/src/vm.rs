@@ -57,6 +57,40 @@ impl TriggerBoxOptions {
     }
 }
 
+/// One `sdk.triggers.teleporter` exit: where the skater lands (heading in radians, forward = (sin h, 0, cos h)) and,
+/// for another map, its name (the map file's stem); `None` = the map the teleporter is on.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeleporterExit {
+    pub position: [f32; 3],
+    #[serde(default)]
+    pub heading: f32,
+    #[serde(default)]
+    pub map: Option<String>,
+}
+
+/// `sdk.triggers.teleporter`: a teleporter like retail's (doc 38 "Teleporters"): entering `volume` (a map volume id
+/// or the mod's own `sdk.triggers.box` key) shows the prompt, D-pad Up asks, Yes moves the skater to the first exit
+/// (several exits: the player picks). A key equal to a retail teleporter's id replaces it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeleporterOptions {
+    pub volume: String,
+    pub exits: Vec<TeleporterExit>,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+impl TeleporterOptions {
+    pub fn validate(&self) -> bool {
+        !self.volume.is_empty() && self.volume.len() <= 160 && !self.volume.chars().any(char::is_control)
+            && (1..=8).contains(&self.exits.len())
+            && self.exits.iter().all(|e| e.position.iter().all(|v| v.is_finite() && v.abs() <= 100_000.)
+                && e.heading.is_finite() && e.map.as_deref().is_none_or(crate::schema::valid_id))
+            && self.title.as_ref().is_none_or(|t| t.len() <= 128 && !t.chars().any(char::is_control))
+    }
+}
+
 /// `sdk.triggers.track`: follow one of the mod's physics bodies. The body's
 /// position is the top point of its query cylinder (retail shape by default).
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -587,6 +621,11 @@ pub enum Command {
     TriggerRemove {
         key: String,
     },
+    TriggerTeleporter {
+        key: String,
+        #[serde(default)]
+        options: Option<TeleporterOptions>,
+    },
     TriggerEnable {
         id: String,
         enabled: bool,
@@ -965,6 +1004,9 @@ impl Command {
             Self::VolumeBox { key, options } => crate::schema::valid_id(key) && options.validate(),
             Self::VolumeRemove { key } => crate::schema::valid_id(key),
             Self::TriggerBox { key, options } => crate::schema::valid_id(key) && options.validate(),
+            Self::TriggerTeleporter { key, options } => {
+                crate::schema::valid_id(key) && options.as_ref().is_none_or(TeleporterOptions::validate)
+            }
             Self::TriggerRemove { key } | Self::TriggerUntrack { key } => crate::schema::valid_id(key),
             Self::TriggerEnable { id, .. } => valid_trigger_id(id),
             Self::TriggerTrack { key, options } => {
@@ -1094,6 +1136,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::VolumeRemove { .. } => "volume_remove",
         Command::TriggerBox { .. } => "trigger_box",
         Command::TriggerRemove { .. } => "trigger_remove",
+        Command::TriggerTeleporter { .. } => "trigger_teleporter",
         Command::TriggerEnable { .. } => "trigger_enable",
         Command::TriggerTrack { .. } => "trigger_track",
         Command::TriggerUntrack { .. } => "trigger_untrack",
@@ -1876,6 +1919,8 @@ mod model_collision_extension_tests {
                 assert(#sdk.triggers.inside('mod:x:ball') == 0, 'other body')
                 sdk.triggers.box('goal', {center={1,2,3}, half_extents={1,1,1}, rotation={0,0,0,1}, name='goal', group='stairs'})
                 sdk.triggers.remove('goal')
+                sdk.triggers.teleporter('up', {volume='goal', exits={{position={1,40,2}, heading=1.5}}, title='To the top'})
+                sdk.triggers.teleporter('up')
                 sdk.triggers.set_enabled('2c7017060025128f', false)
                 sdk.triggers.track('ball')
                 sdk.triggers.track('ball', {radius=0.5, length=0.2})
@@ -1892,12 +1937,14 @@ mod model_collision_extension_tests {
         let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &snap).unwrap();
         let out = vm.call("on_load", json!({}), &snap).unwrap();
         assert_eq!(out.iter().map(command_kind).collect::<Vec<_>>(), vec!["trigger_box", "trigger_remove",
-            "trigger_enable", "trigger_track", "trigger_track", "trigger_untrack", "trigger_configure", "trigger_configure"]);
+            "trigger_teleporter", "trigger_teleporter", "trigger_enable", "trigger_track", "trigger_track", "trigger_untrack", "trigger_configure", "trigger_configure"]);
         assert!(out.iter().all(Command::validate));
-        assert!(matches!(&out[2], Command::TriggerEnable { enabled: false, .. }));
-        assert!(matches!(&out[3], Command::TriggerTrack { options: None, .. }));
-        assert!(matches!(&out[4], Command::TriggerTrack { options: Some(o), .. } if o.radius == Some(0.5)));
-        assert!(matches!(&out[7], Command::TriggerConfigure { options: None }));
+        assert!(matches!(&out[2], Command::TriggerTeleporter { options: Some(o), .. } if o.exits[0].position[1] == 40. && o.exits[0].map.is_none()));
+        assert!(matches!(&out[3], Command::TriggerTeleporter { options: None, .. }));
+        assert!(matches!(&out[4], Command::TriggerEnable { enabled: false, .. }));
+        assert!(matches!(&out[5], Command::TriggerTrack { options: None, .. }));
+        assert!(matches!(&out[6], Command::TriggerTrack { options: Some(o), .. } if o.radius == Some(0.5)));
+        assert!(matches!(&out[9], Command::TriggerConfigure { options: None }));
         let bad = TriggerBoxOptions { center: [0.; 3], half_extents: [0., 1., 1.], rotation: None, name: None, group: None };
         assert!(!bad.validate());
         let lobby = TriggerBoxOptions { half_extents: [1.; 3], group: Some("lobby".into()), ..bad };

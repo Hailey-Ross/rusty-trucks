@@ -64,6 +64,7 @@ mod customiser_parts;
 mod customiser_material;
 mod custom_models;
 mod teleport_menu;
+mod teleporters;
 mod challenge_map;
 mod render_capacity;
 mod retail_backdrop;

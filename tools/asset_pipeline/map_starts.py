@@ -46,6 +46,20 @@ def locators(game_root):
     return found
 
 
+def all_locators(game_root, dlc_vaults=()):
+    """{(district folder casefolded, locator): [matrices]}: the disc's global locators, the packs' and, for names those
+    lack, each DLC stream's own _Sim.loc (its copies of shared names differ slightly)."""
+    records = locators(game_root)
+    for v in dlc_vaults:
+        for key, matrices in v['locators'].items():
+            records.setdefault(key, []).extend(matrices)
+    for v in dlc_vaults:
+        for key, matrices in v.get('stream_locators', {}).items():
+            if key not in records:
+                records[key] = list(matrices)
+    return records
+
+
 def prepare(game_root, converted, dlc_vaults=()):
     """Return {district: {locator, source, position, heading}}. `dlc_vaults` (asset_pipeline.dlc.vaults): the player's
     DLC rows join the disc's, each resolving its text against its own vault's .bin, with the packs' locators."""
@@ -94,15 +108,7 @@ def prepare(game_root, converted, dlc_vaults=()):
         if len({location for location, _ in rows}) == 1 and rows[0][0] not in (c for c, _ in wanted.get(stream, [])):
             wanted.setdefault(stream, []).append((rows[0][0], 'fe_locations ' + rows[0][1]))
 
-    records = locators(game_root)
-    for v in dlc_vaults:
-        for key, matrices in v['locators'].items():
-            records.setdefault(key, []).extend(matrices)
-    # A stream's own _Sim.loc only for names the global locators lack (its copies of shared names differ slightly).
-    for v in dlc_vaults:
-        for key, matrices in v.get('stream_locators', {}).items():
-            if key not in records:
-                records[key] = list(matrices)
+    records = all_locators(game_root, dlc_vaults)
     result = {}
     for district, candidates in sorted(wanted.items()):
         start = pick(district, candidates, records)

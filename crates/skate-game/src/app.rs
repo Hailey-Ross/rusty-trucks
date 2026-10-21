@@ -187,6 +187,7 @@ pub(crate) fn build(
     app.add_plugins(crate::retail_menus::RetailMenusPlugin);
     app.add_plugins(crate::modding::ModdingPlugin);
     crate::teleport_menu::install(&mut app);
+    crate::teleporters::install(&mut app);
     app.add_plugins(crate::updater::UpdaterPlugin);
     app.add_plugins(crate::multiplayer::MultiplayerPlugin);
     app.add_plugins(crate::scoring_hud::ScoringHudPlugin);

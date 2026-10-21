@@ -16,14 +16,18 @@ class MapNameTests(unittest.TestCase):
             row('world', 'dist_megapark_empty', WorldStream='DIST_MegaPark', **{WORLD_NAME: 'ID_OTHER'}),
             row('world', 'dist_skateschool', WorldStream='DIST_SkateSchool', **{WORLD_NAME: 'ID_SCHOOL'}),
             row('world', 'dist_maloofmoneycup', WorldStream='DIST_MaloofMoneyCup'),
+            row('world', 'dist_sanitariumdlc', WorldStream='DIST_SanitariumDLC', **{WORLD_NAME: 'ID_WORLD_SANITARIUMDLC'}),
+            row('map_category', 'sanitariumdlc', **{CATEGORY_LABEL: 'ID_LOCATION_SANITARIUMDLC'}),
         ]}
         text = {'ID_DISTRICT_UNIVERSITY': 'University District', 'ID_WORLD_UNIV': 'Wrong', 'ID_OTHER': 'Wrong',
-                'ID_WORLD_SKATEPARK_MEGAPARK': 'Stadium ', 'ID_SCHOOL': '\x8fSkate School'}
+                'ID_WORLD_SKATEPARK_MEGAPARK': 'Stadium ', 'ID_SCHOOL': '\x8fSkate School',
+                'ID_WORLD_SANITARIUMDLC': 'After Dark', 'ID_LOCATION_SANITARIUMDLC': 'The Sanatorium'}
         got = names(converted, [], text)
         self.assertEqual(got['University'], {'name_id': 'ID_DISTRICT_UNIVERSITY', 'name': 'University District'})
         self.assertEqual(got['MegaPark'], {'name_id': 'ID_WORLD_SKATEPARK_MEGAPARK', 'name': 'Stadium'})
         self.assertEqual(got['SkateSchool'], {'name_id': None, 'name': 'Skate School'})
         self.assertEqual(got['MaloofMoneyCup'], {'name_id': None, 'name': 'Maloof Money Cup'})
+        self.assertEqual(got['SanitariumDLC'], {'name_id': 'ID_LOCATION_SANITARIUMDLC', 'name': 'The Sanatorium'})
 
     def test_words(self):
         self.assertEqual(words('DLC_Rob_Fantasy_Plaza'), 'DLC Rob Fantasy Plaza')

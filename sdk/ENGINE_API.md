@@ -106,6 +106,14 @@ see `docs/hails-additions/24-trigger-volumes.md`).
   The player's cylinder is built like retail's skater from its feet (ground
   point), head and hips: radius 0.34, half-height `length_scale * |head - feet| +
   length_pad` (0.5, 0.05), one end `foot_pad` (0.02) below the feet.
+- `sdk.triggers.teleporter(key, {volume="<volume id or own box key>", exits={{position={x,y,z},
+  heading=<radians>, map="<map name>"}}, title="..."})` adds a teleporter like Skate 3's (max 64 per
+  mod): entering the volume shows the prompt with `title`, D-pad Up asks to confirm (one exit: No /
+  Yes; up to 8 exits: a list), and the skater lands at the exit, on another map after its loading
+  screen. A `key` equal to a retail teleporter's id (`tele_world_to_stadium`) replaces it on that map;
+  `sdk.triggers.teleporter(key)` removes it. Every use posts `{name="teleporter_used", teleporter=,
+  exit=<1-based>, body="player"}`. Mod teleporters go when the mod stops and on a map change (re-add
+  them in `world_changed`).
 - Only `challenge` volumes post `trigger_entered` / `trigger_exited`; retail's
   `stairs` and `camera` groups have no tracked bodies (they are listed, not tracked).
 
