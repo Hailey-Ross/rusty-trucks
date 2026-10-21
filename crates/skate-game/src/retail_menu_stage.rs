@@ -46,15 +46,43 @@ const OPTIONS_PATH: &str = "options/options.swf";
 /// The Trick Guide template (record 29) and its path; FE screen 14's init opens it (0x82618A40).
 const TRICK_GUIDE: &str = "TrickTutorial";
 const TRICK_GUIDE_PATH: &str = "tricks/trickguide.swf";
-/// The instant replay screen's template (TU3 table 72, Replay2; the DLC's Replay3 is not ported) and its path; FE
-/// screen 12's init opens it (826102A8, b391). Opened by the engine when the replay opens, not by a menu push.
-const REPLAY: &str = "Replay2";
-const REPLAY_PATH: &str = "replay2/replay_editor2.swf";
-const REPLAY_MOVIE: &str = "source/screens/replay2/replay_editor2";
-/// The replay help (TU3 table 73, ReplayHelp; the DLC's ReplayHelp2 is not ported); FE 13, opened by Start (b391).
-const REPLAY_HELP: &str = "ReplayHelp";
-const REPLAY_HELP_PATH: &str = "replay2/replay_help.swf";
-const REPLAY_HELP_MOVIE: &str = "source/screens/replay2/replay_help";
+/// The instant replay screen and its help (FE 12 / FE 13; b391): FE 12's init (826102A8) opens the Create pack's
+/// editor (TU3 template 71 Replay3, `replay2/replay_editor3.swf`, help 74 ReplayHelp2) when product CCF0007 is owned,
+/// else template 72 Replay2 with help 73 ReplayHelp (b410 / b411). On PC the pack counts as owned (user: look rows
+/// always on): the first screen whose movies were exported wins. Opened by the engine with the replay, not by a menu
+/// push. `channels`: the screen shows the edit channels (look rows). Data: a mod may add its own screen first.
+struct ReplayScreen {
+    template: &'static str,
+    path: &'static str,
+    movie: &'static str,
+    help: &'static str,
+    help_path: &'static str,
+    help_movie: &'static str,
+    channels: bool,
+}
+const REPLAY_SCREENS: [ReplayScreen; 2] = [
+    ReplayScreen {
+        template: "Replay3",
+        path: "replay2/replay_editor3.swf",
+        movie: "source/screens/replay2/replay_editor3",
+        help: "ReplayHelp2",
+        help_path: "replay2/replay_help2.swf",
+        help_movie: "source/screens/replay2/replay_help2",
+        channels: true,
+    },
+    ReplayScreen {
+        template: "Replay2",
+        path: "replay2/replay_editor2.swf",
+        movie: "source/screens/replay2/replay_editor2",
+        help: "ReplayHelp",
+        help_path: "replay2/replay_help.swf",
+        help_movie: "source/screens/replay2/replay_help",
+        channels: false,
+    },
+];
+/// The title update's DLC templates (TU3 71 / 74): tables taken from the disc's own executable predate them, so they
+/// are registered after the table's (their ids only need to be unique).
+const DLC_TEMPLATES: [&str; 2] = ["Replay3", "ReplayHelp2"];
 /// The Challenge Map template (record 68) and its path; FE screen 17 (b244 / b253). The pause item that opens it.
 const CHALLENGE_MAP: &str = "ChallengeMap";
 const CHALLENGE_MAP_PATH: &str = "map/challengemap.swf";
@@ -150,6 +178,8 @@ struct MenuStage {
     /// its host and whether it is shown (after its IntroComplete).
     replay_id: Option<i32>,
     replay_help_id: Option<i32>,
+    /// The replay screen in use (`REPLAY_SCREENS`).
+    replay_screen: usize,
     replay_menu: crate::replay_menu_host::ReplayMenuHost,
     replay_shown: bool,
     /// The Challenge Map screen's AS id and host (challenge_map_host).
@@ -295,6 +325,12 @@ fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::P
         Some(templates) => templates.iter().map(|t| t.name.clone()).collect(),
         None => vec![CROSSBAR.into()],
     };
+    let mut names = names;
+    for dlc in DLC_TEMPLATES {
+        if !names.iter().any(|n| n == dlc) {
+            names.push(dlc.into());
+        }
+    }
     for name in &names {
         stage.call_path("_global.ScreenManager.RegisterTemplate", vec![text(name)], fe)?;
     }
@@ -523,6 +559,11 @@ fn setup(
                 warn!("RETAIL_MENUS: Extras screen unavailable (no extras movie); the EXTRAS overlay stands in; run Refresh Game Files");
             }
             info!("RETAIL_MENUS stage ready (F8 opens the retail pause menu)");
+            // The replay screen: the first whose movie was exported and whose template is registered (usize::MAX: none).
+            let replay_screen = REPLAY_SCREENS
+                .iter()
+                .position(|r| movies.movies.contains_key(r.movie) && templates.iter().any(|n| n == r.template))
+                .unwrap_or(usize::MAX);
             commands.insert_resource(MenuStage {
                 stage,
                 crossbar: CrossbarState::default(),
@@ -538,8 +579,13 @@ fn setup(
                 crossbar_id: as_id(CROSSBAR),
                 options_id: as_id(OPTIONS),
                 trick_guide_id: as_id(TRICK_GUIDE),
-                replay_id: templates.iter().position(|n| n == REPLAY).filter(|_| movies.movies.contains_key(REPLAY_MOVIE)).map(|i| 600 + i as i32),
-                replay_help_id: templates.iter().position(|n| n == REPLAY_HELP).filter(|_| movies.movies.contains_key(REPLAY_HELP_MOVIE)).map(|i| 600 + i as i32),
+                replay_id: REPLAY_SCREENS.get(replay_screen).and_then(|r| templates.iter().position(|n| n == r.template)).map(|i| 600 + i as i32),
+                replay_help_id: REPLAY_SCREENS
+                    .get(replay_screen)
+                    .filter(|r| movies.movies.contains_key(r.help_movie))
+                    .and_then(|r| templates.iter().position(|n| n == r.help))
+                    .map(|i| 600 + i as i32),
+                replay_screen,
                 replay_menu: Default::default(),
                 replay_shown: false,
                 trick_guide_base: trick_guide.guide.clone(),
@@ -615,10 +661,11 @@ fn update(
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>),
     // Popups; the instant replay feed and whether the retail replay screen shows (one parameter: Bevy's 16).
-    (mut popup_mods, replay_feed, mut replay_ui): (
+    (mut popup_mods, replay_feed, mut replay_ui, mut look_screen): (
         ResMut<crate::popup_host::PopupMods>,
         Option<Res<crate::replay::ReplayFeed>>,
         Option<ResMut<crate::replay::RetailReplayUi>>,
+        Option<ResMut<crate::replay::ReplayLookScreen>>,
     ),
     // Challenge Map travel; cheats out, typed text in and the zombie flag the cheat toggles.
     (mut travel, mut cheats_out, mut unlocks_out, mut typing, living): (
@@ -734,16 +781,16 @@ fn update(
             let feed = replay_feed.as_ref().map(|f| f.0.clone()).filter(|f| f.active);
             match (feed, fe.replay_menu.open) {
                 (Some(feed), false) => {
-                    info!("RETAIL_MENUS open {REPLAY} (FE 12, instant replay)");
+                    info!("RETAIL_MENUS open {} (FE 12, instant replay)", REPLAY_SCREENS[ms.replay_screen].template);
                     fe.replay_menu.reset();
                     fe.replay_menu.open = true;
                     fe.replay_menu.feed = feed;
                     ms.replay_shown = false;
-                    open_screen(&mut ms.stage, REPLAY_PATH, REPLAY, &mut fe)?;
+                    open_screen(&mut ms.stage, REPLAY_SCREENS[ms.replay_screen].path, REPLAY_SCREENS[ms.replay_screen].template, &mut fe)?;
                 }
                 (Some(feed), true) => fe.replay_menu.feed = feed,
                 (None, true) => {
-                    info!("RETAIL_MENUS close {REPLAY}");
+                    info!("RETAIL_MENUS close {}", REPLAY_SCREENS[ms.replay_screen].template);
                     if let Some(help_id) = ms.replay_help_id.filter(|_| fe.replay_menu.help_open) {
                         close(&mut ms.stage, help_id, &mut fe)?;
                     }
@@ -1282,14 +1329,14 @@ fn update(
                 let host = &mut fe.replay_menu;
                 match (host.feed.help, host.help_open) {
                     (true, false) => {
-                        info!("RETAIL_MENUS open {REPLAY_HELP} (FE 13)");
+                        info!("RETAIL_MENUS open {} (FE 13)", REPLAY_SCREENS[ms.replay_screen].help);
                         host.help_open = true;
                         host.help_shown = false;
                         host.help_turns_posted = host.feed.help_turns;
-                        open_screen(&mut ms.stage, REPLAY_HELP_PATH, REPLAY_HELP, &mut fe)?;
+                        open_screen(&mut ms.stage, REPLAY_SCREENS[ms.replay_screen].help_path, REPLAY_SCREENS[ms.replay_screen].help, &mut fe)?;
                     }
                     (false, true) => {
-                        info!("RETAIL_MENUS close {REPLAY_HELP}");
+                        info!("RETAIL_MENUS close {}", REPLAY_SCREENS[ms.replay_screen].help);
                         host.help_open = false;
                         close(&mut ms.stage, help_id, &mut fe)?;
                     }
@@ -1503,6 +1550,10 @@ fn update(
     ms.settings = fe.settings;
     ms.trick_guide = std::mem::take(&mut fe.trick_guide);
     ms.replay_menu = std::mem::take(&mut fe.replay_menu);
+    if let Some(look) = look_screen.as_mut() {
+        let channels = ms.replay_shown && REPLAY_SCREENS.get(ms.replay_screen).is_some_and(|r| r.channels);
+        look.set_if_neq(crate::replay::ReplayLookScreen(channels));
+    }
     if let Some(ui) = replay_ui.as_mut() {
         ui.set_if_neq(crate::replay::RetailReplayUi(ms.replay_shown));
     }

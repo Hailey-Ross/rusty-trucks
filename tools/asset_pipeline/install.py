@@ -353,6 +353,14 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
     from . import asset_exports as exports
     target_versions=fingerprints()
     previous=installed(base) if refresh else None
+    # The player's DLC packages (optional, research b374 / b410): their identity joins the hud group's, so adding or
+    # removing a pack refreshes the menus; with no packages the versions stay exactly as before.
+    from . import dlc as dlc_packages
+    dlc_folder=dlc_packages.folder(iso if iso is not None else game_root, previous[1].get('dlc') if previous else None)
+    dlc_identity=dlc_packages.signature(dlc_folder)
+    if dlc_identity:
+        target_versions['hud']=target_versions['hud']+'+dlc:'+dlc_identity
+        report(f'DLC packages found in {dlc_folder}')
     groups=changed_groups(previous[1].get('pipelines',{}),target_versions) if previous else set(GROUPS)
     source=str((iso if iso is not None else game_root).resolve())
     if game_root is None and iso is not None:
@@ -379,7 +387,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         from .validation_report import summary
         summary(previous[0])
         atomic_json(base/'installation.json', {**previous[1], 'pipelines':target_versions,
-                    'outputs':outputs(previous[0]), 'source':source})
+                    'outputs':outputs(previous[0]), 'source':source, 'dlc':str(dlc_folder) if dlc_identity else None})
         remove_setup_logs(previous[0],report)
         remove_stale_installations(base,previous[0],report)
         report('Game assets are current')
@@ -457,7 +465,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         else:
             converted=json.loads((stock/'skater-collections.json').read_text(encoding='utf-8'))
         if 'hud' in groups:
-            exports.hud(game_root,stage,work,report,log)
+            exports.hud(game_root,stage,work,report,log,dlc=dlc_folder if dlc_identity else None)
         if 'character' in groups:
             exports.character(game_root,stage,work,report,log,converted)
         if 'environment' in groups:
@@ -587,7 +595,8 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         warnings=summary(stage)
     # Publish after core validation and all optional outcomes have been recorded.
     marker=base/'installation.json.new'
-    marker.write_text(json.dumps({'version':1,'directory':'installations/'+install_id,'source':source,'source_hash':source_hash,'pipelines':target_versions,'outputs':outputs(stage)}),encoding='utf-8')
+    marker.write_text(json.dumps({'version':1,'directory':'installations/'+install_id,'source':source,'source_hash':source_hash,'pipelines':target_versions,'outputs':outputs(stage),
+                                  'dlc':str(dlc_folder) if dlc_identity else None}),encoding='utf-8')
     marker.replace(base/'installation.json')
     remove_setup_logs(stage,report)
     remove_stale_installations(base,stage,report)

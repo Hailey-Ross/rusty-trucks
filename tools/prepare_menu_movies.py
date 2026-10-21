@@ -78,6 +78,13 @@ MENU_ROOTS = (
     'source/screens/popup/sk8popup',
     'source/screens/popup/small_popup',
 )
+# Movies from the player's own DLC packages (optional): the Skate.Create Upgrade Pack (product CCF0007) carries the
+# DLC replay editor (template 71 Replay3, `replay2/replay_editor3.swf`, with the look channels) and its help
+# (template 74 ReplayHelp2); research b410 / b411. Exported only when the package is there.
+DLC_ROOTS = (
+    'source/screens/replay2/replay_editor3',
+    'source/screens/replay2/replay_help2',
+)
 MAX_MOVIES = 256  # apt_imports.rs MAX_MOVIES
 # Runtime images the movies load by name (Game.ImageRenderer_Load, research b257 / b258): only in fedynamic.big.
 IMAGE_PREFIXES_DYNAMIC = ('data/fe/source/images/map/',)
@@ -262,11 +269,27 @@ def export_movie(cache, raw, key):
     }, families
 
 
-def prepare(game, output, collections, roots=MENU_ROOTS):
-    """Builds the runtime set in `output` (a work folder) and returns its manifest."""
+def dlc_archives(dlc, work):
+    """The DLC BIGs holding the DLC movies we export (copied out of the player's packages to `work`)."""
+    from asset_pipeline import dlc as packages
+    from vendor.skate3_ui.big import BigArchive
+    # Only archives carrying a movie we export: other packs' front-end files must not replace the disc's.
+    wanted = {('data/fe/' + root + '.apt').lower() for root in DLC_ROOTS}
+    menus = lambda paths: any(p.lower() in wanted for p in paths)  # noqa: E731
+    return [(path, BigArchive(path)) for path in packages.extract_bigs(dlc, work, wanted=menus)]
+
+
+def prepare(game, output, collections, roots=MENU_ROOTS, dlc=None):
+    """Builds the runtime set in `output` (a work folder) and returns its manifest. `dlc`: the player's DLC
+    package folder (optional); its front-end movies and text join the disc's."""
     from prepare_hud import font_mapping
+    from asset_pipeline import dlc as packages
     cache_root = output / 'cache'
-    extract_project(game, cache_root, prefixes=('data/fe/source/',), update=True)
+    extras = dlc_archives(dlc, output / 'dlc') if dlc else []
+    extract_project(game, cache_root, prefixes=('data/fe/source/',), update=True,
+                    extra_archives=tuple(path for path, _ in extras))
+    roots = tuple(roots) + tuple(r for r in DLC_ROOTS
+                                 if (cache_root / 'raw' / ('data/fe/' + r + '.apt')).is_file() and r not in roots)
     cache = AssetCache(cache_root)
     mappings = font_mapping(collections, cache)
     runtime = output / 'runtime'
@@ -307,6 +330,10 @@ def prepare(game, output, collections, roots=MENU_ROOTS):
             fonts[family] = cache.font_asset(fallback)
     language = {row['label'].strip(): row['value'] for row in json.loads(
         (cache_root / 'metadata/languages/english_global.json').read_text(encoding='utf-8'))['entries']}
+    # DLC text (the creator pack's replay editor labels) adds to the disc's; a disc label keeps its text.
+    for _, archive in extras:
+        for label, value in packages.language(archive).items():
+            language.setdefault(label, value)
     # Script-made text fields name fonts at run time (sk8popup's createTextField body: "Futura Std Heavy"); the
     # runtime resolves names without a row to the same fallback, so it is exported with its font.
     if fallback and fallback not in fonts:

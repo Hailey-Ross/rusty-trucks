@@ -259,7 +259,7 @@ fn initialize(
                 sampler(SamplerBindingType::Filtering),
                 storage_buffer_read_only::<Vec4>(false),
                 texture_depth_2d(),
-                uniform_buffer::<[Vec4; 8]>(false),
+                uniform_buffer::<[Vec4; 9]>(false),
             ),
         ),
     );

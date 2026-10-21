@@ -8,10 +8,11 @@ use skate_data::collections::Collections;
 
 /// What the retail tone pass applies (`postfx_visualfxPS`, research b101): near rows (c7..c9), far rows (c10..c12),
 /// the depth weights `(mult.x, mult.y, add.x, add.y)` (c13 / c14: `wA = sat(z * mult.x + add.x)`, `wB = sat(z *
-/// mult.y + add.y)`, linear in view depth between the record's distances, `827F3D20`) and `(camera near, 0, 0, 0)`.
+/// mult.y + add.y)`, linear in view depth between the record's distances, `827F3D20`), `(camera near, 0, 0, 0)` and the
+/// replay's tint overlay RGBA (alpha 0 = none).
 #[derive(Resource, Clone, Copy, Debug, PartialEq, bevy::render::extract_resource::ExtractResource)]
 pub(crate) struct ColourGrade {
-    pub rows: [Vec4; 8],
+    pub rows: [Vec4; 9],
 }
 
 impl ColourGrade {
@@ -31,6 +32,7 @@ impl ColourGrade {
                 row(far[2]),
                 Vec4::new(-1.0 / d, 1.0 / d, record.distance_far / d, -record.distance_near / d),
                 Vec4::new(camera_near, 0.0, 0.0, 0.0),
+                Vec4::ZERO,
             ],
         }
     }
@@ -82,7 +84,12 @@ pub(crate) fn update_grade(
             _ => None,
         })
         .unwrap_or(0.1);
-    let next = ColourGrade::of(record, near);
+    let mut next = ColourGrade::of(record, near);
+    // The replay's tint (b413, `827FE770`): one constant colour alpha-blended over the whole graded frame, under the
+    // HUD and menus; drawn as the tone pass's last step so the exported video carries it too.
+    if let Some(look) = look.as_ref() {
+        next.rows[8] = Vec4::from_array(look.tint);
+    }
     if *grade != next {
         *grade = next;
     }
@@ -133,6 +140,7 @@ mod tests {
         assert_eq!(w(75.0), (0.5, 0.5));
         assert_eq!(w(500.0), (0.0, 1.0));
         assert_eq!(g.rows[7].x, 0.25);
+        assert_eq!(g.rows[8], Vec4::ZERO, "no replay tint");
         let apply = |base: usize, c: Vec3| Vec3::new(g.rows[base].dot(c.extend(1.0)), g.rows[base + 1].dot(c.extend(1.0)), g.rows[base + 2].dot(c.extend(1.0)));
         let c = Vec3::new(0.3, 0.6, 0.9);
         assert!((apply(0, c) - c).length() < 1e-6 && (apply(3, c) - c).length() < 1e-6, "identity");

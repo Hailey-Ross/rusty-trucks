@@ -26,6 +26,7 @@ const PHOTO_POPUP: &str = "engine:replay.photo";
 const PHOTO_DONE_POPUP: &str = "engine:replay.photo_saved";
 const MARKER_POPUP: &str = "engine:replay.marker";
 const X: u16 = 0x4000;
+const Y: u16 = 0x8000;
 /// The fe record retail plays when the instant replay opens (key 0x394015B68783BE9E; data, a mod may remap it).
 const OPEN_SOUND: &str = "editor_select";
 /// Retail opens the replay only with more than 149 frames recorded (`8250B8F8`); read as frames of the editor's 30 fps
@@ -540,6 +541,7 @@ impl Plugin for ReplayPlugin {
             .add_systems(Startup, (setup_ui, load_shake))
             .init_resource::<ReplayFeed>()
             .init_resource::<RetailReplayUi>()
+            .init_resource::<ReplayLookScreen>()
             .init_resource::<export_run::ReplayExport>()
             .add_systems(Update, (publish_feed, update_ui, take_photo, export_run::drive));
     }
@@ -573,6 +575,7 @@ fn apply_user_length(menu: Option<Res<crate::graphics_menu::Menu>>, mut replay: 
 /// back to the timeline).
 fn editor_controls(
     replay: &mut Replay,
+    channels: bool,
     pressed: u16,
     released: u16,
     pad: &crate::input::RawInput,
@@ -591,12 +594,11 @@ fn editor_controls(
     let Some(editor) = replay.editor.as_mut() else { return false };
     let used = match editor.session.mode {
         EditorMode::Effects => {
-            let rows = editor::EFFECT_ROWS.len();
             if pressed & DPAD_UP != 0 || keys.just_pressed(KeyCode::ArrowUp) {
-                editor.row = (editor.row + rows - 1) % rows;
+                editor.move_row(-1, channels);
             }
             if pressed & DPAD_DOWN != 0 || keys.just_pressed(KeyCode::ArrowDown) {
-                editor.row = (editor.row + 1) % rows;
+                editor.move_row(1, channels);
             }
             let step = i32::from(pressed & DPAD_RIGHT != 0 || keys.just_pressed(KeyCode::ArrowRight))
                 - i32::from(pressed & DPAD_LEFT != 0 || keys.just_pressed(KeyCode::ArrowLeft));
@@ -644,6 +646,12 @@ fn editor_controls(
                 editor.trim_sticks(axis(pad.left[0]), axis(pad.right[0]), dt);
                 seek = Some(editor.trim_cursor());
             }
+            true
+        }
+        // Y cycles the edit channel on the Create pack's screen (b405 / b411, `82612C28` case 4: camera, speed, shake,
+        // brightness, contrast, saturation, tint). K on the keyboard.
+        _ if channels && (pressed & Y != 0 || keys.just_pressed(KeyCode::KeyK)) => {
+            editor.cycle_channel();
             true
         }
         _ if pressed & LB != 0 || keys.just_pressed(KeyCode::KeyL) => {
@@ -787,6 +795,7 @@ pub(crate) fn controls(
     net: Option<Res<crate::multiplayer::Multiplayer>>,
     mut popups: ResMut<crate::popup_host::PopupMods>,
     retail_ui: Option<Res<RetailReplayUi>>,
+    look_screen: Option<Res<ReplayLookScreen>>,
     mut sounds: MessageWriter<crate::ui_audio::FrontendSound>,
     mut export: Option<ResMut<export_run::ReplayExport>>,
 ) {
@@ -943,7 +952,7 @@ pub(crate) fn controls(
             }
             return;
         }
-    } else if editor_controls(&mut replay, pressed, released, &pad, &keys, dt) {
+    } else if editor_controls(&mut replay, look_screen.as_ref().is_some_and(|s| s.0), pressed, released, &pad, &keys, dt) {
         return;
     }
     // Retail: RB starts / stops playback (`82C7F0A8` stops); stick or D-pad input resumes a stopped replay
@@ -1072,6 +1081,11 @@ pub(crate) struct ReplayFeed(pub crate::replay_menu_host::ReplayScreenFeed);
 #[derive(Resource, Default, PartialEq)]
 pub(crate) struct RetailReplayUi(pub bool);
 
+/// The retail screen shown is the Create pack's replay editor (replay_editor3, product CCF0007; research b410 /
+/// b411): the editor's edit channels and look rows are on. Set by the menu stage.
+#[derive(Resource, Default, Clone, Copy, PartialEq)]
+pub(crate) struct ReplayLookScreen(pub bool);
+
 fn publish_feed(replay: Res<Replay>, mut feed: ResMut<ReplayFeed>) {
     let (start, end) = replay.bounds();
     let next = crate::replay_menu_host::ReplayScreenFeed {
@@ -1091,6 +1105,11 @@ fn publish_feed(replay: Res<Replay>, mut feed: ResMut<ReplayFeed>) {
         row: replay.editor.as_ref().map_or(0, |e| e.row as u32),
         speed: replay.editor.as_ref().map_or(100, |e| e.lane_value(skate_core::replay_edit::Lane::Speed, replay.cursor)),
         shake: replay.editor.as_ref().map_or(0, |e| e.lane_value(skate_core::replay_edit::Lane::Shake, replay.cursor)),
+        channel: replay.editor.as_ref().map_or(0, |e| e.channel as u32),
+        mode_value: replay.editor.as_ref().map_or(-1, |e| e.mode_value(replay.cursor)),
+        mode_slider: replay.editor.as_ref().map_or(2, |e| e.mode_slider(replay.cursor)),
+        tint: replay.editor.as_ref().map_or(0, |e| e.tint as u32),
+        tints: std::array::from_fn(|i| replay.editor.as_ref().map_or(0, |e| e.tint_value(i, replay.cursor))),
     };
     if feed.0 != next {
         feed.0 = next;
