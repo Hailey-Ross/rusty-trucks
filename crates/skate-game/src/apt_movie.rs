@@ -269,21 +269,29 @@ impl Movie {
             self.queue_events(id, events, clip_event::INITIALIZE, true);
             self.queue_events(id, events, clip_event::CONSTRUCT, true);
         }
-        // registerClass: the clip takes the class prototype now; its constructor runs right
-        // after the initialize / construct handlers, before the clip's first frame actions.
-        // NOT RETAIL YET (order): retail's point for the constructor is not decoded.
-        if let Some(class) = self.classes.get(&character).copied() {
+        // registerClass: the clip takes the class prototype now. Retail sub_82E5A9E0 (after
+        // sub_82E7AF18, from both the timeline place 82E7B090 and attachMovie 82E565A0; research
+        // b452) sets the prototype, runs the first tick 82E5B640 (which places the children, so
+        // their construct handlers run first), then the constructor (82E6A208). So the
+        // constructor is queued after the children are placed; it still runs before the clip's
+        // own frame actions, which wait on `pending`. A child's construct value (button_item2's
+        // mButtonRender `_test = "Unknown"`) no longer overwrites what the parent's constructor
+        // set (`SetButtonType(mButtonImage)`, the teleport prompt's DPad_Up).
+        let class = self.classes.get(&character).copied();
+        if let Some(class) = class {
             if let Value::Object(proto) = vm.get(class, "prototype") {
                 vm.objects[id].prototype = Some(proto);
             }
+        }
+        if !c.frames.is_empty() {
+            self.seek(vm, id, 0, depth + 1)?;
+        }
+        if class.is_some() {
             self.immediate.push_back(Pending {
                 object: id,
                 offset: 0,
                 event: CLASS_CONSTRUCTOR,
             });
-        }
-        if !c.frames.is_empty() {
-            self.seek(vm, id, 0, depth + 1)?;
         }
         // Retail sub_82E5B640: the first tick of a new clip dispatches load (not
         // enterFrame), after that frame's actions were queued.

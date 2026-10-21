@@ -42,6 +42,14 @@ class ParkLayoutTest(unittest.TestCase):
         self.assertEqual(parsed['dynamic'][0]['piece'], '2C70170400030001')
         self.assertEqual(parsed['dynamic'][0]['flag'], 1)
 
+    def test_the_editor_tail_holds_the_park_start(self):
+        raw = layout(2, [((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 1, (1.0, 1.0, 1.0))], filler=16)
+        raw = raw[:-len(b'editor tail')] + struct.pack('>16f', 0, 0, 1, 7, 0, 1, 0, 7, -1, 0, 0, 7, 241.25, 37.0, -91.0, 9e9)
+        self.assertEqual(park_layout.parse(raw)['start'],
+                         [[0.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [241.25, 37.0, -91.0, 1.0]],
+                         'w lanes are junk: rows get 0, the translation 1')
+        self.assertIsNone(park_layout.parse(layout(2, []))['start'], 'a short tail has no start')
+
     def test_tutorial_records_have_no_tint(self):
         raw = layout(1, [((0.0, -0.05, 0.0), (0.0, 0.0, 0.0, 1.0), 0x1DC3303E38703, None)], filler=12)
         piece, = park_layout.parse(raw)['static']
@@ -85,6 +93,31 @@ class ParkLayoutTest(unittest.TestCase):
         self.assertEqual(t['volume']['shape']['center'], [1.0, 0.0, 2.0], 'the first start piece, not the second')
         self.assertEqual(t['volume']['shape']['half_extents'], [2.0, 2.0, 2.0])
         self.assertEqual(t['exits'][0]['matrix'][3], [5.0, 3.0, 6.0, 1.0])
+
+    def test_park_shaders_have_their_own_families(self):
+        from .retail_material import _retail_shader_family
+        self.assertEqual([_retail_shader_family('environmentpark.' + n) for n in ('diffuse', 'decal', 'alphatest')],
+                         [50, 51, 52])
+        self.assertEqual(_retail_shader_family('environmentsimple.alphatest'), 7, 'neighbours unchanged')
+
+    def test_shadow_colours_only_for_park_worlds(self):
+        from .environment import key_hash
+        vec = lambda *v: dict(data=struct.pack('>4f', *v, 0.0).hex().upper())
+        park = {key_hash(park_layout.PARK_WORLD_FIELD): dict(data='01000000'),
+                key_hash(park_layout.DYNAMIC_SHADOW_FIELD): vec(0.5, 0.25, 0.125),
+                key_hash(park_layout.EXPONENTIAL_SHADOW_FIELD): vec(1.0, 0.5, 0.75)}
+        self.assertEqual(park_layout.shadow_colours(park), dict(dynamic=[0.5, 0.25, 0.125], exponential=[1.0, 0.5, 0.75]))
+        city = {**park, key_hash(park_layout.PARK_WORLD_FIELD): dict(data='00000000')}
+        self.assertIsNone(park_layout.shadow_colours(city))
+
+    def test_projected_lightmap_reads_its_name_and_bounds(self):
+        from .environment import key_hash
+        f = lambda v: dict(data=struct.pack('>f', v).hex().upper())
+        fields = {key_hash(park_layout.LIGHTMAP_NAME_FIELD): dict(data='megaparklightmap'),
+                  **{key_hash(name): f(v) for name, v in zip(park_layout.LIGHTMAP_BOUNDS_FIELDS[:3], (25.5, 254.5, -39.0))}}
+        found = park_layout.projected_lightmap(fields)
+        self.assertEqual(found, dict(texture='megaparklightmap', bounds=[25.5, 254.5, -39.0, 0.0]), 'a missing field reads 0')
+        self.assertIsNone(park_layout.projected_lightmap({key_hash(park_layout.LIGHTMAP_NAME_FIELD): dict(data='')}))
 
     @unittest.skipUnless(os.environ.get('SKATE3_DISC'), 'needs the extracted disc (SKATE3_DISC)')
     def test_disc_layouts_resolve_every_piece(self):

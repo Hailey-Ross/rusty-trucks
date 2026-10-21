@@ -11,9 +11,12 @@
 //! this project's licenses, Credits stays greyed until FE 25 is ported. Rows are data (`ExtrasRules`), retail's the
 //! defaults; a mod adds or hides rows.
 
-/// One entry of the profile unlock list (retail `sub_82503C30(list, kind, fnv1a32(name), ..)`, research b321): kind
-/// `entitlement` (retail 8: a redeemed code), `sponsor` (6: a clothing / sponsor item, `cac_unlock_sponsors`),
-/// `location` (0: a world location), `challenge` (passed to TheSim+0xE0 vt+0x14).
+/// One entry of the profile unlock list (retail `sub_82503C30(list, kind, fnv1(name), ..)`, research b321; the hash
+/// is FNV-1, multiply then xor, b458, not FNV-1a as b321 said): kind `entitlement` (retail 8: a redeemed code),
+/// `sponsor` (6: a clothing / sponsor item, `cac_unlock_sponsors`), `location` (0: a world location), `challenge`
+/// (passed to TheSim+0xE0 vt+0x14). Retail kinds (b458, string table 8302CC7C): 0 LOCATIONS, 1 CHARACTERS, 2 REPLAY,
+/// 3 EGGS, 4 GESTURES, 5 CLOTHING_UNLOCK, 6 CLOTHING_SPONSOR, 7 SKATEPARK_SET, 8 ENTITLEMENTS, 9 WORLDS, 10 CHALLENGES,
+/// 11 MOVIE, 12 DLC_PRODUCT.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unlock {
     pub kind: String,

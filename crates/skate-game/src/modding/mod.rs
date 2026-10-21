@@ -1234,6 +1234,7 @@ fn apply_one(
         }
         Command::ReplayMarker { label } => world.resource_mut::<crate::replay::Replay>().add_marker(id, label)?,
         Command::ReplaySetLimits { max_frames, byte_budget } => world.resource_mut::<crate::replay::Replay>().set_limits(id, max_frames, byte_budget),
+        Command::ReplaySetCamera { collide, radius, leash } => world.resource_mut::<crate::replay::Replay>().set_camera(id, collide, radius, leash),
         Command::WorldResetMovedProps {} => {
             if let Some(mut physics) = world.get_resource_mut::<crate::physics::GamePhysics>() {
                 physics.reset_moved_props();

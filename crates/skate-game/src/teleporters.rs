@@ -336,8 +336,11 @@ fn apply(
     for event in used.read() {
         let Some(t) = teleporters.get(current.path.as_deref(), &event.teleporter) else { continue };
         let Some(exit) = t.exits.get(event.exit) else { continue };
-        // b423: the placement carries the skater's own board state (a skater on foot arrives on foot).
-        let on_board = skater.player_input.physical.state.category_12 != 500;
+        // Retail arrives on the board, at rest (research b455: the teleporter path `82D55280` passes IsOnBoard = 1
+        // through `828646E0` -> `82864038` -> skater vt+0x70, state 100 on arrival; `82C0D680` zeroes every body's
+        // velocity, so `travel_ex` gets no velocity). A skater on foot gets on the board; the Challenge Map menu
+        // passes IsOnBoard 0 instead. Was ours (b421 misread): the skater's own board state.
+        let on_board = true;
         let request = crate::challenge_map::TeleportRequest { destination: t.id.clone(), map: exit.map.clone(),
             transform: exit.matrix, on_board, session_marker: false };
         info!("SKATE_TELEPORTER {} exit={} map={} locator={}", t.id, event.exit, exit.map, exit.locator);

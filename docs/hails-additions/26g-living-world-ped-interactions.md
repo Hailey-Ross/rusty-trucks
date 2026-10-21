@@ -2455,3 +2455,14 @@ not captured (the hook crashed the recomp during the teleport's level load); not
   lock while the seat crept away. (The want itself is retail: Plugin has no nearbycollisionreaction exit, b396.)
 - Change: `peds.rs` `seat_carry`: sub-threshold seat steps move the seated owner's lock and body with the seat.
   Open: b219 plan step 3 (latched avoid ahead of the stand-up) and the `seated` test needing the SitIdleCyc clip.
+
+## A bail from a ped hit is logged, and the mid-trick factor is tuning (2026-10-21, research b448)
+
+- Retail (b185, re-checked by b448): no ped-specific bail; the ped body parts' contact force (group 11) goes through the
+  ordinary wipeout checks (ground 8.5 body / 30 arms / 0.4 displacement / 0.6 squash, air 3.5), whose limits shrink by
+  0.3 while the board is side-on mid-trick (flags_2472 bit 15, set by 82BD8CB0 at |board X.y| > 0.71). The ped's
+  reaction is a separate read of the same contact. Ours already did this (doc sections above).
+- New: `WIPEOUT_REASONS` logs `ped_force` (the strongest group-11 force), `side_on_trick` and `trick_scalar`, so a
+  session log shows whether a bail came from a ped; the 0.3 factor is `GroundSettings::trick_scalar` (retail default,
+  a code constant in 82D8F9E0, now mod-tunable). Test `a_ped_hit_bails_side_on_mid_trick_but_not_upright`.
+- Open: retail's bail rate per ped hit (a recomp ped-hit session with the b274 WIPEREQ hooks); a board play test.

@@ -21,6 +21,13 @@ def _retail_shader_family(shader_name: str) -> int:
         # advertisement_defaultPS: diffuse^2 times the boxed, shadowed lightmap
         # with a global light floor; no kd, opaque, the reduced output curve.
         return 17
+    # The skate.Park pieces' programs (research b442): environmentpark{diffuse,decal,alphatest}_defaultPS.
+    if shader.startswith("environmentpark.diffuse"):
+        return 50
+    if shader.startswith("environmentpark.decal"):
+        return 51
+    if shader.startswith("environmentpark.alphatest"):
+        return 52
     if shader.startswith("environmentsimple.alphatest"):
         return 7
     if shader.startswith("environmentsimple.diffuse"):

@@ -41,6 +41,7 @@ Playing this branch's rolling build on a second PC (couch testing): [second-pc-t
 | 37 | [Instant replay: record every actor, 90 s window](37-instant-replay.md) | Game (Rust) | In progress, branch `world/replay`: every drawn actor (NPC skaters, peds, traffic, props, mod actors) recorded as retail's quantised local joint rotations and played back instead of freezing; retail's 5400-frame (90 s) window. Not play-tested |
 | 38 | [DLC support: the player's own Skate 3 DLC packages](38-dlc-support.md) | Setup (Python) + Game (Rust) | In progress, branch `world/replay` (PR #52): STFS reader, DLC folder input, the Create pack's replay editor movie and text exported; DLC maps next. Not play-tested |
 | 39 | [skate.Park layouts: the Full / Basic worlds place their pieces](39-skatepark-layouts.md) | Setup (Python) + Game (Rust) | In progress, branch `world/replay` (PR #52 item 9): static pieces with collision and rails, Challenge Map Full / Empty rows; park shaders and movable pieces next. Not play-tested |
+| 40 | [Map block decode: exact-size buffers (upstream PR #66, extended)](40-map-block-decode.md) | Engine (skate-data) | Uncommitted on `world/replay` (PR #52): #66's exact reserve plus one buffer for the geometry blocks and a bounded reservation for bad files; all 17 maps decode identically |
 
 ## Environment used for verification
 

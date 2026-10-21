@@ -174,16 +174,22 @@ pub(crate) struct ChallengeMapData {
     pub nodes: Vec<skate_core::menus::MapNode>,
     pub pictures: std::collections::BTreeMap<String, String>,
     pub markers: std::collections::BTreeMap<String, skate_core::menus::MapMarker>,
-    pub teleports: Vec<String>,
+    /// (node kind, node id, destination key) of every node with a teleport.
+    pub teleports: Vec<(EntryKind, String, String)>,
 }
 
 fn challenge_map(asset_root: &std::path::Path, world_maps: &std::collections::BTreeMap<String, String>) -> ChallengeMapData {
     let rows = crate::teleport_menu::load(asset_root).unwrap_or_default();
     let locators: std::collections::BTreeMap<&str, [f32; 2]> =
         rows.iter().filter_map(|d| d.matrix.map(|m| (d.id.as_str(), [m[3][0], m[3][2]]))).collect();
+    // The leaves sort by their label's English text, which teleports.json carries per destination.
+    let texts: std::collections::BTreeMap<&str, &str> =
+        rows.iter().filter_map(|d| Some((d.label_key.as_deref()?, d.name.as_str()))).collect();
+    let label_text = |label: &str| texts.get(label).map(|t| (*t).to_owned());
     let (nodes, pictures, markers) = match skate_data::collections::Collections::load(asset_root) {
         Ok(c) => (
-            skate_data::challenge_map::load(c.entries(), "progression", &skate_data::challenge_map::LocationRules::default()),
+            skate_data::challenge_map::load(c.entries(), "progression", &skate_data::challenge_map::LocationRules::default(),
+                &skate_data::challenge_map::LocationUnlocks::load(asset_root), &label_text),
             skate_data::challenge_map::location_maps(c.entries(), world_maps),
             skate_data::challenge_map::location_markers(&c)
                 .into_iter()
@@ -199,24 +205,37 @@ fn challenge_map(asset_root: &std::path::Path, world_maps: &std::collections::BT
             Default::default()
         }
     };
-    let teleports = locators.keys().map(|k| k.to_string()).collect();
+    let mut teleports: Vec<(EntryKind, String, String)> =
+        locators.keys().map(|k| (EntryKind::FeLocation, k.to_string(), k.to_string())).collect();
+    // The skate.Park folder's park worlds (b447): each enters its world through the destination that names it (the
+    // Challenge Map location of that world row, teleports.json `world`; a layout row such as `megapark_full`).
+    for d in rows.iter().filter(|d| d.matrix.is_some()) {
+        if let Some(world) = &d.world {
+            if !teleports.iter().any(|(kind, id, _)| *kind == EntryKind::World && id == world) {
+                teleports.push((EntryKind::World, world.clone(), d.id.clone()));
+            }
+        }
+    }
     ChallengeMapData { nodes, pictures, markers, teleports }
 }
 
 impl RetailMenus {
-    /// Every Challenge Map location with a teleport matrix gets the engine's teleport handler (so it is enabled);
-    /// every other node keeps its hooks and stays greyed until a handler exists (user, 2026-10-18).
-    pub(crate) fn register_teleports(&mut self, teleports: &[String]) -> usize {
-        let locations: Vec<EntryRef> = self
+    /// Every Challenge Map location with a teleport matrix, and every skate.Park world a destination names, gets the
+    /// engine's teleport handler (so it is enabled); every other node keeps its hooks and stays greyed until a handler
+    /// exists (user, 2026-10-18). `teleports`: (node kind, node id, destination key).
+    pub(crate) fn register_teleports(&mut self, teleports: &[(EntryKind, String, String)]) -> usize {
+        let locations: Vec<(EntryRef, String)> = self
             .registry
             .data()
             .map_nodes
             .iter()
-            .filter(|n| n.entry.kind == EntryKind::FeLocation && teleports.contains(&n.entry.id))
-            .map(|n| n.entry.clone())
+            .filter_map(|n| {
+                let (_, _, key) = teleports.iter().find(|(kind, id, _)| *kind == n.entry.kind && *id == n.entry.id)?;
+                Some((n.entry.clone(), key.clone()))
+            })
             .collect();
-        for entry in &locations {
-            let owner = Owner::Engine(format!("{TELEPORT}{}", entry.id));
+        for (entry, key) in &locations {
+            let owner = Owner::Engine(format!("{TELEPORT}{key}"));
             self.registry.register_handler(entry.clone(), Handler { owner, select: true, highlight: false, callback: None });
         }
         locations.len()

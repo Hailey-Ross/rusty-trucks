@@ -81,7 +81,7 @@ fn spawn_static<T: Bundle + Clone>(
     buffers: &mut impl AssetSink<bevy::render::storage::ShaderStorageBuffer>,
     tag: T,
 ) -> (SceneStats, [usize; RenderClass::ALL.len()]) {
-    let table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
+    let mut table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
 
     let mut triangles: Vec<Triangle> = Vec::with_capacity(map.geometry.indices.len() / 3);
     for tri in map.geometry.indices.chunks_exact(3) {
@@ -535,10 +535,11 @@ pub(crate) fn spawn_instances(
     materials: &mut impl AssetSink<WorldMaterial>,
     images: &mut impl AssetSink<Image>,
     buffers: &mut impl AssetSink<bevy::render::storage::ShaderStorageBuffer>,
-    pieces: bool,
+    // Some for a skate.Park layout's fixed pieces: their draw inputs by piece id (park_layout::load_draws).
+    pieces: Option<&HashMap<u32, crate::retail_render::ParkDraw>>,
 ) -> usize {
     let _span = info_span!("spawn_prop_instances").entered();
-    let table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
+    let mut table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
     let mut templates: HashMap<(u32, u32), Vec<PropPart>> = HashMap::new();
     let mut draws = 0;
     for object in objects {
@@ -550,13 +551,14 @@ pub(crate) fn spawn_instances(
             .name
             .split_once('/')
             .unwrap_or(("", object.name.as_str()));
+        let draw = pieces.and_then(|draws| draws.get(&object.id).copied()).unwrap_or_default();
         let children: Vec<_> = parts
             .iter()
             .map(|(class, slab, mesh, aabb)| {
                 (
                     Name::new(format!("{} {class:?} slab {slab}", object.name)),
                     Mesh3d(mesh.clone()),
-                    MeshMaterial3d(table.material(*slab, *class)),
+                    MeshMaterial3d(table.tinted(*slab, *class, draw, materials)),
                     Transform::default(),
                     *aabb,
                 )
@@ -568,7 +570,7 @@ pub(crate) fn spawn_instances(
             Transform::from_matrix(prop_affine(&object.transform)),
             Visibility::default(),
         );
-        if pieces {
+        if pieces.is_some() {
             // Fixed skate.Park pieces: never a PropInstance, so no prop system moves or picks them up.
             commands.spawn_with_children((root, crate::park_layout::ParkPiece { id: object.id, template: template.to_string() }), children);
         } else {
@@ -1935,7 +1937,7 @@ mod tests {
             &mut materials,
             &mut images,
             &mut buffers,
-            false,
+            None,
         );
         assert_eq!(spawned, 2);
         meshes.publish(&mut world);

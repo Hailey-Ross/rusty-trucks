@@ -199,7 +199,18 @@ data. Open: no recomp trace confirms retail plays the SkateSchool bed there.
   the user's video of Skate 3's challenge map with the packs shows "The Sanatorium"). Test `test_map_names`.
 - Audio (`audio_export.py`): the DLC rows join the disc's, the packs' `.ems` (7 files; Maloof's places the 7 disc loop
   banks b414 listed) and every DLC district's region layers keyed by label; the disc's 23 `.ems` are unchanged.
-  Not yet: the new DLC beds and banks (After Dark `24_dlc_ambience`, the Create pack `25_dlc_ambience`, b418).
+  DLC beds and banks (research b432; user 2026-10-21 asked for them first): the bed table is built from data as retail
+  builds it (824D4630: `ambienceresident.big`'s index, bed number = the stream name's leading number, the first entry
+  per number wins, which keeps `19_reclaimed_b_fix` and adds the index's `23_Press_start_screen`; 824D3990: a pack's
+  loose `data/audio/<N>_dlc_ambience.snr` / `.sns` for a number the disc lacks, at most 16, never replacing a disc
+  bed) in `audio_export.bed_table`; zones resolve through it and keep `bed_index`. After Dark's zone plays
+  `24_dlc_ambience`, Downtown Night's `25_dlc_ambience`, Back Lot's the disc's `06_dt_open` (b418 had Back Lot wrong).
+  After Dark's 7 loose `.abk` banks (its random set `e_dlc_sanitariumdlc`) decode with the disc's, a disc bank keeping
+  its name, and reach the AEMS runtime (`aems_files` extra). Tests `test_audio_beds`.
+  A pack's `.ems` (`DLC_sanitarium`, `DLC_Maloof`, `dlc_zenplaza`, ...) is its map's own emitter file, the disc's
+  `sfx_<district>` counterpart, so its banks now count as placed: After Dark's `cage_rattle_1`, `human_moaning_1` and
+  `electric_shock_1` plus 14 disc banks only the packs' emitters use (air units, birds, frogs, rivers, a club, music)
+  decode; before, those emitters had no bank and stayed silent (ours: the disc rule is a file-name prefix).
 - Map pictures (b417, `prepare_menu_movies.py` `dlc_world_maps`): each DLC world row's map name (`tMapInfo`) is read
   against its own vault `.bin` and the packs' BIGs holding `data/fe/source/images/map/` join the dynamic image export,
   so `world_maps` gets `dist_maloofmoneycupdlc` -> `DLC_Maloof_Map_512` and that picture is extracted. Other DLC
@@ -209,6 +220,75 @@ data. Open: no recomp trace confirms retail plays the SkateSchool bed there.
   YET, which field retail reads there is unverified. Test
   `a_dlc_location_whose_district_is_no_world_takes_its_world_field`; verified in the dev install after a `hud`
   refresh (2026-10-21). Not play-tested.
+
+## Challenge Map Locations: the DLC folders and skate.Park (research b447, 2026-10-21)
+
+- Retail [data]: each folder is a `map_listing` row under `progression_locations`, sorted by its order field; each
+  pack's vault adds its own (7 Maloof Money Cup 2010 NYC, 8 Danny Way's Hawaiian Dream, 9 The Sanatorium, 10 Art
+  Gallery: the user's retail video order). A location folder's filter tests the `fe_locations` row's World, not its
+  District (the disc Maloof filter names `dist_maloofmoneycup`, its rows' World; their District is `dist_maloof`; the
+  Art Gallery row has no District). skate.Park's filter (`skatepark`) lists `world` rows with `IsSkatePark` and
+  `AllowInSkateParksTab`: 5 disc park worlds plus Back Lot, Downtown Night and Zen Plaza Full with the packs = the 8 of
+  the video, labelled by the world's own text.
+- Ours (`skate-data` `challenge_map.rs`): the rules match on World (inherited through the row's parents) and include the
+  four DLC folders; the skate.Park folder lists the park worlds as `World` leaves; `retail_menus.rs` gives each park
+  world the teleport of the destination that names that world (`megapark_full` for `dist_megapark_full`, which starts
+  at the layout's start, doc 39). Tests: `the_locations_tab_lists_each_districts_locations_in_its_folder` (by World),
+  `the_dlc_folders_list_by_world_and_the_skate_park_folder_lists_park_worlds`, the real-data tree (every DLC folder
+  filled, skate.Park lists World leaves).
+- DLC park worlds (2026-10-21): the teleport data (`teleports.py`) now reads the packs' rows too (each against its own
+  vault's `.bin`, the packs' locators and language, park layouts from the pack BIGs; `asset_exports.py` passes the
+  vaults), so the packs' fe rows become destinations. The three DLC Full worlds (`dist_backlotpark_full`,
+  `dist_downtownparknight_full`, `dist_zenplazapark_full`) are entered through their packs' rows `dist_backlotpark`,
+  `dist_downtownparknight`, `dist_zenplazapark` (World = the Full world; with artwork, so they keep their locator, the
+  same rule as `startpark_progression`). Before this the three stayed greyed. Checked on the dev install
+  (2026-10-21 refresh): 66 destinations, all with a matrix, incl. the 3 DLC park worlds, their Empty rows and the
+  4 DLC maps.
+- Unlock rule (research b450) [code]: `Unlock.IsLocationUnlocked` (`82839C38`) lists a row when its bool
+  `Hash_90E678B6961730E1` (inherited) is set, otherwise when the unlock manager (`*(0x83067074)`, `82503AE0`) holds
+  `all_locations_unlock` or the row's name text (`Hash_942AB8AEE4B414ED`), or its unlock-all byte (+0x24) is set.
+  [data] The flag is 0 on `gamestart` (it overrides its parent `dist_university_library`), `dist_skateschool`, both
+  Maloof rows, `dist_blackboxpark` and the park rows; 1 on the others. Ours: `LocationUnlocks` (`challenge_map.rs`)
+  over `load`; NOT RETAIL YET: no unlock store, so every name counts as unlocked except `gamestart` and
+  `dist_skateschool`, the start rows progression never unlocks. Result: University 10, skate.School 1, as in the
+  user's retail video (Maloof and Black Box Park show there, so that save holds their unlocks). Test
+  `a_location_without_the_shown_flag_needs_its_unlock`, the real-data tree (University 10, skate.School 1).
+- Order inside a folder (research b451) [code]: the folder build (`82D0D728` -> `82D0C890` -> `82D0C7A8`) sorts each
+  list with `82647EA0` (std::sort, not stable) and comparator `82647B80`: the category order first (the row's
+  `Hash_50D9293B818507EC` map_category, its Int32 `Hash_1349BB6EC1D1E751`; skate.Park: Downtown 100, PCU Training 200,
+  Team HQ 300, Stadium 400, Back Lot 600, Downtown Night 700, Zen Plaza 20000), then items in a runtime list (+0x60)
+  first, then the label's text compared by position in the language's sort string (`8290F0A8`: a character not in it
+  after all listed ones, a prefix compares equal). Ours: `load` sorts each folder's leaves by category order and
+  label text (`collate`, `COLLATION`: our case-interleaved letters then digits), with the English names teleports.json
+  carries per label (`label_key`); ties keep data order. Test `a_folder_sorts_by_category_order_then_label_text`.
+  NOT RETAIL YET: the language's own sort string.
+- Category headers (research b454) [code + movie data]: after the sort retail inserts a map_category row before each
+  category run; the screen draws it as a picker header (`UpdateStuffMenuItems` -> `AddSpecificItem(label,
+  mHeaderItem)`, list [3] of `GetStuffMenuItems` `8264AF28`), labelled by the category's `Hash_465698DD3CC73CA2`
+  (`82644430`), not greyed (`82646D18`), skipped by the cursor (`82D0D100`, the movie's picker) and by A (`826475B8`),
+  and not counted; normal rows indent 16 px when a list has one. A folder whose inherited `Hash_EAFE7F250C154184` is
+  set and that holds one category shows no header (University, Downtown and the other location folders). The
+  comparator's middle key is cProgressionManager's challenge status "new" list (`*(*(0x830CFD94)+0xE0)+0x44`, +0x60):
+  new challenges first; it never matches a location or park key. Ours: `load` inserts the header nodes
+  (EntryKind::MapCategory; the screen host already sends list [3] and skips them), `select` ignores a header, rows
+  never grey a header. Result on the dev install: skate.Park = 15 rows, 8 parks under 7 headers (Zen Plaza's
+  category is the San Van pack's, labelled `ID_WORLD_ARTGALLERYDLC` in its data). Tests:
+  `a_folder_sorts_by_category_order_then_label_text` (headers, the flag with one and two categories), the real tree.
+  Open: retail's header label for leaves without a category; who fills the "new" list. Not play-tested; b447 noted
+  the video's skate.Park count as "(8)", so the user's check decides whether the headers show.
+- Unlock grants (research b458) [code + data]: the manager's list A (mgr+0x28) is the profile save (`82505150` /
+  `82505000`); a fresh save (`82503AD0` -> `825046B0`) holds 7 characters and 37 gestures, no locations. List B is
+  rebuilt from the content packages' `data\unlocks\*.unlock` lines (`KIND,name`, `82505220`) and never saved; the
+  location test asks both. In the user's packages (main checked): `presell.unlock` (Black Box Distribution Skate
+  Park) `LOCATIONS,dist_blackboxpark`, `unlckall_attrib.unlock` (Time is Money) `LOCATIONS,dist_maloof_street` /
+  `dist_maloof_vert`: that is why both show in the user's video. `all_locations_unlock` is only cheat id 2, which no
+  TU3 cheat code has. The hash is FNV-1 everywhere (`82503BD8` multiplies, then xors; recomp checked), not FNV-1a.
+  Ours: setup writes `private/dlc-unlocks.json` (every package's unlock lines, `dlc.py` `unlocks`, read from the
+  package without copying its BIGs; `BigArchive.decode`); `LocationUnlocks::load` takes its LOCATIONS names as
+  grants. Until the profile store exists everything else stays unlocked except `gamestart` / `dist_skateschool` (the
+  user's 2026-10-19 rule for the unlock hooks). Test `a_location_without_the_shown_flag_needs_its_unlock`.
+- Open: the profile unlock store (list A, per profile) and a mod API to grant / lock locations; retail's Lua /
+  challenge rewards that grant locations.
 
 ## Teleporters (disc and DLC maps)
 
@@ -251,8 +331,36 @@ Change:
   82665E88; the `kActionOverlayState_*` names are set on `_global` 0..6 because no movie defines them) with the title
   through `SignUpPoster.GetTeleportTitle`, state 0 when it goes. A set exported before the movie keeps our text line
   (no set version bump, so no forced refresh), and without the stage the confirm is skipped. Verified on University:
-  "Enter Stadium skate.Park" in the retail font with the logo glyph. OPEN: no D-pad Up glyph shows beside it (the
-  Teleport state sets no button type; where retail's glyph comes from is not found).
+  "Enter Stadium skate.Park" in the retail font with the logo glyph.
+- Arrival (research b455, 2026-10-21) [code; user fact 2026-10-21: "It did, i can confirm I landed from the teleport
+  on my board"]: the skater arrives on the board and at rest. The teleporter path `82D55280` passes IsOnBoard = 1
+  (`li r6,1` into the vt+36 call, recomp checked) through `828646E0` -> `82864038` -> skater vt+0x70, and the arrival
+  state is 100 (on board); the player teleport `82DB8998` -> `82C0D680` zeroes every body's linear and angular
+  velocity and nothing sets one afterwards. The Challenge Map menu passes IsOnBoard 0 (arrives on foot). Ours:
+  `teleporters.rs` `on_board = true` (was the skater's own board state, a b421 misread); `travel_ex` already gets no
+  velocity. Far teleport (research b457) [code]: the flow handler `82709740` case 3 stores the request
+  (`82706F50`: matrix, slot, IsOnBoard), the load chain `82707BE0` -> `82707CB0` -> `82707D70` -> `82707F08` ->
+  `827080A0` streams the exit area, then `827070C0` posts cMsgTeleport (0x8FCDC5E2 {matrix, IsOnBoard,
+  IsSessionMarkerTeleport}), the same event as a same-world teleport; no velocity anywhere on the path. Ours already
+  matches (`challenge_map.rs` `travel_ex(request.transform, None, request.on_board)` after the map load). Open: who
+  turns cMsgTeleport into the skater move (likely retail Lua); whether our placement can run before the exit area's
+  collision exists; whether our `travel_ex` resets twice (`skater.rs:219-228`).
+  Moddable next: per exit `on_board` / arrival velocity on `sdk.triggers.teleporter` (`TeleporterOptions`, vm.rs:77).
+- D-pad Up glyph (research b452, 2026-10-21): the Teleport state sets no button type; the movie's own data does.
+  [data] `mSignup.mButtonItem` (a `button_item2`) has a Construct clip action setting `mButtonImage = "DPad_Up"`, and
+  `button_item2`'s constructor calls `SetButtonType(mButtonImage)`, which writes its child `mButtonRender._test`; that
+  child's own Construct sets `_test = "Unknown"`. [code] Retail runs a placed clip's initialize / construct
+  (`82E7AF18`), then `82E5A9E0`: the prototype, the first tick `82E5B640` (which places the children, so their
+  construct runs), then the class constructor (`82E6A208`), so the constructor's `DPad_Up` wins. Ours queued the
+  constructor before placing the children, so the child's "Unknown" won and no glyph drew. Fix: `apt_movie.rs` queues
+  the constructor after the first-frame `seek` (it still runs before the clip's own frame actions). This applies to
+  every placed registered class, so other buttons whose constructor sets a glyph now show it too (the pause menu's
+  screen test now draws a `prompt/X`: the DLC banner's button, which retail sets to X too; research b467 + main check:
+  it is drawn at y -34..-2, above the stage, until InitializeMenu hides the banner, so it is never on screen, as in
+  retail's video; the test asserts that and its texture check skips the engine's `prompt/` glyphs). Test
+  `the_teleport_prompt_shows_its_dpad_up_glyph` (state 2 draws `prompt/DPad_Up`); apt_stage tests 15 pass. Not
+  play-tested. Open: retail runs the clip's own load before the constructor, ours after; `DAT_83037550` (skips the
+  first tick). Moddable next: an optional `button` on `sdk.triggers.teleporter` through the movie's `SetButtonType`.
 - NOT RETAIL YET: the arrival speed is the same reset as the session marker's (b423: whether retail zeroes speed is
   open).
 

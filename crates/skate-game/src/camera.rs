@@ -2,7 +2,7 @@
 //! CameraRuntime::advance after its complete physical/animation publication.
 mod settings;
 mod collision;
-mod world_query;
+pub(crate) mod world_query;
 mod shot_data;
 mod stock_names;
 mod shake_data;
@@ -65,6 +65,8 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
     history: Res<crate::presentation::Presentation>, time: Res<Time<Fixed>>,
     replay: Res<crate::replay::Replay>,
     customiser: Option<Res<crate::customiser::Customiser>>,
+    physics: Option<Res<crate::physics::GamePhysics>>,
+    mut guard: Local<crate::replay::CameraGuard>,
     mut cameras: Query<(&mut Camera, &mut Transform, &mut Projection), With<GameplayCamera>>) {
     if let Ok(window) = windows.single() {
         // A minimized window reports 0x0, and 0/0 is NaN. That poisons the
@@ -82,10 +84,12 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
         if replay.active {
             if let Some(free) = replay.free_camera {
                 *transform = free;
+                *guard = Default::default();
             } else {
                 // The editor's camera key on the skater root (Follow / Tripod / Free; Game keeps the recording).
                 let root = crate::presentation::blend(previous.root, current.root, alpha);
-                let (key_pose, fov) = replay.editor_camera(&root);
+                let world = physics.as_deref().map(crate::physics::GamePhysics::world);
+                let (key_pose, fov) = replay.guarded_editor_camera(&root, &mut guard, world);
                 if let Some(pose) = key_pose {
                     *transform = pose;
                 }
@@ -97,8 +101,11 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
                     *transform = *transform * shake;
                 }
             }
-        } else if let Some(pose) = manual_pose {
-            *transform = pose;
+        } else {
+            *guard = Default::default();
+            if let Some(pose) = manual_pose {
+                *transform = pose;
+            }
         }
         if let Projection::Perspective(p) = &mut *projection {
             p.fov = previous.fov + (current.fov - previous.fov) * alpha;

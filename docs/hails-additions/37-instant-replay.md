@@ -108,17 +108,61 @@ replay" gates (research b375, b378).
   `VehicleAlarm`, `PedTazerEvent`, `PedBodyFallEvent`) and writes each again once when the playback cursor crosses
   its time going forward (not on a rewind). NPC reactions and ped speech stay out (speech, blocked in retail's
   replay). Any `Message + Clone` can be tracked the same way (`messages::track`).
-- Not yet: vehicle impact sounds (`car_alarm.rs` contact path) are not recorded. Replay speed below 100 % (M2) will
+- Vehicle sounds (research b409, 2026-10-21): retail has no vehicle impact sound; its vehicle entry keeps a horn field per recorded frame. Ours now records the EFFECTIVE horn state (`world_audio::VehicleHornState`: the bridge's honk / alarm hold, else the AI's horn) as a component track and plays the recorded value at the playhead (`world_bridge.rs`: live holds neither count down nor take events during a replay, they resume on exit), so a seek or rewind into a sounding alarm plays it; the `VehicleHorn` / `VehicleAlarm` one-shot tracks are gone (they would double). Test `the_horn_state_is_recorded_and_a_replay_plays_the_recorded_value`. Replay speed below 100 % (M2) will
   scale `AudioState.time_scale`; whether retail's pitch follows is open.
 
 ## The free camera stays within 40 m of the player
 
 Retail's replay free camera is pulled back when it is farther than 40 m from the player (per-frame limits step
 `82683680` -> `82682CB0`, constant at 0x821EB794; research b381). Ours flew anywhere. Now the free camera is projected
-back onto the 40 m sphere around the player's recorded position at the cursor after each move
-(`replay.rs` `leashed`, `FREE_CAMERA_LEASH`; `Replay::free_camera_leash` overrides it, data for a mod). Retail's
-world collision for the free camera (a 0.1 m sphere, 0.8 m with a world flag, x 1.3, `82682D80`) is not ported yet.
+back onto the 40 m sphere around the player's recorded position at the cursor after each move.
 Test: the leash keeps a camera inside 40 m and pulls a far one onto the sphere.
+
+### The replay cameras do not pass through walls (2026-10-21, research b449)
+
+Problem: the free camera and the editor's Follow / Tripod / Free cameras flew through walls and the ground.
+
+Retail [code, b449]: every evaluated replay camera goes through one constraint (`82C8B698` -> `82683680`): the 40 m
+leash first (`82682CB0`), then `82682D80`: a swept sphere of 0.1 m x 1.3 = 0.13 m (0x820641A8, 0x82099484) from the
+last accepted position to the new one, and a line-of-sight sweep from the player to the new position. A hit on the
+motion sweep slides the camera along the hit plane (the into-wall part of the move removed); if the slide is blocked
+too the camera stays where it was. A non-Free camera whose player is hidden is turned back to its look point
+(`82670600`); Free keeps its rotation. A move below FLT_EPSILON runs no query. No smoothing, no minimum height.
+
+Change: `replay/camera_collision.rs` `constrain` (pure, a sweep closure; the map query is the gameplay camera's fat
+line, `camera/world_query.rs` `line`). The instant replay free camera uses it after each move (`replay.rs` controls);
+the editor cameras are corrected for the view in `camera.rs` `present` through `Replay::guarded_editor_camera`, with
+the last accepted position in a `CameraGuard`. The data is `Replay::camera_collision` (`CameraCollision`: switch,
+radius, scale, epsilon, leash; retail defaults) and a mod sets it with `sdk.replay.set_camera{collide, radius, leash}`
+(nil restores retail's, the override goes when the mod stops; last writer wins). Replaces `leashed`,
+`FREE_CAMERA_LEASH` and `Replay::free_camera_leash`.
+
+OURS / NOT RETAIL YET: a camera cut (a new clip camera, a cursor jump over 0.25 s) has no last position, so only the
+line of sight runs and the camera is pulled in front of an occluder (our stand-in for retail's snap request +0x183,
+whose setter is open). The editor correction is view only: whether retail writes it back into stored keys on
+playback is open (`82C82E40` / `82C82A50`). The 0.8 m and world-supplied radii (world flags +0x30DA0 / +0x30C72) and
+the sweep's collision layers are open; ours hits the map and its external queries, not actors.
+
+Tests: `camera_collision` (slide along a wall, blocked slide stops, no motion runs no query, a cut behind a wall
+pulls in front, leash before collision, a hidden player turns a non-Free camera back, switched off passes through),
+`replay::tests` (leash, mod override restore and disable), skate-mods `replay_set_camera` validation and Lua call.
+
+### Peds' held props replay through a drop, a put-away and a cull (2026-10-21, research b453)
+
+Retail [code, b453]: a ped's hand prop is an ordinary DMO in the census list the recorder walks (`826B8830` creates
+it there, cap 49; `827BF090` writes a 0x70 record per DMO: id, transform, template key); it is recorded by its own id
+for its whole life (picked up, held, dropped, gone) and the ped's record has no prop field.
+
+Ours had three gaps: one track per ped (a second prop reused it), one track in two spaces (hand-space keys while held,
+world keys after a drop: scrubbing back before a drop put the dropped model near the world origin), and props put
+away or culled were despawned, so they vanished from the frames where they were still held. Change:
+`replay/world.rs`: one id per prop object (`HAND_PROP_TAG` + the prop entity's bits) and `keep_model`: a hidden copy
+of the model stays under its parent with the recorded id (a `ReplayGhost`, dropped when its track leaves the window)
+and the original's track ends; `ped_hand_props.rs` calls it at the drop (the dropped model then starts its own prop
+track in world space), at the put-away and at the cull. OURS: retail keeps one id through the drop; ours splits the
+held and the dropped life into two tracks, the same outcome on screen. Test
+`a_dropped_hand_prop_keeps_its_held_frames_on_a_hidden_copy`; replay tests 35, hand prop tests 8 pass.
+Open: the id 2 playback reader, the DMO state entries (`82C48610`).
 
 ## Fixes from the first play test (desktop session 2026-10-20)
 
@@ -500,8 +544,25 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   clip marker lands inside a run of soft keys (`82508828`). All six strings checked in the exported menu text.
 - Ours: `Editor::marker_kind`, `drop_needs_confirm`, `remove_marker` (the sweep) in `replay/editor.rs`; the questions
   are engine popups (`replay.rs` `marker_popup`, callback `engine:replay.marker`), applied straight away without the
-  retail menu stage. NOT RETAIL YET: retail also resets the merged clip's speed and shake (channel 0) and, without
-  the DLC, removes a clip marker from channels 0 / 5 / 4 / 1 together; our speed / shake lanes keep their values.
+  retail menu stage. The merged clip's reset: see "Clip delete reset (b460)" below.
+- Delete sounds (b459, 2026-10-21) [data: ids matched in the audio manifest]: `editor_up_marker`
+  (0x9DEF3BCCEF922B96) as either question opens (none on Yes), `core_error` (0x47F720222F2CAED4) when no marker is
+  under the cursor. Ours: `replay.rs` `editor_controls` hands the sound to `controls`, which plays it. b459 also read
+  the clip-delete reset (camera channel only: lens to 24 clamped 24..75, channel 1 element 0xE to 0.1, speed 100,
+  shake 0), the per-channel delete with the film DLC (active channel only; internal channels 5 = speed, 4 = shake),
+  and the hit window (+-0.00889 of clip time, clamped to [0.00889, 0.99111]).
+- Clip delete reset (b460, 2026-10-21) [code, medium-high on the whole-clip outcome: `82C82490` is the base game's
+  normal per-clip speed setter]: on the camera channel, a clip marker delete writes the defaults at the merged
+  clip's key: lens 24 (clamped 24..75), near clip 0.1 (`CLIPPING_NEAR`, no counterpart in ours), speed 100, shake
+  off. Without the film pack the whole merged span (previous hard key to the next) starts at the defaults; with it
+  only the lane value in effect at the cursor resets. Look lanes and soft key deletes are untouched. Ours:
+  `skate_core::replay_edit` `reset_span` / `reset_at` (lane defaults from `EditLimits`, data), `Editor::remove_marker
+  (time, channels)` resets speed / shake and the lens (`CameraRules`), `MarkerAsk::channels`. Tests
+  `a_clip_delete_resets_the_merged_span_to_the_lane_defaults` (skate-core), `deleting_a_clip_marker_takes_the_key_
+  markers_on_both_sides` (now checks the reset), `a_clip_delete_with_the_film_pack_resets_only_the_values_at_the_
+  cursor`; the trim test now expects speed 1.0 / shake 0 after deleting the only key. NOT PORTED: the hit window
+  clamp (same outcome for inner keys). Open: a recomp check of the whole-clip outcome (speed 50 on clip B, delete
+  marker A|B, read the merged clip's speed).
   Test `deleting_a_clip_marker_takes_the_key_markers_on_both_sides`.
 
 ## M3 step 2 research: the look lanes (b408, 2026-10-20)

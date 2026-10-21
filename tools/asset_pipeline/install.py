@@ -490,6 +490,16 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 report(f'DLC maps unavailable ({error})')
         if 'environment' in groups:
             exports.environment(game_root,stage,work,report,log,converted,game_exe,dlc_vaults)
+            # The unlock lines of the player's DLC packages (b458: retail's second unlock list; the Challenge Map shows
+            # a hidden-flag location only when it is unlocked). No packages = an empty list (a fresh save's view).
+            from .optional_content import CONTENT_ERRORS as UNLOCK_ERRORS
+            target=stage/'assets/private/dlc-unlocks.json'
+            try:
+                lines=dlc_packages.unlocks(dlc_folder) if dlc_identity else []
+                target.parent.mkdir(parents=True,exist_ok=True)
+                target.write_text(json.dumps({'version':1,'unlocks':lines},indent=1),encoding='utf-8')
+            except UNLOCK_ERRORS as error:
+                report(f'DLC unlocks unavailable ({error})')
         if 'audio' in groups:
             exports.audio(game_root,stage,work,report,log,base/'tools',dlc_jobs,dlc_vaults)
         if 'livingworld' in groups:
@@ -633,7 +643,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 from .dlc import merged
                 from .environment import Collections
                 park_bigs=dlc_packages.extract_bigs(dlc_folder,work/'dlc',lambda paths:any(p.lower().startswith(('data/skatepark/','data/content/recipe/','data/content/static/')) for p in paths)) if dlc_jobs else []
-                sources=Sources([BigArchive(game_root/'data/big/miscload.big'),BigArchive(game_root/'data/content/parkassets.big'),*map(BigArchive,park_bigs)])
+                sources=Sources([BigArchive(game_root/'data/big/miscload.big'),BigArchive(game_root/'data/big/miscboot.big'),BigArchive(game_root/'data/content/parkassets.big'),*map(BigArchive,park_bigs)])
                 shutil.rmtree(stage/'assets/private/park-layouts',ignore_errors=True)
                 park_rows=Collections(merged(converted,list(dlc_vaults)))
                 write_park_layouts(sources,world_layouts(park_rows),stage/'assets/private/park-layouts',report,teleporter_roles(park_rows))

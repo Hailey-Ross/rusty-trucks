@@ -20,6 +20,7 @@ Output (`private/park-layouts/`): `<layout>.skate` + `<layout>.json` per layout 
 {world row: {layout, stream}}. All of it is data: a mod adds or replaces a layout or a world's entry.
 """
 import hashlib
+import math
 import json
 import struct
 import sys
@@ -30,6 +31,15 @@ from pathlib import Path
 import numpy as np
 
 LAYOUT_FIELD = 'Hash_79B248E8469DC5DA'
+# The park worlds' shadow colours (research b443: 827FFFB0 reads them when the world's park bool is set; other
+# worlds use (0.2, 0.2, 0.2), a code constant).
+# The park worlds' projected lightmap (research b439 / b440: 8280FDC0 reads a texture name and x0, x1, z0, z1 from the
+# world row; 828101C0 builds g_skateparkProjectedTransform from them). The textures: miscboot.big data/content/textures.
+LIGHTMAP_NAME_FIELD = 'Hash_AA9212BDE5A603B4'
+LIGHTMAP_BOUNDS_FIELDS = ('Hash_A3845713F3CC3AE8', 'Hash_3B8116674904A528', 'Hash_81A067E9478EC244', 'Hash_1101273D0D2882B5')
+LIGHTMAPS = 'data/content/textures/'
+PARK_WORLD_FIELD, DYNAMIC_SHADOW_FIELD, EXPONENTIAL_SHADOW_FIELD = ('Hash_0C54AD24155E3220', 'Hash_281597C51E312AFC',
+                                                              'Hash_C26D37D18EF0D13E')
 STATIC_RECIPE = 'data/content/recipe/static/'
 DYNAMIC_RECIPE = 'data/content/recipe/dynamic/'
 STATIC_MODELS = 'data/content/static/model/static/'
@@ -50,7 +60,14 @@ def parse(raw):
         starts.append(starts[-1] + length)
     if starts[-1] > len(raw):
         raise ValueError('Park layout blocks run past the file')
-    result = dict(version=version, origin_world_hash=f'{origin:016X}', static=[], dynamic=[])
+    result = dict(version=version, origin_world_hash=f'{origin:016X}', static=[], dynamic=[], start=None)
+    # The editor tail's first matrix (b425 section 4: v7 / v10-12 one, v2 / v3 the first of 8): the park's player start,
+    # where retail places the skater on the park (user's video 2026-10-21: Stadium - Full starts on top of the big
+    # ramp = MegaPark_Fullpark's (241.2, 37.1, -91.0)). Rows as stored, translation in row 3; its w lanes hold junk.
+    if starts[-1] + 64 <= len(raw):
+        m = [list(struct.unpack_from('>4f', raw, starts[-1] + 16*r)) for r in range(4)]
+        if all(math.isfinite(v) for row in m for v in row[:3]) and all(abs(sum(v*v for v in m[r][:3]) - 1) < 0.01 for r in range(3)):
+            result['start'] = [m[0][:3] + [0.0], m[1][:3] + [0.0], m[2][:3] + [0.0], m[3][:3] + [1.0]]
     if lengths[0]:
         record_format, count = struct.unpack_from('>2I', raw, starts[0])
         stride = {1: 36, 2: 48}.get(record_format)
@@ -107,7 +124,7 @@ class Sources:
     which number wins between packs is open, b425)."""
 
     def __init__(self, archives):
-        self.layouts, self.models, self.textures, self.static, self.dynamic = {}, {}, {}, {}, {}
+        self.layouts, self.models, self.textures, self.static, self.dynamic, self.lightmaps = {}, {}, {}, {}, {}, {}
         for archive in archives:
             for entry in archive.entries:
                 path = entry.path.replace('\\', '/').lower()
@@ -115,6 +132,8 @@ class Sources:
                     self.layouts['skatepark/' + Path(path).name] = (archive, entry)
                 elif path.endswith('.rx2') and path.startswith((STATIC_MODELS, DYNAMIC_MODELS)):
                     self.models[Path(path).stem.upper().removeprefix('0X')] = (archive, entry)
+                elif path.endswith('.rx2') and path.startswith(LIGHTMAPS) and path.count('/') == LIGHTMAPS.count('/'):
+                    self.lightmaps[Path(path).stem] = (archive, entry)
                 elif path.endswith('.rx2') and path.startswith((STATIC_TEXTURES, DYNAMIC_TEXTURES)):
                     self.textures[int(Path(path).stem, 16)] = (archive, entry)
             for entry in sorted(archive.entries, key=lambda e: e.path.lower()):
@@ -135,7 +154,8 @@ class Sources:
 
 
 def world_layouts(collections):
-    """{world row key: (layout field value, stream)} over every world row, the field resolved through parents."""
+    """{world row key: (layout field value, stream, shadow colours)} over every world row, the fields resolved through
+    parents; the colours ({dynamic, exponential} RGB) are None unless the row's park bool is set."""
     from .environment import key_hash
     result = {}
     for (cls, key), row in collections.rows.items():
@@ -144,9 +164,44 @@ def world_layouts(collections):
         fields, _ = collections.resolve('world', key)
         layout, stream = fields.get(key_hash(LAYOUT_FIELD)), fields.get(key_hash('WorldStream'))
         if layout and layout.get('data') and stream and stream.get('data'):
-            result[row['key']] = (layout['data'], stream['data'])
+            result[row['key']] = (layout['data'], stream['data'], shadow_colours(fields), projected_lightmap(fields))
     return result
 
+
+def shadow_colours(fields):
+    """{dynamic, exponential}: the world row's g_DynamicShadowColour / g_ExponentialShadowColour RGB (big-endian
+    Vector4 fields), None when the row is no park world (its park bool clear)."""
+    from .environment import key_hash
+    flag = (fields.get(key_hash(PARK_WORLD_FIELD)) or {}).get('data')
+    if not flag or not int(flag[:2], 16):
+        return None
+    def colour(name):
+        value = (fields.get(key_hash(name)) or {}).get('data')
+        return list(struct.unpack('>3f', bytes.fromhex(value)[:12])) if value else [0.0, 0.0, 0.0]
+    return dict(dynamic=colour(DYNAMIC_SHADOW_FIELD), exponential=colour(EXPONENTIAL_SHADOW_FIELD))
+
+
+def projected_lightmap(fields):
+    """{texture, bounds [x0, x1, z0, z1]} of a world row's projected lightmap, None without a name (the base row's is
+    empty; non-park worlds have none)."""
+    from .environment import key_hash
+    name = (fields.get(key_hash(LIGHTMAP_NAME_FIELD)) or {}).get('data')
+    if not name:
+        return None
+    def value(field):
+        data = (fields.get(key_hash(field)) or {}).get('data')
+        return struct.unpack('>f', bytes.fromhex(data))[0] if data else 0.0  # a missing field reads 0.0 (830D0850)
+    return dict(texture=name, bounds=[value(f) for f in LIGHTMAP_BOUNDS_FIELDS])
+
+
+def lightmap_texture(sources, name, path):
+    """Decode one projected lightmap RX2 (512 x 512 DXT1, research b444) to RGBA at `path`; the manifest entry."""
+    tools = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(tools/'vendor/utt'))
+    import rx2_parser
+    texture = rx2_parser.parse_rx2(sources.read(sources.lightmaps, name)).textures[0]
+    path.write_bytes(texture.rgba)
+    return dict(width=texture.width, height=texture.height, rgba=str(path))
 
 def piece_template(sources, piece, work, recipe_rows=None):
     """Template geometry, textures and collision of one static piece, in the catalog shape `write_placements`
@@ -160,7 +215,7 @@ def piece_template(sources, piece, work, recipe_rows=None):
     import mdl_parser
     import rx2_parser
     import prepare_hawaiian_dream as prep
-    from retail_lightmap_uv import decode_lightmap_uvs
+    from retail_lightmap_uv import decode_decal_uvs, decode_lightmap_uvs
     from retail_texture_decode import B5G6R5_FORMAT_ID, decode_b5g6r5
     entry = (sources.static if recipe_rows is None else recipe_rows).get(piece)
     if entry is None or entry['arena'] not in sources.models:
@@ -195,6 +250,12 @@ def piece_template(sources, piece, work, recipe_rows=None):
             vertex_count=mesh.vertex_count, vertex_stride=mesh.vertex_stride, attributes=mesh.attributes)
         if lightmap is not None:
             arrays[f'lightmap_uvs_{i}'] = lightmap.values
+        # The decal programs read their decal on its own UV set (TEXCOORD1), as the map exporter writes it
+        # (prepare_hawaiian_dream); without it the decal falls back to the diffuse UVs and lands offset.
+        decal = decode_decal_uvs(raw, vertex_buffer_offset=mesh.source_offsets['vertex_buffer'],
+            vertex_count=mesh.vertex_count, vertex_stride=mesh.vertex_stride, attributes=mesh.attributes)
+        if decal is not None:
+            arrays[f'decal_uvs_{i}'] = decal.values
         for role, name in roles.items():
             guid = group[role]
             if name in textures or guid not in sources.textures:
@@ -294,7 +355,8 @@ def export(sources, worlds, output, report=print, roles=None):
     with tempfile.TemporaryDirectory(prefix='skate-park-') as temporary:
         work = Path(temporary)
         templates, movable_templates, textures, missing = {}, {}, {}, set()
-        for world, (field_value, stream) in sorted(worlds.items()):
+        for world, (field_value, stream, *extra) in sorted(worlds.items()):
+            colours, lightmap = (extra + [None, None])[:2]
             layout = sources.layout(field_value)
             if layout is None:
                 continue  # e.g. `skateparks\debug.park` on the base row: not shipped.
@@ -359,10 +421,21 @@ def export(sources, worlds, output, report=print, roles=None):
                 write_placements(stem, stream, movable, movable_templates, textures, output/(stem + '.props.skate'),
                                  layout=layout)
             unresolved = sorted(({p['piece'] for p in parsed['static']} | {p['piece'] for p in parsed['dynamic']}) & missing)
+            # The park's projected lightmap, bound as each piece material's lightmap channel (sampled at the projected
+            # position, not a UV set; retail_world.wgsl park branch). None: neutral 1, as a world without one.
+            lit, layout_templates = None, templates
+            if lightmap and lightmap['texture'].lower() in sources.lightmaps:
+                name = 'park_lightmap_' + lightmap['texture'].lower()
+                if name not in textures:
+                    textures[name] = lightmap_texture(sources, lightmap['texture'].lower(), work/(name + '.rgba'))
+                lit = dict(lightmap, texture_id=name)
+                layout_templates = {key: dict(value, meshes=[dict(mesh, retail_texture_ids=dict(mesh['retail_texture_ids'], lightmap=name))
+                                                           for mesh in value['meshes']]) for key, value in templates.items()}
             if placements:
-                write_placements(stem, stream, placements, templates, textures, output/(stem + '.skate'),
+                write_placements(stem, stream, placements, layout_templates, textures, output/(stem + '.skate'),
                                  layout=layout, version=parsed['version'], origin_world_hash=parsed['origin_world_hash'],
-                                 dynamic=dynamic, missing_pieces=unresolved)
+                                 dynamic=dynamic, missing_pieces=unresolved, shadow_colours=colours,
+                                 projected_lightmap=lit)
             written[stem] = len(placements)
             report(f'Park layout {stem}: {len(placements)} pieces, {len(movable)}/{len(dynamic)} movable, {len(unresolved)} missing')
     index = {w: v for w, v in index.items() if written.get(v['layout'])}

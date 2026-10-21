@@ -98,7 +98,7 @@ def environment(game_root, stage, work, report, log, converted=None, game_exe=No
         attempt('menus',lambda assets:write_menu_tables(game_exe,game_root/'default.xex',assets,log))
     report('Extracting original travel destinations and location names')
     from .teleports import convert as write_teleports
-    attempt('teleports',lambda assets:write_teleports(game_root,assets,converted))
+    attempt('teleports',lambda assets:write_teleports(game_root,assets,converted,dlc_vaults))
     report('Preparing global foliage backdrops')
     from .backdrop import convert as write_backdrops
     attempt('backdrops',lambda assets:write_backdrops(game_root,assets,converted))

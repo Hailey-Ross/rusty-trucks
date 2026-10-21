@@ -177,6 +177,11 @@ class BigArchive:
         with self.path.open("rb") as stream:
             stream.seek(entry.offset)
             packed = stream.read(entry.stored_size)
+        return self.decode(entry, packed)
+
+    @staticmethod
+    def decode(entry: BigEntry, packed: bytes) -> bytes:
+        """An entry's bytes from its stored (packed) bytes, however they were read."""
         if len(packed) != entry.stored_size:
             raise FormatError(f"{entry.path}: truncated BIG payload")
         if entry.compression == 0:

@@ -201,3 +201,40 @@ fn look_lanes_ramp_between_markers_and_a_committed_neutral_value_still_overrides
     edit.set_marker(clip, Lane::Speed, 600, 100).unwrap();
     assert_eq!(edit.lane_effect(clip, Lane::Speed, 400), Some(0.5));
 }
+
+/// b460: a clip marker delete resets speed / shake over the merged span (lane default from the span's start, the
+/// value in effect at its end kept), or with the film pack only the lane value in effect at the cursor.
+#[test]
+fn a_clip_delete_resets_the_merged_span_to_the_lane_defaults() {
+    let mut edit = ReplayEdit::default();
+    let clip = edit.add_clip(0, 300).unwrap();
+    edit.clips[clip].markers[Lane::Speed.index()] = vec![(100, 50), (200, 70)];
+    edit.reset_span(clip, Lane::Speed, 80, 250).unwrap();
+    assert_eq!(edit.value_at(clip, Lane::Speed, 79), Some(100));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 80), Some(100));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 249), Some(100));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 250), Some(70), "the clip right of the span keeps its value");
+    // From the clip start: the clip value takes the default, no marker at the start.
+    edit.clips[clip].values[Lane::Shake.index()] = 2;
+    edit.clips[clip].markers[Lane::Shake.index()] = vec![(120, 3)];
+    edit.reset_span(clip, Lane::Shake, 0, 150).unwrap();
+    assert_eq!(edit.clips[clip].values[Lane::Shake.index()], 0);
+    assert_eq!(edit.clips[clip].markers[Lane::Shake.index()], vec![(150, 3)]);
+    // To the clip end: nothing to restore.
+    edit.reset_span(clip, Lane::Shake, 0, 300).unwrap();
+    assert!(edit.clips[clip].markers[Lane::Shake.index()].is_empty());
+    // The pack's form: the marker in effect at the frame takes the default, the others stay.
+    edit.clips[clip].markers[Lane::Speed.index()] = vec![(100, 50), (200, 70)];
+    edit.reset_at(clip, Lane::Speed, 150).unwrap();
+    assert_eq!(edit.clips[clip].markers[Lane::Speed.index()], vec![(100, 100), (200, 70)]);
+    edit.clips[clip].values[Lane::Speed.index()] = 40;
+    edit.reset_at(clip, Lane::Speed, 50).unwrap();
+    assert_eq!(edit.clips[clip].values[Lane::Speed.index()], 100);
+    // The default is data (a mod's limits).
+    let mut limits = EditLimits::default();
+    limits.lanes[Lane::Speed.index()].default = 50;
+    let mut modded = ReplayEdit::new(limits);
+    let clip = modded.add_clip(0, 300).unwrap();
+    modded.reset_span(clip, Lane::Speed, 0, 300).unwrap();
+    assert_eq!(modded.value_at(clip, Lane::Speed, 10), Some(50));
+}

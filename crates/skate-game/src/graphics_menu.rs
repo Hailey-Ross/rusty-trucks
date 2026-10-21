@@ -1667,7 +1667,7 @@ mod tests {
         assert_eq!(m.page(), m.rows(), "no headers in the multiplayer pages");
         m.select_section(0);
         m.maps[0].path = Some(PathBuf::from("University.skate"));
-        m.destinations = vec![crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), world: None, matrix: Some([[0.;4];4]) }];
+        m.destinations = vec![crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), world: None, label_key: None, matrix: Some([[0.;4];4]) }];
         m.map_detail = true;
         assert_eq!(m.page(), vec![50, 51, 910, 1_000_000]);
     }
@@ -1748,8 +1748,8 @@ mod tests {
         assert_eq!(menu.rows(), (1000..1040).collect::<Vec<_>>());
         menu.maps[0].path = Some(PathBuf::from("University.skate"));
         menu.destinations = vec![
-            crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), world: None, matrix: Some([[0.;4];4]) },
-            crate::teleport_menu::Destination { id: "dt".into(), name: "Downtown".into(), map: "DownTown".into(), world: None, matrix: Some([[0.;4];4]) },
+            crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), world: None, label_key: None, matrix: Some([[0.;4];4]) },
+            crate::teleport_menu::Destination { id: "dt".into(), name: "Downtown".into(), map: "DownTown".into(), world: None, label_key: None, matrix: Some([[0.;4];4]) },
         ];
         menu.map_detail = true;
         assert_eq!(menu.rows(), vec![50,51,1_000_000]);
