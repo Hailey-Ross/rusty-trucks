@@ -32,16 +32,55 @@ impl CameraKey {
         }
     }
 
-    /// The edit mode the row's A opens (b401: Follow 7, Tripod 8, Game 9, Free 10) and the movie state the C++ posts
-    /// for it (the movie's kFollowEditMode 1, kTripodEditMode 2, kDefaultCameraMode 10, kFreeCameraMode 7).
+    /// The edit mode the row's A opens (b401: Follow 7, Tripod 8, Game 9, Free 10; the advanced rows 4..6 the same
+    /// modes, b405) and the movie state the C++ posts for it (kFollowEditMode 1, kTripodEditMode 2, kDefaultCameraMode
+    /// 10, kFreeCameraMode 7; advanced 12 / 13 / 14).
     pub fn edit_mode_and_state(row: usize) -> Option<(u8, i32)> {
         match row {
             0 => Some((7, 1)),
             1 => Some((8, 2)),
             2 => Some((9, 10)),
             3 => Some((10, 7)),
+            4 => Some((7, 12)),
+            5 => Some((8, 13)),
+            6 => Some((10, 14)),
             _ => None,
         }
+    }
+
+    /// The basic row of a menu row (the advanced rows 4..6 are Follow / Tripod / Free) and whether it is advanced.
+    pub fn basic_row(row: usize) -> (usize, bool) {
+        match row {
+            4 => (0, true),
+            5 => (1, true),
+            6 => (3, true),
+            r => (r, false),
+        }
+    }
+
+    /// Retail's camera type (`82508CE8`: 0 Follow, 1 Tripod, 2 Free, 3 Game), the timeline band's colour index.
+    pub fn kind(&self) -> u8 {
+        match self {
+            CameraKey::Follow { .. } => 0,
+            CameraKey::Tripod { .. } => 1,
+            CameraKey::Free { .. } => 2,
+            CameraKey::Game => 3,
+        }
+    }
+
+    /// Between two keys of the same camera (`u` 0..1): the parameters blended (OURS: linear for every camera; retail's
+    /// Free camera eye is cubic, `curve`); None across different cameras (a cut).
+    pub fn lerp(&self, other: &CameraKey, u: f32) -> Option<CameraKey> {
+        let l = |a: f32, b: f32| a + (b - a) * u;
+        Some(match (*self, *other) {
+            (CameraKey::Game, CameraKey::Game) => CameraKey::Game,
+            (CameraKey::Follow { yaw, pitch, distance, look_height }, CameraKey::Follow { yaw: y2, pitch: p2, distance: d2, look_height: h2 }) => {
+                CameraKey::Follow { yaw: l(yaw, y2), pitch: l(pitch, p2), distance: l(distance, d2), look_height: l(look_height, h2) }
+            }
+            (CameraKey::Tripod { eye, look_height }, CameraKey::Tripod { eye: e2, look_height: h2 }) => CameraKey::Tripod { eye: eye.lerp(e2, u), look_height: l(look_height, h2) },
+            (CameraKey::Free { eye, yaw, pitch }, CameraKey::Free { eye: e2, yaw: y2, pitch: p2 }) => CameraKey::Free { eye: eye.lerp(e2, u), yaw: l(yaw, y2), pitch: l(pitch, p2) },
+            _ => return None,
+        })
     }
 }
 
@@ -66,6 +105,9 @@ pub(crate) struct CameraRules {
     pub lens_range: (f32, f32),
     pub lens_default: f32,
     pub console_hz: f32,
+    /// Height over the skater root the Follow / Tripod cameras look at, m. NOT RETAIL YET: retail looks at its object
+    /// 4 (b402: which actor part is open); the root is the feet.
+    pub look_target_height: f32,
 }
 
 impl Default for CameraRules {
@@ -85,12 +127,13 @@ impl Default for CameraRules {
             lens_range: (24.0, 75.0),
             lens_default: 24.0,
             console_hz: 30.0,
+            look_target_height: 1.0,
         }
     }
 }
 
-/// The pad input of one frame for the key edit modes: left stick turns, right stick y = distance (orbit) / move
-/// (free, both axes), d-pad up / down = height, left / right = lens.
+/// The pad input of one frame for the key edit modes (the screen's prompts): right stick rotates, left stick y =
+/// distance (orbit) / move (free, both axes), d-pad up / down = height, left / right (the arrows) = lens.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct CameraInput {
     pub turn: Vec2,
@@ -149,8 +192,11 @@ pub(crate) fn edit(key: &mut CameraKey, lens: &mut f32, input: CameraInput, rule
     }
 }
 
-/// The camera pose of `key` for the skater root `root` (None: the recorded camera).
+/// The camera pose of `key` for the skater root `root` (None: the recorded camera), looking at the root raised by the
+/// rules' look target height.
 pub(crate) fn pose(key: &CameraKey, root: &Transform) -> Option<Transform> {
+    let root = Transform { translation: root.translation + Vec3::Y * CameraRules::default().look_target_height, ..*root };
+    let root = &root;
     let look_at = |eye: Vec3, look: Vec3| Transform::from_translation(eye).looking_at(look, Vec3::Y);
     match *key {
         CameraKey::Game => None,
@@ -185,7 +231,9 @@ mod tests {
         let view = Transform::from_xyz(10.0, 0.0, 0.0) * Transform::from_xyz(0.0, 0.0, 4.0);
         let mut key = key_from_view(0, &Transform::from_translation(root.transform_point(Vec3::new(0.0, 0.0, 4.0))), &root).unwrap();
         let p = pose(&key, &root).unwrap();
-        assert!(p.translation.distance(root.transform_point(Vec3::new(0.0, 0.0, 4.0))) < 1e-4, "{p:?}");
+        // The orbit centre is the look target, the root raised by the rules' height.
+        let expected = root.transform_point(Vec3::new(0.0, 0.0, 4.0)) + Vec3::Y * CameraRules::default().look_target_height;
+        assert!(p.translation.distance(expected) < 1e-4, "{p:?}");
         let _ = view;
         // A full stick for one second: capped at 3 degrees per console frame -> 90 degrees.
         let mut lens = 24.0;

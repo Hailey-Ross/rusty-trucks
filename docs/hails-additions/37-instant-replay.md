@@ -380,7 +380,7 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   `82C89A50` holds the value without keys). NOT RETAIL YET: the skater root for retail's objects 2 / 4, the pad mapping
   (left stick turns, right stick distance / move, D-pad up / down height, left / right lens; retail's axis table
   unread), the lens to FOV (24 mm high gate). The advanced cameras (rows 4..6, keyed poses on the cubic curve below)
-  are not ported.
+  came later: see "M2 step 7: camera keys".
 - Retail's key curve (b404, for the advanced cameras): keys at u16 fractions of the clip, cubic Hermite per segment
   `v(u) = ((a u + b) u + m0) u + p0` (a = m0 + m1 - 2d, b = 3d - 2 m0 - m1), tangents linear (m = d) unless the
   element's CUBIC flag is set, then the non-uniform Catmull-Rom (Bessel) tangent across a soft key, times the key's
@@ -444,3 +444,35 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   (Media Foundation's source reader) and finds a white top half on top (upright, colours right); the game export's first
   frame decoded to PNG shows the world without UI; its audio decodes to 10.5 s of 48 kHz stereo (quiet ambience, the
   skater standing still). The save dialog itself (B > Save to PC) is not clicked through yet; the user tests it.
+
+## M2 step 7: camera keys, the key curve and the advanced cameras (2026-10-20)
+- Retail [code, b405]: there is no separate advanced input mode. A camera row's setup `82C7FFB8(take, advanced,
+  existing)` inserts a key at the playhead: basic rows (Follow / Tripod / Free) a **hard** key (both sides hard: the
+  pose holds and cuts at the key), advanced rows a **soft** key (the camera blends through it on the channel curve).
+  Then the same edit states as basic (7 / 8 / 10), but the movie gets states 12 / 13 / 14 instead of 1 / 2 / 3. An
+  insert is refused within a minimum spacing of another key or the In / Out point (scaled by the clip length). In the
+  timeline (mode 6, `82612C28`), A over a key marker seeks onto it and, on release, re-opens that key in the advanced
+  state 12 / 13 / 14 without inserting; A elsewhere inside the clip opens the effects menu, where a camera row adds
+  the key; D-pad Down release adds a marker (cap 100, `82613500`, popup `82613598`). b405 also corrects b404:
+  `82C810A8` / `82C813B0` are effect lane setters 4 / 5, not key handlers; no pad path edits a key's CUBIC / TANGENT.
+- Key curve (b404): `skate_core::replay_edit::curve`, retail's cubic Hermite per segment with linear tangents, or the
+  Bessel (non-uniform Catmull-Rom) tangent across a soft key when the element is CUBIC, times the key's TANGENT; hard
+  keys cut. Test `linear_by_default_cubic_across_soft_keys_and_cuts_at_hard_keys`.
+- Ours: `replay/editor.rs` keeps a sorted camera key track (`CamKey`: frame, camera, hard / soft) instead of one key
+  per clip. `pick_camera` inserts or replaces the key at the playhead, `reopen_at` re-edits the key under the playhead
+  (edit states 12 / 13 / 14 posted by `replay_menu_host.rs`), `pose` returns the key in effect (a soft key blends into
+  the next soft key of the same camera), `segments` feeds the timeline band (`retail_menu_stage.rs`: one band per
+  segment, the recorded camera before the first key) and the markers come from the keys. D-pad Down drops a hard key
+  holding the camera in effect (refused at a key, at the clip ends or at the cap). The advanced rows, the key kind
+  and the pose blend are in `replay/camera_key.rs`. Cap, spacing and rates are data (`CameraRules`, editor limits),
+  so a mod can override them.
+- Fixes from the user's Follow edit screenshot: the right stick now orbits and the left stick moves in / out; the
+  `DPad_UpDown` / `DPad_Arrows` prompts show the plain D-pad glyph (`prompt_glyphs.rs`); the Follow / Tripod cameras
+  aim 1 m above the skater root (`CameraRules::look_target_height`).
+- NOT RETAIL YET: D-pad Up removes the key at the cursor (retail's delete path was not found: b405 reads Up release as
+  the same seek as A); the look target height (retail looks at an actor part, which one is open); the stick mapping
+  (retail's axis table is unread); the look effects (DLC lanes) are not ported.
+- Verified: `camera_keys_hold_cut_and_blend`, the curve test, `follow_orbits_in_the_skater_frame_with_retail_caps`
+  (orbit centre now includes the look height); skate-core 1176 and full bin 855 passed. Verify switches
+  `SKATE_VERIFY_REPLAY_EDITOR=markers` (two markers, the playhead glows on the second) and `=camera` (Follow picked at
+  the playhead, then its edit mode). Not play-tested by the user yet.
