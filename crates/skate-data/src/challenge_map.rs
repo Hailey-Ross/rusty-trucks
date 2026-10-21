@@ -87,7 +87,12 @@ pub fn location_maps(entries: &[Collection], world_maps: &BTreeMap<String, Strin
     entries
         .iter()
         .filter(|e| class_is(e, "fe_locations"))
-        .filter_map(|loc| Some((loc.key.clone(), name_of(by_hash.get(&typed_ref_key(loc, LOCATION_DISTRICT)?)?, &parent, world_maps)?)))
+        .filter_map(|loc| {
+            // NOT RETAIL YET (b417): the DLC locations' District names a map_category (Maloof NYC), not a world, so
+            // their World field picks the record; which field retail reads there is unverified.
+            let world = [LOCATION_DISTRICT, LOCATION_WORLD].iter().find_map(|f| by_hash.get(&typed_ref_key(loc, f)?))?;
+            Some((loc.key.clone(), name_of(world, &parent, world_maps)?))
+        })
         .filter(|(_, name)| !name.is_empty())
         .collect()
 }
@@ -222,6 +227,19 @@ mod tests {
         let maps = location_maps(&rows, &worlds);
         assert_eq!(maps, named(&[("school_spot", "map_skateschool"), ("uni_spot", "map_portcarverton")]));
         assert!(location_maps(&rows, &BTreeMap::new()).is_empty(), "an older menu set names no maps");
+    }
+
+    #[test]
+    fn a_dlc_location_whose_district_is_no_world_takes_its_world_field() {
+        let rows = [
+            row("world", "default", "", &[]),
+            row("world", "dist_maloofmoneycupdlc", "default", &[]),
+            row("fe_locations", "dist_maloofmoneycupdlc", "skate3", &[(LOCATION_DISTRICT, typed("maloofmoneycupdlc")),
+                (LOCATION_WORLD, typed("dist_maloofmoneycupdlc"))]),
+        ];
+        let worlds: BTreeMap<String, String> = [("default".to_string(), "map1024".to_string()),
+            ("dist_maloofmoneycupdlc".to_string(), "DLC_Maloof_Map_512".to_string())].into();
+        assert_eq!(location_maps(&rows, &worlds).get("dist_maloofmoneycupdlc").map(String::as_str), Some("DLC_Maloof_Map_512"));
     }
 
     #[test]

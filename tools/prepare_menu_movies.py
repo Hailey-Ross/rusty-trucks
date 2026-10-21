@@ -123,6 +123,36 @@ def _contained(root, relative):
 WORLD_MAP_INFO = 'Hash_20BBC594CD2FAEF8'
 
 
+def dlc_world_maps(game, dlc, work):
+    """The DLC packs' world records with their own tMapInfo, each pointer resolved against its own vault's `.bin`
+    (research b417: against the disc's `.bin` the Maloof NYC pointer reads another name), and the BIGs holding their
+    pictures (`data/fe/source/images/map/`)."""
+    from vendor.skate3_ui.big import BigArchive
+    from asset_pipeline import dlc as packages
+    from vendor.skate3_ui.project import find_big_directory
+    images = lambda paths: any(p.lower().startswith(IMAGE_PREFIXES_DYNAMIC) for p in paths)  # noqa: E731
+    vaulted = lambda paths: any(p.lower().startswith('data/db/') and p.lower().endswith('.vlt') for p in paths)  # noqa: E731
+    bigs = packages.extract_bigs(dlc, work / 'bigs', wanted=lambda paths: images(paths) or vaulted(paths))
+    schema = work / 'schema'
+    database = BigArchive(find_big_directory(game) / 'db.big')
+    schema.mkdir(parents=True, exist_ok=True)
+    for entry in database.entries:
+        name = Path(entry.path).name.lower()
+        if name in ('skaterschema.bin', 'skaterschema.vlt'):
+            (schema / name).write_bytes(database.read(entry))
+    names = (Path(__file__).resolve().parent / 'asset_pipeline/names.txt').read_text(encoding='utf-8').splitlines()
+    out = {}
+    for v in packages.vaults(bigs, schema / 'skaterschema', names, work / 'vaults'):
+        for row in v['converted']['collections']:
+            field = row.get('fields', {}).get(WORLD_MAP_INFO)
+            if field and len(field.get('data', '')) >= 8:
+                pointer = int(field['data'][:8], 16)
+                end = v['binary'].find(bytes(1), pointer) if pointer else -1
+                if pointer and 0 < pointer < len(v['binary']) and end > pointer:
+                    out.setdefault(row['key'], bytes(v['binary'][pointer:end]).decode('ascii'))
+    return out, [big for big in bigs if images([e.path.replace('\\', '/') for e in BigArchive(big).entries])]
+
+
 def world_maps(game, collections, work):
     """{world record key: map picture name} for every world record that sets its own tMapInfo (children inherit
     through the collections' parent chain; the engine walks it)."""
@@ -358,10 +388,16 @@ def prepare(game, output, collections, roots=MENU_ROOTS, dlc=None):
     # Named runtime images: a second, narrow extraction with fedynamic.big (its own cache, so every movie keeps its
     # source archive); without fedynamic.big the menus still export and the map pictures draw nothing.
     missing_images = None
+    dlc_maps, picture_archives = {}, []
+    if dlc:
+        try:
+            dlc_maps, picture_archives = dlc_world_maps(game, dlc, output / 'dlc-maps')
+        except (FileNotFoundError, KeyError, ValueError) as error:
+            missing_images = f'DLC map pictures: {error}'
     try:
         dynamic_root = output / 'cache-dynamic'
         extract_project(game, dynamic_root, include_dynamic=True, prefixes=IMAGE_PREFIXES_DYNAMIC + TEXTURE_PACKS_DYNAMIC,
-                        update=True)
+                        update=True, extra_archives=tuple(picture_archives))
         images = named_images(dynamic_root, runtime, IMAGE_PREFIXES_DYNAMIC)
         images.update(pack_textures(dynamic_root, runtime, TEXTURE_PACKS_DYNAMIC))
     except FileNotFoundError as error:
@@ -369,6 +405,9 @@ def prepare(game, output, collections, roots=MENU_ROOTS, dlc=None):
     images.update(named_images(cache_root, runtime, IMAGE_NAMES_CORE))
     try:
         maps = world_maps(game, collections, output / 'db')
+        # The packs' worlds after the disc's (a DLC row never replaces a disc row, as in asset_pipeline.dlc.merged).
+        for key, name in dlc_maps.items():
+            maps.setdefault(key, name)
     except (FileNotFoundError, KeyError, ValueError) as error:
         maps, missing_images = {}, (missing_images or '') + f' world maps: {error}'
     finally:
