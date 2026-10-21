@@ -96,6 +96,24 @@ class DlcInput(unittest.TestCase):
                 if env is not None:
                     os.environ[dlc.ENV] = env
 
+    def test_a_dlc_folder_next_to_the_game_copy_and_its_listing(self):
+        # The release ZIP: no variable, nothing saved, a `dlc` folder next to skate3rust.exe (the laptop import,
+        # 2026-10-21). The listing is what the game's start-up check compares (asset_check.rs, same format).
+        with tempfile.TemporaryDirectory() as temp:
+            game = Path(temp) / 'game copy'
+            (game / 'dlc/Pack/454108E6').mkdir(parents=True)
+            (game / 'dlc/Pack/454108E6/PKG').write_bytes(b'1234567')
+            (game / 'dlc/TU_file').write_bytes(b'123')
+            env = os.environ.pop(dlc.ENV, None)
+            try:
+                self.assertIsNone(dlc.folder(None))
+                self.assertEqual(dlc.folder(None, None, game), (game / 'dlc').resolve())
+                self.assertEqual(dlc.listing(game / 'dlc'), ['Pack/454108E6/PKG|7', 'TU_file|3'])
+                self.assertEqual(dlc.listing(None), [])
+            finally:
+                if env is not None:
+                    os.environ[dlc.ENV] = env
+
     def test_a_district_needs_its_sim_index_and_sim_cells(self):
         s = 'data/content/world/stream/'
         paths = [s + 'DIST_MaloofMoneyCupDLC/DIST_MaloofMoneyCupDLC_Sim.xst', s + 'DIST_MaloofMoneyCupDLC/cSim_0_0_high.xsf',

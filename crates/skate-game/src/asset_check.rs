@@ -215,9 +215,74 @@ fn hand_props(assets: &Path) -> Vec<Finding> {
     }
 }
 
+/// The DLC folder the way setup finds it (`tools/asset_pipeline/dlc.py` `folder`): `SKATE3_DLC_DIR` (`env`), the folder
+/// the last setup used, a `dlc` folder next to the game folder setup read, or a `dlc` folder next to this game copy.
+fn dlc_folder(env: Option<PathBuf>, marker: &serde_json::Value, game_dir: Option<&Path>) -> Option<PathBuf> {
+    let dir = |p: PathBuf| p.is_dir().then_some(p);
+    if let Some(p) = env.and_then(dir).or_else(|| marker["dlc"].as_str().map(PathBuf::from).and_then(dir)) {
+        return Some(p);
+    }
+    if let Some(source) = marker["source"].as_str().map(Path::new) {
+        let start = if source.extension().is_some() { source.parent() } else { Some(source) };
+        for root in start.into_iter().flat_map(|s| [s.parent(), Some(s)]).flatten() {
+            if let Some(p) = dir(root.join("dlc")) {
+                return Some(p);
+            }
+        }
+    }
+    game_dir.and_then(|g| dir(g.join("dlc")))
+}
+
+/// Every file in the DLC folder as `relative/path|size`, sorted (setup's `dlc.listing`, recorded as `dlc_files`).
+fn dlc_listing(folder: &Path) -> Vec<String> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match std::fs::metadata(&path) {
+                Ok(m) if m.is_dir() => walk(root, &path, out),
+                Ok(m) if m.is_file() => {
+                    if let Ok(rel) = path.strip_prefix(root) {
+                        let rel: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+                        out.push(format!("{}|{}", rel.join("/"), m.len()));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(folder, folder, &mut out);
+    out.sort();
+    out
+}
+
+/// A DLC pack added to or removed from the DLC folder since setup (the launcher's Import DLC, a `dlc` folder next to the
+/// game): the hud group is reported, and setup's refresh then rebuilds every group whose DLC identity changed (the
+/// menus, and the maps, skies and audio for map packs). An installation from before the listing was recorded counts
+/// as current when setup already read a DLC folder.
+fn dlc(env: Option<PathBuf>, marker: &serde_json::Value, game_dir: Option<&Path>) -> Vec<Finding> {
+    let now = dlc_folder(env, marker, game_dir).map_or_else(Vec::new, |d| dlc_listing(&d));
+    let changed = match marker["dlc_files"].as_array() {
+        Some(seen) => !seen.iter().map(|v| v.as_str()).eq(now.iter().map(|s| Some(s.as_str()))),
+        None => marker["dlc"].is_null() && !now.is_empty(),
+    };
+    if changed {
+        vec![finding("hud", format!("DLC packages changed since setup ({} files in the DLC folder now)", now.len()))]
+    } else {
+        Vec::new()
+    }
+}
+
 /// All checks for an asset root; one finding per group and reason.
 pub(crate) fn check(assets: &Path) -> Vec<Finding> {
-    let mut out = installation(assets).map_or(Vec::new(), |(root, marker)| receipts(&root, &marker));
+    let mut out = installation(assets).map_or(Vec::new(), |(root, marker)| {
+        let mut found = receipts(&root, &marker);
+        // The game copy holds `data/installations/<id>`.
+        let game_dir = root.parent().and_then(Path::parent).and_then(Path::parent);
+        found.extend(dlc(std::env::var_os("SKATE3_DLC_DIR").map(PathBuf::from), &marker, game_dir));
+        found
+    });
     // The set the menus load (`retail_menu_movies::set_root`): a dev export from `SKATE3_MENU_MOVIES` is checked, not the
     // installed set it replaces.
     let movies = std::env::var("SKATE3_MENU_MOVIES").map(std::path::PathBuf::from).unwrap_or_else(|_| assets.join("private/menu-movies"));
@@ -405,6 +470,41 @@ mod tests {
         assert_eq!(hud(&dir, &dir.join("private/menu-movies")).into_iter().map(|f| f.reason).collect::<Vec<_>>(), ["menu movie file missing: a.json"]);
         std::fs::write(private.join("menu-movies/a.json"), "{}").unwrap();
         assert!(hud(&dir, &dir.join("private/menu-movies")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The laptop's import (2026-10-21): packs added after setup are seen, the same listing is current, an install
+    /// from before the listing that already read a DLC folder stays current, and a `dlc` folder next to the game counts.
+    #[test]
+    fn dlc_packs_added_after_setup_offer_the_refresh() {
+        let dir = std::env::temp_dir().join(format!("skate3rust-asset-check-dlc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let packs = dir.join("imported");
+        std::fs::create_dir_all(packs.join("After Dark/454108E6/00000002")).unwrap();
+        std::fs::write(packs.join("After Dark/454108E6/00000002/PKG"), [0u8; 7]).unwrap();
+        std::fs::write(packs.join("TU_file"), [0u8; 3]).unwrap();
+        assert_eq!(dlc_listing(&packs), ["After Dark/454108E6/00000002/PKG|7", "TU_file|3"]);
+        let fresh = serde_json::json!({ "dlc": null, "dlc_files": [] });
+        // Imported, setup not run yet: the hud group is reported; without the folder nothing is.
+        assert_eq!(dlc(Some(packs.clone()), &fresh, None).len(), 1);
+        assert_eq!(dlc(Some(packs.clone()), &fresh, None)[0].group, "hud");
+        assert!(dlc(None, &fresh, None).is_empty());
+        // After the refresh setup recorded the same listing: current.
+        let done = serde_json::json!({ "dlc": packs.to_string_lossy(), "dlc_files": dlc_listing(&packs) });
+        assert!(dlc(Some(packs.clone()), &done, None).is_empty());
+        assert!(dlc(None, &done, None).is_empty(), "a run without the variable reads the saved folder");
+        // A pack removed: reported again.
+        std::fs::remove_file(packs.join("TU_file")).unwrap();
+        assert_eq!(dlc(None, &done, None).len(), 1);
+        // From before the listing: current when setup read a folder, reported when it never did.
+        assert!(dlc(None, &serde_json::json!({ "dlc": packs.to_string_lossy() }), None).is_empty());
+        assert_eq!(dlc(Some(packs.clone()), &serde_json::json!({ "dlc": null }), None).len(), 1);
+        // A `dlc` folder next to the game copy.
+        let game = dir.join("game copy");
+        std::fs::create_dir_all(game.join("dlc/Pack")).unwrap();
+        std::fs::write(game.join("dlc/Pack/PKG"), [0u8; 2]).unwrap();
+        assert_eq!(dlc_folder(None, &fresh, Some(&game)), Some(game.join("dlc")));
+        assert_eq!(dlc(None, &fresh, Some(&game)).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

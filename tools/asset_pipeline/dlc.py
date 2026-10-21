@@ -14,9 +14,11 @@ from pathlib import Path
 ENV = 'SKATE3_DLC_DIR'
 
 
-def folder(source: str | Path | None, saved: str | None = None) -> Path | None:
+def folder(source: str | Path | None, saved: str | None = None, game_dir: str | Path | None = None) -> Path | None:
     """The DLC folder: SKATE3_DLC_DIR, else the folder the last setup used, else a `dlc` folder next to the game
-    folder (the recomp's layout: `<install>/game/default.xex` + `<install>/dlc/<pack>/454108E6/...`)."""
+    folder (the recomp's layout: `<install>/game/default.xex` + `<install>/dlc/<pack>/454108E6/...`), else a `dlc`
+    folder next to this game copy (`game_dir`, the folder with `skate3rust.exe`). The game's start-up check resolves
+    the folder by the same rules (`asset_check.rs` `dlc_folder`)."""
     for candidate in (os.environ.get(ENV), saved):
         if candidate and Path(candidate).is_dir():
             return Path(candidate).resolve()
@@ -26,7 +28,17 @@ def folder(source: str | Path | None, saved: str | None = None) -> Path | None:
         for root in (start.parent, start):
             if (root / 'dlc').is_dir():
                 return (root / 'dlc').resolve()
+    if game_dir and (Path(game_dir) / 'dlc').is_dir():
+        return (Path(game_dir) / 'dlc').resolve()
     return None
+
+
+def listing(dlc: Path | None) -> list[str]:
+    """Every file in the DLC folder as `relative/path|size`, sorted: recorded in installation.json (`dlc_files`) so the
+    game's start-up check sees a pack added or removed and offers the refresh (`asset_check.rs`, same format)."""
+    if dlc is None or not dlc.is_dir():
+        return []
+    return sorted(f'{p.relative_to(dlc).as_posix()}|{p.stat().st_size}' for p in dlc.rglob('*') if p.is_file())
 
 
 def packages(dlc: Path | None):

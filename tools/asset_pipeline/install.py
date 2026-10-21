@@ -362,8 +362,11 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
     # The player's DLC packages (optional, research b374 / b410): their identity joins the hud group's, so adding or
     # removing a pack refreshes the menus; with no packages the versions stay exactly as before.
     from . import dlc as dlc_packages
-    dlc_folder=dlc_packages.folder(iso if iso is not None else game_root, previous[1].get('dlc') if previous else None)
+    dlc_folder=dlc_packages.folder(iso if iso is not None else game_root, previous[1].get('dlc') if previous else None,
+                                   Path(base).resolve().parent)
     dlc_identity=dlc_packages.signature(dlc_folder)
+    # What the folder held (every file, packages or not): the game's start-up check compares it with the folder now.
+    dlc_files=dlc_packages.listing(dlc_folder)
     if dlc_identity:
         target_versions['hud']=target_versions['hud']+'+dlc:'+dlc_identity
         report(f'DLC packages found in {dlc_folder}')
@@ -399,7 +402,8 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         from .validation_report import summary
         summary(previous[0])
         atomic_json(base/'installation.json', {**previous[1], 'pipelines':target_versions,
-                    'outputs':outputs(previous[0]), 'source':source, 'dlc':str(dlc_folder) if dlc_identity else None})
+                    'outputs':outputs(previous[0]), 'source':source, 'dlc':str(dlc_folder) if dlc_identity else None,
+                    'dlc_files':dlc_files})
         remove_setup_logs(previous[0],report)
         remove_stale_installations(base,previous[0],report)
         report('Game assets are current')
@@ -669,7 +673,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
     # Publish after core validation and all optional outcomes have been recorded.
     marker=base/'installation.json.new'
     marker.write_text(json.dumps({'version':1,'directory':'installations/'+install_id,'source':source,'source_hash':source_hash,'pipelines':target_versions,'outputs':outputs(stage),
-                                  'dlc':str(dlc_folder) if dlc_identity else None}),encoding='utf-8')
+                                  'dlc':str(dlc_folder) if dlc_identity else None,'dlc_files':dlc_files}),encoding='utf-8')
     marker.replace(base/'installation.json')
     remove_setup_logs(stage,report)
     remove_stale_installations(base,stage,report)
