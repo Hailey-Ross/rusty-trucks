@@ -305,7 +305,7 @@ mod tests {
         world.insert_resource(library);
         world.insert_resource(assets);
         world.insert_resource(Voices::default());
-        world.insert_resource(crate::map_transition::CurrentMap { path: None, name: "MyMap".into(), spawn: [0.0; 3], heading: 0.0, generation: 1, audio_tag: None });
+        world.insert_resource(crate::map_transition::CurrentMap { path: None, name: "MyMap".into(), spawn: [0.0; 3], heading: 0.0, generation: 1, audio_tag: None, layout: None });
         world.insert_resource(super::super::skate_events::Cues::default());
         world.insert_resource(Time::<Real>::default());
         world.insert_resource(Time::<Virtual>::default());

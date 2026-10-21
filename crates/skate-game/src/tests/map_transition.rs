@@ -4,8 +4,8 @@ use super::*;
 #[test]
 fn a_pending_request_cannot_be_replaced_by_another_menu_action() {
     let mut transition = MapTransition::default();
-    transition.request(Entry { label: "first".into(), path: None });
-    transition.request(Entry { label: "second".into(), path: Some("other.skate".into()) });
+    transition.request(Entry { label: "first".into(), path: None, world: None });
+    transition.request(Entry { label: "second".into(), path: Some("other.skate".into()), world: None });
     assert!(transition.busy());
     assert!(matches!(&transition.phase, Phase::Requested(entry) if entry.label == "first"));
 }
@@ -50,7 +50,7 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     for (iteration, file) in [Some("BlackBoxPark.skate"), None, Some("University.skate"), None,
         Some("BlackBoxPark.skate"), None].into_iter().enumerate() {
         let entry = Entry { label: file.unwrap_or("Test world").into(),
-            path: file.map(|name| root.parent().unwrap().join("maps").join(name)) };
+            path: file.map(|name| root.parent().unwrap().join("maps").join(name)), world: None };
         let old: Vec<_> = world.query_filtered::<Entity, With<crate::map_render::MapEntity>>().iter(&world).collect();
         world.resource_mut::<GamePhysics>().contact_count = 123;
         world.resource_mut::<SkaterRuntime>().pose_generation = 999;
@@ -92,7 +92,7 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
         eprintln!("LIFECYCLE_CHECK generation={} map={file:?} triangles={triangles} entities={} meshes={} images={}",
             iteration + 1, world.query_filtered::<Entity, With<crate::map_render::MapEntity>>().iter(&world).count(), world.resource::<Assets<Mesh>>().len(), world.resource::<Assets<Image>>().len());
     }
-    let missing = Entry { label: "missing".into(), path: Some(root.join("nonexistent-transition-check.skate")) };
+    let missing = Entry { label: "missing".into(), path: Some(root.join("nonexistent-transition-check.skate")), world: None };
     let Phase::Loading { job, .. } = start(&world, missing).unwrap() else { panic!("expected worker"); };
     assert!(job.join().unwrap().is_err());
     assert_eq!(world.resource::<CurrentMap>().generation, 6);

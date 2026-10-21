@@ -82,14 +82,23 @@ def convert(game_root, assets, converted):
                           source_sha256=hashlib.sha256(raw).hexdigest())
             locators.setdefault((stream.casefold(), record['locator']), []).append(record)
     collections = Collections(converted)
+    world_keys = {key: row['key'] for (cls, key), row in collections.rows.items() if cls == key_hash('world')}
     destinations = []
     # Own location artwork distinguishes selectable FE destinations from base
-    # templates, startup checkpoints and park-layout aliases.
+    # templates and startup checkpoints. A skate.Park layout row (`megapark_full`, research b424) has no artwork of its
+    # own but is a destination: its world places the park's pieces; it is named by its world row's text.
     for (cls, key), row in collections.rows.items():
-        if cls != key_hash('fe_locations') or not any(key_hash(k) == key_hash('Hash_786A2D24F475342B') for k in row['fields']):
+        if cls != key_hash('fe_locations'):
             continue
         fields, _ = collections.resolve(cls, key)
+        world_field = fields.get(key_hash('World'))
+        world_fields = collections.resolve('world', int(world_field['data'][:16], 16))[0] if world_field else {}
+        park = key_hash('Hash_79B248E8469DC5DA') in world_fields
+        if not park and not any(key_hash(k) == key_hash('Hash_786A2D24F475342B') for k in row['fields']):
+            continue
         label = fields[key_hash('Hash_174B301910A902C9')]['data']
+        if park and not any(key_hash(k) == key_hash('Hash_786A2D24F475342B') for k in row['fields']):
+            label = (world_fields.get(key_hash('Hash_095E1D9778F0C6F4')) or {}).get('data')
         if label not in labels:
             continue  # Template placeholders have no shipped localized name.
         text = tables['english'][labels[label]]
@@ -103,10 +112,23 @@ def convert(game_root, assets, converted):
         if not (game_root / 'data/content' / ('world' + stream + '.big')).exists():
             continue
         matches = locators.get((stream.casefold(), locator), [])
+        if not matches:
+            # Retail resolves the name in one global locator table, whatever the district (research b436: locator
+            # system 82910DC0 over all of global_locators): the Stadium's layout rows name DownTown park's
+            # `Z_SP_DT_Start` and use it as is. Same-district first keeps every other destination as before.
+            matches = [dict(matrix=m['matrix'], source=m['source'], source_sha256=m['source_sha256'])
+                       for (_, name), found in locators.items() if name == locator for m in found]
+            if len({json.dumps(m['matrix']) for m in matches}) > 1:
+                matches = []
+            if not matches and park:
+                # A name found nowhere (`vert_skp5_01_challengelocator_01`): 82910DC0 teleports to identity at
+                # (0, 0.5, -5 x (player + 1)); player 1 here.
+                item_matrix = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.5, -5.0, 1.0]]
+                matches = [dict(matrix=item_matrix, source='retail missing-locator fallback (82910DC0)')]
         unique = {json.dumps(m['matrix']) for m in matches}
         if len(unique) > 1:
             raise ValueError('Ambiguous authored teleport: ' + locator)
-        item = dict(id=row['key'], name=name, map=stream.removeprefix('DIST_'),
+        item = dict(id=row['key'], name=name, map=stream.removeprefix('DIST_'), world=world_keys.get(world_key),
                     label_key=label, locator=locator, matrix=None)
         if matches:
             item.update(matches[0])

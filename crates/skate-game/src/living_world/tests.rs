@@ -412,7 +412,7 @@ fn loader_app(root: &std::path::Path, seed: u64, loading_screen: bool) -> App {
         difficulty: crate::difficulty::Difficulty::Hardcore, check_assets: false, validate_maps: false, start_paused: false,
         teleport: None, mute: false, multiplayer: Default::default(), map_fingerprint: 0,
     });
-    app.insert_resource(crate::map_transition::CurrentMap { path: None, name: "Test".into(), spawn: [0.0; 3], heading: 0.0, generation: 1, audio_tag: None });
+    app.insert_resource(crate::map_transition::CurrentMap { path: None, name: "Test".into(), spawn: [0.0; 3], heading: 0.0, generation: 1, audio_tag: None, layout: None });
     app.insert_resource(LivingWorldSettings { seed, ..LivingWorldSettings::default() });
     app.init_resource::<PopulationState>().init_resource::<peds::PedData>().init_resource::<peds::PedNavSettings>().init_resource::<EarlyLoad>().init_resource::<vehicles::TrafficState>();
     app.add_message::<LivingWorldDespawn>();

@@ -128,6 +128,10 @@ impl Config {
             if target.matrix.is_none() || !config.map_path.as_ref().is_some_and(|p| crate::teleport_menu::same_map(p, &target.map)) {
                 return Err("Teleport destination is unavailable or belongs to a different map".into());
             }
+            // A skate.Park destination (`megapark_full`) starts the map as its world, with that layout's pieces.
+            if let Some(map) = config.map.as_mut() {
+                crate::park_layout::attach(map, &config.asset_root, target.world.as_deref());
+            }
         }
         if let Some(path) = &mut config.verification_capture {
             if path.extension().and_then(|x| x.to_str()) != Some("png") {

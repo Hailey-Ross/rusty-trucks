@@ -1,10 +1,13 @@
 //! Installed map discovery and the default pointer, shared by startup and the menu.
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Entry {
     pub label: String,
     pub path: Option<PathBuf>,
+    /// The world row to load the map as (dist_megapark_full): which skate.Park layout it places (park_layout.rs).
+    /// None = the stream's own row.
+    pub world: Option<String>,
 }
 
 /// The Skate 3 names setup wrote into `maps.json` (`display`, user 2026-10-20: retail names for every map), by the
@@ -34,13 +37,14 @@ pub(crate) fn discover(assets: &Path) -> Vec<Entry> {
                     maps.push(Entry {
                         label: names.get(&file).cloned().unwrap_or_else(|| path.file_stem().unwrap().to_string_lossy().replace('_', " ")),
                         path: Some(path.canonicalize().unwrap_or(path)),
+                        world: None,
                     });
                 }
             }
         }
     }
     maps.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
-    maps.insert(0, Entry { label: "Test world".into(), path: None });
+    maps.insert(0, Entry { label: "Test world".into(), path: None, world: None });
     maps
 }
 

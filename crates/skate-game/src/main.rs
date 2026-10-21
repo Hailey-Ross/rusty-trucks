@@ -81,6 +81,7 @@ mod debug_cam;
 mod replay;
 mod world;
 mod grind_world;
+mod park_layout;
 mod skate_world;
 mod map_validation;
 mod water_splash;
