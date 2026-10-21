@@ -10,11 +10,18 @@ fn fragment(i: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let t = saturate(1.0-xe);
     let tm = max(xe*0.25+0.75,vec3<f32>(1.0))-t*t;
     let gamma = saturate(sqrt(max(tm*0.5,vec3<f32>(0.0)))*1.41);
-    // Bevy's final output attachment performs sRGB encoding. The retail
-    // curve already includes gamma; invert sRGB here to avoid encoding twice.
-    let linear = select(gamma/12.92,pow((gamma+0.055)/1.055,vec3<f32>(2.4)),gamma>vec3<f32>(0.04045));
     // The reference's final tone pass is opaque. Material coverage has
     // already been resolved; carrying it into the presentation blit would
     // composite foliage a second time against the window's clear colour.
+#ifdef TONE_GAMMA
+    // `SKATE_TONE_GAMMA`: the window is written through a view that doesn't
+    // encode sRGB, so the curve's result, which already includes gamma, goes
+    // in as it is (retail_exposure.rs `ExposureNode`).
+    return vec4<f32>(gamma,1.0);
+#else
+    // Bevy's final output attachment performs sRGB encoding. The retail
+    // curve already includes gamma; invert sRGB here to avoid encoding twice.
+    let linear = select(gamma/12.92,pow((gamma+0.055)/1.055,vec3<f32>(2.4)),gamma>vec3<f32>(0.04045));
     return vec4<f32>(linear,1.0);
+#endif
 }

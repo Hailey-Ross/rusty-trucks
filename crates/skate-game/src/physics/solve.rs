@@ -21,7 +21,12 @@ fn advance_inner(
     skater: &mut SkaterRuntime,
     truck_targets: [f32; 2],
 ) -> Result<(), String> {
-    let mod_before = crate::modding::player_physics::before_solve(physics,skater);
+    // The contacts and joint loads mods read (modding/player_physics.rs), built only while one
+    // can. Built as JSON every tick with no mod running, they took about two fifths of the
+    // solve's CPU time on the Switch.
+    let mod_before = skater
+        .mod_contact_frame_wanted
+        .then(|| crate::modding::player_physics::before_solve(physics, skater));
     let before = diagnostics::snapshot(physics, skater);
     diagnostics::validate(&before, "before shared solve").map_err(|error| format!(
         "{error}; com_frame={:?}; lifted_com_frame={:?}; animation_root={:?}; biped_position={:?}; biped_surface={:?}",
@@ -117,8 +122,14 @@ fn advance_inner(
             drives: &mut drives.rows,
         },
     );
-    skater.mod_contact_frame = crate::modding::player_physics::after_solve(physics,skater,&mod_before);
-    skater.mod_contact_frame.joint_loads=crate::modding::player_physics::joint_loads(skater,&joints,dt);
+    skater.mod_contact_frame = match &mod_before {
+        Some(mod_before) => {
+            let mut frame = crate::modding::player_physics::after_solve(physics, skater, mod_before);
+            frame.joint_loads = crate::modding::player_physics::joint_loads(skater, &joints, dt);
+            frame
+        }
+        None => crate::modding::player_physics::ContactFrame::unread(physics.ticks),
+    };
     physics.network_proxies.capture_dynamics_reactions(physics.board.solved_reactions(), dt);
     if let Err(error) = diagnostics::validate(
         &diagnostics::snapshot(physics, skater), "after shared solve",

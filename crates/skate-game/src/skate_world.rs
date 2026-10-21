@@ -12,7 +12,10 @@
 use bevy::{
     asset::RenderAssetUsages,
     camera::primitives::Aabb,
-    mesh::{Indices, MeshVertexAttribute, PrimitiveTopology, VertexFormat},
+    mesh::{
+        Indices, MeshTag, MeshVertexAttribute, PrimitiveTopology, VertexAttributeValues,
+        VertexFormat,
+    },
     prelude::*,
 };
 use skate_core::{
@@ -41,10 +44,59 @@ use crate::retail_render::{MaterialTable, RenderClass, WorldMaterial};
 pub(crate) const ATTRIBUTE_MATERIAL_INDEX: MeshVertexAttribute =
     MeshVertexAttribute::new("MaterialIndex", 0x534B_4D49, VertexFormat::Uint32);
 
+/// The world's normals and tangents as Snorm16x4 and its decal UVs as Float32x2: 56 bytes a
+/// vertex instead of the 76 that Bevy's standard normal (Float32x3), tangent and colour
+/// (Float32x4) attributes take, so a quarter less vertex data to fetch per vertex and to keep in
+/// the heap. The shaders normalize the directions they read, so the packing keeps each one's
+/// direction to within 1/65534 a component, and the zero tangent that means "no authored frame"
+/// and the ±1 handedness come through exactly (`snorm16x4`). The decal UVs are the two floats the
+/// shaders already read from the colour. `SKATE_VERTEX_PACKING=0` at launch keeps the standard
+/// attributes, for comparing; `WorldMaterial::specialize` follows whichever the mesh has.
+pub(crate) const ATTRIBUTE_PACKED_NORMAL: MeshVertexAttribute =
+    MeshVertexAttribute::new("PackedNormal", 0x534B_4E4D, VertexFormat::Snorm16x4);
+pub(crate) const ATTRIBUTE_PACKED_TANGENT: MeshVertexAttribute =
+    MeshVertexAttribute::new("PackedTangent", 0x534B_544E, VertexFormat::Snorm16x4);
+pub(crate) const ATTRIBUTE_DECAL_UV: MeshVertexAttribute =
+    MeshVertexAttribute::new("DecalUv", 0x534B_4455, VertexFormat::Float32x2);
+
+/// Whether `merge` packs the vertices (`ATTRIBUTE_PACKED_NORMAL`). Read once, at the first map
+/// load.
+fn vertex_packing() -> bool {
+    static PACKING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PACKING.get_or_init(|| {
+        let packing =
+            std::env::var("SKATE_VERTEX_PACKING").map_or(true, |value| value.trim() != "0");
+        info!("[Skate] world vertex packing: {}", if packing { "on" } else { "off" });
+        packing
+    })
+}
+
 /// Triangles per spatial leaf. The single tuning dial trading draw count against
 /// culling granularity (RFC 1 §5): ~1.9M Downtown triangles at this size gives
 /// ~120 leaves.
 const LEAF_TRIANGLE_BUDGET: usize = 16_384;
+
+/// `SKATE_WORLD_LEAF_BUDGET=<triangles>`: the leaf size to build the world with instead, from 256
+/// to 1048576; read once, at the first map load. Smaller leaves let frustum culling, and
+/// occlusion culling under `SKATE_OCCLUSION`, leave out more of the world's triangles, for more
+/// draws.
+fn leaf_budget() -> usize {
+    static BUDGET: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        let budget = std::env::var("SKATE_WORLD_LEAF_BUDGET")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|budget| (256..=1 << 20).contains(budget))
+            .unwrap_or(LEAF_TRIANGLE_BUDGET);
+        info!("[Skate] world leaf budget: {budget} triangles");
+        budget
+    })
+}
+
+/// The triangles in one world leaf, counted into the frame statistics for the leaves a camera
+/// sees (performance.rs `world_draw_stats`).
+#[derive(Component, Clone, Copy)]
+pub(crate) struct LeafTriangles(pub u32);
 
 #[derive(Default, Clone, Copy, Debug)]
 pub(crate) struct SceneStats {
@@ -65,6 +117,13 @@ struct Triangle {
     /// Slab owning this triangle's material; a leaf spanning two slabs must split.
     slab: u16,
     class: RenderClass,
+    /// Water materials are drawn by their own shader variant, so a leaf holding
+    /// water and other materials must split too.
+    water: bool,
+    /// Under `SKATE_WORLD_SHADOW_SPLIT`, the skater's shadow can fall on this opaque or cutout
+    /// triangle's material and not on those of the leaves split from it (retail_render.rs
+    /// `MaterialEntry::shadow_group`).
+    shadow_group: bool,
 }
 
 pub(crate) fn spawn(
@@ -79,6 +138,7 @@ pub(crate) fn spawn(
 ) -> SceneStats {
     let _span = info_span!("spawn_world").entered();
     let table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
+    crate::log_memory("world texture pages built");
 
     let mut triangles: Vec<Triangle> = Vec::with_capacity(map.geometry.indices.len() / 3);
     for tri in map.geometry.indices.chunks_exact(3) {
@@ -98,46 +158,200 @@ pub(crate) fn spawn(
             centroid: (position(a) + position(b) + position(c)) / 3.0,
             slab: entry.slab,
             class: entry.class,
+            water: entry.water,
+            shadow_group: entry.shadow_group,
         });
     }
 
     // Partition by render class first: classes cannot share a draw (RFC 1 §4),
     // so splitting here keeps every leaf single-class for free.
     let mut stats = SceneStats { slabs: table.slab_count(), triangles: triangles.len(), ..default() };
-    let mut buckets: HashMap<(RenderClass, u16), Vec<usize>> = HashMap::new();
+    let mut buckets: HashMap<(RenderClass, u16, bool, bool), Vec<usize>> = HashMap::new();
     for (index, triangle) in triangles.iter().enumerate() {
-        buckets.entry((triangle.class, triangle.slab)).or_default().push(index);
+        let key = (triangle.class, triangle.slab, triangle.water, triangle.shadow_group);
+        buckets.entry(key).or_default().push(index);
     }
 
     // Draws per render class. The class mix is what decides whether the draw
     // budget holds on a big map: spatial subdivision is a number we choose, but
     // every two-sided or blended material forces an extra bucket we do not.
     let mut per_class = [0usize; RenderClass::ALL.len()];
-    for ((class, slab), mut members) in buckets {
-        let leaves = partition(&mut members, &triangles);
+    let (mut vertices, mut vertex_bytes) = (0usize, 0usize);
+    let authored_order = std::env::var("SKATE_WORLD_ORDER").as_deref() != Ok("centroid");
+    if !authored_order {
+        eprintln!("[Skate] SKATE_WORLD_ORDER=centroid: world leaves keep the partition's order");
+    }
+    let mut water_leaves = 0usize;
+    // `SKATE_VIS_CULL`'s marks: a word for each triangle of the leaves the triangle cull takes,
+    // in leaf order. A leaf's start is the low bits of its tag, which the depth prepass and the
+    // cull add a triangle's place in the leaf's draw to (retail_depth.wgsl `WORLD_MARK`).
+    let marks = crate::render_options::world_marks();
+    let mut mark_words = 0usize;
+    // `SKATE_CLUSTER_CULL`'s boxes, for each leaf from the marks' word over the run length, so
+    // a leaf's marks then start at a multiple of it (bevy_pbr `TriangleCullClusters`).
+    let clusters = crate::render_options::world_clusters();
+    let run = bevy::pbr::TRIANGLE_CULL_CLUSTER_TRIANGLES as usize;
+    let mut cluster_boxes: Vec<u8> = Vec::new();
+    let mut fetch = crate::render_options::world_fetch_geometry().then(|| FetchGeometry {
+        triangles: Vec::with_capacity(triangles.len()),
+    });
+    // Diagnostic: `SKATE_FETCH_PARTS=tags` gives the leaves their `MeshTag`s but binds the
+    // placeholders, `buffers` the reverse, to tell which of the two disturbs the rest of a frame.
+    let parts = std::env::var("SKATE_FETCH_PARTS").ok();
+    let (fetch_tags, fetch_copy) = match parts.as_deref().map(str::trim) {
+        Some("tags") => (true, false),
+        Some("buffers") => (false, true),
+        _ => (true, true),
+    };
+    if fetch.is_some() && parts.is_some() {
+        eprintln!("[Skate] SKATE_FETCH_PARTS: tags={fetch_tags} copy={fetch_copy}");
+    }
+    for ((class, slab, water, shadow_group), mut members) in buckets {
+        let leaves = partition(&mut members, &triangles, authored_order, leaf_budget());
         stats.leaves += leaves.len();
         per_class[class as usize] += leaves.len();
+        if water {
+            water_leaves += leaves.len();
+        }
         for leaf in leaves {
             let mesh = merge(map, &table, &triangles, &leaf);
             let aabb = mesh.1;
-            commands.spawn((
-                Name::new(format!("world {class:?} slab {slab}")),
+            let leaf_triangles = mesh.0.indices().map_or(0, |indices| indices.len() / 3);
+            vertices += mesh.0.count_vertices();
+            vertex_bytes += mesh.0.get_vertex_buffer_size();
+            let bundle = (
+                Name::new(format!(
+                    "world {class:?} slab {slab}{}{}",
+                    if water { " water" } else { "" },
+                    if shadow_group { " shadowed" } else { "" }
+                )),
                 Mesh3d(meshes.add(mesh.0)),
-                MeshMaterial3d(table.material(slab, class)),
+                MeshMaterial3d(table.material(slab, class, water, shadow_group)),
+                // The world shaders read positions, normals and tangents as world
+                // space and never load this transform (retail_world.wgsl), so a
+                // leaf must stay at the identity.
                 Transform::default(),
                 // Precomputed so Bevy's CalculateBounds never walks this mesh
                 // (RFC 1 D4). The extents were already computed while merging.
                 aabb,
-            ));
+                LeafTriangles(leaf.len() as u32),
+            );
+            match &mut fetch {
+                Some(fetch) => {
+                    let first = fetch.push_leaf(map, &table, &triangles, &leaf);
+                    if fetch_tags {
+                        commands.spawn((bundle, MeshTag(first)))
+                    } else {
+                        commands.spawn(bundle)
+                    }
+                }
+                None => {
+                    if clusters {
+                        mark_words = mark_words.next_multiple_of(run);
+                        // The boxes run on from the last leaf's, as its words do. Past the tag's
+                        // bits a leaf has none, and the prepass draws it whole.
+                        if mark_words + leaf_triangles
+                            <= bevy::pbr::TRIANGLE_CULL_MARK_BASE as usize
+                        {
+                            debug_assert_eq!(
+                                cluster_boxes.len(),
+                                mark_words / run * CLUSTER_BOX_BYTES
+                            );
+                            push_cluster_boxes(&mut cluster_boxes, map, &triangles, &leaf);
+                        }
+                    }
+                    // Past the tag's bits, a leaf's words start out of the marks' range, and the
+                    // cull keeps its triangles.
+                    let mark_base = if marks {
+                        mark_words.min(bevy::pbr::TRIANGLE_CULL_MARK_BASE as usize) as u32
+                    } else {
+                        0
+                    };
+                    mark_words += leaf_triangles;
+                    commands.spawn((
+                        bundle,
+                        // Its triangles may be culled one by one for the main pass
+                        // (`SKATE_TRIANGLE_CULL`, render_options.rs).
+                        MeshTag(
+                            bevy::pbr::TRIANGLE_CULL_LEAF
+                                | if class.two_sided() {
+                                    bevy::pbr::TRIANGLE_CULL_TWO_SIDED
+                                } else {
+                                    0
+                                }
+                                | mark_base,
+                        ),
+                    ))
+                }
+            }
             stats.draws += 1;
         }
     }
 
+    crate::log_memory(&format!(
+        "world meshes merged ({vertices} vertices, {:.1} MiB of vertex data)",
+        vertex_bytes as f64 / (1024.0 * 1024.0)
+    ));
+    // Every material binds the copy, so a map without one still gets a placeholder of a record
+    // each, which nothing reads.
+    let (fetch_vertices, fetch_triangles) = match fetch {
+        Some(fetch) if fetch_copy => {
+            let geometry = (FetchGeometry::vertex_bytes(map), fetch.triangle_bytes());
+            crate::log_memory(&format!(
+                "world fetch geometry built ({} vertices, {} triangles, {:.1} MiB)",
+                map.geometry.vertices.len(),
+                fetch.triangles.len(),
+                (geometry.0.len() + geometry.1.len()) as f64 / (1024.0 * 1024.0)
+            ));
+            geometry
+        }
+        _ => (vec![0; FetchGeometry::VERTEX_BYTES], vec![0; FetchGeometry::TRIANGLE_BYTES]),
+    };
+    let storage = |bytes: Vec<u8>| bevy::render::storage::ShaderStorageBuffer {
+        data: Some(bytes),
+        asset_usage: RenderAssetUsages::RENDER_WORLD,
+        ..default()
+    };
+    buffers.insert(&table.fetch_buffers().vertices, storage(fetch_vertices));
+    buffers.insert(&table.fetch_buffers().triangles, storage(fetch_triangles));
+    // The marks start at zero (wgpu clears a new buffer), and the cull clears each mark it reads.
+    // Every material binds them, so a map without them still gets a word, which nothing reads.
+    let words = if marks {
+        mark_words.min(bevy::pbr::TRIANGLE_CULL_MARK_BASE as usize).max(1)
+    } else {
+        1
+    };
+    buffers.insert(
+        table.marks(),
+        bevy::render::storage::ShaderStorageBuffer::with_size(
+            words * 4,
+            RenderAssetUsages::RENDER_WORLD,
+        ),
+    );
+    if marks {
+        crate::log_memory(&format!(
+            "world marks built ({mark_words} triangles, {:.1} MiB)",
+            (words * 4) as f64 / (1024.0 * 1024.0)
+        ));
+        commands.insert_resource(bevy::pbr::TriangleCullMarks(table.marks().id()));
+    }
+    if clusters && !cluster_boxes.is_empty() {
+        let boxes = cluster_boxes.len() / CLUSTER_BOX_BYTES;
+        let bytes = cluster_boxes.len();
+        let handle = buffers.add(storage(cluster_boxes));
+        crate::log_memory(&format!(
+            "world cluster boxes built ({boxes} boxes, {:.1} MiB)",
+            bytes as f64 / (1024.0 * 1024.0)
+        ));
+        commands.insert_resource(bevy::pbr::TriangleCullClusters(handle.id()));
+        // The staged handle is dropped once the buffer is published, and nothing else binds it.
+        commands.spawn((Name::new("world cluster boxes"), WorldClusterBoxes { _boxes: handle }));
+    }
     spawn_lights(map, commands);
     eprintln!(
         "SKATE_RENDER_READY draws={} triangles={} slabs={} materials={} \
          opaque={} opaque_two_sided={} cutout={} cutout_two_sided={} \
-         blended={} blended_two_sided={}",
+         blended={} blended_two_sided={} water={}",
         stats.draws,
         stats.triangles,
         stats.slabs,
@@ -148,6 +362,7 @@ pub(crate) fn spawn(
         per_class[RenderClass::CutoutTwoSided as usize],
         per_class[RenderClass::Blended as usize],
         per_class[RenderClass::BlendedTwoSided as usize],
+        water_leaves,
     );
     stats
 }
@@ -156,11 +371,29 @@ pub(crate) fn spawn(
 ///
 /// Sorting by the longest axis of the current extent keeps leaves roughly cubic,
 /// which matters because leaf AABBs are what frustum culling tests.
-fn partition(members: &mut Vec<usize>, triangles: &[Triangle]) -> Vec<Vec<usize>> {
+///
+/// Each leaf is returned in authored order. The sorts leave a split leaf ordered
+/// by centroid along one axis, which scatters every vertex's triangles across
+/// the leaf, so the GPU shades each vertex again in batch after batch: 2.55
+/// vertices per triangle by the Switch's own counters, 2.58 in a model of
+/// University. In the model the retail exporter's own order was already
+/// optimised for vertex reuse (1.38, against 1.36 for Forsyth's algorithm and a
+/// floor of 1.28 unique vertices per triangle), so restoring it costs one
+/// integer sort per leaf (findings doc 20). `authored_order` is false only
+/// under `SKATE_WORLD_ORDER=centroid`, kept to measure the difference.
+fn partition(
+    members: &mut Vec<usize>,
+    triangles: &[Triangle],
+    authored_order: bool,
+    budget: usize,
+) -> Vec<Vec<usize>> {
     let mut pending = vec![std::mem::take(members)];
     let mut leaves = Vec::new();
     while let Some(mut group) = pending.pop() {
-        if group.len() <= LEAF_TRIANGLE_BUDGET {
+        if group.len() <= budget {
+            if authored_order {
+                group.sort_unstable();
+            }
             leaves.push(group);
             continue;
         }
@@ -236,17 +469,92 @@ fn merge(
         }
     }
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+    // The capacities above guess two vertices per triangle; a leaf that needs
+    // more doubles every list, and the slack would ride along to the renderer.
+    positions.shrink_to_fit();
+    normals.shrink_to_fit();
+    uv.shrink_to_fit();
+    lightmap_uv.shrink_to_fit();
+    decal_uv.shrink_to_fit();
+    material_index.shrink_to_fit();
+    tangents.shrink_to_fit();
+    // Nothing reads these vertices back on the CPU, and the AABB is computed
+    // here. On the Switch the GPU's memory is the game's own heap (bevy-horizon
+    // docs/platform-notes.md), so a main-world copy beside the GPU one would
+    // hold the world's geometry in the heap twice, and three times while Bevy
+    // uploads it, as extraction clones a mesh it keeps. `RENDER_WORLD` moves
+    // the vertices to the renderer instead, which frees them once they are on
+    // the GPU (bevy_render `extract_render_asset`).
+    let usage = if cfg!(target_os = "horizon") {
+        RenderAssetUsages::RENDER_WORLD
+    } else {
+        RenderAssetUsages::default()
+    };
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, usage)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, lightmap_uv)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, decal_uv)
-        .with_inserted_attribute(ATTRIBUTE_MATERIAL_INDEX, material_index)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
+        .with_inserted_attribute(ATTRIBUTE_MATERIAL_INDEX, material_index);
+    if vertex_packing() {
+        let normals = normals.iter().map(|n| snorm16x4(*n, 0.)).collect();
+        let tangents = tangents.iter().map(|t| snorm16x4([t[0], t[1], t[2]], t[3])).collect();
+        let decal_uv: Vec<[f32; 2]> = decal_uv.iter().map(|c| [c[0], c[1]]).collect();
+        mesh.insert_attribute(ATTRIBUTE_PACKED_NORMAL, VertexAttributeValues::Snorm16x4(normals));
+        mesh.insert_attribute(ATTRIBUTE_PACKED_TANGENT, VertexAttributeValues::Snorm16x4(tangents));
+        mesh.insert_attribute(ATTRIBUTE_DECAL_UV, decal_uv);
+    } else {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, decal_uv);
+    }
     mesh.insert_indices(Indices::U32(indices));
     let aabb = Aabb::from_min_max(min, max);
     (mesh, aabb)
+}
+
+/// Bytes in one of `SKATE_CLUSTER_CULL`'s boxes: its world-space minimum and maximum, each
+/// padded to four floats (`ClusterBox` in bevy_pbr's triangle_cull_clusters.wgsl).
+const CLUSTER_BOX_BYTES: usize = 32;
+
+/// Holds `SKATE_CLUSTER_CULL`'s boxes for as long as the map: the render world finds them by
+/// `TriangleCullClusters`' id alone, and the staged handle is dropped once it is published.
+#[derive(Component)]
+struct WorldClusterBoxes {
+    _boxes: Handle<bevy::render::storage::ShaderStorageBuffer>,
+}
+
+/// Appends a box for each run of `TRIANGLE_CULL_CLUSTER_TRIANGLES` of a leaf's triangles, in the
+/// order `merge` draws them. Each box is taken from the very positions the leaf's vertices
+/// carry, so it holds its triangles exactly.
+fn push_cluster_boxes(boxes: &mut Vec<u8>, map: &SkateMap, triangles: &[Triangle], leaf: &[usize]) {
+    for run in leaf.chunks(bevy::pbr::TRIANGLE_CULL_CLUSTER_TRIANGLES as usize) {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for &triangle in run {
+            for source in triangles[triangle].indices {
+                let position = Vec3::from_array(map.geometry.vertices[source as usize].position);
+                min = min.min(position);
+                max = max.max(position);
+            }
+        }
+        for value in [min.x, min.y, min.z, 0., max.x, max.y, max.z, 0.] {
+            boxes.extend_from_slice(&f32::to_le_bytes(value));
+        }
+    }
+}
+
+/// A direction and a fourth component as Snorm16, which the GPU reads back as
+/// `max(c / 32767, -1)` (Vulkan's SNORM conversion). Both shaders normalize every direction
+/// they read, so only the direction is kept: it is scaled until its largest component is ±1.
+/// That spends all 16 bits on it, leaves no component for the clamp to turn, and keeps a very
+/// short tangent (a binormal nearly along its normal) from rounding to a zero `xyz` beside a
+/// nonzero `w`, which the shader would normalize into NaN. A zero direction stays zero, and a
+/// `w` of 0 or ±1 comes through exactly.
+fn snorm16x4(xyz: [f32; 3], w: f32) -> [i16; 4] {
+    let largest = xyz.iter().fold(0_f32, |largest, c| largest.max(c.abs()));
+    let snorm = |c: f32| (c.clamp(-1., 1.) * 32767.).round() as i16;
+    let direction = |c: f32| snorm(if largest > 0. { c / largest } else { 0. });
+    [direction(xyz[0]), direction(xyz[1]), direction(xyz[2]), snorm(w)]
 }
 
 /// Decodes the authored tangent frame, which the format stores as a signed-byte
@@ -265,6 +573,80 @@ fn tangent(v: &skate_data::skate_map::Vertex) -> [f32; 4] {
     let binormal = Vec3::new(frame[0], frame[1], frame[2]);
     let tangent = binormal.cross(Vec3::from_array(v.normal)) * frame[3];
     [tangent.x, tangent.y, tangent.z, frame[3]]
+}
+
+/// `SKATE_WORLD_FETCH`'s copy of the world (retail_render.rs `FetchBuffers`), which
+/// retail_world.wgsl `fetch_triangle` reads in place of the vertex stage's outputs. Each map
+/// vertex is four `vec4<u32>`: its position's bits and a spare word; its UV and lightmap UV; its
+/// decal UV and its normal; and its tangent and two spare words. The normal and tangent are
+/// `snorm16x4` as the packed meshes carry them, two components a word, the first in the low
+/// half, which is how WGSL's `unpack2x16snorm` reads them. Each drawn triangle is its corners'
+/// indices into those and its material's place in its slab, in the order its leaf draws it. A
+/// leaf's `MeshTag` is where its triangles start, and the fragment adds `primitive_index`, which
+/// counts a draw's triangles from zero.
+struct FetchGeometry {
+    triangles: Vec<[u32; 4]>,
+}
+
+impl FetchGeometry {
+    const VERTEX_BYTES: usize = 64;
+    const TRIANGLE_BYTES: usize = 16;
+
+    /// Appends a leaf's triangles in `merge`'s order and returns where they start.
+    fn push_leaf(
+        &mut self,
+        map: &SkateMap,
+        table: &MaterialTable,
+        triangles: &[Triangle],
+        leaf: &[usize],
+    ) -> u32 {
+        let first = self.triangles.len() as u32;
+        for &triangle in leaf {
+            let [a, b, c] = triangles[triangle].indices;
+            // The material of the first corner, the one flat interpolation takes (Vulkan's
+            // provoking vertex), numbered as `merge` numbers it.
+            let source = map.geometry.vertices[a as usize].material.saturating_sub(1) as usize;
+            self.triangles.push([a, b, c, table.slab_index(source)]);
+        }
+        first
+    }
+
+    fn triangle_bytes(&self) -> Vec<u8> {
+        self.triangles.iter().flatten().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    fn vertex_bytes(map: &SkateMap) -> Vec<u8> {
+        let pair = |low: i16, high: i16| u32::from(low as u16) | (u32::from(high as u16) << 16);
+        let mut bytes = Vec::with_capacity(map.geometry.vertices.len() * Self::VERTEX_BYTES);
+        for v in &map.geometry.vertices {
+            let normal = snorm16x4(v.normal, 0.);
+            let t = tangent(v);
+            let tangent = snorm16x4([t[0], t[1], t[2]], t[3]);
+            let [du, dv] = v.decal_uv.unwrap_or_default();
+            let words: [u32; 16] = [
+                v.position[0].to_bits(),
+                v.position[1].to_bits(),
+                v.position[2].to_bits(),
+                0,
+                v.uv[0].to_bits(),
+                v.uv[1].to_bits(),
+                v.lightmap_uv[0].to_bits(),
+                v.lightmap_uv[1].to_bits(),
+                du.to_bits(),
+                dv.to_bits(),
+                pair(normal[0], normal[1]),
+                pair(normal[2], normal[3]),
+                pair(tangent[0], tangent[1]),
+                pair(tangent[2], tangent[3]),
+                0,
+                0,
+            ];
+            for word in words {
+                bytes.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        bytes
+    }
 }
 
 fn spawn_lights(map: &SkateMap, commands: &mut SceneCommands) {
@@ -650,6 +1032,22 @@ pub(crate) fn collision_world(
 mod tests {
     use super::*;
 
+    #[test]
+    fn snorm16x4_keeps_zero_handedness_and_direction() {
+        // The zero tangent is the shader's "no authored frame".
+        assert_eq!(snorm16x4([0., 0., 0.], 0.), [0; 4]);
+        assert_eq!(snorm16x4([1., -1., 0.], -1.), [32767, -32767, 0, -32767]);
+        // A component past ±1 scales the direction down whole rather than clamping one axis.
+        assert_eq!(snorm16x4([2., 1., 0.], 1.), [32767, 16384, 0, 32767]);
+        // A very short direction is scaled up rather than rounded to zero.
+        assert_eq!(snorm16x4([1e-6, 0., -1e-6], 1.), [32767, 0, -32767, 32767]);
+        let direction = Vec3::new(0.3, -0.7, 0.648_074);
+        let [x, y, z, _] = snorm16x4(direction.to_array(), 0.);
+        let unpacked = Vec3::new(x.into(), y.into(), z.into()) / 32767.;
+        let expected = direction / 0.7;
+        assert!((unpacked - expected).abs().max_element() <= 0.5 / 32767.);
+    }
+
     /// Measures the static draw budget on a real installed map. This is the
     /// check that the whole architecture exists to pass, so it reports the class
     /// mix rather than only the total: if the budget is ever missed, the mix says
@@ -667,6 +1065,8 @@ mod tests {
         let path = std::path::PathBuf::from(
             std::env::var("SKATE_BUDGET_MAP").expect("SKATE_BUDGET_MAP"),
         );
+        // The package keeps its texture payloads compressed; the table decompresses each
+        // one per page layer (findings 58 §3.6).
         let map = skate_data::skate_map::SkateMap::load(&path).unwrap();
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
@@ -674,6 +1074,7 @@ mod tests {
         world.init_resource::<Assets<StandardMaterial>>();
         world.init_resource::<Assets<crate::retail_render::WorldMaterial>>();
         world.init_resource::<Assets<bevy::render::storage::ShaderStorageBuffer>>();
+        world.init_resource::<Assets<crate::retail_sky::SkyMaterial>>();
         let mut scene = crate::map_render::PreparedScene::new(&world);
         let started = std::time::Instant::now();
         scene.prepare(Some(&map), &root);
@@ -697,7 +1098,14 @@ mod tests {
     }
 
     fn triangle(centroid: Vec3) -> Triangle {
-        Triangle { indices: [0, 1, 2], centroid, slab: 0, class: RenderClass::Opaque }
+        Triangle {
+            indices: [0, 1, 2],
+            centroid,
+            slab: 0,
+            class: RenderClass::Opaque,
+            water: false,
+            shadow_group: false,
+        }
     }
 
     #[test]
@@ -706,7 +1114,7 @@ mod tests {
             .map(|i| triangle(Vec3::new(i as f32, 0., 0.)))
             .collect();
         let mut members: Vec<usize> = (0..triangles.len()).collect();
-        let leaves = partition(&mut members, &triangles);
+        let leaves = partition(&mut members, &triangles, true, LEAF_TRIANGLE_BUDGET);
         assert!(leaves.len() >= 4, "expected several leaves, got {}", leaves.len());
         for leaf in &leaves {
             assert!(leaf.len() <= LEAF_TRIANGLE_BUDGET, "leaf of {} triangles", leaf.len());
@@ -718,19 +1126,40 @@ mod tests {
         let triangles: Vec<Triangle> = (0..5_000)
             .map(|i| triangle(Vec3::new((i % 71) as f32, (i % 13) as f32, i as f32)))
             .collect();
-        let mut members: Vec<usize> = (0..triangles.len()).collect();
-        let mut seen: Vec<usize> = partition(&mut members, &triangles)
-            .into_iter()
-            .flatten()
+        for authored_order in [true, false] {
+            let mut members: Vec<usize> = (0..triangles.len()).collect();
+            let mut seen: Vec<usize> =
+                partition(&mut members, &triangles, authored_order, LEAF_TRIANGLE_BUDGET)
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            seen.sort_unstable();
+            assert_eq!(seen, (0..triangles.len()).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn split_leaves_return_to_authored_order() {
+        // Centroids descend while indices ascend, so every split reverses the
+        // order within its halves unless the leaf is put back.
+        let triangles: Vec<Triangle> = (0..LEAF_TRIANGLE_BUDGET * 2 + 1)
+            .map(|i| triangle(Vec3::new(-(i as f32), 0., 0.)))
             .collect();
-        seen.sort_unstable();
-        assert_eq!(seen, (0..triangles.len()).collect::<Vec<_>>());
+        let mut members: Vec<usize> = (0..triangles.len()).collect();
+        let leaves = partition(&mut members, &triangles, true, LEAF_TRIANGLE_BUDGET);
+        assert!(leaves.len() >= 2);
+        for leaf in &leaves {
+            assert!(leaf.windows(2).all(|w| w[0] < w[1]), "leaf is not in authored order");
+        }
+        let mut members: Vec<usize> = (0..triangles.len()).collect();
+        let sorted = partition(&mut members, &triangles, false, LEAF_TRIANGLE_BUDGET);
+        assert!(sorted.iter().any(|leaf| leaf.windows(2).any(|w| w[0] > w[1])));
     }
 
     #[test]
     fn a_single_leaf_is_not_split() {
         let triangles: Vec<Triangle> = (0..64).map(|i| triangle(Vec3::splat(i as f32))).collect();
         let mut members: Vec<usize> = (0..triangles.len()).collect();
-        assert_eq!(partition(&mut members, &triangles).len(), 1);
+        assert_eq!(partition(&mut members, &triangles, true, LEAF_TRIANGLE_BUDGET).len(), 1);
     }
 }

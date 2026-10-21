@@ -546,11 +546,18 @@ pub(crate) fn setup(
     .ok()
     .and_then(|b| serde_json::from_slice::<Library>(&b).ok())
     .unwrap_or_default();
-    let geometry = library
-        .models
-        .iter()
-        .map(|(id, p)| (id.clone(), server.load(p.scene.clone())))
-        .collect();
+    // Every retail part carries 22 morph targets, and Bevy uploads each part's targets as
+    // its own 3D texture, 4 MiB or more on the Switch's GPU. All 480 parts would need about
+    // 1.8 GiB, so on Horizon `update` loads a part only when an outfit needs it.
+    let geometry = if cfg!(target_os = "horizon") {
+        HashMap::new()
+    } else {
+        library
+            .models
+            .iter()
+            .map(|(id, p)| (id.clone(), server.load(p.scene.clone())))
+            .collect()
+    };
     let tattoos = library
         .tattoos
         .iter()
@@ -645,6 +652,12 @@ pub(crate) fn update(
     for id in precache {
         if parts.instances.contains_key(&id) {
             continue;
+        }
+        if cfg!(target_os = "horizon") && !parts.geometry.contains_key(&id) {
+            if let Some(part) = parts.library.models.get(&id) {
+                let handle = server.load(part.scene.clone());
+                parts.geometry.insert(id.clone(), handle);
+            }
         }
         if let Some(handle) = parts.geometry.get(&id) {
             if server.is_loaded_with_dependencies(handle.id()) {

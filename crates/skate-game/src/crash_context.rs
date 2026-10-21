@@ -1,5 +1,6 @@
 //! Infrequent, allowlisted snapshots: no player names, addresses or lobby credentials.
 use bevy::prelude::*;
+use std::fmt::Write as _;
 use skate_core::player::state::PhysicalStateId;
 
 type Transition = (u64, PhysicalStateId, PhysicalStateId);
@@ -41,6 +42,9 @@ pub(crate) fn sample(
         return;
     }
     previous.next = now + 1.;
+    // One write for the whole snapshot. Stderr is unbuffered, so each `eprintln!` was several
+    // writes, and on the Switch each write to the SD card blocks the thread making it.
+    let mut out = String::new();
     if let Ok(mut events) = EVENTS.try_lock() {
         let count = events.2;
         let next = events.1;
@@ -48,25 +52,29 @@ pub(crate) fn sample(
         events.2 = 0;
         drop(events);
         if count > 64 {
-            eprintln!(
+            let _ = writeln!(
+                out,
                 "REPORT_TRANSITION older_requests_overwritten:{}",
                 count - 64
             );
         }
         for i in 0..64 {
             if let Some((tick, from, to)) = batch[(next + i) % 64] {
-                eprintln!("REPORT_TRANSITION physics_tick:{tick} requested:{from:?}->{to:?}");
+                let _ = writeln!(
+                    out,
+                    "REPORT_TRANSITION physics_tick:{tick} requested:{from:?}->{to:?}"
+                );
             }
         }
     }
     if !previous.gpu_recorded {
         if let Some(adapter) = adapter {
-            eprintln!("REPORT_META gpu={:?}", &**adapter);
+            let _ = writeln!(out, "REPORT_META gpu={:?}", &**adapter);
             previous.gpu_recorded = true;
         }
     }
     if let Some(multiplayer) = &multiplayer {
-        eprintln!("REPORT_META network={}", multiplayer.diagnostic_summary());
+        let _ = writeln!(out, "REPORT_META network={}", multiplayer.diagnostic_summary());
     }
     let state = format!(
         "map_fingerprint:{:016x} generation:{} difficulty:{} physical:{:?} paused:{} map_loading:{} multiplayer_active:{} physics_failed:{}",
@@ -80,18 +88,20 @@ pub(crate) fn sample(
         physics.failed
     );
     if state != previous.state {
-        eprintln!("REPORT_TRANSITION {state}");
+        let _ = writeln!(out, "REPORT_TRANSITION {state}");
         previous.state = state.clone();
     }
-    eprintln!(
+    let _ = writeln!(
+        out,
         "REPORT_META state={state} physics_tick:{} contacts:{} network_contacts:{}",
         physics.ticks, physics.contact_count, physics.network_contacts
     );
     if let Some(menu) = menu {
         let graphics = menu.diagnostic_settings();
         if graphics != previous.graphics {
-            eprintln!("REPORT_META graphics={graphics}");
+            let _ = writeln!(out, "REPORT_META graphics={graphics}");
             previous.graphics = graphics;
         }
     }
+    eprint!("{out}");
 }

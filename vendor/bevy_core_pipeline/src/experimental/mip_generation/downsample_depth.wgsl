@@ -39,6 +39,13 @@ var<push_constant> constants: Constants;
 
 var<workgroup> intermediate_memory: array<array<f32, 16>, 16>;
 
+#ifdef SKATE_PYRAMID_TILE
+// skate (Switch port, vendor/README.md): the depth block a workgroup reads, `depth_tile_fits` in
+// mod.rs keeps views whose blocks don't fit on Bevy's pipeline.
+const DEPTH_TILE_CAPACITY: u32 = 2304u;
+var<workgroup> depth_tile: array<f32, DEPTH_TILE_CAPACITY>;
+#endif
+
 @compute
 @workgroup_size(256, 1, 1)
 fn downsample_depth_first(
@@ -49,7 +56,13 @@ fn downsample_depth_first(
     let x = sub_xy.x + 8u * ((local_invocation_index >> 6u) % 2u);
     let y = sub_xy.y + 8u * (local_invocation_index >> 7u);
 
+#ifdef SKATE_PYRAMID_TILE
+    downsample_mips_0_to_2_tiled(x, y, workgroup_id.xy, local_invocation_index);
+#else ifdef SKATE_PYRAMID_BLOCK
+    downsample_mips_0_to_2_block(x, y, workgroup_id.xy);
+#else
     downsample_mips_0_and_1(x, y, workgroup_id.xy, local_invocation_index);
+#endif
 
     downsample_mips_2_to_5(x, y, workgroup_id.xy, local_invocation_index);
 }
@@ -116,6 +129,211 @@ fn downsample_mips_0_and_1(x: u32, y: u32, workgroup_id: vec2u, local_invocation
         intermediate_memory[x + 0u][y + 8u] = v[2];
         intermediate_memory[x + 8u][y + 8u] = v[3];
     }
+}
+
+#ifdef SKATE_PYRAMID_TILE
+// skate: mips 1 and 2 with one read of each depth texel. Bevy's `reduce_load_mip_0` takes four
+// gathers a mip 1 texel, 16 a thread, and NAK waits for each before the next. Here the workgroup
+// first gathers the block of depth its 64x64 virtual texels read into `depth_tile`, about two
+// gathers a thread at 1280x720. Each thread then takes a 2x2 block of mip 1 texels, each the
+// minimum over exactly the texels Bevy's gathers read (`tile_footprint_min`), and their minimum
+// is its mip 2 texel, so both levels are Bevy's without its shared-memory rounds for mip 2.
+fn downsample_mips_0_to_2_tiled(x: u32, y: u32, workgroup_id: vec2u, local_invocation_index: u32) {
+    let size = textureDimensions(mip_0);
+    // `next_power_of_two(size)` is 1 << shift.
+    let shift = vec2(32u) - countLeadingZeros(size);
+    let virtual_first = workgroup_id * 64u;
+    let first = max(vec2(
+        first_gathered_texel(virtual_first.x, size.x, shift.x),
+        first_gathered_texel(virtual_first.y, size.y, shift.y),
+    ), vec2(0));
+    let last = min(vec2(
+        first_gathered_texel(virtual_first.x + 63u, size.x, shift.x),
+        first_gathered_texel(virtual_first.y + 63u, size.y, shift.y),
+    ) + 1, vec2<i32>(size) - 1);
+    let extent = vec2<u32>(last - first) + 1u;
+    // An odd row stride spreads a warp's reads over more banks.
+    let stride = extent.x | 1u;
+    let blocks = (extent + 1u) / 2u;
+    let texel_size = 1.0 / vec2<f32>(size);
+    for (var block = local_invocation_index; block < blocks.x * blocks.y; block += 256u) {
+        let t = vec2(block % blocks.x, block / blocks.x) * 2u;
+        // At the corner texels t and t + 1 share, the gather reads exactly those four. Past the
+        // last column or row it clamps to the edge; those lie outside the block and aren't kept.
+        let g = textureGather(mip_0, samplr, vec2<f32>(vec2<i32>(t) + first + 1) * texel_size);
+        let i = t.y * stride + t.x;
+        depth_tile[i] = g.w;
+        if t.x + 1u < extent.x {
+            depth_tile[i + 1u] = g.z;
+        }
+        if t.y + 1u < extent.y {
+            depth_tile[i + stride] = g.x;
+            if t.x + 1u < extent.x {
+                depth_tile[i + stride + 1u] = g.y;
+            }
+        }
+    }
+    workgroupBarrier();
+
+    let p = workgroup_id * 32u + vec2(x, y) * 2u;
+    let a = tile_footprint_min(p, size, shift, first, stride);
+    let b = tile_footprint_min(p + vec2(1u, 0u), size, shift, first, stride);
+    let c = tile_footprint_min(p + vec2(0u, 1u), size, shift, first, stride);
+    let d = tile_footprint_min(p + vec2(1u, 1u), size, shift, first, stride);
+    textureStore(mip_1, p, vec4(a));
+    textureStore(mip_1, p + vec2(1u, 0u), vec4(b));
+    textureStore(mip_1, p + vec2(0u, 1u), vec4(c));
+    textureStore(mip_1, p + vec2(1u, 1u), vec4(d));
+
+    if constants.max_mip_level <= 1u { return; }
+
+    let v = reduce_4(vec4(a, b, c, d));
+    textureStore(mip_2, workgroup_id * 16u + vec2(x, y), vec4(v));
+    intermediate_memory[x][y] = v;
+}
+
+// The minimum over the depth texels that `reduce_load_mip_0` gathers for mip 1 texel `p`: on each
+// axis, from the first texel read at virtual texel 2p to the second read at 2p + 1, two or three
+// texels, clamped to the depth buffer as the sampler clamps.
+fn tile_footprint_min(p: vec2u, size: vec2u, shift: vec2u, first: vec2<i32>, stride: u32) -> f32 {
+    let lo = vec2<u32>(max(vec2(
+        first_gathered_texel(2u * p.x, size.x, shift.x),
+        first_gathered_texel(2u * p.y, size.y, shift.y),
+    ), vec2(0)) - first);
+    let hi = vec2<u32>(min(vec2(
+        first_gathered_texel(2u * p.x + 1u, size.x, shift.x),
+        first_gathered_texel(2u * p.y + 1u, size.y, shift.y),
+    ) + 1, vec2<i32>(size) - 1) - first);
+    // When the footprint is two wide, the third column or row repeats the second.
+    let r0 = lo.y * stride;
+    let r1 = r0 + stride;
+    let r2 = hi.y * stride;
+    return min(
+        min(min(depth_tile[r0 + lo.x], depth_tile[r0 + lo.x + 1u]), depth_tile[r0 + hi.x]),
+        min(
+            min(min(depth_tile[r1 + lo.x], depth_tile[r1 + lo.x + 1u]), depth_tile[r1 + hi.x]),
+            min(min(depth_tile[r2 + lo.x], depth_tile[r2 + lo.x + 1u]), depth_tile[r2 + hi.x]),
+        ),
+    );
+}
+#endif
+
+#ifdef SKATE_PYRAMID_BLOCK
+// skate: mips 1 and 2 with each depth texel gathered about once (vendor/README.md). Bevy's
+// `reduce_load_mip_0` makes four gathers for each mip 1 texel, sixteen a thread, whose texels
+// overlap, and NAK waits for each before the next. Here each thread takes a 2x2 block of mip 1
+// texels and gathers the depth under all four in 2x2 blocks side by side, two or three each way,
+// none needing another's result: six at 1280x720. Each mip 1 texel is then the minimum over
+// exactly the texels Bevy's gathers read, and their minimum is the thread's mip 2 texel, as with
+// the tile.
+fn downsample_mips_0_to_2_block(x: u32, y: u32, workgroup_id: vec2u) {
+    let size = textureDimensions(mip_0);
+    // `next_power_of_two(size)` is 1 << shift.
+    let shift = vec2(32u) - countLeadingZeros(size);
+    let p = workgroup_id * 32u + vec2(x, y) * 2u;
+    // On each axis, Bevy gathers mip 1 texels p and p + 1 at virtual texels 2p to 2p + 3, whose
+    // first texels are `first` and d.x, d.y and d.z texels after it, and each gather reads that
+    // texel and the next. The virtual size is under twice the size, so each step is 0 or 1
+    // texels: p reads from 0 to d.x + 1 texels after `first`, and p + 1 from d.y to d.z + 1,
+    // with d.x at most 1, d.y 1 or 2 and d.z d.y or d.y + 1.
+    let first = vec2(
+        first_gathered_texel(2u * p.x, size.x, shift.x),
+        first_gathered_texel(2u * p.y, size.y, shift.y),
+    );
+    let dx = vec3<u32>(vec3(
+        first_gathered_texel(2u * p.x + 1u, size.x, shift.x),
+        first_gathered_texel(2u * p.x + 2u, size.x, shift.x),
+        first_gathered_texel(2u * p.x + 3u, size.x, shift.x),
+    ) - first.x);
+    let dy = vec3<u32>(vec3(
+        first_gathered_texel(2u * p.y + 1u, size.y, shift.y),
+        first_gathered_texel(2u * p.y + 2u, size.y, shift.y),
+        first_gathered_texel(2u * p.y + 3u, size.y, shift.y),
+    ) - first.y);
+
+    // Each gather sits on the corner of texels `first + 2i` and `first + 2i + 1` each way, so it
+    // reads exactly those four; past the edge the sampler clamps, as it does for Bevy's. An axis
+    // needs a third gather only if d.z can be 3, when three virtual texels span over two texels.
+    // The third row is gathered and reduced on its own, to keep fewer registers.
+    let wide = 3u * size > vec2(2u) << shift;
+    let uv = vec2<f32>(first + 1) / vec2<f32>(size);
+    let g00 = textureGather(mip_0, samplr, uv);
+    let g10 = textureGather(mip_0, samplr, uv, vec2(2, 0));
+    let g01 = textureGather(mip_0, samplr, uv, vec2(0, 2));
+    let g11 = textureGather(mip_0, samplr, uv, vec2(2, 2));
+    // Only picked where dx.z is 3, which needs `wide.x`.
+    var g20 = g10;
+    var g21 = g11;
+    if wide.x {
+        g20 = textureGather(mip_0, samplr, uv, vec2(4, 0));
+        g21 = textureGather(mip_0, samplr, uv, vec2(4, 2));
+    }
+    let rows_0 = block_row_minima_third(block_row_minima(g00, g10, dx), g20.wx, dx);
+    let rows_1 = block_row_minima_third(block_row_minima(g01, g11, dx), g21.wx, dx);
+    let top = block_min_first(rows_0[0], rows_0[1], rows_1[0], dy);
+    var bottom = block_min_second(rows_0[1], rows_1[0], rows_1[1], dy);
+    if wide.y {
+        let g02 = textureGather(mip_0, samplr, uv, vec2(0, 4));
+        let g12 = textureGather(mip_0, samplr, uv, vec2(2, 4));
+        // Only picked where dx.z is 3, which needs `wide.x`.
+        var g22 = g12;
+        if wide.x {
+            g22 = textureGather(mip_0, samplr, uv, vec2(4, 4));
+        }
+        let rows_2 = block_row_minima_third(block_row_minima(g02, g12, dx), g22.wx, dx);
+        bottom = block_min_third(bottom, rows_2[0], dy);
+    }
+    textureStore(mip_1, p, vec4(top.x));
+    textureStore(mip_1, p + vec2(1u, 0u), vec4(top.y));
+    textureStore(mip_1, p + vec2(0u, 1u), vec4(bottom.x));
+    textureStore(mip_1, p + vec2(1u, 1u), vec4(bottom.y));
+
+    if constants.max_mip_level <= 1u { return; }
+
+    let v = reduce_4(vec4(top, bottom));
+    textureStore(mip_2, workgroup_id * 16u + vec2(x, y), vec4(v));
+    intermediate_memory[x][y] = v;
+}
+
+// For two gathered rows, from two gathers side by side, each row's minima for mip 1 texels p and
+// p + 1 (`.x` and `.y`) without a third gather's texels: `[0]` for the upper row, `[1]` for the
+// lower.
+fn block_row_minima(g0: vec4f, g1: vec4f, d: vec3u) -> array<vec2f, 2> {
+    // A gather's `.w` and `.z` are its upper row's texels, left to right, and `.x` and `.y` its
+    // lower row's, so each of these columns holds a texel of both rows.
+    let first = block_min_first(g0.wx, g0.zy, g1.wx, d);
+    let second = block_min_second(g0.zy, g1.wx, g1.zy, d);
+    return array(vec2(first.x, second.x), vec2(first.y, second.y));
+}
+
+// `block_row_minima`'s minima with a third gather's first column, `t4`, added.
+fn block_row_minima_third(rows: array<vec2f, 2>, t4: vec2f, d: vec3u) -> array<vec2f, 2> {
+    let second = block_min_third(vec2(rows[0].y, rows[1].y), t4, d);
+    return array(vec2(rows[0].x, second.x), vec2(rows[1].x, second.y));
+}
+
+// The minimum over texels 0 to d.x + 1 after `first`, given texels 0, 1 and 2, for two rows or
+// columns at once.
+fn block_min_first(t0: vec2f, t1: vec2f, t2: vec2f, d: vec3u) -> vec2f {
+    return min(min(t0, t1), select(t1, t2, d.x == 1u));
+}
+
+// The minimum over texels d.y to d.z + 1 after `first` up to texel 3, given texels 1 to 3. Texel
+// 2 is always among them.
+fn block_min_second(t1: vec2f, t2: vec2f, t3: vec2f, d: vec3u) -> vec2f {
+    return min(min(t2, select(t2, t1, d.y == 1u)), select(t2, t3, d.z >= 2u));
+}
+
+// `block_min_second`'s minimum `m` with texel 4 added where d.z is 3, so it reaches texel 4.
+fn block_min_third(m: vec2f, t4: vec2f, d: vec3u) -> vec2f {
+    return min(m, select(m, t4, d.z == 3u));
+}
+#endif
+
+// The first texel on one axis that `load_mip_0`'s gather reads at virtual texel `v`,
+// floor((v + 0.5) * size / 2^shift - 0.5), in integers; the gather's other texel is the next one.
+fn first_gathered_texel(v: u32, size: u32, shift: u32) -> i32 {
+    return (i32((2u * v + 1u) * size) - (1i << shift)) >> (shift + 1u);
 }
 
 fn downsample_mips_2_to_5(x: u32, y: u32, workgroup_id: vec2u, local_invocation_index: u32) {

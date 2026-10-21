@@ -11,17 +11,20 @@ fn main() -> Result<(), String> {
     let mut bytes = 0usize;
     let mut unique_bytes = 0usize;
     let mut unique = 0;
+    // Textures stay compressed in the package; uniqueness is over the compressed payload,
+    // which is what the renderer deduplicates on (retail_render.rs `canonical_texture_ids`).
     for (i, t) in map.textures.iter().enumerate() {
-        bytes += t.rgba.len();
+        let block = &map.texture_blocks[i];
+        bytes += block.expected;
         let mut hash = std::collections::hash_map::DefaultHasher::new();
-        t.rgba.hash(&mut hash);
+        block.bytes.hash(&mut hash);
         let bucket = buckets
             .entry((t.width, t.height, t.color_space, hash.finish()))
             .or_default();
-        if !bucket.iter().any(|&j| map.textures[j].rgba == t.rgba) {
+        if !bucket.iter().any(|&j| map.texture_blocks[j].bytes == block.bytes) {
             bucket.push(i);
             unique += 1;
-            unique_bytes += t.rgba.len();
+            unique_bytes += block.expected;
         }
     }
     let mut bounds = vec![([f32::INFINITY; 3], [f32::NEG_INFINITY; 3], 0u64); map.materials.len()];

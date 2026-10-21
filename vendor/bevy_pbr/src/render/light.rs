@@ -28,7 +28,7 @@ use bevy_light::{
     Cascades, DirectionalLight, DirectionalLightShadowMap, GlobalAmbientLight, NotShadowCaster,
     PointLight, PointLightShadowMap, ShadowFilteringMethod, SpotLight, VolumetricLight,
 };
-use bevy_math::{ops, Mat4, UVec4, Vec3, Vec3Swizzles, Vec4, Vec4Swizzles};
+use bevy_math::{ops, Mat4, URect, UVec2, UVec4, Vec3, Vec3Swizzles, Vec4, Vec4Swizzles};
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_platform::hash::FixedHasher;
 use bevy_render::erased_render_asset::ErasedRenderAssets;
@@ -652,6 +652,93 @@ pub(crate) fn remove_light_view_entities(
 pub struct ShadowView {
     pub depth_attachment: DepthAttachment,
     pub pass_name: String,
+}
+
+/// The shadow map layer a directional light's cascade draws into: the array texture and the
+/// layer. Local change for [`SkipClearShadowLayers`] (vendor/README.md).
+#[derive(Component, Clone, Copy)]
+pub struct ShadowLayer {
+    pub texture: TextureId,
+    pub layer: u32,
+}
+
+/// Skips the shadow pass of a directional light's cascade that has nothing to draw while its
+/// layer of the shadow map holds only the clear value: the pass would clear the layer again and
+/// draw nothing into it. A layer counts as clear once a pass has cleared it and drawn nothing,
+/// until a pass draws into it, or a frame passes without the layer's texture in use. Cascades
+/// with occlusion culling always run. Off unless the app inserts this into the render world.
+/// Local change (vendor/README.md).
+#[derive(Resource, Default)]
+pub struct SkipClearShadowLayers {
+    clear: HashSet<(TextureId, u32)>,
+    skipped: EntityHashSet,
+}
+
+impl SkipClearShadowLayers {
+    /// Whether this frame's shadow pass skips the cascade `view_light`.
+    pub fn skips(&self, view_light: Entity) -> bool {
+        self.skipped.contains(&view_light)
+    }
+
+    /// Records one cascade's frame: its layer, whether its pass would draw nothing, and the
+    /// view light entity. Returns whether the pass is skipped.
+    fn record(&mut self, key: (TextureId, u32), empty: bool, view_light: Entity) -> bool {
+        if !empty {
+            self.clear.remove(&key);
+            return false;
+        }
+        // The pass runs and clears the layer the first time; after that, the layer stays clear.
+        if self.clear.insert(key) {
+            return false;
+        }
+        self.skipped.insert(view_light);
+        true
+    }
+}
+
+/// Chooses the cascades [`SkipClearShadowLayers`] skips this frame, after their phases are
+/// queued and batched.
+pub fn skip_clear_shadow_layers(
+    skip: Option<ResMut<SkipClearShadowLayers>>,
+    phases: Option<Res<ViewBinnedRenderPhases<Shadow>>>,
+    views: Query<&ViewLightEntities>,
+    cascades: Query<(&ExtractedView, &ShadowLayer, Has<OcclusionCulling>)>,
+) {
+    let Some(mut skip) = skip else {
+        return;
+    };
+    skip.skipped.clear();
+    let Some(phases) = phases else {
+        return;
+    };
+    let mut seen = HashSet::new();
+    for view_lights in &views {
+        for &view_light in &view_lights.lights {
+            let Ok((view, layer, occlusion_culling)) = cascades.get(view_light) else {
+                continue;
+            };
+            let key = (layer.texture, layer.layer);
+            seen.insert(key);
+            let Some(phase) = phases.get(&view.retained_view_entity) else {
+                // The pass node passes over this cascade; keep no claim about its layer.
+                skip.clear.remove(&key);
+                continue;
+            };
+            skip.record(key, !occlusion_culling && phase.is_empty(), view_light);
+        }
+    }
+    skip.clear.retain(|key| seen.contains(key));
+}
+
+/// The texels of shadow views' maps that anything drawn can read, which the app finds, keyed
+/// by view: each such view's pass draws only within its rectangle, in texels from the top left
+/// of a map `size` texels square. A view without one, or whose map is another size, draws all
+/// of its map, as Bevy does; either way the pass clears all of it. Local change
+/// (vendor/README.md).
+#[derive(Resource, Default, Clone)]
+pub struct ShadowScissors {
+    pub size: u32,
+    pub rects: HashMap<RetainedViewEntity, URect>,
 }
 
 #[derive(Component)]
@@ -1540,6 +1627,7 @@ pub fn prepare_lights(
                         far_bound: *bound,
                     };
 
+                let layer = directional_depth_texture_array_index;
                 let depth_texture_view =
                     directional_light_depth_texture
                         .texture
@@ -1551,7 +1639,7 @@ pub fn prepare_lights(
                             aspect: TextureAspect::All,
                             base_mip_level: 0,
                             mip_level_count: None,
-                            base_array_layer: directional_depth_texture_array_index,
+                            base_array_layer: layer,
                             array_layer_count: Some(1u32),
                         });
 
@@ -1582,6 +1670,10 @@ pub fn prepare_lights(
                         pass_name: format!(
                             "shadow_directional_light_{light_index}_cascade_{cascade_index}"
                         ),
+                    },
+                    ShadowLayer {
+                        texture: directional_light_depth_texture.texture.id(),
+                        layer,
                     },
                     ExtractedView {
                         retained_view_entity,
@@ -2296,9 +2388,14 @@ impl ShadowPassNode {
         else {
             return Ok(());
         };
+        let skip = world.get_resource::<SkipClearShadowLayers>();
+        let scissors = world.get_resource::<ShadowScissors>();
 
         if let Ok(view_lights) = self.main_view_query.get_manual(world, graph.view_entity()) {
             for view_light_entity in view_lights.lights.iter().copied() {
+                if skip.is_some_and(|skip| skip.skips(view_light_entity)) {
+                    continue;
+                }
                 let Ok((view_light, extracted_light_view, occlusion_culling)) =
                     self.view_light_query.get_manual(world, view_light_entity)
                 else {
@@ -2316,6 +2413,23 @@ impl ShadowPassNode {
                 else {
                     continue;
                 };
+
+                let size = UVec2::new(
+                    extracted_light_view.viewport.z,
+                    extracted_light_view.viewport.w,
+                );
+                let scissor = scissors
+                    .filter(|scissors| size == UVec2::splat(scissors.size))
+                    .and_then(|scissors| {
+                        scissors.rects.get(&extracted_light_view.retained_view_entity)
+                    })
+                    .map(|rect| {
+                        let min = rect.min.min(size);
+                        (min, rect.max.min(size).max(min) - min)
+                    });
+                // An empty rectangle keeps every fragment out, so the view's draws would cost
+                // only their vertices. Its pass still runs, and clears the layer as before.
+                let empty = scissor.is_some_and(|(_, area)| area.x == 0 || area.y == 0);
 
                 let depth_stencil_attachment =
                     Some(view_light.depth_attachment.get_attachment(StoreOp::Store));
@@ -2340,11 +2454,16 @@ impl ShadowPassNode {
                     let mut render_pass = TrackedRenderPass::new(&render_device, render_pass);
                     let pass_span =
                         diagnostics.pass_span(&mut render_pass, view_light.pass_name.clone());
+                    if let Some((at, size)) = scissor {
+                        render_pass.set_scissor_rect(at.x, at.y, size.x, size.y);
+                    }
 
-                    if let Err(err) =
-                        shadow_phase.render(&mut render_pass, world, view_light_entity)
-                    {
-                        error!("Error encountered while rendering the shadow phase {err:?}");
+                    if !empty {
+                        if let Err(err) =
+                            shadow_phase.render(&mut render_pass, world, view_light_entity)
+                        {
+                            error!("Error encountered while rendering the shadow phase {err:?}");
+                        }
                     }
 
                     pass_span.end(&mut render_pass);

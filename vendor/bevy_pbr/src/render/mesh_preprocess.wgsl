@@ -85,6 +85,11 @@ struct PushConstants {
     // The offset into the `late_preprocess_work_item_indirect_parameters`
     // buffer.
     late_preprocess_work_item_indirect_offset: u32,
+    // skate: in the low 16 bits, 0 for Bevy's 2 x 2 occlusion test, otherwise the finer test's
+    // span in texels (`occlusion_culling::occluded_finely`, `OCCLUSION_TEST_SPAN`); bit 16 reads
+    // its texels eight at a time (`occluded_finely_batched`, `OCCLUSION_TEST_BATCH`,
+    // vendor/README.md).
+    occlusion_test_span: u32,
 }
 
 // The current frame's `MeshInput`.
@@ -233,6 +238,9 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     let timestamp = current_input[input_index].timestamp;
     let mesh_changed_this_frame = timestamp == view.frame_count;
 
+    // Only the early phase's occlusion test needs the previous model matrix; the
+    // late phase looks it up after its test (skate: vendor/README.md).
+#ifdef EARLY_PHASE
     // Look up the previous model matrix, if it could have been.
     let previous_input_index = current_input[input_index].previous_input_index;
     var previous_world_from_local_affine_transpose: mat3x4<f32>;
@@ -244,6 +252,7 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     }
     let previous_world_from_local =
         maths::affine3_to_square(previous_world_from_local_affine_transpose);
+#endif  // EARLY_PHASE
 
     // Occlusion cull if necessary. This is done by calculating the screen-space
     // axis-aligned bounding box (AABB) of the mesh and testing it against the
@@ -301,8 +310,6 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     // Figure out the depth of the occluder, and compare it to our own depth.
 
     let aabb_pixel_size = occlusion_culling::get_aabb_size_in_pixels(aabb, depth_pyramid);
-    let occluder_depth_ndc =
-        occlusion_culling::get_occluder_depth(aabb, aabb_pixel_size, depth_pyramid);
 
 #ifdef EARLY_PHASE
     let max_depth_ndc = prev_view_z_to_depth_ndc(max_depth_view);
@@ -310,8 +317,36 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     let max_depth_ndc = view_z_to_depth_ndc(max_depth_view);
 #endif
 
-    // Are we culled out?
-    if (max_depth_ndc < occluder_depth_ndc) {
+    var occluded: bool;
+    let occlusion_test_span = push_constants.occlusion_test_span & 0xffffu;
+    if (occlusion_test_span == 0u) {
+        let occluder_depth_ndc =
+            occlusion_culling::get_occluder_depth(aabb, aabb_pixel_size, depth_pyramid);
+        occluded = max_depth_ndc < occluder_depth_ndc;
+    } else if ((push_constants.occlusion_test_span & 0x10000u) != 0u) {
+        occluded = occlusion_culling::occluded_finely_batched(
+            aabb,
+            aabb_pixel_size,
+            max_depth_ndc,
+            f32(occlusion_test_span),
+            depth_pyramid
+        );
+    } else {
+        occluded = occlusion_culling::occluded_finely(
+            aabb,
+            aabb_pixel_size,
+            max_depth_ndc,
+            f32(occlusion_test_span),
+            depth_pyramid
+        );
+    }
+
+    // Are we culled out? A mesh that opts out of frustum culling says its bounds don't describe
+    // where it draws (a skinned mesh's bind pose, geometry the vertex shader moves), or has none,
+    // and gets infinite extents, which project to infinities and NaNs. The depth can't rule out
+    // either, so it is never culled here (skate: vendor/README.md).
+    if ((current_input[input_index].flags & MESH_FLAGS_NO_FRUSTUM_CULLING_BIT) == 0u &&
+            occluded) {
 #ifdef EARLY_PHASE
         // If this is the early phase, we need to make a note of this mesh so
         // that we examine it again in the late phase, so that we handle the
@@ -337,6 +372,19 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
         return;
     }
 #endif  // OCCLUSION_CULLING
+
+#ifndef EARLY_PHASE
+    // The same lookup as the early phase's, made after the test so that the
+    // matrix isn't held in registers across it (skate: vendor/README.md).
+    let previous_input_index = current_input[input_index].previous_input_index;
+    var previous_world_from_local_affine_transpose: mat3x4<f32>;
+    if (mesh_changed_this_frame && previous_input_index != 0xffffffffu) {
+        previous_world_from_local_affine_transpose =
+            previous_input[previous_input_index].world_from_local;
+    } else {
+        previous_world_from_local_affine_transpose = world_from_local_affine_transpose;
+    }
+#endif  // EARLY_PHASE
 
     // Calculate inverse transpose.
     let local_from_world_transpose = transpose(maths::inverse_affine3(transpose(

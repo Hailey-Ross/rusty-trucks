@@ -337,6 +337,8 @@ impl Plugin for PbrPlugin {
                         .in_set(RenderSystems::ManageViews)
                         .after(sort_cameras),
                     prepare_clusters.in_set(RenderSystems::PrepareResources),
+                    // Local change (vendor/README.md): after the shadow phases are queued.
+                    skip_clear_shadow_layers.in_set(RenderSystems::PrepareBindGroups),
                 ),
             )
             .init_resource::<LightMeta>()

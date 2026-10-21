@@ -29,10 +29,11 @@ use bevy_render::{
     render_resource::BindGroupLayoutDescriptor, RenderStartup,
 };
 use bevy_render::{
+    diagnostic::RecordDiagnostics,
     experimental::occlusion_culling::{
         OcclusionCulling, OcclusionCullingSubview, OcclusionCullingSubviewEntities,
     },
-    render_graph::{Node, NodeRunError, RenderGraphContext, RenderGraphExt},
+    render_graph::{Node, NodeRunError, RenderGraphContext, RenderGraphExt, RenderLabel},
     render_resource::{
         binding_types::{sampler, texture_2d, texture_2d_multisampled, texture_storage_2d},
         BindGroup, BindGroupEntries, BindGroupLayout, BindGroupLayoutEntries,
@@ -50,7 +51,57 @@ use bevy_render::{
 use bevy_shader::Shader;
 use bevy_utils::default;
 use bitflags::bitflags;
-use tracing::debug;
+use tracing::{debug, warn};
+
+/// skate: while set, the late build is skipped (vendor/README.md). The pyramid is the same cached
+/// texture from frame to frame, so the next frame's early test reads what this frame's early build
+/// left: the depth of the meshes drawn early, without those drawn late. That can only keep more
+/// meshes, never fewer.
+pub static SKIP_LATE_DEPTH_PYRAMID: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// skate: while set, a single-sampled view whose depth fits (`depth_tile_fits`) builds the
+/// pyramid's first two levels from a block of depth each workgroup reads into shared memory once,
+/// rather than with four gathers a texel (`SKATE_PYRAMID_TILE` in `downsample_depth.wgsl`,
+/// vendor/README.md). Each texel is the minimum over the same depth texels as Bevy's.
+pub static PYRAMID_TILE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// skate: while set, a single-sampled view builds the pyramid's first two levels with each thread
+/// gathering the depth under its 2x2 block of level-1 texels side by side, two or three gathers
+/// each way, rather than four gathers a texel (`SKATE_PYRAMID_BLOCK` in `downsample_depth.wgsl`,
+/// vendor/README.md). Each texel is the minimum over the same depth texels as Bevy's. The tile
+/// takes precedence while both are set.
+pub static PYRAMID_BLOCK: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// skate: whether a view too big for the tile has been reported.
+static TILE_FALLBACK_WARNED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// skate: `DEPTH_TILE_CAPACITY` in `downsample_depth.wgsl`, in texels.
+const DEPTH_TILE_CAPACITY: u32 = 2304;
+
+/// skate: whether every first-pass workgroup's block of depth fits `DEPTH_TILE_CAPACITY` for a
+/// depth buffer of `size`, by the shader's own arithmetic. Below 32 texels a side, workgroups
+/// reach past the pyramid, so Bevy's pass keeps those.
+fn depth_tile_fits(size: UVec2) -> bool {
+    // The widest block on one axis: from the first texel the workgroup's first virtual texel
+    // gathers to the second its last one does.
+    fn widest(size: u32) -> u32 {
+        let shift = 32 - size.leading_zeros();
+        let first = |v: u32| ((2 * i64::from(v) + 1) * i64::from(size) - (1 << shift)) >> (shift + 1);
+        (0..(1u32 << shift).div_ceil(64))
+            .map(|group| {
+                let start = first(64 * group).max(0);
+                let end = (first(64 * group + 63) + 1).min(i64::from(size) - 1);
+                (end - start + 1) as u32
+            })
+            .max()
+            .unwrap_or(0)
+    }
+    size.x >= 32 && size.y >= 32 && (widest(size.x) | 1) * widest(size.y) <= DEPTH_TILE_CAPACITY
+}
 
 /// Identifies the `downsample_depth.wgsl` shader.
 #[derive(Resource, Deref)]
@@ -175,6 +226,12 @@ impl Node for DownsampleDepthNode {
         render_context: &mut RenderContext<'w>,
         world: &'w World,
     ) -> Result<(), NodeRunError> {
+        if SKIP_LATE_DEPTH_PYRAMID.load(core::sync::atomic::Ordering::Relaxed)
+            && render_graph_context.label() == Node3d::LateDownsampleDepth.intern()
+        {
+            return Ok(());
+        }
+
         let Ok((
             view_depth_pyramid,
             view_downsample_depth_bind_group,
@@ -261,9 +318,37 @@ fn downsample_depth<'w>(
         return Ok(());
     };
 
+    // skate: the tiled first pass when it's on and the view fits, and Bevy's until it compiles.
+    let tile = sample_count == 1 && PYRAMID_TILE.load(core::sync::atomic::Ordering::Relaxed);
+    let tile_fits = tile && depth_tile_fits(view_size);
+    if tile
+        && !tile_fits
+        && !TILE_FALLBACK_WARNED.swap(true, core::sync::atomic::Ordering::Relaxed)
+    {
+        warn!(
+            "skate: a {view_size} depth buffer doesn't fit the depth pyramid tile, so Bevy's \
+             pass builds its pyramid"
+        );
+    }
+    let tile_pipeline = downsample_depth_pipelines
+        .first_tile
+        .pipeline_id
+        .filter(|_| tile_fits)
+        .and_then(|id| pipeline_cache.get_compute_pipeline(id));
+    // skate: otherwise the block first pass when it's on, also Bevy's until it compiles.
+    let block_pipeline = downsample_depth_pipelines
+        .first_block
+        .pipeline_id
+        .filter(|_| {
+            sample_count == 1 && PYRAMID_BLOCK.load(core::sync::atomic::Ordering::Relaxed)
+        })
+        .and_then(|id| pipeline_cache.get_compute_pipeline(id));
+
     // Fetch the pipelines for the two passes.
     let (Some(first_downsample_depth_pipeline), Some(second_downsample_depth_pipeline)) = (
-        pipeline_cache.get_compute_pipeline(first_downsample_depth_pipeline_id),
+        tile_pipeline
+            .or(block_pipeline)
+            .or_else(|| pipeline_cache.get_compute_pipeline(first_downsample_depth_pipeline_id)),
         pipeline_cache.get_compute_pipeline(second_downsample_depth_pipeline_id),
     ) else {
         return Ok(());
@@ -323,6 +408,10 @@ pub struct DownsampleDepthPipelines {
     first_multisample: DownsampleDepthPipeline,
     /// The second pass of the pipeline, when the depth buffer is multisampled.
     second_multisample: DownsampleDepthPipeline,
+    /// skate: the first pass with `SKATE_PYRAMID_TILE`, for `PYRAMID_TILE`.
+    first_tile: DownsampleDepthPipeline,
+    /// skate: the first pass with `SKATE_PYRAMID_BLOCK`, for `PYRAMID_BLOCK`.
+    first_block: DownsampleDepthPipeline,
     /// The sampler that the depth downsampling shader uses to sample the depth
     /// buffer.
     sampler: Sampler,
@@ -384,6 +473,14 @@ fn create_downsample_depth_pipelines(
             multisampled_bind_group_layout.clone(),
             downsample_depth_shader.0.clone(),
         ),
+        first_tile: DownsampleDepthPipeline::new(
+            standard_bind_group_layout.clone(),
+            downsample_depth_shader.0.clone(),
+        ),
+        first_block: DownsampleDepthPipeline::new(
+            standard_bind_group_layout.clone(),
+            downsample_depth_shader.0.clone(),
+        ),
         sampler,
     };
 
@@ -410,6 +507,18 @@ fn create_downsample_depth_pipelines(
             &pipeline_cache,
             &downsample_depth_pipelines.second_multisample,
             DownsampleDepthPipelineKey::SECOND_PHASE | DownsampleDepthPipelineKey::MULTISAMPLE,
+        ));
+    downsample_depth_pipelines.first_tile.pipeline_id =
+        Some(specialized_compute_pipelines.specialize(
+            &pipeline_cache,
+            &downsample_depth_pipelines.first_tile,
+            DownsampleDepthPipelineKey::TILE,
+        ));
+    downsample_depth_pipelines.first_block.pipeline_id =
+        Some(specialized_compute_pipelines.specialize(
+            &pipeline_cache,
+            &downsample_depth_pipelines.first_block,
+            DownsampleDepthPipelineKey::BLOCK,
         ));
 
     commands.insert_resource(downsample_depth_pipelines);
@@ -466,6 +575,12 @@ bitflags! {
         /// True if this shader is the second phase of the downsample depth
         /// process; false if this shader is the first phase.
         const SECOND_PHASE = 2;
+        /// skate: the first phase builds mips 1 and 2 from a shared-memory
+        /// tile (`SKATE_PYRAMID_TILE`). Single-sampled only.
+        const TILE = 4;
+        /// skate: the first phase builds mips 1 and 2 from 2x2 blocks of
+        /// gathers (`SKATE_PYRAMID_BLOCK`). Single-sampled only.
+        const BLOCK = 8;
     }
 }
 
@@ -477,11 +592,27 @@ impl SpecializedComputePipeline for DownsampleDepthPipeline {
         if key.contains(DownsampleDepthPipelineKey::MULTISAMPLE) {
             shader_defs.push("MULTISAMPLE".into());
         }
+        if key.contains(DownsampleDepthPipelineKey::TILE) {
+            shader_defs.push("SKATE_PYRAMID_TILE".into());
+        }
+        if key.contains(DownsampleDepthPipelineKey::BLOCK) {
+            shader_defs.push("SKATE_PYRAMID_BLOCK".into());
+        }
 
         let label = format!(
-            "downsample depth{}{} pipeline",
+            "downsample depth{}{}{}{} pipeline",
             if key.contains(DownsampleDepthPipelineKey::MULTISAMPLE) {
                 " multisample"
+            } else {
+                ""
+            },
+            if key.contains(DownsampleDepthPipelineKey::TILE) {
+                " tile"
+            } else {
+                ""
+            },
+            if key.contains(DownsampleDepthPipelineKey::BLOCK) {
+                " block"
             } else {
                 ""
             },
@@ -726,11 +857,13 @@ impl ViewDepthPyramid {
             (view_size.y + 1).next_power_of_two(),
         );
 
+        let diagnostics = render_context.diagnostic_recorder();
         let command_encoder = render_context.command_encoder();
         let mut downsample_pass = command_encoder.begin_compute_pass(&ComputePassDescriptor {
             label: Some(label),
             timestamp_writes: None,
         });
+        let pass_span = diagnostics.pass_span(&mut downsample_pass, label.to_owned());
         downsample_pass.set_pipeline(downsample_depth_first_pipeline);
         // Pass the mip count as a push constant, for simplicity.
         downsample_pass.set_push_constants(0, &self.mip_count.to_le_bytes());
@@ -745,6 +878,7 @@ impl ViewDepthPyramid {
             downsample_pass.set_pipeline(downsample_depth_second_pipeline);
             downsample_pass.dispatch_workgroups(1, 1, 1);
         }
+        pass_span.end(&mut downsample_pass);
     }
 }
 

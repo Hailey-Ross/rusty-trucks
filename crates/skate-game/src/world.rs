@@ -17,7 +17,8 @@ impl Plugin for WorldPlugin {
             .add_systems(Startup, spawn);
     }
 }
-fn spawn(world: &mut World) {
+/// The scene build (Startup). Audio `setup` runs before it, so the start-up banks load meanwhile.
+pub(crate) fn spawn(world: &mut World) {
     let scene = {
         let server = world.resource::<AssetServer>();
         let manifest = world.resource::<AssetManifest>();
@@ -30,15 +31,29 @@ fn spawn(world: &mut World) {
         let mut config = world.resource_mut::<crate::config::Config>();
         (config.map.take(), config.asset_root.clone())
     };
+    crate::log_memory("scene preparation starting");
     prepared.prepare(map.as_ref(), &root);
+    crate::log_memory("scene prepared");
     prepared.publish(world);
+    drop(map);
+    crate::log_memory("scene published, map data freed");
 }
 
+/// The ground the physics knows, drawn plainly, and a sun. Three switches, read as it spawns,
+/// look for what hangs the Switch's GPU here (findings 22 §2.3): `SKATE_TEST_WORLD_SHADOWS=0`
+/// turns the sun's shadows off, `SKATE_TEST_WORLD_INDEXED=1` gives the ground indices, and
+/// `SKATE_TEST_WORLD_UNLIT=1` draws the ground unlit. Until that is found the Switch starts here
+/// only with `SKATE_TEST_WORLD=1` (map_library.rs).
 pub(crate) fn spawn_test_world(
     commands: &mut crate::map_render::SceneCommands,
     meshes: &mut impl crate::map_render::AssetSink<Mesh>,
     materials: &mut impl crate::map_render::AssetSink<StandardMaterial>,
 ) {
+    let set = |name: &str, value: &str| std::env::var(name).is_ok_and(|v| v.trim() == value);
+    let shadows = !set("SKATE_TEST_WORLD_SHADOWS", "0");
+    let indexed = set("SKATE_TEST_WORLD_INDEXED", "1");
+    let unlit = set("SKATE_TEST_WORLD_UNLIT", "1");
+    info!("[Skate] test world: shadows={shadows} indexed={indexed} unlit={unlit}");
     let colors = [
         Color::srgb(0.16, 0.19, 0.21),
         Color::srgb(0.48, 0.35, 0.22),
@@ -57,6 +72,10 @@ pub(crate) fn spawn_test_world(
             bevy::asset::RenderAssetUsages::default(),
         ).with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         mesh.compute_flat_normals();
+        if indexed {
+            let count = mesh.count_vertices() as u32;
+            mesh.insert_indices(bevy::mesh::Indices::U32((0..count).collect()));
+        }
         commands.spawn((
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(materials.add(StandardMaterial {
@@ -64,6 +83,7 @@ pub(crate) fn spawn_test_world(
                 perceptual_roughness: 0.9,
                 double_sided: true,
                 cull_mode: None,
+                unlit,
                 ..default()
             })),
             Transform::default(),
@@ -72,7 +92,7 @@ pub(crate) fn spawn_test_world(
     commands.spawn((
         DirectionalLight {
             illuminance: 11000.,
-            shadows_enabled: true,
+            shadows_enabled: shadows,
             ..default()
         },
         Transform::from_xyz(4., 7., 4.).looking_at(Vec3::ZERO, Vec3::Y),

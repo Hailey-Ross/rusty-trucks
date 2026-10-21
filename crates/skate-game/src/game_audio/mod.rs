@@ -340,7 +340,7 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<mod_world::OwnWorldOwners>()
             .init_resource::<mod_world::ModWorld>()
             .init_resource::<crate::world_audio::WorldEmitterStats>()
-            .add_systems(Startup, setup)
+            .add_systems(Startup, setup.before(crate::world::spawn))
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
             .add_systems(
                 Update,
@@ -373,7 +373,13 @@ fn setup(mut commands: Commands, config: Res<crate::config::Config>) {
     commands.insert_resource(AudioSettings::load(&config));
     commands.spawn((GameAudioListener, SpatialListener::new(0.2), Transform::default()));
     match Library::load(&config.asset_root) {
-        Ok(library) => commands.insert_resource(library),
+        Ok(library) => {
+            // The first start's banks load while the scene builds (`native::startup`).
+            if let Some(early) = native::startup::begin(&library) {
+                commands.insert_resource(early);
+            }
+            commands.insert_resource(library);
+        }
         Err(error) => info!("Game audio unavailable (run setup to extract it): {error}"),
     }
 }

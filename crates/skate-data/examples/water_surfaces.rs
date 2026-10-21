@@ -377,14 +377,25 @@ pub fn model_materials(map: &skate_data::skate_map::SkateMap, model: &str) {
 /// `TEXTURES=id,id,...`: size, colour space and mean RGBA of 1-based texture ids.
 pub fn texture_stats(map: &skate_data::skate_map::SkateMap, ids: &[usize]) {
     for &id in ids {
-        let Some(t) = id.checked_sub(1).and_then(|i| map.textures.get(i)) else {
+        let Some(i) = id.checked_sub(1) else {
             println!("  texture {id}: missing");
             continue;
         };
+        let Some(t) = map.textures.get(i) else {
+            println!("  texture {id}: missing");
+            continue;
+        };
+        let rgba = match map.decode_texture(i) {
+            Ok(rgba) => rgba,
+            Err(error) => {
+                println!("  texture {id} {}: {error}", t.name);
+                continue;
+            }
+        };
         let mut sum = [0f64; 4];
         let mut max = [0u8; 4];
-        let px = t.rgba.len() / 4;
-        for p in t.rgba.chunks_exact(4) {
+        let px = rgba.len() / 4;
+        for p in rgba.chunks_exact(4) {
             for c in 0..4 {
                 sum[c] += f64::from(p[c]);
                 max[c] = max[c].max(p[c]);

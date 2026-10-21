@@ -847,7 +847,8 @@ pub(crate) fn wav_pcm(bytes: &[u8]) -> Option<skate_audio::mixer::Pcm> {
 /// A bank's decoded samples by S10A slot (None where a WAV is missing or unreadable).
 pub(crate) type BankPcm = Vec<Option<Arc<skate_audio::mixer::Pcm>>>;
 
-/// Read and decode the WAVs in order (`Library::bank_pcm` and `BankSource::load`).
+/// Read and decode the WAVs in order (`Library::bank_pcm`, `BankSource::load` and
+/// `SpliceSource::load`).
 fn decode_wavs<'a>(files: impl Iterator<Item = &'a Path>) -> BankPcm {
     files
         .map(|file| {
@@ -885,7 +886,7 @@ thread_local! {
 /// same bank and PCM.
 /// Each file is an absolute path (a retail bank with a replaced WAV mixes the install and a mod);
 /// `rebuild` lists the slots whose header comes from their (mod) WAV, with the loop start.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BankSource {
     stem: String,
     file: String,
@@ -917,6 +918,30 @@ impl BankSource {
         }
         Ok((bank, pcm))
     }
+}
+
+/// What reading a Splice bank needs ([`Library::splice_source`]), detached from the library like
+/// [`BankSource`]: `native::startup` reads the start-up Splice banks with it on its thread, and
+/// [`Library::splice_bank`] runs the same [`SpliceSource::load`].
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SpliceSource {
+    tree: PathBuf,
+    wavs: Vec<PathBuf>,
+}
+
+impl SpliceSource {
+    /// The patch tree and its samples (stream n = WAV n); None when the tree can't be read or
+    /// parsed, or the WAVs don't match its sample count.
+    pub(crate) fn load(&self) -> Option<(skate_audio::splice::SpliceBank, BankPcm)> {
+        let bank = skate_audio::splice::SpliceBank::parse(&std::fs::read(&self.tree).ok()?).ok()?;
+        let pcm = decode_wavs(self.wavs.iter().map(PathBuf::as_path));
+        (pcm.len() == bank.samples).then_some((bank, pcm))
+    }
+}
+
+/// A wheel-spin recording ([`Library::wheels_source`]) as planar PCM.
+pub(crate) fn wheels_load(file: &Path) -> Option<Arc<skate_audio::mixer::Pcm>> {
+    std::fs::read(file).ok().and_then(|bytes| wav_pcm(&bytes)).map(Arc::new)
 }
 
 #[derive(Resource)]
@@ -1269,8 +1294,12 @@ impl Library {
 
     /// A wheel-spin recording (`SFXObj_Wheels`) as planar PCM, decoded now.
     pub(crate) fn wheels_pcm(&self, name: &str) -> Option<Arc<skate_audio::mixer::Pcm>> {
-        let entry = self.manifest.wheels.get(name)?;
-        self.read(&entry.file).ok().and_then(|bytes| wav_pcm(&bytes)).map(Arc::new)
+        wheels_load(&self.wheels_source(name)?)
+    }
+
+    /// Where a wheel-spin recording is (None: not in the install), for [`wheels_load`].
+    pub(crate) fn wheels_source(&self, name: &str) -> Option<PathBuf> {
+        Some(self.path(&self.manifest.wheels.get(name)?.file))
     }
 
     /// The install's audio, no overlays.
@@ -1555,14 +1584,19 @@ impl Library {
     }
 
     pub(crate) fn splice_bank(&self, stem: &str) -> Option<(skate_audio::splice::SpliceBank, Vec<Option<Arc<skate_audio::mixer::Pcm>>>)> {
+        self.splice_source(stem)?.load()
+    }
+
+    /// What reading a Splice bank needs (None: the install has no patch tree for it).
+    pub(crate) fn splice_source(&self, stem: &str) -> Option<SpliceSource> {
         let file = self.manifest.aems.splice.get(stem)?;
-        let bank = skate_audio::splice::SpliceBank::parse(&self.read(file).ok()?).ok()?;
-        let pcm = self.bank_pcm(stem);
-        (pcm.len() == bank.samples).then_some((bank, pcm))
+        let entries = self.manifest.banks.get(stem).map_or(&[][..], Vec::as_slice);
+        Some(SpliceSource { tree: self.path(file), wavs: entries.iter().map(|e| self.path(&e.file)).collect() })
     }
 
     /// A bank's decoded samples as planar f32 PCM by S10A slot (the WAV order); None where a file
     /// is missing or unreadable (the native runtime then plays silence of the right length).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn bank_pcm(&self, bank: &str) -> BankPcm {
         let Some(entries) = self.manifest.banks.get(bank) else { return Vec::new() };
         let paths: Vec<PathBuf> = entries.iter().map(|e| self.path(&e.file)).collect();

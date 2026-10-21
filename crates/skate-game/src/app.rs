@@ -60,7 +60,7 @@ pub(crate) fn build(
     let mut app = App::new();
     crate::custom_models::register_source(&mut app);
     crate::modding::register_source(&mut app);
-    app.add_plugins(
+    let plugins =
         DefaultPlugins
             .set(AssetPlugin {
                 file_path: config.asset_root.to_string_lossy().into_owned(),
@@ -84,15 +84,22 @@ pub(crate) fn build(
                     ..default()
                 }),
                 ..default()
-            }).build().disable::<bevy::log::LogPlugin>()
-            // Gameplay and menu navigation both use raw pad states from
-            // input::platform (SDL3, XInput fallback). No game system consumes
-            // Bevy gamepad events/rumble; its second device backend can stall
-            // PreUpdate (70.68 ms in the University capture).
-            .disable::<bevy::gilrs::GilrsPlugin>(),
-    )
-    .insert_resource(bevy::winit::WinitSettings {focused_mode:bevy::winit::UpdateMode::Continuous,unfocused_mode:bevy::winit::UpdateMode::Continuous})
-    .insert_resource(config)
+            }).build().disable::<bevy::log::LogPlugin>();
+    // Gameplay and menu navigation both use raw pad states from
+    // input::platform (SDL3, XInput fallback). No game system consumes
+    // Bevy gamepad events/rumble; its second device backend can stall
+    // PreUpdate (70.68 ms in the University capture).
+    // The Switch build has neither gilrs nor winit (crate::horizon).
+    #[cfg(not(target_os = "horizon"))]
+    let plugins = plugins.disable::<bevy::gilrs::GilrsPlugin>();
+    #[cfg(target_os = "horizon")]
+    let plugins = crate::horizon::plugins(plugins);
+    app.add_plugins(plugins);
+    #[cfg(not(target_os = "horizon"))]
+    app.insert_resource(bevy::winit::WinitSettings {focused_mode:bevy::winit::UpdateMode::Continuous,unfocused_mode:bevy::winit::UpdateMode::Continuous});
+    #[cfg(target_os = "horizon")]
+    crate::horizon::install(&mut app);
+    app.insert_resource(config)
     .insert_resource(crate::retail_render::RetailScene(retail_scene))
     .insert_resource(assets::AssetManifest(manifest))
     .insert_resource(graphs)
@@ -139,6 +146,9 @@ pub(crate) fn build(
     app.add_plugins(crate::custom_models::CustomModelsPlugin);
     app.add_plugins(crate::trigger_volumes::TriggerVolumesPlugin);
     app.add_plugins(crate::retail_menus::RetailMenusPlugin);
+    app.add_plugins(crate::render_options::RenderOptionsPlugin);
+    app.add_plugins(crate::world_diag::WorldDiagPlugin);
+    app.add_plugins(crate::prepass_order::PrepassOrderPlugin);
     app.add_plugins(crate::modding::ModdingPlugin);
     crate::teleport_menu::install(&mut app);
     app.add_plugins(crate::updater::UpdaterPlugin);

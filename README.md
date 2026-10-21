@@ -60,6 +60,8 @@ the `data` folder beside your executable. Each freshly unpacked copy runs its
 own setup; it does not adopt another installation. In-place updates refresh
 only changed asset groups.
 
+To play on a Nintendo Switch with custom firmware, see [`docs/switch/README.md`](docs/switch/README.md).
+
 ## Build
 
 Requires Windows, Rust with the MSVC toolchain, and LLVM installed in its default

@@ -3,6 +3,8 @@
 //! axes/trigger bytes reach the TU3 converter without Bevy/gilrs deadzones or
 //! normalized-axis reconstruction. `SKATE3_INPUT=xinput` selects the original
 //! Windows XInput transport, which is also the fallback if SDL cannot start.
+//! The Switch has no SDL: its controller arrives as XInput state through
+//! bevy_horizon (`horizon` below).
 use super::controller_kind::{ControllerKind, XinputCaps};
 use skate_core::input::xbox::XboxState;
 use std::sync::{Arc, OnceLock};
@@ -60,7 +62,7 @@ pub(crate) enum DeviceError {
     State(u32),
     Capabilities(u32),
     /// No device backend could be started.
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "horizon")))]
     Unavailable,
 }
 
@@ -292,6 +294,7 @@ pub(crate) fn xinput_identity(index: u32) -> Option<ControllerKind> {
     windows::identity(index)
 }
 
+#[cfg(not(target_os = "horizon"))]
 mod sdl {
     use super::*;
     use crate::input::controller_kind;
@@ -473,6 +476,7 @@ mod sdl {
     }
 }
 
+#[cfg(not(target_os = "horizon"))]
 enum Backend {
     Sdl(&'static sdl::Shared),
     #[cfg(windows)]
@@ -481,6 +485,7 @@ enum Backend {
     Unavailable,
 }
 
+#[cfg(not(target_os = "horizon"))]
 fn backend() -> &'static Backend {
     static BACKEND: OnceLock<Backend> = OnceLock::new();
     BACKEND.get_or_init(|| {
@@ -505,11 +510,107 @@ fn backend() -> &'static Backend {
     })
 }
 
+/// The Switch: player 1's controller as bevy_horizon read it this frame, presented as slot 0's
+/// XInput state. Buttons map by position, as Bevy's gamepad mapping does on the Switch: the bottom
+/// face button (Switch B) is XInput's A. XInput's bits are the Windows SDK's Xinput.h ones.
+#[cfg(target_os = "horizon")]
+mod horizon {
+    use super::*;
+    use bevy_horizon::npad_button as switch;
+
+    const XINPUT_BUTTONS: [(u64, u16); 14] = [
+        (switch::UP, 0x0001),      // XINPUT_GAMEPAD_DPAD_UP
+        (switch::DOWN, 0x0002),    // DPAD_DOWN
+        (switch::LEFT, 0x0004),    // DPAD_LEFT
+        (switch::RIGHT, 0x0008),   // DPAD_RIGHT
+        (switch::PLUS, 0x0010),    // START
+        (switch::MINUS, 0x0020),   // BACK
+        (switch::STICK_L, 0x0040), // LEFT_THUMB
+        (switch::STICK_R, 0x0080), // RIGHT_THUMB
+        (switch::L, 0x0100),       // LEFT_SHOULDER
+        (switch::R, 0x0200),       // RIGHT_SHOULDER
+        (switch::B, 0x1000),       // A
+        (switch::A, 0x2000),       // B
+        (switch::Y, 0x4000),       // X
+        (switch::X, 0x8000),       // Y
+    ];
+    /// XINPUT_DEVSUBTYPE_GAMEPAD.
+    const SUBTYPE_GAMEPAD: u8 = 1;
+
+    /// XInput's packet number changes when the state does; this counts changes the same way.
+    static LAST: std::sync::Mutex<(Option<bevy_horizon::RawPad>, u32)> = std::sync::Mutex::new((None, 0));
+
+    /// Who holds the controls, from libnx's `HidNpadStyleTag` bits (switch/services/hid.h).
+    fn identity(style_set: u32) -> XinputIdentity {
+        use crate::input::controller_kind::{Backend, Family};
+        let (family, name) = match style_set {
+            s if s & 0x2 != 0 => (Family::JoyconPair, "Handheld controls"),
+            s if s & 0x1 != 0 => (Family::SwitchPro, "Pro Controller"),
+            s if s & 0x4 != 0 => (Family::JoyconPair, "Joy-Con pair"),
+            s if s & 0x8 != 0 => (Family::JoyconLeft, "Joy-Con (L)"),
+            s if s & 0x10 != 0 => (Family::JoyconRight, "Joy-Con (R)"),
+            _ => (Family::Unknown, "Controller"),
+        };
+        let kind = ControllerKind {
+            family,
+            name: name.into(),
+            vendor_id: None,
+            product_id: None,
+            backend: Backend::Horizon,
+            driver: format!("style {style_set:#x}"),
+            xinput_subtype: None,
+            wireless: None,
+            paddles: 0,
+            hardware_paddles: 0,
+            touchpad: false,
+            misc_button: false,
+            prompt_style: family.prompt_style(),
+        };
+        XinputIdentity { subtype: SUBTYPE_GAMEPAD, kind: Arc::new(kind) }
+    }
+
+    pub(super) fn poll(index: usize, cache: &mut CapabilityCache) -> Result<DevicePacket, DeviceError> {
+        let pad = bevy_horizon::raw_pad();
+        if index != 0 || pad.style_set == 0 {
+            cache.invalidate();
+            return Err(DeviceError::Disconnected);
+        }
+        let identity = cache.get(std::time::Instant::now(), || Ok(identity(pad.style_set)))?;
+        let number = {
+            let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if last.0 != Some(pad) {
+                *last = (Some(pad), last.1.wrapping_add(1));
+            }
+            last.1
+        };
+        let held = |bit: u64| pad.buttons & bit != 0;
+        let buttons = XINPUT_BUTTONS.iter().filter(|(bit, _)| held(*bit)).fold(0, |all, (_, xinput)| all | xinput);
+        // ZL and ZR are digital; XInput's triggers are 0-255.
+        let trigger = |bit| if held(bit) { u8::MAX } else { 0 };
+        // libnx's sticks are -32767..=32767 with +y up, like XInput's.
+        let stick = |[x, y]: [i32; 2]| [x.clamp(-32768, 32767) as i16, y.clamp(-32768, 32767) as i16];
+        Ok(DevicePacket {
+            number,
+            state: XboxState {
+                buttons,
+                triggers: [trigger(switch::ZL), trigger(switch::ZR)],
+                left: stick(pad.sticks[0]),
+                right: stick(pad.sticks[1]),
+            },
+            subtype: identity.subtype,
+            kind: Some(identity.kind),
+        })
+    }
+}
+
 pub(crate) fn poll_cached(
     index: usize,
     cache: &mut CapabilityCache,
 ) -> Result<DevicePacket, DeviceError> {
     assert!(index < 4);
+    #[cfg(target_os = "horizon")]
+    return horizon::poll(index, cache);
+    #[cfg(not(target_os = "horizon"))]
     match backend() {
         Backend::Sdl(shared) => {
             let _ = cache;

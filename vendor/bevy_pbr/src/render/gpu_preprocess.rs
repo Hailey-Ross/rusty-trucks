@@ -6,14 +6,22 @@
 //! [`MeshInputUniform`]s instead and use the GPU to calculate the remaining
 //! derived fields in [`MeshUniform`].
 
+use core::any::TypeId;
 use core::num::{NonZero, NonZeroU64};
 
 use bevy_app::{App, Plugin};
 use bevy_asset::{embedded_asset, load_embedded_asset, Handle};
 use bevy_core_pipeline::{
-    core_3d::graph::{Core3d, Node3d},
+    core_3d::{
+        graph::{Core3d, Node3d},
+        AlphaMask3d, Opaque3d, Transmissive3d, Transparent3d,
+    },
+    deferred::{AlphaMask3dDeferred, Opaque3dDeferred},
     experimental::mip_generation::ViewDepthPyramid,
-    prepass::{DepthPrepass, PreviousViewData, PreviousViewUniformOffset, PreviousViewUniforms},
+    prepass::{
+        AlphaMask3dPrepass, DepthPrepass, Opaque3dPrepass, PreviousViewData,
+        PreviousViewUniformOffset, PreviousViewUniforms,
+    },
 };
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::{
@@ -62,10 +70,44 @@ use crate::{
     graph::NodePbr, MeshCullingData, MeshCullingDataBuffer, MeshInputUniform, MeshUniform,
 };
 
-use super::{ShadowView, ViewLightEntities};
+use super::{Shadow, ShadowView, ViewLightEntities};
 
 /// The GPU workgroup size.
 const WORKGROUP_SIZE: usize = 64;
+
+/// skate: which box test occlusion culling uses (vendor/README.md). 0, the default, is Bevy's:
+/// the farthest of 2 x 2 texels at the pyramid level where the box's screen rectangle spans one.
+/// Otherwise every texel the rectangle touches, at the finest level where it spans at most this
+/// many texels each way (`occlusion_culling.wgsl`, `occluded_finely`). Read at each dispatch.
+pub static OCCLUSION_TEST_SPAN: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// skate: with a span set, the finer test reads its texels eight at a time along each row
+/// (`occlusion_culling.wgsl`, `occluded_finely_batched`): the same texels, the same answer.
+/// Read at each dispatch.
+pub static OCCLUSION_TEST_BATCH: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// skate: late mesh preprocessing dispatches directly, a thread for each of the view and phase's
+/// early work items, instead of indirectly with the count the early pass wrote. The shader still
+/// stops at that count, so the same threads do the work. On the Switch, NVK makes each indirect
+/// dispatch wait for the work before it. Read at each dispatch.
+pub static LATE_PREPROCESS_DIRECT: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// skate: the indirect-parameter builds skip the phases nothing draws before the next build
+/// rebuilds them (`skips_indirect_parameters`). The main build skips any only in a frame the early
+/// build runs. Read at each dispatch.
+pub static INDIRECT_PHASE_FILTER: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// The occlusion-culling pipelines' push constants: the late work item offset, then the span,
+/// with bit 16 set for the batched test.
+fn occlusion_push_constants(late_indirect_parameters_offset: u32) -> [u32; 2] {
+    let span = OCCLUSION_TEST_SPAN.load(core::sync::atomic::Ordering::Relaxed) & 0xffff;
+    let batch = OCCLUSION_TEST_BATCH.load(core::sync::atomic::Ordering::Relaxed);
+    [late_indirect_parameters_offset, span | (u32::from(batch) << 16)]
+}
 
 /// A plugin that builds mesh uniforms on GPU.
 ///
@@ -179,6 +221,17 @@ pub struct MainBuildIndirectParametersNode {
     view_query: QueryState<
         Read<PreprocessBindGroups>,
         (Without<SkipGpuPreprocess>, Without<NoIndirectDrawing>),
+    >,
+    /// skate: the views [`EarlyPrepassBuildIndirectParametersNode`] runs for. Under
+    /// `INDIRECT_PHASE_FILTER`, this build skips the prepass, deferred and shadow phases only when
+    /// there is one, so that the early build has built them before any pass draws them.
+    early_view_query: QueryState<
+        Read<PreprocessBindGroups>,
+        (
+            Without<SkipGpuPreprocess>,
+            Without<NoIndirectDrawing>,
+            Or<(With<DepthPrepass>, With<ShadowView>)>,
+        ),
     >,
 }
 
@@ -431,6 +484,7 @@ impl Plugin for GpuMeshPreprocessPlugin {
         embedded_asset!(app, "mesh_preprocess.wgsl");
         embedded_asset!(app, "reset_indirect_batch_sets.wgsl");
         embedded_asset!(app, "build_indirect_params.wgsl");
+        super::triangle_cull::build(app);
     }
 
     fn finish(&self, app: &mut App) {
@@ -512,6 +566,9 @@ impl Plugin for GpuMeshPreprocessPlugin {
                     NodePbr::MainBuildIndirectParameters,
                 )
             );
+
+        // skate: per-triangle culling for the main opaque passes (vendor/README.md).
+        super::triangle_cull::finish(render_app);
     }
 }
 
@@ -730,7 +787,9 @@ impl Node for EarlyGpuPreprocessNode {
                             {
                                 compute_pass.set_push_constants(
                                     0,
-                                    bytemuck::bytes_of(&late_indirect_parameters_indexed_offset),
+                                    bytemuck::bytes_of(&occlusion_push_constants(
+                                        late_indirect_parameters_indexed_offset,
+                                    )),
                                 );
                             }
 
@@ -754,9 +813,9 @@ impl Node for EarlyGpuPreprocessNode {
                             {
                                 compute_pass.set_push_constants(
                                     0,
-                                    bytemuck::bytes_of(
-                                        &late_indirect_parameters_non_indexed_offset,
-                                    ),
+                                    bytemuck::bytes_of(&occlusion_push_constants(
+                                        late_indirect_parameters_non_indexed_offset,
+                                    )),
                                 );
                             }
 
@@ -801,6 +860,7 @@ impl FromWorld for MainBuildIndirectParametersNode {
     fn from_world(world: &mut World) -> Self {
         Self {
             view_query: QueryState::new(world),
+            early_view_query: QueryState::new(world),
         }
     }
 }
@@ -859,6 +919,8 @@ impl Node for LateGpuPreprocessNode {
 
         let pass_span = diagnostics.pass_span(&mut compute_pass, "late_mesh_preprocessing");
 
+        let late_direct = LATE_PREPROCESS_DIRECT.load(core::sync::atomic::Ordering::Relaxed);
+
         // Run the compute passes.
         for (view, bind_groups, view_uniform_offset) in self.view_query.iter_manual(world) {
             compute_pass.set_pipeline(preprocess_pipeline);
@@ -886,9 +948,10 @@ impl Node for LateGpuPreprocessNode {
                     PreprocessWorkItemBuffers::Indirect {
                         gpu_occlusion_culling:
                             Some(GpuOcclusionCullingWorkItemBuffers {
+                                late_indexed,
+                                late_non_indexed,
                                 late_indirect_parameters_indexed_offset,
                                 late_indirect_parameters_non_indexed_offset,
-                                ..
                             }),
                         ..
                     },
@@ -921,30 +984,50 @@ impl Node for LateGpuPreprocessNode {
                 if let Some(late_indexed_bind_group) = maybe_late_indexed_bind_group {
                     compute_pass.set_push_constants(
                         0,
-                        bytemuck::bytes_of(late_indirect_parameters_indexed_offset),
+                        bytemuck::bytes_of(&occlusion_push_constants(
+                            *late_indirect_parameters_indexed_offset,
+                        )),
                     );
 
                     compute_pass.set_bind_group(0, late_indexed_bind_group, &dynamic_offsets);
-                    compute_pass.dispatch_workgroups_indirect(
-                        late_indexed_indirect_parameters_buffer,
-                        (*late_indirect_parameters_indexed_offset as u64)
-                            * (size_of::<LatePreprocessWorkItemIndirectParameters>() as u64),
-                    );
+                    if late_direct {
+                        // skate: the early pass adds at most one late work item for each of its
+                        // own, and `late_indexed` has a slot for each.
+                        let workgroup_count = late_indexed.len().div_ceil(WORKGROUP_SIZE);
+                        if workgroup_count > 0 {
+                            compute_pass.dispatch_workgroups(workgroup_count as u32, 1, 1);
+                        }
+                    } else {
+                        compute_pass.dispatch_workgroups_indirect(
+                            late_indexed_indirect_parameters_buffer,
+                            (*late_indirect_parameters_indexed_offset as u64)
+                                * (size_of::<LatePreprocessWorkItemIndirectParameters>() as u64),
+                        );
+                    }
                 }
 
                 // Transform and cull non-indexed meshes if there are any.
                 if let Some(late_non_indexed_bind_group) = maybe_late_non_indexed_bind_group {
                     compute_pass.set_push_constants(
                         0,
-                        bytemuck::bytes_of(late_indirect_parameters_non_indexed_offset),
+                        bytemuck::bytes_of(&occlusion_push_constants(
+                            *late_indirect_parameters_non_indexed_offset,
+                        )),
                     );
 
                     compute_pass.set_bind_group(0, late_non_indexed_bind_group, &dynamic_offsets);
-                    compute_pass.dispatch_workgroups_indirect(
-                        late_non_indexed_indirect_parameters_buffer,
-                        (*late_indirect_parameters_non_indexed_offset as u64)
-                            * (size_of::<LatePreprocessWorkItemIndirectParameters>() as u64),
-                    );
+                    if late_direct {
+                        let workgroup_count = late_non_indexed.len().div_ceil(WORKGROUP_SIZE);
+                        if workgroup_count > 0 {
+                            compute_pass.dispatch_workgroups(workgroup_count as u32, 1, 1);
+                        }
+                    } else {
+                        compute_pass.dispatch_workgroups_indirect(
+                            late_non_indexed_indirect_parameters_buffer,
+                            (*late_indirect_parameters_non_indexed_offset as u64)
+                                * (size_of::<LatePreprocessWorkItemIndirectParameters>() as u64),
+                        );
+                    }
                 }
             }
         }
@@ -979,6 +1062,8 @@ impl Node for EarlyPrepassBuildIndirectParametersNode {
             world,
             &preprocess_pipelines.early_phase,
             "early_prepass_indirect_parameters_building",
+            false,
+            INDIRECT_PHASE_FILTER.load(core::sync::atomic::Ordering::Relaxed),
         )
     }
 }
@@ -1007,6 +1092,8 @@ impl Node for LatePrepassBuildIndirectParametersNode {
             world,
             &preprocess_pipelines.late_phase,
             "late_prepass_indirect_parameters_building",
+            false,
+            INDIRECT_PHASE_FILTER.load(core::sync::atomic::Ordering::Relaxed),
         )
     }
 }
@@ -1014,6 +1101,7 @@ impl Node for LatePrepassBuildIndirectParametersNode {
 impl Node for MainBuildIndirectParametersNode {
     fn update(&mut self, world: &mut World) {
         self.view_query.update_archetypes(world);
+        self.early_view_query.update_archetypes(world);
     }
 
     fn run<'w>(
@@ -1024,12 +1112,41 @@ impl Node for MainBuildIndirectParametersNode {
     ) -> Result<(), NodeRunError> {
         let preprocess_pipelines = world.resource::<PreprocessPipelines>();
 
+        // skate: without a view the early build runs for, it built nothing, and this build
+        // builds every phase, as in Bevy.
+        let phase_filter = INDIRECT_PHASE_FILTER.load(core::sync::atomic::Ordering::Relaxed)
+            && self.early_view_query.iter_manual(world).next().is_some();
+
         run_build_indirect_parameters_node(
             render_context,
             world,
             &preprocess_pipelines.main_phase,
             "main_indirect_parameters_building",
+            true,
+            phase_filter,
         )
+    }
+}
+
+/// skate: whether a build of indirect parameters can skip a phase under `INDIRECT_PHASE_FILTER`.
+/// The early and late builds skip the main pass's phases, which the main build rebuilds before
+/// the main pass draws them. The main build skips the prepass, deferred and shadow phases, which
+/// are drawn before it, but only in a frame the early build has built them (its node's
+/// `early_view_query`). Each build resets and recounts its own phases' batch sets and reads only
+/// what preprocessing wrote, so the skipped work's results are never read. Other phases are built
+/// every time, as in Bevy.
+fn skips_indirect_parameters(phase_type_id: TypeId, main_build: bool) -> bool {
+    if main_build {
+        phase_type_id == TypeId::of::<Opaque3dPrepass>()
+            || phase_type_id == TypeId::of::<AlphaMask3dPrepass>()
+            || phase_type_id == TypeId::of::<Opaque3dDeferred>()
+            || phase_type_id == TypeId::of::<AlphaMask3dDeferred>()
+            || phase_type_id == TypeId::of::<Shadow>()
+    } else {
+        phase_type_id == TypeId::of::<Opaque3d>()
+            || phase_type_id == TypeId::of::<AlphaMask3d>()
+            || phase_type_id == TypeId::of::<Transmissive3d>()
+            || phase_type_id == TypeId::of::<Transparent3d>()
     }
 }
 
@@ -1038,6 +1155,8 @@ fn run_build_indirect_parameters_node(
     world: &World,
     preprocess_phase_pipelines: &PreprocessPhasePipelines,
     label: &'static str,
+    main_build: bool,
+    phase_filter: bool,
 ) -> Result<(), NodeRunError> {
     let Some(build_indirect_params_bind_groups) =
         world.get_resource::<BuildIndirectParametersBindGroups>()
@@ -1101,6 +1220,10 @@ fn run_build_indirect_parameters_node(
     for (phase_type_id, phase_build_indirect_params_bind_groups) in
         build_indirect_params_bind_groups.iter()
     {
+        if phase_filter && skips_indirect_parameters(*phase_type_id, main_build) {
+            continue;
+        }
+
         let Some(phase_indirect_parameters_buffers) =
             indirect_parameters_buffers.get(phase_type_id)
         else {
@@ -1286,7 +1409,7 @@ impl SpecializedComputePipeline for PreprocessPipeline {
             push_constant_ranges: if key.contains(PreprocessPipelineKey::OCCLUSION_CULLING) {
                 vec![PushConstantRange {
                     stages: ShaderStages::COMPUTE,
-                    range: 0..4,
+                    range: 0..8,
                 }]
             } else {
                 vec![]

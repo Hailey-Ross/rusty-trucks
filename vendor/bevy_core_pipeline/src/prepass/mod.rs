@@ -89,6 +89,13 @@ pub struct DepthPrepassDoubleBuffer;
 #[require(DeferredPrepass)]
 pub struct DeferredPrepassDoubleBuffer;
 
+/// Leaves out the copy of the view's depth that the prepass makes after every frame's prepass
+/// for shaders to sample (`depth_prepass_texture`, `prepass_utils::prepass_depth`), for an app
+/// whose shaders never sample it. The texture is still bound; it holds whatever it last held.
+/// Off unless the app inserts this into the render world. Local change (vendor/README.md).
+#[derive(Resource, Default, Clone, Copy)]
+pub struct SkipPrepassDepthCopy;
+
 /// View matrices from the previous frame.
 ///
 /// Useful for temporal rendering techniques that need access to last frame's camera data.

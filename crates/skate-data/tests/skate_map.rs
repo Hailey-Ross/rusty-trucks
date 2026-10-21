@@ -185,7 +185,7 @@ fn reads_all_documented_versions_without_moving_geometry() {
         assert_eq!(map.heading, 1.);
         assert_eq!(map.geometry.vertices[2].position, [1., 0., 0.]);
         assert_eq!(map.geometry.collision[0].surface, 99);
-        assert_eq!(map.textures[0].rgba, [255, 128, 64, 255]);
+        assert_eq!(map.decode_texture(0).unwrap(), [255, 128, 64, 255]);
         assert_eq!(map.materials[0].audio, if version == 1 { 3 } else { 42 });
         assert_eq!(map.materials[0].physics, if version == 1 { 1 } else { 4 });
         assert_eq!(map.rails[0].points.len(), 2);
@@ -221,7 +221,9 @@ fn v15_texture_references_preserve_order_and_reject_forward_or_wrong_size() {
     data.splice(texture_end..texture_end, references);
     let map = SkateMap::parse(&data).unwrap();
     assert_eq!(map.textures.len(), 3);
-    assert!(map.textures.iter().all(|t| t.rgba == [255, 128, 64, 255]));
+    assert_eq!(map.texture_blocks.len(), 3);
+    assert!(map.texture_blocks.iter().all(|b| b.expected == 4));
+    assert!(map.texture_blocks.iter().enumerate().all(|(i, _)| map.decode_texture(i).unwrap() == [255, 128, 64, 255]));
     let reference = texture_end + (metadata_end - start) + 8;
     data[reference..reference + 4].copy_from_slice(&1u32.to_le_bytes());
     assert!(SkateMap::parse(&data).unwrap_err().contains("forward texture reference"));
@@ -259,6 +261,42 @@ fn rejects_future_versions_endianness_nonfinite_and_huge_counts() {
     let mut bad = data;
     bad[219..223].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(SkateMap::parse(&bad).is_err());
+}
+#[test]
+fn rejects_blocks_declaring_more_than_their_bytes_can_hold() {
+    // Version 13 stores every block with deflate.
+    let data = fixture(13);
+    let mut needle = Vec::new();
+    s(&mut needle, "Pixel");
+    let width = data.windows(needle.len()).position(|w| w == needle).unwrap() + needle.len();
+    let mut bad = data.clone();
+    for at in [width, width + 4] {
+        bad[at..at + 4].copy_from_slice(&8192u32.to_le_bytes());
+    }
+    // Textures decode only when their page is built, so the parse itself must refuse this.
+    assert!(SkateMap::parse(&bad).unwrap_err().contains("declares"));
+    // 19 million vertices, about 1 GiB, from a block of a few dozen bytes.
+    let vertex_count = 8 + 4 + 4 + "Fixture".len() + 49 * 4 + 8;
+    let mut bad = data;
+    bad[vertex_count..vertex_count + 4].copy_from_slice(&19_000_000u32.to_le_bytes());
+    assert!(SkateMap::parse(&bad).unwrap_err().contains("declares"));
+}
+#[test]
+fn a_short_texture_reference_is_an_error_not_a_panic() {
+    let mut data = fixture(15);
+    let header_counts = 8 + 4 + 4 + "Fixture".len() + 49 * 4;
+    data[header_counts + 4..header_counts + 8].copy_from_slice(&2u32.to_le_bytes());
+    let mut needle = Vec::new();
+    s(&mut needle, "Pixel");
+    let start = data.windows(needle.len()).position(|w| w == needle).unwrap();
+    let metadata_end = start + needle.len() + 12;
+    let texture_end = metadata_end + 8 + 4; // fixture v15 uses raw RGBA
+    let mut reference = data[start..metadata_end].to_vec();
+    u(&mut reference, 11);
+    u(&mut reference, 2);
+    reference.extend([0, 0]);
+    data.splice(texture_end..texture_end, reference);
+    assert!(SkateMap::parse(&data).unwrap_err().contains("reference size"));
 }
 #[test]
 fn rejects_bad_vertex_and_material_references() {
