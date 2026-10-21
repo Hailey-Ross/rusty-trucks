@@ -26,6 +26,11 @@ What it does:
 - **Tools:** Refresh Game Files (the game's start-up check without starting the game, and the refresh when it finds a
   problem), build a version now, send the logs now, the recomp's newest build and save from the main PC, and the
   first-time setup.
+- **Import DLC (Tools):** pick one or more of your Skate 3 DLC package files, or a folder (every package inside, any
+  depth). Each Skate 3 package (checked by its header, not its name; the title update and other files are skipped) is
+  copied to `dlc\<pack name>\` in the state folder (`dlc_dir` in `config.json` moves it). Every game, setup and refresh
+  the launcher starts gets that folder as `SKATE3_DLC_DIR`; run Refresh Game Files afterwards to convert what the packs
+  add (the Create pack's replay editor, DLC maps as they are supported).
 - **First-time setup:** on a fresh PC the window opens on a setup page that checks Git, Rust, the C++ build tools,
   LLVM, Python 3.13 and Vulkan, and installs what is missing with winget (one UAC prompt for the machine-wide tools).
 - **Size cap:** optional, the build folders never grow over a set size: before a build the launcher deletes the build

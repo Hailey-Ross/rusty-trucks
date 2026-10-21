@@ -48,6 +48,71 @@ if (Test-Path $ConfigFile) { $Config = Read-Json $ConfigFile }
 function Setting([string]$Name, $Default) { if ($Config -and $null -ne $Config.$Name -and "$($Config.$Name)" -ne '') { return $Config.$Name }; return $Default }
 $Remote = Setting 'remote' 'origin'
 
+# The player's Skate 3 DLC packages (Tools > Import DLC copies them here): every game, setup and refresh the launcher
+# starts gets the folder as SKATE3_DLC_DIR, so setup converts what they hold (the Create pack's replay editor, DLC
+# maps). config.json "dlc_dir" moves it.
+$DlcDir = [string](Setting 'dlc_dir' (Join-Path $StateDir 'dlc'))
+if (Test-Path -LiteralPath $DlcDir) { $env:SKATE3_DLC_DIR = $DlcDir }
+
+# A Skate 3 DLC package (Xbox 360 LIVE / PIRS / CON, marketplace content 0x2, title 0x454108E6), by its header; returns
+# its display name, or $null for anything else.
+function Dlc-Name([string]$Path) {
+    try {
+        $f = [System.IO.File]::OpenRead($Path)
+        try { $h = New-Object byte[] 0x492; $n = $f.Read($h, 0, $h.Length) } finally { $f.Dispose() }
+    } catch { return $null }
+    if ($n -lt $h.Length) { return $null }
+    $magic = [System.Text.Encoding]::ASCII.GetString($h, 0, 4)
+    if ($magic -notin @('LIVE', 'PIRS', 'CON ')) { return $null }
+    $be = { param($o) ([uint32]$h[$o] -shl 24) -bor ([uint32]$h[$o + 1] -shl 16) -bor ([uint32]$h[$o + 2] -shl 8) -bor [uint32]$h[$o + 3] }
+    if ((& $be 0x344) -ne 2 -or (& $be 0x360) -ne 0x454108E6) { return $null }
+    $name = [System.Text.Encoding]::BigEndianUnicode.GetString($h, 0x411, 0x80).Split([char]0)[0].Trim()
+    if (-not $name) { $name = [System.IO.Path]::GetFileName($Path) }
+    return $name
+}
+
+# Tools > Import DLC: pick package files (one or many) or a folder (every package inside, any depth); each Skate 3
+# package is copied to <dlc>\<display name>\<file>, other files are skipped. Returns the result line.
+function Import-Dlc {
+    Add-Type -AssemblyName System.Windows.Forms
+    $nl = [Environment]::NewLine
+    # The tool runs in a windowless PowerShell under the launcher window: a topmost owner keeps the dialogs in front.
+    $owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false; Width = 1; Height = 1 }
+    $owner.Show(); $owner.Hide()
+    $ask = [System.Windows.Forms.MessageBox]::Show($owner, "Pick DLC package files?$nl$nl" + "Yes: choose one or more package files.$nl" +
+        'No: choose a folder (every package inside it).', 'Import DLC', [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+        [System.Windows.Forms.MessageBoxIcon]::Question)
+    $files = @()
+    if ($ask -eq [System.Windows.Forms.DialogResult]::Yes) {
+        $d = New-Object System.Windows.Forms.OpenFileDialog
+        $d.Title = 'Skate 3 DLC packages'; $d.Multiselect = $true; $d.Filter = 'All files (*.*)|*.*'
+        if ($d.ShowDialog($owner) -ne [System.Windows.Forms.DialogResult]::OK) { return 'Import DLC: cancelled.' }
+        $files = @($d.FileNames)
+    } elseif ($ask -eq [System.Windows.Forms.DialogResult]::No) {
+        $d = New-Object System.Windows.Forms.FolderBrowserDialog
+        $d.Description = 'The folder with your Skate 3 DLC packages (subfolders too)'
+        if ($d.ShowDialog($owner) -ne [System.Windows.Forms.DialogResult]::OK) { return 'Import DLC: cancelled.' }
+        $files = @(Get-ChildItem -LiteralPath $d.SelectedPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -ge 0xB000 } | ForEach-Object { $_.FullName })
+    } else { return 'Import DLC: cancelled.' }
+    $added = @(); $kept = @(); $skipped = 0
+    foreach ($file in $files) {
+        $name = Dlc-Name $file
+        if (-not $name) { $skipped++; continue }
+        $safe = ($name -replace '[\\/:*?"<>|]', '_').Trim('. ')
+        $target = Join-Path (Join-Path $DlcDir $safe) ([System.IO.Path]::GetFileName($file))
+        if ((Test-Path -LiteralPath $target) -and (Get-Item -LiteralPath $target).Length -eq (Get-Item -LiteralPath $file).Length) { $kept += $name; continue }
+        Write-Host "  Copying $name..."
+        New-Item -ItemType Directory -Path (Split-Path $target) -Force | Out-Null
+        Copy-Item -LiteralPath $file -Destination $target -Force
+        $added += $name
+    }
+    if ($added.Count -gt 0 -or $kept.Count -gt 0) { $env:SKATE3_DLC_DIR = $DlcDir }
+    $r = "Import DLC: $($added.Count) added" + $(if ($added) { " ($($added -join ', '))" } else { '' }) +
+        $(if ($kept) { ", $($kept.Count) already there" } else { '' }) + $(if ($skipped) { ", $skipped other files skipped" } else { '' }) + '.'
+    if ($added.Count -gt 0) { $r += ' Run Refresh game files (Tools) to convert them.' }
+    return $r
+}
+
 # Always there: the fork's hails-additions and upstream main, each a launcher-only detached worktree that follows its
 # pushed branch and rebuilds when it moved. The URLs can be changed in config.json (fork_url, upstream_url); a
 # versions.json entry with the same id replaces the built-in one.
@@ -594,6 +659,7 @@ $Entries = [ordered]@{
     'tool-send'     = @{ Group = 'tools'; Name = 'Send the logs now';         Kind = 'tool';     Hint = 'Runs the after-session send (config.json after_session).' }
     'tool-recomp-update'  = @{ Group = 'tools'; Name = 'Recomp: get the newest build'; Kind = 'tool'; Hint = "Copies the main PC's newest recomp build (play-recomp.ps1 -Update)." }
     'tool-recomp-getsave' = @{ Group = 'tools'; Name = 'Recomp: get the main PC save'; Kind = 'tool'; Hint = "Copies the main PC's recomp save after backing up this PC's (play-recomp.ps1 -GetSave)." }
+    'tool-dlc'      = @{ Group = 'tools'; Name = 'Import DLC';                Kind = 'tool';     Hint = 'Copies your Skate 3 DLC packages (pick one or many files, or a folder) to the launcher; Refresh game files then converts them.' }
     'tool-setup'    = @{ Group = 'tools'; Name = 'First-time setup';          Kind = 'tool';     Hint = 'Checks git, Rust, the C++ build tools and Python, and installs what is missing.' }
 }
 # The session traces a version's source contains; rust-traceall turns on all of them. SKATE_TRACE_ALL (newer
@@ -690,6 +756,7 @@ function Run-Tool([string]$Key, $Ver) {
 $r" }
         }
         'tool-send' { $r = Send-Sessions }
+        'tool-dlc'  { $r = Import-Dlc }
         'tool-recomp-update'  { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Recomp-Script) -Update; $r = "Recomp update: exit code $LASTEXITCODE" + $(if ($LASTEXITCODE -eq 0) { ' (done)' } else { ' - see above' }) }
         'tool-recomp-getsave' { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Recomp-Script) -GetSave; $r = "Recomp save: exit code $LASTEXITCODE" + $(if ($LASTEXITCODE -eq 0) { ' (done)' } else { ' - see above' }) }
         'tool-refresh' {
