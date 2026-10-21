@@ -185,7 +185,55 @@ data. Open: no recomp trace confirms retail plays the SkateSchool bed there.
   stream): the `map_category` row keyed like the world row, else the world row's own name, resolved in the disc's
   English table and the packs' own; text with font glyphs or none falls back to the label in words. Per the retail
   data: MegaPark = "Stadium", StartPark = "PCU Training", IndustrialSkatePark = "Team HQ", AGPark = "The Art
-  Gallery", SanitariumDLC = "After Dark". Test `test_map_names`.
+  Gallery", SanitariumDLC = "The Sanatorium" (the DLC category rows drop the world row's `dist_`: `sanitariumdlc`;
+  the user's video of Skate 3's challenge map with the packs shows "The Sanatorium"). Test `test_map_names`.
 - Audio (`audio_export.py`): the DLC rows join the disc's, the packs' `.ems` (7 files; Maloof's places the 7 disc loop
   banks b414 listed) and every DLC district's region layers keyed by label; the disc's 23 `.ems` are unchanged.
   Not yet: the new DLC beds and banks (After Dark `24_dlc_ambience`, the Create pack `25_dlc_ambience`, b418).
+
+## Teleporters (disc and DLC maps)
+
+Problem: the DLC maps' teleporters (user: "there are several in the dlc maps that make it not only easier in some
+cases but also possible in others to reach the top of ramps") and the disc's (University to the Stadium and the other
+parks; user: include them) did nothing; the converter found no volumes for most of them.
+
+Root cause (research b420, main-verified on the files): a retail teleporter is a challenge of the `teleports` group,
+not part of the map's world stream. Its bank row (`data/db/challengebanks/*`) has the title; its local data vault
+(`data/db/challenge_local_data/<challenge>`) has TeleporterTrigger ("DISTRICT|volume|0xid" plus the volume's id) and
+TeleportExitLocation (target `world` row plus locator name); the volume sits in the challenge's hull
+(`data/content/missions/<challenge>/cSim_Global.xsf`) or, for a few, in the world stream. Maloof Money Cup 2010 NYC has
+none; Hawaiian Dream has 4 (01 to 04; 04 lands on 01's exit, the top of the mega ramp).
+
+What retail does (b421 / b423, stategraph `challenge_stategraph/teleport`; button D-pad Up is the user's fact): every
+teleporter of the loaded district is armed; entering its volume shows the prompt with the title, leaving hides it;
+D-pad Up asks `Popup.ShowYesNoPopup(Title, "ID_PAUSEMENU_CONFIRM")` (options ID_COMMON_NO / ID_COMMON_YES, read at
+`828556D8`) for one exit, a list for several; Yes takes exit 0. Returning to waiting resets the volume: no cooldown
+(user). An exit in the loaded world is placed at once (`82864038` -> skater `825926F8`, the actor-reset chain of
+`request_manual`); another world is the far path with its loading screen (`828646E0` compares the target world-file
+id 0x830B7B18 with the current one 0x830B7B10, main-verified in the recomp code).
+
+Change:
+- Setup (`tools/asset_pipeline/teleporters.py`, maps group): reads every challenge vault of the disc (`db.big`,
+  `missions.big`) and the packs, keeps the rows whose trigger names a volume (a pack's vault also carries its group
+  template with an empty trigger), resolves the volume (hull or stream), the exits (`map_starts.all_locators`) and the
+  title text, and writes `private/teleporters.json`. Result on the disc and the user's packs: 20 teleporters on 9 maps
+  (University 4, SkateSchool 5 incl. the four "Back to the top", StartPark 2, Hawaiian Dream 4, one each on DownTown,
+  DownTownSkatePark, Industrial, IndustrialSkatePark, MegaPark); `teleport_dwgh_01` / `02` point at a Danny Way map no
+  pack ships and are left out. Tests `test_teleporters`.
+- Engine (`crates/skate-game/src/teleporters.rs`): arms the loaded map's teleporters (hull volumes join the map's
+  trigger volumes), shows the prompt while the local skater is inside, D-pad Up raises retail's confirm popup (No /
+  Yes; a list for several exits), Yes posts a serialisable `TeleporterUsed` and moves the skater: `travel_ex` on the
+  same map (the skater's own board state), the map transition plus the Challenge Map arrival for another map
+  (multiplayer refuses a map switch, as the Challenge Map does). Tests in the module.
+- Mods (`sdk.triggers.teleporter`, `sdk/ENGINE_API.md`): add, replace (same id as a retail teleporter) or remove
+  teleporters; event `teleporter_used`; cleared when the mod stops.
+- NOT RETAIL YET: the prompt is our own text line (retail's action overlay Teleport state not ported yet, research
+  b426 running); without the retail menu stage the confirm is skipped; the arrival speed is the same reset as the
+  session marker's (b423: whether retail zeroes speed is open).
+
+Verification (2026-10-20, verify switch `SKATE_VERIFY_TELEPORTER=<id>` with `--verify`: starts the skater in that
+teleporter's volume and presses once, no popup): University `tele_world_to_stadium` armed 4 teleporters, loaded
+MegaPark and landed at (67.2, 0.03, -134.3) on its exit locator (67.3, 0.2, -134.5), riding, with MegaPark's own
+"Leave Stadium skate.Park" prompt up; Hawaiian Dream `teleport_dwmc_01` landed at (-8.0, 39.4, 64.3) on the Fun Track
+(exit (-8.0, 40.3, 64.6)). The confirm popup and the D-pad Up press itself are not play-tested yet. Tests: setup 251,
+skate-game 862, skate-mods 106, skate-data pass.

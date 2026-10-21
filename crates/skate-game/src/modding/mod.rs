@@ -1591,6 +1591,7 @@ fn apply_one(
         Command::VolumeRemove { key } => volumes::remove(world, mods, id, &key),
         Command::TriggerBox { key, options } => triggers::set_box(world, id, key, options)?,
         Command::TriggerRemove { key } => triggers::remove_box(world, id, &key),
+        Command::TriggerTeleporter { key, options } => triggers::set_teleporter(world, id, key, options)?,
         Command::TriggerEnable { id: volume, enabled } => triggers::enable(world, id, &volume, enabled)?,
         Command::TriggerTrack { key, options } => triggers::track(world, mods, id, key, options)?,
         Command::TriggerUntrack { key } => triggers::untrack(world, id, &key),

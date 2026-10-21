@@ -618,6 +618,14 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 report(f'Map names unavailable ({error}); the lists show file names')
             for item in catalog:
                 if item['name'] in named:item.update(display=named[item['name']]['name'],name_id=named[item['name']]['name_id'])
+            # Teleporters (teleporters.py, research b420 / b421): the disc's and the packs' teleport challenges per map.
+            try:
+                from .teleporters import export as write_teleporters
+                bigs=dlc_packages.extract_bigs(dlc_folder,work/'dlc',lambda paths:any(p.lower().startswith(('data/db/challenge','data/content/missions/')) for p in paths)) if dlc_jobs else []
+                write_teleporters(game_root,converted,dlc_vaults,bigs,work/'teleporters',stage/'assets/private/teleporters.json',text if named else None,report)
+            except CONTENT_ERRORS as error:
+                (stage/'assets/private/teleporters.json').unlink(missing_ok=True)
+                note(private/'map-status'/'teleporters-availability.json','Teleporters',error,report=report)
         report('Validating installed runtime inputs')
         validate('TEST_WORLD')
         if validator is not None:validator.close()

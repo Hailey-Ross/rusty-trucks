@@ -1,7 +1,7 @@
 """Each map's Skate 3 name for the map lists (user 2026-10-20: retail names for every map, the file stem stays the id).
 
 The rule is ours (no retail screen lists maps by stream): the `map_category` row keyed like the map's `world` row
-(the cities: `dist_university` -> ID_DISTRICT_UNIVERSITY), else the world row's own name field (the parks and the DLC
+(the cities: `dist_university` -> ID_DISTRICT_UNIVERSITY; DLC rows drop the `dist_`), else the world row's own name field (the parks and the DLC
 worlds: ID_WORLD_MALOOFMONEYCUP_NYC), resolved in the disc's language table and the DLC packs' own (research b416).
 A map without a resolvable name keeps its label.
 """
@@ -37,7 +37,10 @@ def names(converted: dict, dlc_vaults, language: dict[str, str]) -> dict[str, di
         own = row['key'].casefold() in (stream.casefold(), ('dist_' + label).casefold())
         if not own and label in out:
             continue
-        category = categories.get(key)
+        # Keyed like the world row (`dist_university`) or without its `dist_` (the DLC rows: `sanitariumdlc`, whose
+        # ID_LOCATION_SANITARIUMDLC "The Sanatorium" is what Skate 3's challenge map shows).
+        category = categories.get(key) or (categories.get(key_hash(row['key'][5:]))
+                                           if row['key'].lower().startswith('dist_') else None)
         name_id = (category and _own_text(category, CATEGORY_LABEL)) or _own_text(row, WORLD_NAME)
         text = language.get(name_id) if name_id else None
         # The menu fonts draw glyphs in byte positions (the school's name starts with one): such a text, like a
