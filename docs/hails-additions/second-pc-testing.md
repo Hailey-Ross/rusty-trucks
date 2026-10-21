@@ -351,6 +351,34 @@ and `tools\` (a copy of the second PC's script until it is on `hails-additions`)
 
 Once the work is pushed, `hails-additions` itself has it; `GET-PATCHES.bat -Remove` then tidies up.
 
+## DLC packages from the main PC
+
+The main PC puts its Skate 3 DLC packages in the share, so the laptop can test the DLC maps, teleporters, the Challenge
+Map's DLC folders and the Create pack's replay editor without its own copy.
+
+**What is there** (2026-10-21): `\\HAILEY-DESKTOP\SkateSessions\_dlc`, 9 files, 962 MB, in the same folder layout as on
+the main PC (`<pack name>\454108E6\00000002\<package>`): After Dark, Black Box Distribution Skate Park, Create Park
+Upgrade, Create Share Pack, Danny's Hawaiian Dream, Maloof Money Cup 2010 NYC, San Van Party Pack, Time is money, and the
+Title Update file. Sign in to the share with the `skatelogs` account as for
+sessions.
+
+**On the laptop, once:**
+1. Copy the whole `_dlc` folder to a local folder, for example `C:\Skate3\dlc` (setup reads the packages several
+   times; a local copy is much faster than the network).
+2. Get the latest `hails-additions` (B: `git pull`, then build; A: Esc > EXTRAS > Updates).
+3. Point the game at the folder:
+   - **B, Steam launcher:** Tools > **Import DLC** > No (choose a folder) > `C:\Skate3\dlc`. The launcher copies the
+     packages into its own `dlc` folder. Then Tools > **Refresh game files**.
+   - **A, release ZIP:** in a command prompt in the game folder, `set SKATE3_DLC_DIR=C:\Skate3\dlc`, then start
+     `PLAY-WITH-LOG.bat` and open Extras > **Refresh Game Files**. Setup remembers the folder for later refreshes.
+4. The refresh converts the DLC maps, the menus and the DLC audio (a few minutes).
+
+**What to test:** the DLC maps in Esc > MAPS and the Challenge Map's DLC folders, the teleporters (University to the
+Stadium; Hawaiian Dream's four up to the ramp tops; D-pad Up asks first), the skate.Park "Full" worlds, and in the
+replay editor (A in the replay) Y to cycle the Create pack's channels. Send the session back as usual.
+
+The packages are your own purchases: they stay in the share and on your PCs, never in a repository or a release.
+
 ## Moving the ISO
 
 A FAT32 flash drive cannot hold a file over 4 GB, whatever its free space. Format it as exFAT (Explorer: right-click
