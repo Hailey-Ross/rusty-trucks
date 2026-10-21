@@ -26,11 +26,25 @@ pub(crate) struct Editor {
     frames: u32,
     trim_carry: [f64; 2],
     trimming_end: bool,
-    /// The clip's camera key and lens (mm), and the camera limits / rates (data).
-    pub camera: super::camera_key::CameraKey,
-    pub lens: f32,
+    /// The camera keys (sorted by frame; none = the recorded camera), the key being edited, and the camera limits /
+    /// rates (data).
+    pub cameras: Vec<CamKey>,
+    pub editing: Option<usize>,
     pub camera_rules: super::camera_key::CameraRules,
 }
+
+/// One camera key on the timeline (b405): inserted at the playhead when a camera row is picked; a basic camera's key is
+/// hard (the pose holds and cuts at the next key), an advanced camera's soft (blends into the next soft key).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CamKey {
+    pub frame: u32,
+    pub camera: super::camera_key::CameraKey,
+    pub lens: f32,
+    pub soft: bool,
+}
+
+/// Retail's camera key cap (b381 / b405: 100 markers, `82613500`).
+pub(crate) const MAX_CAMERA_KEYS: usize = 100;
 
 /// Retail's trim rate: at full stick, 0.005 of the timeline per console frame (the scrub filter's clamp, `82610F18`
 /// mode 2, b387), at the console's 30 frames per second.
@@ -50,7 +64,7 @@ impl Editor {
         let clip = edit.add_clip(0, frames).ok()?;
         let mut session = EditorSession::instant();
         session.mode = EditorMode::Timeline;
-        Some(Self { session, edit, clip, row: 0, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, camera: super::camera_key::CameraKey::Game, lens: super::camera_key::CameraRules::default().lens_default, camera_rules: Default::default() })
+        Some(Self { session, edit, clip, row: 0, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default() })
     }
 
     pub fn frame(&self, time: f64) -> u32 {
@@ -108,10 +122,107 @@ impl Editor {
         if self.trimming_end { end } else { start }
     }
 
-    /// The markers as fractions of the recording (the timeline strip's x / 817, b403).
+    /// The camera keys as fractions of the recording (the timeline strip's markers, x / 817, b403).
     pub fn key_fractions(&self) -> Vec<f32> {
+        self.cameras.iter().map(|k| k.frame as f32 / self.frames.max(1) as f32).collect()
+    }
+
+    /// The timeline band's segments: (start fraction, camera type), the recorded camera before the first key.
+    pub fn segments(&self) -> Vec<(f32, u8)> {
+        let mut out = Vec::new();
+        if self.cameras.first().is_none_or(|k| k.frame > 0) {
+            out.push((0.0, 3));
+        }
+        out.extend(self.cameras.iter().map(|k| (k.frame as f32 / self.frames.max(1) as f32, k.camera.kind())));
+        out
+    }
+
+    /// The key at the playhead: within the marker spacing of the clip (at least one frame; `825084C8`, b382).
+    pub fn key_near(&self, time: f64) -> Option<usize> {
+        let frame = self.frame(time);
         let c = &self.edit.clips[self.clip];
-        c.markers[Lane::Speed.index()].iter().map(|m| m.0 as f32 / self.frames.max(1) as f32).collect()
+        let near = ((self.edit.limits.marker_spacing * (c.end - c.start) as f32).floor() as u32).max(1);
+        self.cameras.iter().position(|k| k.frame.abs_diff(frame) <= near)
+    }
+
+    /// The key in effect at `time` (the last at or before it).
+    fn active(&self, time: f64) -> Option<usize> {
+        let frame = self.frame(time);
+        self.cameras.iter().rposition(|k| k.frame <= frame)
+    }
+
+    /// The menu row of the camera in effect (advanced rows for soft keys; the game camera without keys).
+    pub fn active_row(&self, time: f64) -> usize {
+        self.active(time).map_or(GAME_CAMERA_ROW, |i| {
+            let k = &self.cameras[i];
+            match (k.camera.row(), k.soft) {
+                (0, true) => 4,
+                (1, true) => 5,
+                (3, true) => 6,
+                (r, _) => r,
+            }
+        })
+    }
+
+    /// A on a camera row (b405, `82C7FFB8`): a key of that camera at the playhead from the current view (a key already
+    /// there takes the new camera), then its edit mode. None when refused (the cap) or the row is not a camera.
+    pub fn pick_camera(&mut self, row: usize, time: f64, view: &bevy::prelude::Transform, root: &bevy::prelude::Transform) -> Option<u8> {
+        let (mode, _) = super::camera_key::CameraKey::edit_mode_and_state(row)?;
+        let (basic, soft) = super::camera_key::CameraKey::basic_row(row);
+        let from = self.pose(time, root).0.unwrap_or(*view);
+        let camera = super::camera_key::key_from_view(basic, &from, root)?;
+        let lens = self.active(time).map_or(self.camera_rules.lens_default, |i| self.cameras[i].lens);
+        let index = match self.key_near(time) {
+            Some(i) => {
+                self.cameras[i].camera = camera;
+                self.cameras[i].soft = soft;
+                i
+            }
+            None if self.cameras.len() >= MAX_CAMERA_KEYS => return None,
+            None => {
+                let frame = self.frame(time);
+                let i = self.cameras.partition_point(|k| k.frame < frame);
+                self.cameras.insert(i, CamKey { frame, camera, lens, soft });
+                i
+            }
+        };
+        self.editing = Some(index);
+        Some(mode)
+    }
+
+    /// A on a camera key in the timeline (b405, `82612C28`): that key's edit mode, None when no key is there.
+    pub fn reopen_at(&mut self, time: f64) -> Option<u8> {
+        let i = self.key_near(time)?;
+        self.editing = Some(i);
+        let k = &self.cameras[i];
+        let row = if k.soft { [4, 5, 2, 6][k.camera.row().min(3)] } else { k.camera.row() };
+        super::camera_key::CameraKey::edit_mode_and_state(row).map(|(mode, _)| mode)
+    }
+
+    /// The key edit controls on the key being edited.
+    pub fn edit_key(&mut self, input: super::camera_key::CameraInput, dt: f32) {
+        let rules = self.camera_rules;
+        if let Some(k) = self.editing.and_then(|i| self.cameras.get_mut(i)) {
+            super::camera_key::edit(&mut k.camera, &mut k.lens, input, &rules, dt);
+        }
+    }
+
+    /// The camera at `time` on the skater root: the key in effect (a soft key blends into the next soft key of the
+    /// same camera), and its lens; (None, None) = the recorded camera at its own lens.
+    pub fn pose(&self, time: f64, root: &bevy::prelude::Transform) -> (Option<bevy::prelude::Transform>, Option<f32>) {
+        let Some(i) = self.active(time) else { return (None, None) };
+        let (mut camera, mut lens) = (self.cameras[i].camera, self.cameras[i].lens);
+        if let Some(next) = self.cameras.get(i + 1).filter(|n| self.cameras[i].soft && n.soft) {
+            let a = self.cameras[i].frame as f64;
+            let u = ((self.frame(time) as f64 - a) / (next.frame as f64 - a).max(1.0)).clamp(0.0, 1.0) as f32;
+            if let Some(blend) = camera.lerp(&next.camera, u) {
+                camera = blend;
+                lens += (next.lens - lens) * u;
+            }
+        }
+        let fov = (lens != self.camera_rules.lens_default || camera != super::camera_key::CameraKey::Game)
+            .then(|| super::camera_key::lens_fov(lens));
+        (super::camera_key::pose(&camera, root), fov)
     }
 
     /// D-pad Left / Right released: the previous / next marker (the screen's "Skip to previous / next marker"),
@@ -119,7 +230,7 @@ impl Editor {
     pub fn skip(&self, time: f64, forward: bool) -> f64 {
         let frame = self.frame(time);
         let c = &self.edit.clips[self.clip];
-        let markers = c.markers[Lane::Speed.index()].iter().map(|m| m.0);
+        let markers = self.cameras.iter().map(|k| k.frame);
         let target = if forward {
             markers.filter(|&f| f > frame).min().unwrap_or(c.end)
         } else {
@@ -128,23 +239,33 @@ impl Editor {
         self.time(target)
     }
 
-    /// D-pad Down released: a speed marker at the cursor with the value there (retail drops a key; refused near the
-    /// ends or at the cap with its error sound / popup).
+    /// D-pad Down released: a camera key at the cursor holding the camera in effect there (a hard key: the marker the
+    /// timeline draws, b403 / b405); refused at a key, at the clip's ends (the marker spacing) or at the cap (retail's
+    /// error sound / popup, `82613500` / `82613598`).
     pub fn drop_marker(&mut self, time: f64) -> Result<(), EditError> {
-        let frame = self.frame(time);
-        let value = self.edit.value_at(self.clip, Lane::Speed, frame).ok_or(EditError::NoClip)?;
-        self.edit.set_marker(self.clip, Lane::Speed, frame, value)
-    }
-
-    /// D-pad Up released: remove the marker at the cursor (within the marker spacing).
-    pub fn remove_marker(&mut self, time: f64) -> bool {
+        if self.cameras.len() >= MAX_CAMERA_KEYS {
+            return Err(EditError::NoMoreMarkers);
+        }
         let frame = self.frame(time);
         let c = &self.edit.clips[self.clip];
-        let near = (self.edit.limits.marker_spacing * (c.end - c.start) as f32).floor() as u32;
-        let Some(&(at, _)) = c.markers[Lane::Speed.index()].iter().find(|m| m.0.abs_diff(frame) <= near) else {
-            return false;
-        };
-        self.edit.remove_marker(self.clip, Lane::Speed, at).unwrap_or(false)
+        let at = (frame as f32 - c.start as f32) / (c.end - c.start).max(1) as f32;
+        let spacing = self.edit.limits.marker_spacing;
+        if self.key_near(time).is_some() || at <= spacing || at >= 1.0 - spacing {
+            return Err(EditError::TooClose);
+        }
+        let (camera, lens) = self.active(time).map_or((super::camera_key::CameraKey::Game, self.camera_rules.lens_default), |i| (self.cameras[i].camera, self.cameras[i].lens));
+        let i = self.cameras.partition_point(|k| k.frame < frame);
+        self.cameras.insert(i, CamKey { frame, camera, lens, soft: false });
+        Ok(())
+    }
+
+    /// D-pad Up released: remove the camera key at the cursor. NOT RETAIL YET: retail's delete path is not found
+    /// (b405: Up release seeks to the marker like A).
+    pub fn remove_marker(&mut self, time: f64) -> bool {
+        let Some(i) = self.key_near(time) else { return false };
+        self.cameras.remove(i);
+        self.editing = None;
+        true
     }
 
     /// A lane's editor value at the cursor (`GetSimpleSpeedSetting` speed %, `GetShakeCamType` shake 0..3).
@@ -197,9 +318,10 @@ mod tests {
         }
         assert_eq!(e.heads(), (14.0, 28.0));
         e.trim_by(-90, 0, 600);
-        // Speed 100 % until a marker slows it.
+        // Speed 100 % until a lowered value at the cursor slows it from there.
         assert_eq!(e.speed(20.0), 1.0);
         e.drop_marker(20.0).unwrap();
+        assert_eq!(e.cameras.len(), 1, "a camera key (the timeline's marker)");
         e.row = 7;
         assert!(e.adjust_row(20.0, -1));
         assert!((e.speed(21.0) - 0.9).abs() < 1e-6 && e.speed(15.0) == 1.0);
@@ -212,6 +334,38 @@ mod tests {
         assert_eq!(e.lane_value(Lane::Shake, 21.0), 3);
         assert_eq!((e.skip(15.0, true), e.skip(25.0, false), e.skip(25.0, true)), (20.0, 20.0, 28.0));
         assert!(e.remove_marker(20.0));
-        assert_eq!(e.speed(21.0), 1.0);
+        assert!(e.cameras.is_empty(), "the camera key went; the speed lane keeps its value");
+        assert!((e.speed(21.0) - 0.9).abs() < 1e-6);
+    }
+
+    /// Camera keys (b405): picking a basic camera inserts a hard key at the playhead (the pose holds and cuts), an
+    /// advanced camera a soft key (blends into the next soft key of the same camera); A on a key re-edits it.
+    #[test]
+    fn camera_keys_hold_cut_and_blend() {
+        use bevy::prelude::{Transform, Vec3};
+        let mut e = Editor::open(0.0, 20.0, EditLimits::default()).unwrap();
+        let root = Transform::IDENTITY;
+        let view = Transform::from_xyz(0.0, 2.0, 5.0);
+        // No keys: the recorded camera.
+        assert!(e.pose(5.0, &root).0.is_none());
+        // Tripod (basic) at 5 s: holds from there.
+        assert_eq!(e.pick_camera(1, 5.0, &view, &root), Some(8));
+        assert!(e.pose(4.0, &root).0.is_none() && e.pose(9.0, &root).0.is_some());
+        assert_eq!(e.active_row(9.0), 1);
+        // Advanced Free keys at 10 s and 14 s: soft, blending between them.
+        // (A new key starts from the camera in effect at the playhead; the eyes are then edited, set here directly.)
+        assert_eq!(e.pick_camera(6, 10.0, &view, &root), Some(10));
+        assert_eq!(e.pick_camera(6, 14.0, &view, &root), Some(10));
+        for (i, x) in [(1, 0.0), (2, 8.0)] {
+            e.cameras[i].camera = super::super::camera_key::CameraKey::Free { eye: Vec3::new(x, 2.0, 0.0), yaw: 0.0, pitch: 0.0 };
+        }
+        let mid = e.pose(12.0, &root).0.unwrap().translation;
+        assert!((mid - Vec3::new(4.0, 2.0, 0.0)).length() < 1e-3, "{mid}");
+        assert_eq!(e.active_row(12.0), 6);
+        assert_eq!(e.key_fractions().len(), 3);
+        assert_eq!(e.segments().iter().map(|s| s.1).collect::<Vec<_>>(), vec![3, 1, 2, 2]);
+        // A on the Tripod key re-edits it (mode 8); not on a key: None.
+        assert_eq!(e.reopen_at(5.0), Some(8));
+        assert_eq!(e.reopen_at(7.0), None);
     }
 }

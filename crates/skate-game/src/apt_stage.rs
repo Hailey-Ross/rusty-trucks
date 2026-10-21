@@ -980,6 +980,19 @@ unhandled: {:?}", game.calls, stage.unhandled());
             assert!(game.replay_menu.seen.iter().any(|m| m == native), "{native} not asked: {:?}", game.replay_menu.seen);
         }
         assert!(!stage.unhandled().iter().any(|c| c.starts_with("FEReplayMenu.")), "{:?}", stage.unhandled());
+        // The editor's timeline (A: SetState 21, 9): the CustomTimeline strip is drawn as the host's placeholder.
+        game.replay_menu.feed.mode = 6;
+        game.replay_menu.feed.instant = false;
+        for state in [21, 9] {
+            stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text(state.to_string())], &mut game).unwrap();
+            for _ in 0..30 {
+                stage.update(16.0, &movies, &mut game).unwrap();
+            }
+        }
+        let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
+        let strip = draws.iter().find(|d| d.texture == crate::apt_scene::REPLAY_TIMELINE);
+        eprintln!("timeline placeholder: {:?}", strip.map(|d| (d.vertices.iter().map(|v| v.position).collect::<Vec<_>>(), d.multiply)));
+        assert!(strip.is_some(), "no CustomTimeline placeholder in the editor");
     }
 
     /// The instant replay help (template ReplayHelp, FE 13, `replay2/replay_help`): loads over the replay screen and

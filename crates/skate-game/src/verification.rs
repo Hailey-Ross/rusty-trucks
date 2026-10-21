@@ -58,6 +58,27 @@ fn verify(
         if replay.active && replay.editor.is_none() && state.elapsed > replay_at + 1.0 {
             let (start, end) = replay.bounds();
             replay.editor = crate::replay::editor::Editor::open(start, end, Default::default());
+            // "markers": two markers at a third and two thirds, the playhead on the second (it glows).
+            if mode == "markers" {
+                let (a, b) = (start + (end - start) / 3.0, start + (end - start) * 2.0 / 3.0);
+                if let Some(e) = replay.editor.as_mut() {
+                    let _ = e.drop_marker(a);
+                    let _ = e.drop_marker(b);
+                }
+                replay.seek(b);
+            }
+        }
+        // "camera": Follow picked at the playhead half a second later (A on the effects menu's row 0): its edit mode.
+        if let Some(e) = replay.editor.as_mut().filter(|e| mode == "camera" && e.mode() == 6 && state.elapsed > replay_at + 1.5) {
+            e.session.mode = skate_core::replay_edit::session::EditorMode::Effects;
+            e.row = 0;
+        }
+        let cursor = replay.cursor();
+        let view_root = replay.sample().map(|(a, b, t)| (crate::presentation::blend(a.camera, b.camera, t), crate::presentation::blend(a.root, b.root, t)));
+        if let (Some(e), Some((view, root))) = (replay.editor.as_mut().filter(|e| mode == "camera" && e.mode() == 11 && state.elapsed > replay_at + 2.0), view_root) {
+            if e.pick_camera(0, cursor, &view, &root).is_some() {
+                e.session.mode = skate_core::replay_edit::session::EditorMode::FollowKey;
+            }
         }
         // The effects menu half a second later, from the timeline (as A does).
         if let Some(e) = replay.editor.as_mut().filter(|e| mode == "effects" && e.mode() == 6 && state.elapsed > replay_at + 1.5) {

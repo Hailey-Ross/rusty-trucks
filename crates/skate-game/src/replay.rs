@@ -560,10 +560,8 @@ fn editor_controls(
             }
             // A on a basic camera row: that camera from the current view, then its key edit mode (b401).
             if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
-                if let (Some((mode, _)), Some((view, root))) = (camera_key::CameraKey::edit_mode_and_state(editor.row), view_root) {
-                    let view = camera_key::pose(&editor.camera, &root).unwrap_or(view);
-                    if let Some(key) = camera_key::key_from_view(editor.row, &view, &root) {
-                        editor.camera = key;
+                if let Some((view, root)) = view_root {
+                    if let Some(mode) = editor.pick_camera(editor.row, cursor, &view, &root) {
                         editor.session.mode = match mode {
                             7 => EditorMode::FollowKey,
                             8 => EditorMode::TripodKey,
@@ -579,15 +577,13 @@ fn editor_controls(
         EditorMode::FollowKey | EditorMode::TripodKey | EditorMode::GameKey | EditorMode::FreeKey => {
             let dpad = |plus: u16, minus: u16| f32::from(pad.buttons & plus != 0) - f32::from(pad.buttons & minus != 0);
             let input = camera_key::CameraInput {
-                turn: Vec2::new(axis(pad.left[0]), axis(pad.left[1])),
-                move_: Vec2::new(axis(pad.right[0]), axis(pad.right[1])),
+                // The screen's prompts (kFollowEditMode etc.): the right stick rotates, the left stick moves in / out.
+                turn: Vec2::new(axis(pad.right[0]), axis(pad.right[1])),
+                move_: Vec2::new(axis(pad.left[0]), axis(pad.left[1])),
                 height: dpad(DPAD_UP, DPAD_DOWN),
                 zoom: dpad(DPAD_RIGHT, DPAD_LEFT),
             };
-            let rules = editor.camera_rules;
-            let mut lens = editor.lens;
-            camera_key::edit(&mut editor.camera, &mut lens, input, &rules, dt);
-            editor.lens = lens;
+            editor.edit_key(input, dt);
             if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
                 editor.session.mode = EditorMode::Timeline;
             }
@@ -607,10 +603,20 @@ fn editor_controls(
             editor.session.mode = EditorMode::Trim;
             true
         }
+        // A on a camera key re-edits it (b405, `82612C28`); elsewhere the Pro Edit Menu on the camera in effect.
         _ if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) => {
             play = Some(false);
-            editor.row = editor::GAME_CAMERA_ROW;
-            editor.session.mode = EditorMode::Effects;
+            if let Some(mode) = editor.reopen_at(cursor) {
+                editor.session.mode = match mode {
+                    7 => EditorMode::FollowKey,
+                    8 => EditorMode::TripodKey,
+                    9 => EditorMode::GameKey,
+                    _ => EditorMode::FreeKey,
+                };
+            } else {
+                editor.row = editor.active_row(cursor);
+                editor.session.mode = EditorMode::Effects;
+            }
             true
         }
         _ => {
@@ -689,9 +695,7 @@ impl Replay {
     /// radians); None = the recorded camera at its own lens.
     pub(crate) fn editor_camera(&self, root: &Transform) -> (Option<Transform>, Option<f32>) {
         let Some(editor) = self.editor.as_ref() else { return (None, None) };
-        let lens = (editor.lens != editor.camera_rules.lens_default || editor.camera != camera_key::CameraKey::Game)
-            .then(|| camera_key::lens_fov(editor.lens));
-        (camera_key::pose(&editor.camera, root), lens)
+        editor.pose(self.cursor, root)
     }
 
     pub(crate) fn shake(&self) -> Option<Transform> {
@@ -1006,7 +1010,8 @@ fn publish_feed(replay: Res<Replay>, mut feed: ResMut<ReplayFeed>) {
         help: replay.active && replay.help_open,
         help_turns: replay.help_turns,
         mode: replay.editor.as_ref().map_or(5, |e| e.mode()),
-        camera_row: replay.editor.as_ref().map_or(editor::GAME_CAMERA_ROW as u32, |e| e.camera.row() as u32),
+        camera_row: replay.editor.as_ref().map_or(editor::GAME_CAMERA_ROW as u32, |e| e.active_row(replay.cursor) as u32),
+        segments: replay.editor.as_ref().map_or_else(Vec::new, |e| e.segments()),
         keys: replay.editor.as_ref().map_or_else(Vec::new, |e| e.key_fractions()),
         heads: replay.editor.as_ref().map_or((0, 0), |e| e.head_frames()),
         row: replay.editor.as_ref().map_or(0, |e| e.row as u32),

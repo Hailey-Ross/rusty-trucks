@@ -1731,12 +1731,17 @@ fn timeline_draws(placeholder: &crate::apt_scene::Draw, feed: &crate::replay_men
         return out;
     }
     let under = feed.keys.iter().position(|k| (k - feed.position as f32).abs() <= look.snap);
-    // Camera type by menu row (b401: rows Follow 0, Tripod 1, Game 2, Free 3 -> types 0, 1, 3, 2).
-    let kind = [0, 1, 3, 2].get(feed.camera_row as usize).copied().unwrap_or(3);
-    let selected = under.is_none();
-    let (rgb, alpha) = if selected { (look.selected[kind], look.alpha_selected) } else { (look.normal[kind], look.alpha) };
     let a = placeholder.multiply[3];
-    out.push(quad(0.0, look.band_top, look.width, look.band_bottom, String::new(), [rgb[0], rgb[1], rgb[2], alpha * a]));
+    // One band per camera segment (the recorded camera before the first key); the segment under the playhead is
+    // "selected" unless a key is under it.
+    let segments = if feed.segments.is_empty() { vec![(0.0, 3)] } else { feed.segments.clone() };
+    for (i, &(start, kind)) in segments.iter().enumerate() {
+        let end = segments.get(i + 1).map_or(1.0, |s| s.0);
+        let current = (start..end).contains(&(feed.position as f32)) || (i + 1 == segments.len() && feed.position as f32 >= end);
+        let kind = usize::from(kind.min(3));
+        let (rgb, alpha) = if current && under.is_none() { (look.selected[kind], look.alpha_selected) } else { (look.normal[kind], look.alpha) };
+        out.push(quad(start * look.width, look.band_top, end * look.width, look.band_bottom, String::new(), [rgb[0], rgb[1], rgb[2], alpha * a]));
+    }
     let camera_edit = (7..=10).contains(&feed.mode);
     for (i, k) in feed.keys.iter().enumerate() {
         let highlighted = under == Some(i);
@@ -2031,7 +2036,7 @@ mod timeline_tests {
             multiply: [1.0; 4],
             add: [0.0; 4],
         };
-        let mut feed = crate::replay_menu_host::ReplayScreenFeed { mode: 6, camera_row: 0, keys: vec![0.5], position: 0.2, ..Default::default() };
+        let mut feed = crate::replay_menu_host::ReplayScreenFeed { mode: 6, keys: vec![0.5], segments: vec![(0.0, 0)], position: 0.2, ..Default::default() };
         let draws = timeline_draws(&placeholder, &feed);
         assert_eq!(draws.len(), 2);
         // The band: Follow (type 0) selected colour, from x 100 to 917, y 53 to 80.

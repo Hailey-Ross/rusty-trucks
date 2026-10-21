@@ -50,8 +50,10 @@ pub struct ReplayScreenFeed {
     pub mode: u8,
     /// The clip camera's menu row (`GetCurrentCameraEditIndex`; b401: 0 Follow, 1 Tripod, 2 Game, 3 Free).
     pub camera_row: u32,
-    /// The timeline's keys after the first, as fractions of the recording (retail draws keys i >= 1, b403).
+    /// The timeline's camera keys as fractions of the recording (b403), and the band's segments (start fraction,
+    /// camera type 0 Follow / 1 Tripod / 2 Free / 3 Game).
     pub keys: Vec<f32>,
+    pub segments: Vec<(f32, u8)>,
     pub heads: (u32, u32),
     pub row: u32,
     pub speed: i32,
@@ -112,12 +114,14 @@ impl ReplayMenuHost {
                 (6, 2) => self.states.push(LB_MOVE),
                 (2, 6) => self.states.push(SHOW_TOGGLE),
                 (6, 11) => self.states.extend([HIDE_TOGGLE, EFFECTS]),
-                // A on a camera row: the camera's key edit state (Follow 1, Tripod 2, Game 10, Free 7); A commits
+                // A on a camera row, or on a camera key in the timeline: the camera's key edit state (Follow 1, Tripod 2,
+                // Game 10, Free 7; the advanced cameras 12 / 13 / 14, b405), from the camera row in effect; A commits
                 // back to the timeline (21, 9).
-                (11, 7) => self.states.push(1),
-                (11, 8) => self.states.push(2),
-                (11, 9) => self.states.push(10),
-                (11, 10) => self.states.push(7),
+                (11 | 6, 7..=10) => {
+                    if let Some((_, state)) = crate::replay::camera_key::CameraKey::edit_mode_and_state(feed.camera_row as usize) {
+                        self.states.push(state);
+                    }
+                }
                 (7..=10, 6) => self.states.extend([SHOW_TOGGLE, MAIN_EDIT]),
                 _ => {}
             }
