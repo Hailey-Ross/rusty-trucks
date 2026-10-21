@@ -33,6 +33,14 @@ pub(crate) struct Editor {
     pub camera_rules: super::camera_key::CameraRules,
 }
 
+/// The two marker kinds retail's delete asks about (b407, `82508D88`): 1 a clip marker (a hard key), 2 a key marker
+/// (a soft key).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MarkerKind {
+    Clip,
+    Key,
+}
+
 /// One camera key on the timeline (b405): inserted at the playhead when a camera row is picked; a basic camera's key is
 /// hard (the pose holds and cuts at the next key), an advanced camera's soft (blends into the next soft key).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,6 +90,11 @@ impl Editor {
     }
 
     /// Playback rate at `time` (the speed lane: 1.0 = real time; retail slows only, 10 % steps).
+    /// The clip's look at `time` over the world grade `base` (the look lanes, b408), or None outside a clip.
+    pub fn look(&self, time: f64, base: &skate_core::colour_matrix::ColourMatrixRecord) -> Option<skate_core::replay_edit::ReplayLook> {
+        self.edit.look_at(self.clip, self.frame(time), base)
+    }
+
     pub fn speed(&self, time: f64) -> f64 {
         f64::from(self.edit.effect_at(self.clip, Lane::Speed, self.frame(time)).unwrap_or(1.0))
     }
@@ -259,11 +272,31 @@ impl Editor {
         Ok(())
     }
 
-    /// D-pad Up released: remove the camera key at the cursor. NOT RETAIL YET: retail's delete path is not found
-    /// (b405: Up release seeks to the marker like A).
+    /// What D-pad Up asks about before removing the key at the cursor (b407, `82613650` via `82508D88`): a hard key is
+    /// a clip marker, a soft key a key marker; None = no key there (retail's error sound).
+    pub fn marker_kind(&self, time: f64) -> Option<MarkerKind> {
+        self.key_near(time).map(|i| if self.cameras[i].soft { MarkerKind::Key } else { MarkerKind::Clip })
+    }
+
+    /// D-pad Down's confirm (b407, `82508828`): retail asks before a clip marker lands inside a run of soft keys (the
+    /// key in effect is soft); not at the cap, whose refusal comes first (`82613500`).
+    pub fn drop_needs_confirm(&self, time: f64) -> bool {
+        self.cameras.len() < MAX_CAMERA_KEYS && self.active(time).is_some_and(|i| self.cameras[i].soft)
+    }
+
+    /// D-pad Up released, answered Yes (b407, `82613910` -> `82C7FD60`): remove the key at the cursor. A clip marker
+    /// also takes every soft key in the clips on both sides, up to the next hard key each way (`82C7FB08`; retail's
+    /// own text, ID_REPLAY_EDITOR_POPUP_CLIPMARKER). NOT RETAIL YET: retail also resets the merged clip's speed and
+    /// shake (channel 0); our speed / shake lanes keep their values.
     pub fn remove_marker(&mut self, time: f64) -> bool {
         let Some(i) = self.key_near(time) else { return false };
-        self.cameras.remove(i);
+        if self.cameras[i].soft {
+            self.cameras.remove(i);
+        } else {
+            let lo = self.cameras[..i].iter().rposition(|k| !k.soft).map_or(0, |p| p + 1);
+            let hi = self.cameras[i + 1..].iter().position(|k| !k.soft).map_or(self.cameras.len(), |p| i + 1 + p);
+            self.cameras.drain(lo..hi);
+        }
         self.editing = None;
         true
     }
@@ -367,5 +400,29 @@ mod tests {
         // A on the Tripod key re-edits it (mode 8); not on a key: None.
         assert_eq!(e.reopen_at(5.0), Some(8));
         assert_eq!(e.reopen_at(7.0), None);
+    }
+
+    /// Deleting (b407): a soft key goes alone; a clip marker takes the soft keys in the clips on both sides, up to
+    /// the next hard key each way. D-pad Down asks first only inside a run of soft keys.
+    #[test]
+    fn deleting_a_clip_marker_takes_the_key_markers_on_both_sides() {
+        use bevy::prelude::Transform;
+        let mut e = Editor::open(0.0, 30.0, EditLimits::default()).unwrap();
+        let (root, view) = (Transform::IDENTITY, Transform::from_xyz(0.0, 2.0, 5.0));
+        // Keys: hard 4, soft 8, soft 10, hard 14, soft 18, soft 20, hard 24.
+        for (t, row) in [(4.0, 1), (8.0, 6), (10.0, 6), (14.0, 0), (18.0, 4), (20.0, 4), (24.0, 2)] {
+            assert!(e.pick_camera(row, t, &view, &root).is_some(), "{t}");
+        }
+        assert_eq!(e.marker_kind(14.0), Some(MarkerKind::Clip));
+        assert_eq!(e.marker_kind(18.0), Some(MarkerKind::Key));
+        assert_eq!(e.marker_kind(16.0), None);
+        assert!(e.drop_needs_confirm(9.0) && !e.drop_needs_confirm(16.0));
+        // A key marker goes alone.
+        assert!(e.remove_marker(20.0));
+        assert_eq!(e.cameras.len(), 6);
+        // The clip marker at 14 takes 8, 10 and 18; the hard keys at 4 and 24 stay.
+        assert!(e.remove_marker(14.0));
+        assert_eq!(e.cameras.iter().map(|k| (k.frame, k.soft)).collect::<Vec<_>>(), vec![(e.frame(4.0), false), (e.frame(24.0), false)]);
+        assert!(!e.remove_marker(14.0));
     }
 }

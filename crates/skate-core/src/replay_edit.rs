@@ -79,20 +79,23 @@ pub struct LaneSpec {
     /// Past the end wraps to the other end (retail's shake) instead of clamping.
     pub wraps: bool,
     pub scale: f32,
+    /// Ramps linearly between markers instead of stepping (retail's look elements, b408 `82C87640`; speed and shake
+    /// stay stepped).
+    pub interpolate: bool,
 }
 
 impl LaneSpec {
     /// Retail's ranges. Defaults: speed 100 [code]; the look defaults are the neutral values (brightness 0,
     /// contrast 10 = x1, saturation 100 = x1, tint 0 = overlay off) [ours: retail's look defaults not read yet].
     pub fn retail(lane: Lane) -> LaneSpec {
-        let spec = |min, max, step, default, scale| LaneSpec { min, max, step, default, wraps: false, scale };
+        let spec = |min, max, step, default, scale| LaneSpec { min, max, step, default, wraps: false, scale, interpolate: false };
         match lane {
             Lane::Speed => spec(10, 100, 10, 100, 0.01),
             Lane::Shake => LaneSpec { wraps: true, ..spec(0, 3, 1, 0, 1.0) },
-            Lane::Brightness => spec(-100, 100, 20, 0, 0.01),
-            Lane::Contrast => spec(10, 30, 2, 10, 0.1),
-            Lane::Saturation => spec(0, 100, 10, 100, 0.01),
-            Lane::TintR | Lane::TintG | Lane::TintB | Lane::TintA => spec(0, 250, 25, 0, 1.0 / 255.0),
+            Lane::Brightness => LaneSpec { interpolate: true, ..spec(-100, 100, 20, 0, 0.01) },
+            Lane::Contrast => LaneSpec { interpolate: true, ..spec(10, 30, 2, 10, 0.1) },
+            Lane::Saturation => LaneSpec { interpolate: true, ..spec(0, 100, 10, 100, 0.01) },
+            Lane::TintR | Lane::TintG | Lane::TintB | Lane::TintA => LaneSpec { interpolate: true, ..spec(0, 250, 25, 0, 1.0 / 255.0) },
         }
     }
 
@@ -153,6 +156,9 @@ pub struct Clip {
     pub values: [i32; 9],
     /// Per lane, markers (frame, value) sorted by frame.
     pub markers: [Vec<(u32, i32)>; 9],
+    /// Per lane, whether the clip's own value was committed (retail's OVERRIDE flag at the clip's key, b408): a look
+    /// lane applies only once set, here or by a marker at or before the frame.
+    pub set: [bool; 9],
 }
 
 /// Retail's trigger scrub, data driven. Per console frame (`frame_hz`, the 360's ~30 fps): target = (RT - LT) x
@@ -244,7 +250,7 @@ impl ReplayEdit {
             return Err(EditError::EmptySpan);
         }
         let values = self.limits.lanes.map(|s| s.default);
-        self.clips.push(Clip { start, end, values, markers: Default::default() });
+        self.clips.push(Clip { start, end, values, markers: Default::default(), set: [false; 9] });
         Ok(self.clips.len() - 1)
     }
 
@@ -266,6 +272,7 @@ impl ReplayEdit {
     pub fn adjust(&mut self, clip: usize, lane: Lane, direction: i32) -> Result<i32, EditError> {
         let spec = self.limits.lanes[lane.index()];
         let c = self.clips.get_mut(clip).ok_or(EditError::NoClip)?;
+        c.set[lane.index()] = true;
         let v = &mut c.values[lane.index()];
         *v = spec.adjust(*v, direction);
         Ok(*v)
@@ -321,17 +328,38 @@ impl ReplayEdit {
         self.value_at(clip, lane, frame).map(|v| v as f32 * self.limits.lanes[lane.index()].scale)
     }
 
-    /// The look at `frame`: the world grade `base` with the clip's look lanes replacing their terms (retail's
-    /// consumers `82686DF0` / `82687FD8` / `826888B8` write an override copy of the world colour block, research b380):
-    /// brightness = the add term on R, G, B, contrast, saturation, in both bands (retail's far band takes the near
-    /// saturation). A lane at its neutral default leaves the world's term (OURS: when retail counts a lane as set is
-    /// not read). Plus the tint lanes as an RGBA screen overlay (0 alpha = none).
-    pub fn look_at(&self, clip: usize, frame: u32, base: &ColourMatrixRecord) -> Option<ReplayLook> {
-        let set = |lane: Lane| {
-            let v = self.value_at(clip, lane, frame)?;
-            let spec = self.limits.lanes[lane.index()];
-            (v != spec.default).then_some(v as f32 * spec.scale)
+    /// A lane's effect value at `frame` (editor value x scale): stepped like `effect_at`, or for an interpolating lane
+    /// a linear ramp between the markers around `frame` (the clip's value before the first marker, the last marker's
+    /// after it; retail's soft keys, b404 / b408).
+    pub fn lane_effect(&self, clip: usize, lane: Lane, frame: u32) -> Option<f32> {
+        let spec = self.limits.lanes[lane.index()];
+        if !spec.interpolate {
+            return self.effect_at(clip, lane, frame);
+        }
+        let c = self.clips.get(clip)?;
+        let markers = &c.markers[lane.index()];
+        let i = markers.partition_point(|m| m.0 <= frame);
+        let v = match (i.checked_sub(1).map(|k| markers[k]), markers.get(i)) {
+            (Some(a), Some(b)) if b.0 > a.0 => a.1 as f32 + (b.1 - a.1) as f32 * (frame - a.0) as f32 / (b.0 - a.0) as f32,
+            (Some(a), _) => a.1 as f32,
+            (None, _) => c.values[lane.index()] as f32,
         };
+        Some(v * spec.scale)
+    }
+
+    /// Whether a look lane applies at `frame` (retail's stepped OVERRIDE flag, b408): a value was committed on the clip,
+    /// or a marker sits at or before `frame`. A committed neutral value still overrides the world's term.
+    pub fn lane_set(&self, clip: usize, lane: Lane, frame: u32) -> bool {
+        self.clips.get(clip).is_some_and(|c| c.set[lane.index()] || c.markers[lane.index()].first().is_some_and(|m| m.0 <= frame))
+    }
+
+    /// The look at `frame`: the world grade `base` with the clip's set look lanes replacing their terms (retail's
+    /// consumers `82686DF0` / `82687FD8` / `826888B8` write an override copy of the world colour block, research b380 /
+    /// b408): brightness = the add term on R, G, B, contrast, saturation, in both bands (retail's far band takes the
+    /// near saturation). Values ramp between markers. Plus the tint lanes as an RGBA screen overlay (0 alpha = none).
+    pub fn look_at(&self, clip: usize, frame: u32, base: &ColourMatrixRecord) -> Option<ReplayLook> {
+        self.clips.get(clip)?;
+        let set = |lane: Lane| self.lane_set(clip, lane, frame).then(|| self.lane_effect(clip, lane, frame)).flatten();
         let mut record = *base;
         for band in [&mut record.near, &mut record.far] {
             if let Some(b) = set(Lane::Brightness) {
@@ -344,8 +372,7 @@ impl ReplayEdit {
                 band.saturation = s;
             }
         }
-        let tint = [Lane::TintR, Lane::TintG, Lane::TintB, Lane::TintA]
-            .map(|l| self.effect_at(clip, l, frame).unwrap_or(0.0));
+        let tint = [Lane::TintR, Lane::TintG, Lane::TintB, Lane::TintA].map(|l| set(l).unwrap_or(0.0));
         Some(ReplayLook { record, tint })
     }
 

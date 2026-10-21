@@ -66,10 +66,15 @@ pub(crate) fn update_grade(
     records: Res<ColourRecords>,
     settings: Option<Res<crate::living_world::LivingWorldSettings>>,
     cameras: Query<&Projection, With<crate::camera::GameplayCamera>>,
+    replay: Option<Res<crate::replay::Replay>>,
     mut grade: ResMut<ColourGrade>,
 ) {
     let zombie = settings.is_some_and(|s| s.zombie);
-    let record = if zombie { records.zombie.as_ref().unwrap_or(&records.base) } else { &records.base };
+    let world = if zombie { records.zombie.as_ref().unwrap_or(&records.base) } else { &records.base };
+    // During a replay the editor's look lanes replace their terms of the world record (b380 / b408: retail's override
+    // copy of the colour block, built into the same matrices).
+    let look = replay.as_ref().and_then(|r| r.look(world));
+    let record = look.as_ref().map_or(world, |l| &l.record);
     let near = cameras
         .iter()
         .find_map(|p| match p {
