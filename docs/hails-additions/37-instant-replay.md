@@ -469,10 +469,77 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
 - Fixes from the user's Follow edit screenshot: the right stick now orbits and the left stick moves in / out; the
   `DPad_UpDown` / `DPad_Arrows` prompts show the plain D-pad glyph (`prompt_glyphs.rs`); the Follow / Tripod cameras
   aim 1 m above the skater root (`CameraRules::look_target_height`).
-- NOT RETAIL YET: D-pad Up removes the key at the cursor (retail's delete path was not found: b405 reads Up release as
-  the same seek as A); the look target height (retail looks at an actor part, which one is open); the stick mapping
+- Deleting: see "Deleting keys" below (b407). NOT RETAIL YET: the stick mapping
   (retail's axis table is unread); the look effects (DLC lanes) are not ported.
 - Verified: `camera_keys_hold_cut_and_blend`, the curve test, `follow_orbits_in_the_skater_frame_with_retail_caps`
   (orbit centre now includes the look height); skate-core 1176 and full bin 855 passed. Verify switches
   `SKATE_VERIFY_REPLAY_EDITOR=markers` (two markers, the playhead glows on the second) and `=camera` (Follow picked at
   the playhead, then its edit mode). Not play-tested by the user yet.
+- Look target (b406, 2026-10-20): Follow / Tripod look at the look object's origin plus LOOK_Z straight up; every
+  frame `82C80A78` writes one constant (the "no input" value, very likely 0.0) to LOOK_X / LOOK_Y (elements 3 / 4)
+  and writes LOOK_Z (element 5) back unchanged [code, main checked in the recomp]. LOOK_Z defaults to 0.0 (`82903840`)
+  and the D-pad moves it within +-1 m [code, agent]. There is no fixed look height in the camera code: the target is
+  the camera target entry flagged 0x400000 in the list at `[0x83083C38]+0x2E680` (its world matrix translation)
+  [code, agent, medium-high]. Which part of the skater that entry is (root, pelvis, a raised point) is OPEN; the
+  cheapest proof is a short recomp trace of `826824F8` next to the skater root. Until then our
+  `look_target_height` (1 m) stands for the target's height over the root, still NOT RETAIL.
+  Recomp trace (2026-10-20, hook `CAMTGT` on the fork's research-hooks, trace `.local/research/b406/camtgt.tsv`): the
+  flagged entry is the skater's root at foot / deck level [trace]: standing on the board it sits 0.08 m above the
+  board body, after stepping off it stays 0.09 m above the same ground while the board lies 3.6 m behind, it does not
+  bob while pushing or walking, and it falls with the skater rolling downhill. With LOOK_Z reset to 0 when a camera
+  is picked (b405, `82C7FFB8`), retail's Follow / Tripod look at the skater's feet until the D-pad raises it (max
+  1 m). User 2026-10-20: "Retail: feet": `look_target_height` is now 0 (data, a mod may raise it); the D-pad lift
+  still raises the aim per key.
+- Deleting keys (b407, 2026-10-20) [code, main checked the key id switch in the recomp]: b405 read `82612C28`'s case
+  numbers as hex; they are decimal key ids, so D-pad Up released (32) calls `82613650`, the delete, and D-pad Left
+  released (34) is the seek to the start. `82613650` asks first: over a clip marker (a hard key)
+  ID_REPLAY_EDITOR_DELETE_CLIP / _DESC, over a key marker (a soft key) ID_REPLAY_EDITOR_DELETE_KEY / _DESC, No / Yes;
+  no marker = an error sound. Yes removes the key (`82613910` -> `82C7FD60`); a clip marker also takes the soft keys
+  in the clips on both sides (`82C7FB08`; retail's own text says so: "it will also remove all Key Markers in the
+  clips on both sides"). D-pad Down asks ID_REPLAY_SAVEWARNING_TITLE / ID_REPLAY_EDITOR_POPUP_CLIPMARKER before a
+  clip marker lands inside a run of soft keys (`82508828`). All six strings checked in the exported menu text.
+- Ours: `Editor::marker_kind`, `drop_needs_confirm`, `remove_marker` (the sweep) in `replay/editor.rs`; the questions
+  are engine popups (`replay.rs` `marker_popup`, callback `engine:replay.marker`), applied straight away without the
+  retail menu stage. NOT RETAIL YET: retail also resets the merged clip's speed and shake (channel 0) and, without
+  the DLC, removes a clip marker from channels 0 / 5 / 4 / 1 together; our speed / shake lanes keep their values.
+  Test `deleting_a_clip_marker_takes_the_key_markers_on_both_sides`.
+
+## M3 step 2 research: the look lanes (b408, 2026-10-20)
+- Retail [code `82507438`, agent; our code lines checked by main]: with the film DLC the edit channel (Y) is 0
+  camera, 1 speed, 2 shake, 3 brightness (setter `82C81750`), 4 contrast (`82C810A8`), 5 saturation (`82C813B0`), 6 a
+  four-value tint (`82C81AC8`); without the DLC only speed and shake. No vignette, grain or letterbox lane exists.
+- Element defaults / ranges [code `82C8FAD8`, agent]: brightness 0 (-1..1), contrast 1 (0..50) with midpoint 0.5
+  (0..1), saturation 0 (0..1), tint X / Y 0 (-1..1), Z 1 (0..1); per-lane OVERRIDE flags (0x71..0x77, default 0).
+- A committed value also sets its lane's OVERRIDE flag at the key, and the renderer applies a lane only where the flag
+  is on [code, agent; brightness setter read in full by the agent, the others by pattern; main could not find the
+  flag write in the recomp's `sub_82C81750` by a quick search: UNVERIFIED]. Ours counts a lane as set when it differs
+  from its default (`replay_edit.rs` `look_at`, already labelled OURS).
+- Sampling [code `82C87640` / `82C8E680`, agent]: look values are interpolated (linear between soft keys), the flags
+  stepped; ours steps every lane (`value_at`).
+- Renderer (b380, re-read): a set lane replaces its term in an override copy of the world colour block, built into the
+  post FX matrix by `827F3D20` / `827F13D8`; the tint goes to a separate overlay. OPEN: who sets the +0x7E00 gate,
+  the far band's extra saturation term, how the tint overlay blends, the DLC row labels.
+- Port rule: explicit per-lane override flag with each commit, linear look values between keys, `look_at` into
+  `colour_matrix::build` during playback, the tint as an overlay after the grade; lane list, defaults, ranges and
+  interpolation per lane as mod data. NOT PORTED: the rows exist only with the film DLC; whether we offer them is the
+  user's call (DLC support is the next work item). User 2026-10-20: "Always on" (offer them on PC without the DLC).
+- M3 step 2, part 1 (2026-10-20): `skate_core::replay_edit`: `LaneSpec::interpolate` (look lanes ramp linearly between
+  markers, speed / shake stay stepped; data), `Clip::set` + `lane_set` (a look lane applies once a value was committed
+  on the clip or a marker sits at or before the frame: retail's stepped OVERRIDE flag; a committed neutral value
+  still overrides the world), `lane_effect`, `look_at` on both. The game's `colour_matrix::update_grade` takes the
+  editor's look during a replay (`Replay::look`). Test
+  `look_lanes_ramp_between_markers_and_a_committed_neutral_value_still_overrides`. NOT YET: rows to edit the looks
+  (b410 found the DLC editor movie `replay_editor3` with the tint / brightness rows in the user's Create Park Upgrade
+  package), the tint overlay (retail's blend is open). Before the first marker a look holds the clip value (whether
+  retail's In point key ramps into it is open). Retail's look defaults differ in meaning for saturation (SATURATE
+  default 0, range 0..1) from ours (100 = x1); unresolved.
+- Look rows UI (b410, 2026-10-20): retail gates every DLC editor branch on product CCF0007, the Skate.Create Upgrade
+  Pack (`82518AD0` with the string at 0x822FD708; main counted 7 of its 32 call sites loading that string), not a
+  Filmer Pack [code]. The user's Create Park Upgrade package carries `DLC_PRODUCT,CCF0007`, the DLC editor movie
+  `source/screens/replay2/replay_editor3`, `replay_help2` and the creator language tables with the channel labels
+  (ID_REPLAYEDITOR_CHANNEL_CAMERA .. _TINT) [data, main checked in the package]. Retail: Y cycles the channel
+  (Camera, Speed, Shake, Brightness, Contrast, Saturation, Tint), one panel per channel; new natives GetModeText,
+  GetMode, GetModeSliderValue, GetCurrentTint, the tint getters [code, agent]. The base movie `replay_editor2` cannot
+  show the look rows. Port: the DLC pipeline extracts replay_editor3 + its language table from the user's package,
+  CCF0007 counts as owned on PC (user: always on), the stage loads replay_editor3 when present; without the package
+  our own one-line channel / value overlay (ours). Details in `.local/research/b410-replay-look-rows-ui.md`.

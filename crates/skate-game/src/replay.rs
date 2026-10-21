@@ -24,6 +24,7 @@ const DPAD_DOWN: u16 = 0x0002;
 const QUIT_POPUP: &str = "engine:replay.quit";
 const PHOTO_POPUP: &str = "engine:replay.photo";
 const PHOTO_DONE_POPUP: &str = "engine:replay.photo_saved";
+const MARKER_POPUP: &str = "engine:replay.marker";
 const X: u16 = 0x4000;
 /// The fe record retail plays when the instant replay opens (key 0x394015B68783BE9E; data, a mod may remap it).
 const OPEN_SOUND: &str = "editor_select";
@@ -112,6 +113,43 @@ fn quit_popup() -> skate_core::fe_popup::PopupRequest {
     }
 }
 
+/// A marker change waiting for its confirm popup (b407): D-pad Up's delete (the kind decides the question) or D-pad
+/// Down's drop inside a run of soft keys; Yes applies it at `time`.
+#[derive(Clone, Copy, Debug)]
+struct MarkerAsk {
+    delete: Option<editor::MarkerKind>,
+    time: f64,
+    shown: bool,
+}
+
+/// Retail's marker questions (b407, strings from the movie's language table; No / Yes): delete a clip marker
+/// (`82613808`), delete a key marker (`826138C0`), drop a clip marker inside soft keys (`82613878`).
+fn marker_popup(delete: Option<editor::MarkerKind>) -> skate_core::fe_popup::PopupRequest {
+    let (title, description) = match delete {
+        Some(editor::MarkerKind::Clip) => ("ID_REPLAY_EDITOR_DELETE_CLIP", "ID_REPLAY_EDITOR_DELETE_CLIP_DESC"),
+        Some(editor::MarkerKind::Key) => ("ID_REPLAY_EDITOR_DELETE_KEY", "ID_REPLAY_EDITOR_DELETE_KEY_DESC"),
+        None => ("ID_REPLAY_SAVEWARNING_TITLE", "ID_REPLAY_EDITOR_POPUP_CLIPMARKER"),
+    };
+    skate_core::fe_popup::PopupRequest {
+        title: title.into(),
+        description: description.into(),
+        options: vec!["ID_COMMON_NO".into(), "ID_COMMON_YES".into()],
+        callback: MARKER_POPUP.into(),
+        cancelable: true,
+        ..Default::default()
+    }
+}
+
+/// Yes to a marker question: the delete or the drop at the cursor it was asked at.
+fn apply_marker_ask(replay: &mut Replay, ask: MarkerAsk) {
+    let Some(editor) = replay.editor.as_mut() else { return };
+    if ask.delete.is_some() {
+        editor.remove_marker(ask.time);
+    } else if let Err(e) = editor.drop_marker(ask.time) {
+        info!("REPLAY_EDITOR marker refused: {e:?}");
+    }
+}
+
 struct Frame {
     time: f64,
     pose: Snapshot,
@@ -166,6 +204,8 @@ pub(crate) struct Replay {
     pub(crate) free_camera_leash: Option<f32>,
     /// The quit warning is up (waiting for its answer).
     quit_pending: bool,
+    /// A marker delete / drop waiting for its confirm popup.
+    marker_ask: Option<MarkerAsk>,
     /// B / Back asked for the quit warning; it opens when the button is released.
     quit_on_release: bool,
     /// Shortest recording the replay opens on (s); None = retail's [`MIN_OPEN_SECONDS`]. Data, mod-settable.
@@ -400,11 +440,18 @@ impl Replay {
         }
         self.active = false;
         self.editor = None;
+        self.marker_ask = None;
         self.quit_pending = false;
         self.quit_on_release = false;
         self.playing = false;
         self.free_camera = None;
         self.release_controls = true;
+    }
+
+    /// The editor's look at the playhead over the world grade (None: no replay or no editor open).
+    pub(crate) fn look(&self, base: &skate_core::colour_matrix::ColourMatrixRecord) -> Option<skate_core::replay_edit::ReplayLook> {
+        self.active.then_some(())?;
+        self.editor.as_ref()?.look(self.cursor, base)
     }
 
     pub(crate) fn seek(&mut self, time: f64) {
@@ -540,6 +587,7 @@ fn editor_controls(
     // Decided with the editor borrowed, applied to the replay after.
     let mut seek: Option<f64> = None;
     let mut play: Option<bool> = None;
+    let mut ask: Option<MarkerAsk> = None;
     let Some(editor) = replay.editor.as_mut() else { return false };
     let used = match editor.session.mode {
         EditorMode::Effects => {
@@ -620,13 +668,20 @@ fn editor_controls(
             true
         }
         _ => {
+            // D-pad Down drops a marker, asking first inside a run of soft keys; D-pad Up deletes the marker at the
+            // cursor after retail's question (b407: key ids 0x21 / 0x20 in `82612C28`).
             if released & DPAD_DOWN != 0 || keys.just_pressed(KeyCode::KeyM) {
-                if let Err(e) = editor.drop_marker(cursor) {
+                if editor.drop_needs_confirm(cursor) {
+                    ask = Some(MarkerAsk { delete: None, time: cursor, shown: false });
+                } else if let Err(e) = editor.drop_marker(cursor) {
                     info!("REPLAY_EDITOR marker refused: {e:?}");
                 }
             }
             if released & DPAD_UP != 0 || keys.just_pressed(KeyCode::KeyN) {
-                editor.remove_marker(cursor);
+                match editor.marker_kind(cursor) {
+                    Some(kind) => ask = Some(MarkerAsk { delete: Some(kind), time: cursor, shown: false }),
+                    None => info!("REPLAY_EDITOR delete refused: no marker at the cursor"),
+                }
             }
             let (start, end) = editor.heads();
             if released & DPAD_LEFT != 0 || keys.just_pressed(KeyCode::Comma) {
@@ -647,6 +702,10 @@ fn editor_controls(
             }
         }
     };
+    if ask.is_some() {
+        replay.marker_ask = ask;
+        replay.playing = false;
+    }
     if let Some(t) = seek {
         replay.seek(t);
     }
@@ -766,6 +825,11 @@ pub(crate) fn controls(
                 _ => {}
             }
         }
+        if callback == MARKER_POPUP {
+            if let Some(ask) = replay.marker_ask.take().filter(|_| choice == 1) {
+                apply_marker_ask(&mut *replay, ask);
+            }
+        }
         if callback == PHOTO_POPUP && replay.photo == Photo::Confirm {
             replay.photo = if choice == 1 { Photo::Capture } else { Photo::Idle };
         }
@@ -831,7 +895,17 @@ pub(crate) fn controls(
             replay.release_controls = false;
         }
     }
-    if !replay.active || menu_open || replay.quit_pending || replay.photo != Photo::Idle {
+    // A marker question raised by the editor last frame: retail's popup, or straight through without the retail stage.
+    if let Some(ask) = replay.marker_ask.filter(|a| !a.shown) {
+        if popups.stage_ready {
+            popups.engine_requests.push(marker_popup(ask.delete));
+            replay.marker_ask = Some(MarkerAsk { shown: true, ..ask });
+        } else {
+            replay.marker_ask = None;
+            apply_marker_ask(&mut *replay, ask);
+        }
+    }
+    if !replay.active || menu_open || replay.quit_pending || replay.marker_ask.is_some() || replay.photo != Photo::Idle {
         return;
     }
     let dt = time.delta_secs().min(0.1);

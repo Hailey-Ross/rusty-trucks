@@ -4,7 +4,7 @@
 //! retail's caps (`82C826D0`, `82509558`). Every limit and rate is data ([`CameraRules`]).
 //!
 //! A basic camera is one pose for the whole clip: its setup clears the channel's keys and the sampler holds the live
-//! value without keys (b404, `82C89A50`); keyed poses are the Advanced cameras'. NOT RETAIL YET: the skater root as both of retail's objects 2 / 4 (eye / look objects), the
+//! value without keys (b404, `82C89A50`); keyed poses are the Advanced cameras'. The look object 4 is the skater root (b406, traced). NOT RETAIL YET: the skater root as the eye object 2 (b406: likely the game camera's frame), the
 //! pad mapping (retail's axis table `[pad+0xC]+4` is unread), and the lens to field of view (a 24 mm high film gate).
 use bevy::prelude::*;
 
@@ -105,8 +105,9 @@ pub(crate) struct CameraRules {
     pub lens_range: (f32, f32),
     pub lens_default: f32,
     pub console_hz: f32,
-    /// Height over the skater root the Follow / Tripod cameras look at, m. NOT RETAIL YET: retail looks at its object
-    /// 4 (b402: which actor part is open); the root is the feet.
+    /// Height over the skater root the Follow / Tripod cameras look at, m (data; the key's own D-pad lift adds on top).
+    /// Retail 0: its look object 4 is the skater root at foot / deck level and a new key's lift starts at 0 (b406:
+    /// `826824F8`, recomp trace CAMTGT; `82C7FFB8` resets LOOK_Z).
     pub look_target_height: f32,
 }
 
@@ -127,7 +128,7 @@ impl Default for CameraRules {
             lens_range: (24.0, 75.0),
             lens_default: 24.0,
             console_hz: 30.0,
-            look_target_height: 1.0,
+            look_target_height: 0.0,
         }
     }
 }

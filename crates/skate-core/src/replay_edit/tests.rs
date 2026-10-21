@@ -180,3 +180,24 @@ fn replay_editor_session_follows_retail_mode_transitions() {
     assert_eq!(s.mode, EditorMode::Timeline);
     assert_eq!(s.press(key::B), Some(EditorAction::Finished));
 }
+
+#[test]
+fn look_lanes_ramp_between_markers_and_a_committed_neutral_value_still_overrides() {
+    use crate::colour_matrix::ColourMatrixRecord;
+    let mut edit = ReplayEdit::default();
+    let clip = edit.add_clip(0, 1000).unwrap();
+    let mut base = ColourMatrixRecord::default();
+    base.near.add = [0.05; 3];
+    // Brightness markers 0 at 200 and +100 at 600: ramps between them, holds after, unset before the first.
+    edit.set_marker(clip, Lane::Brightness, 200, 0).unwrap();
+    edit.set_marker(clip, Lane::Brightness, 600, 100).unwrap();
+    assert_eq!(edit.look_at(clip, 100, &base).unwrap().record.near.add, [0.05; 3]);
+    // At the first marker the committed neutral 0 replaces the world's 0.05 (retail's OVERRIDE flag).
+    assert_eq!(edit.look_at(clip, 200, &base).unwrap().record.near.add, [0.0; 3]);
+    assert!((edit.look_at(clip, 400, &base).unwrap().record.near.add[0] - 0.5).abs() < 1e-6);
+    assert!((edit.look_at(clip, 900, &base).unwrap().record.far.add[1] - 1.0).abs() < 1e-6);
+    // Speed stays stepped.
+    edit.set_marker(clip, Lane::Speed, 200, 50).unwrap();
+    edit.set_marker(clip, Lane::Speed, 600, 100).unwrap();
+    assert_eq!(edit.lane_effect(clip, Lane::Speed, 400), Some(0.5));
+}
