@@ -109,6 +109,37 @@ pub(crate) fn load_package(assets: &Path, map: &SkateMap) -> Option<(SkateMap, V
     (!objects.is_empty()).then_some((package, objects))
 }
 
+/// Each placed piece's draw inputs by its MOBJ id (the sidecar's `instances`: `instance_id` low 32 bits, as setup's
+/// `mobj_extension` writes the id): its `tint` RGB (white when absent) and its layout's world shadow colours
+/// (`shadow_colours`, research b443; the retail (0.2, 0.2, 0.2) when the world is no park world).
+pub(crate) fn load_draws(assets: &Path, map: &SkateMap) -> std::collections::HashMap<u32, crate::retail_render::ParkDraw> {
+    let Some(layout) = layout_of(map) else { return Default::default() };
+    let path = directory(assets).join(format!("{layout}.json"));
+    let Some(sidecar) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
+        return Default::default();
+    };
+    let rgb = |value: &serde_json::Value| -> Option<Vec4> {
+        let v: Vec<f32> = value.as_array()?.iter().filter_map(|v| v.as_f64().map(|v| v as f32)).collect();
+        (v.len() == 3 && v.iter().all(|x| x.is_finite())).then(|| Vec4::new(v[0], v[1], v[2], 1.0))
+    };
+    let mut base = crate::retail_render::ParkDraw::default();
+    if let Some(colours) = sidecar.get("shadow_colours").filter(|c| !c.is_null()) {
+        base.dynamic_shadow = rgb(&colours["dynamic"]).unwrap_or(Vec4::new(0., 0., 0., 1.));
+        base.exponential_shadow = rgb(&colours["exponential"]).unwrap_or(Vec4::new(0., 0., 0., 1.));
+    }
+    // The projected lightmap's bounds; the texture is the pieces' lightmap channel (setup binds it).
+    let bounds: Option<Vec<f32>> = sidecar["projected_lightmap"]["bounds"].as_array().map(|b| b.iter().filter_map(|v| v.as_f64().map(|v| v as f32)).collect());
+    if let Some(b) = bounds.filter(|b| b.len() == 4 && b.iter().all(|v| v.is_finite()) && b[1] != b[0] && b[3] != b[2]) {
+        base.lightmap_bounds = Vec4::new(b[0], b[1], b[2], b[3]);
+    }
+    let mut draws = std::collections::HashMap::new();
+    for instance in sidecar["instances"].as_array().into_iter().flatten() {
+        let Some(id) = instance["instance_id"].as_str().and_then(|s| u64::from_str_radix(s, 16).ok()) else { continue };
+        let tint = rgb(&instance["tint"]).unwrap_or(Vec4::ONE);
+        draws.insert((id & 0xFFFF_FFFF) as u32, crate::retail_render::ParkDraw { tint, ..base });
+    }
+    draws
+}
 /// The posed static pieces of a loaded map's layout for physics: world-space collision triangles with one range per
 /// piece (b431: one registration per piece), the package's materials, and the posed grind segments.
 pub(crate) struct Pieces {

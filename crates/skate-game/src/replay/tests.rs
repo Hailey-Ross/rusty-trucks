@@ -433,12 +433,25 @@ fn one_shot_sounds_fire_again_when_playback_crosses_them() {
 }
 
 #[test]
+fn a_mod_camera_override_goes_on_restore_and_disable() {
+    let mut replay = Replay::default();
+    replay.set_camera("m", Some(false), None, Some(80.));
+    assert!(!replay.camera_collision.enabled && replay.camera_collision.leash == 80.);
+    assert_eq!(replay.camera_collision.radius, 0.1, "unset fields keep retail's");
+    replay.set_camera("other", None, None, None);
+    assert!(!replay.camera_collision.enabled, "only the owner restores");
+    replay.clear_owner("m");
+    assert_eq!(replay.camera_collision, camera_collision::CameraCollision::default());
+}
+
+#[test]
 fn free_camera_stays_within_retail_forty_metres_of_the_player() {
     let player = Vec3::new(10., 0., 0.);
-    assert_eq!(leashed(Vec3::new(20., 0., 0.), player, FREE_CAMERA_LEASH), Vec3::new(20., 0., 0.));
-    let far = leashed(Vec3::new(110., 0., 0.), player, FREE_CAMERA_LEASH);
-    assert!((far - Vec3::new(50., 0., 0.)).length() < 1e-4);
-    assert_eq!(Replay::default().free_camera_leash.unwrap_or(FREE_CAMERA_LEASH), 40.);
+    let rules = Replay::default().camera_collision;
+    assert_eq!(rules.leash, 40.);
+    let leashed = |to: Vec3| camera_collision::constrain(Some(to), to, player, true, &rules, |_, _, _| None).position;
+    assert_eq!(leashed(Vec3::new(20., 0., 0.)), Vec3::new(20., 0., 0.));
+    assert!((leashed(Vec3::new(110., 0., 0.)) - Vec3::new(50., 0., 0.)).length() < 1e-4);
 }
 
 #[test]
@@ -560,6 +573,47 @@ fn a_still_prop_added_between_replay_frames_still_plays_back() {
     }
     app.update();
     assert_eq!(app.world().get::<Visibility>(bench), Some(&Visibility::Inherited), "the still bench is drawn");
+}
+
+/// b453: a held prop's hand-space frames play back on a hidden copy after it is dropped, and the dropped prop's own
+/// world-space track starts at the drop, so scrubbing back never shows the dropped model at a hand-space pose.
+#[test]
+fn a_dropped_hand_prop_keeps_its_held_frames_on_a_hidden_copy() {
+    use super::world::{ReplayActor, ReplayGhost};
+    use bevy::ecs::system::RunSystemOnce;
+    let mut app = App::new();
+    app.init_resource::<Replay>();
+    super::world::plugin(&mut app);
+    let step = |app: &mut App, x: f32| {
+        app.world_mut().resource_mut::<Replay>().record(pose(x), 1. / 60., false);
+        app.update();
+    };
+    let hand = app.world_mut().spawn((Transform::from_xyz(10., 0., 0.), Visibility::Inherited)).id();
+    let held = Transform::from_xyz(1., 0., 0.);
+    let prop = app.world_mut().spawn((ReplayActor { id: 21 }, SceneRoot::default(), held, Visibility::Inherited, ChildOf(hand))).id();
+    step(&mut app, 0.);
+    step(&mut app, 1.);
+    // The drop: the copy is kept, then the model is detached into the world and re-tagged as a prop.
+    app.world_mut().run_system_once(move |mut commands: Commands| super::keep_model(&mut commands, prop)).unwrap();
+    app.world_mut().entity_mut(prop).remove::<ChildOf>().insert((Transform::from_xyz(11., 0., 0.), ReplayActor { id: 22 }));
+    step(&mut app, 2.);
+    step(&mut app, 3.);
+    let ghost = app.world_mut().query_filtered::<Entity, With<ReplayGhost>>().single(app.world()).unwrap();
+    assert_eq!(app.world().get::<ChildOf>(ghost).map(ChildOf::parent), Some(hand), "the copy stays in the hand's space");
+    let seek = |app: &mut App, t: f64| {
+        let mut replay = app.world_mut().resource_mut::<Replay>();
+        replay.enter();
+        replay.seek(t);
+        app.update();
+    };
+    seek(&mut app, 0.5 / 60.);
+    assert_eq!(app.world().get::<Visibility>(ghost), Some(&Visibility::Inherited), "held frames: the copy draws");
+    assert_eq!(app.world().get::<Transform>(ghost).map(|t| t.translation), Some(held.translation));
+    assert_eq!(app.world().get::<Visibility>(prop), Some(&Visibility::Hidden), "held frames: the dropped model is hidden");
+    seek(&mut app, 3. / 60.);
+    assert_eq!(app.world().get::<Visibility>(ghost), Some(&Visibility::Hidden), "after the drop the copy is hidden");
+    assert_eq!(app.world().get::<Visibility>(prop), Some(&Visibility::Inherited));
+    assert_eq!(app.world().get::<Transform>(prop).map(|t| t.translation), Some(Vec3::new(11., 0., 0.)));
 }
 
 #[test]

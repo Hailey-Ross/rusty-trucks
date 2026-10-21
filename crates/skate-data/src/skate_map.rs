@@ -1074,4 +1074,34 @@ mod tests {
             assert!(decode_joined(&[block]).unwrap_err().contains("declares"), "method {method}");
         }
     }
+
+    /// Regression check for the decode changes (regression-check 3b): every installed map's geometry fingerprint.
+    /// `SKATE3_MAPS_DIR=<install>/maps cargo test -p skate-data --lib installed_map_geometry_fingerprints -- --ignored
+    /// --nocapture`, once per decoder version; the printed lines must be identical.
+    #[test]
+    #[ignore = "Requires installed maps"]
+    fn installed_map_geometry_fingerprints() {
+        use std::hash::{Hash, Hasher};
+        let dir = std::path::PathBuf::from(std::env::var("SKATE3_MAPS_DIR").expect("SKATE3_MAPS_DIR"));
+        let mut paths: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "skate")).collect();
+        paths.sort();
+        for path in paths {
+            let map = SkateMap::load(&path).unwrap();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for v in &map.geometry.vertices {
+                v.position.map(f32::to_bits).hash(&mut h);
+                v.normal.map(f32::to_bits).hash(&mut h);
+                v.uv.map(f32::to_bits).hash(&mut h);
+                v.lightmap_uv.map(f32::to_bits).hash(&mut h);
+                (v.material, v.decal_uv.map(|d| d.map(f32::to_bits)), v.tangent_frame).hash(&mut h);
+            }
+            map.geometry.indices.hash(&mut h);
+            for c in &map.geometry.collision {
+                (c.points.map(|p| p.map(f32::to_bits)), c.surface, c.material, c.native_edges).hash(&mut h);
+            }
+            println!("GEOMETRY {} v={} i={} c={} {:016x}", path.file_name().unwrap().to_string_lossy(),
+                map.geometry.vertices.len(), map.geometry.indices.len(), map.geometry.collision.len(), h.finish());
+        }
+    }
 }

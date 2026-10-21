@@ -10,6 +10,7 @@ ambience is downmixed to stereo by a weighted average (audio_formats.py).
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import struct
 import subprocess
@@ -33,14 +34,36 @@ LOOP_CROSSFADE = 0.08  # seconds
 VGMSTREAM_URL = 'https://github.com/vgmstream/vgmstream/releases/download/r2117/vgmstream-win64.zip'
 VGMSTREAM_SHA = '6c4a8a3813864fefed081bbd337dbc0ad93bf88e0b92f5db98d7ab258b22dc6c'
 
-# Per-map ambience beds (ambience.big + headers in ambienceresident.big).
-AMBIENCE = (
-    '01_dt_apt', '02_dt_less_busy', '03_dt_rez', '04_dt_main', '05_dt_parks', '06_dt_open',
-    '07_univ_mt_high', '08_univ_mt_low', '09_univ_campus', '10_univ_housing',
-    '11_indu_shipyard', '12_indu_drydock', '13_indu_quarry', '14_reclaimed_a', '15_indu_new_factory',
-    '16_spillway', '17_space_park', '18_skate_school', '19_reclaimed_b_fix', '20_indu_old_factory',
-    '21_interior_arena_amb', '22_interior_tunnel_amb',
-)
+# Per-map ambience beds (research b432): retail builds its bed table from ambienceresident.big's index (824D4630:
+# bed number = the stream name's leading number, the first entry per number wins; bodies in ambience.big), and
+# adds a mounted pack's loose `data/audio/<N>_dlc_ambience.snr` / `.sns` for a number the disc lacks (824D3990, at
+# most 16 such slots; `%d`, no zero padding). A pack can not replace a disc bed.
+DLC_BED = re.compile(r'^(\d+)_dlc_ambience$', re.IGNORECASE)
+DLC_BED_SLOTS = 16
+
+
+def bed_table(headers, bodies, packs=()):
+    """{bed number: (stream stem, (archive, header entry), (archive, body entry))}: the disc's beds, then the packs'."""
+    table = {}
+    disc_bodies = {Path(e.path).stem: e for e in bodies.entries if e.path.endswith('.sns')}
+    for entry in headers.entries:
+        stem = Path(entry.path).stem
+        if not entry.path.endswith('.snr') or not stem[:2].isdigit() or int(stem[:2]) in table:
+            continue
+        if stem not in disc_bodies:
+            raise KeyError(f'ambience bed {stem} is missing from the disc')
+        table[int(stem[:2])] = (stem, (headers, entry), (bodies, disc_bodies[stem]))
+    slots = 0
+    for archive in packs:
+        audio = {Path(e.path).name.lower(): e for e in archive.entries if e.path.lower().startswith('data/audio/')}
+        for name in sorted(audio):
+            found = DLC_BED.match(Path(name).stem) if name.endswith('.snr') else None
+            body = audio.get(Path(name).stem + '.sns')
+            if not found or body is None or int(found.group(1)) in table or slots >= DLC_BED_SLOTS:
+                continue
+            table[int(found.group(1))] = (Path(audio[name].path).stem, (archive, audio[name]), (archive, body))
+            slots += 1
+    return table
 
 # Sample banks from audiofiles.big (data/audio/<name>).
 BANKS = (
@@ -275,14 +298,14 @@ CROSSFADE_FIELDS = {
 CROSSFADE_BANKS = ('Main_Ambience_Crossfade_DT.abk', 'Main_Ambience_Crossfade_Ind.abk', 'Main_Ambience_Crossfade_Uni.abk')
 
 
-def ambience_zones(collections: list[dict], names: list[str]) -> tuple[dict, list[dict]]:
-    """Zones by key ({name, bed stream, volume, times}) and crossfades ({name, from, to, group,
-    level, ...} with zone keys as 16 hex digits)."""
+def ambience_zones(collections: list[dict], names: list[str], beds: dict[int, str]) -> tuple[dict, list[dict]]:
+    """Zones by key ({name, bed stream, bed_index, volume, times}) and crossfades ({name, from, to, group,
+    level, ...} with zone keys as 16 hex digits). `beds`: bed number -> stream stem (`bed_table`); a number with no
+    bed stays `bed: None` (retail plays nothing)."""
     known = {name_id(n): n for n in names}
-    beds = {int(name.split('_', 1)[0]): name for name in AMBIENCE}
     zones = {}
     for key, fields in _resolved(collections, ZONE_CLASS, ZONE_FIELDS).items():
-        zones[f'{key:016X}'] = {'name': known.get(key), 'bed': beds.get(fields.get('bed', 0)),
+        zones[f'{key:016X}'] = {'name': known.get(key), 'bed': beds.get(fields.get('bed', 0)), 'bed_index': fields.get('bed'),
                                 **{k: fields[k] for k in ('volume', 'time_a', 'time_b') if k in fields}}
     crossfades = []
     for key, fields in _resolved(collections, CROSSFADE_CLASS, CROSSFADE_FIELDS).items():
@@ -331,6 +354,16 @@ def emitters(files: BigArchive, attributes: dict[int, dict] | None = None, extra
             # Ids hash the name either as the file is named or lower-cased (both occur).
             for key in {Path(name).stem, Path(name).stem.lower()}:
                 banks[name_id(key)] = name
+    # A pack's loose banks (After Dark's cage_rattle_1, human_moaning_1, ... for its own emitters, b432) resolve
+    # too; a disc bank keeps its name.
+    for pack in extra:
+        for entry in pack.entries:
+            name = Path(entry.path).name
+            if entry.path.replace('\\', '/').lower().startswith('data/audio/') and name.lower().endswith('.abk') \
+                    and name.lower() not in by_file:
+                by_file[name.lower()] = name
+                for key in {Path(name).stem, Path(name).stem.lower()}:
+                    banks.setdefault(name_id(key), name)
     listed, placed = {}, set()
     sources = [(files, e) for e in sorted(files.entries, key=lambda e: e.path)]
     for pack in extra:
@@ -340,6 +373,9 @@ def emitters(files: BigArchive, attributes: dict[int, dict] | None = None, extra
         if not entry.path.endswith('.ems'):
             continue
         stem = Path(entry.path).stem
+        # A pack's .ems is its map's own emitter file (DLC_sanitarium, DLC_Maloof, b414 / b432), the disc's
+        # sfx_<district> counterpart: its banks play in the world.
+        sounds = stem.startswith(SOUND_EMITTERS) or archive is not files
         if stem in listed:
             continue
         records = ems_emitters(archive.read(entry))
@@ -353,7 +389,7 @@ def emitters(files: BigArchive, attributes: dict[int, dict] | None = None, extra
                 record['reverb'] = f"{record['reverb']:016X}"
             record['bank'] = Path(bank).stem if bank else None
             record['sound_id'] = f"{record['sound_id']:016X}"
-            if bank and stem.startswith(SOUND_EMITTERS):
+            if bank and sounds:
                 placed.add(bank)
         listed[stem] = records
     return listed, placed
@@ -1103,7 +1139,7 @@ def player_tuning(collections: list[dict], image: bytes | None = None, image_bas
     return out
 
 
-def aems_files(files: BigArchive, output: Path, banks) -> dict:
+def aems_files(files: BigArchive, output: Path, banks, extra=None) -> dict:
     """Copy the native AEMS runtime's inputs into output/'aems', byte for byte: every Csis project
     (`.csi`, in archive order, the order the runtime installs them) and the ABKC module banks among
     `banks` plus AEMS_EXTRA_BANKS. The runtime runs each bank's own patch programs; its samples stay
@@ -1115,11 +1151,12 @@ def aems_files(files: BigArchive, output: Path, banks) -> dict:
     for name in projects:
         (folder/name).write_bytes(files.read(by_name[name]))
     copied = {}
+    extra = extra or {}  # {bank name: read()}: the packs' loose banks (b432)
     for bank in sorted(set(banks) | set(AEMS_EXTRA_BANKS)):
         entry = by_name.get(bank)
-        if entry is None or not bank.lower().endswith('.abk'):
+        if (entry is None and bank not in extra) or not bank.lower().endswith('.abk'):
             continue
-        data = files.read(entry)
+        data = files.read(entry) if entry is not None else extra[bank]()
         if data[:4] != b'ABKC':
             continue
         (folder/bank).write_bytes(data)
@@ -1160,18 +1197,15 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     manifest = {'version': VERSION, 'ambience': {}, 'grains': {}, 'wheels': {}, 'banks': {}, 'patches': {}}
 
     report('Decoding ambience')
-    beds, headers = BigArchive(audio_root/'ambience.big'), BigArchive(audio_root/'ambienceresident.big')
-    bodies = {Path(e.path).stem: e for e in beds.entries if e.path.endswith('.sns')}
-    heads = {Path(e.path).stem: e for e in headers.entries if e.path.endswith('.snr')}
+    # The player's DLC packs (their map BIGs): DLC beds and loose banks (b432).
+    packs = [BigArchive(a) for a in sorted({j['archive'] for j in dlc_jobs})]
+    beds = bed_table(BigArchive(audio_root/'ambienceresident.big'), BigArchive(audio_root/'ambience.big'), packs)
     folder = work/'ambience'
     folder.mkdir()
-    for name in AMBIENCE:
-        if name not in bodies or name not in heads:
-            raise KeyError(f'ambience bed {name} is missing from the disc')
     (output/'ambience').mkdir(parents=True)
-    for name in AMBIENCE:
-        (folder/(name + '.snr')).write_bytes(headers.read(heads[name]))
-        (folder/(name + '.sns')).write_bytes(beds.read(bodies[name]))
+    for _, (name, (head_archive, head), (body_archive, body)) in sorted(beds.items()):
+        (folder/(name + '.snr')).write_bytes(head_archive.read(head))
+        (folder/(name + '.sns')).write_bytes(body_archive.read(body))
         _decode(vgmstream, folder, [name + '.snr'], log)
         decoded = folder/(name + '.snr.wav')
         info = _stereo(decoded, output/'ambience'/(name + '.wav'))
@@ -1217,11 +1251,19 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     manifest['bus_tuning'] = bus_tuning(collections)
     manifest['frontend'] = frontend_sounds(collections)
     attributes = emitter_attributes(collections)
-    manifest['emitters'], placed = emitters(files, attributes, [BigArchive(a) for a in sorted({j['archive'] for j in dlc_jobs})])
+    manifest['emitters'], placed = emitters(files, attributes, packs)
     by_file = {Path(e.path).name.lower(): Path(e.path).name for e in files.entries}
+    # The packs' loose banks (After Dark's 7 emitter banks, b432) join the disc's; a disc bank keeps its name.
+    pack_banks = {}
+    for archive in packs:
+        for entry in archive.entries:
+            name = Path(entry.path).name
+            if entry.path.lower().startswith('data/audio/') and name.lower().endswith('.abk') and name.lower() not in by_file:
+                pack_banks.setdefault(name, (archive, entry))
+    by_file.update({name.lower(): name for name in pack_banks})
     manifest['random_sets'], random_banks = random_sets(collections, attributes, record_names, by_file)
     placed |= random_banks
-    manifest['zones'], manifest['crossfades'] = ambience_zones(collections, record_names)
+    manifest['zones'], manifest['crossfades'] = ambience_zones(collections, record_names, {n: s for n, (s, _, _) in beds.items()})
     placed |= set(CROSSFADE_BANKS)
     # The world sources' banks, tuning and speech index (crates/skate-audio/src/world; inert in game
     # until a ped / traffic system publishes owners).
@@ -1231,9 +1273,12 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     report('Reading audio regions')
     manifest['regions'] = regions(game_root, work, dlc_jobs)
     for bank in BANKS + tuple(sorted(placed - set(BANKS))):
-        if bank not in by_name:
+        if bank in by_name:
+            data = files.read(by_name[bank])
+        elif bank in pack_banks:
+            data = pack_banks[bank][0].read(pack_banks[bank][1])
+        else:
             raise KeyError(f'sound bank {bank} is missing from the disc')
-        data = files.read(by_name[bank])
         stem = Path(bank).stem
         folder = work/'banks'/stem
         folder.mkdir(parents=True)
@@ -1254,7 +1299,7 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
             manifest['patches'][stem] = splc_patches(data)
 
     report('Copying the AEMS banks and projects')
-    manifest['aems'] = aems_files(files, output, BANKS + tuple(placed))
+    manifest['aems'] = aems_files(files, output, BANKS + tuple(placed), {n: (lambda a=a, e=e: a.read(e)) for n, (a, e) in pack_banks.items()})
     mixmap = mixmap_file(audio_root, output)
     if mixmap:
         manifest['aems']['mixmap'] = mixmap

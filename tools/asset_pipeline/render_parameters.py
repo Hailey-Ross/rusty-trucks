@@ -17,12 +17,13 @@ def convert(assets, converted):
     collections = Collections(converted)
     result = {}
     aliases = ('default', 'reflection', 'backlituvscroll', 'transparent',
-               'flowing', 'flowingalpha', 'alpha', 'skatepark', 'videoscreen', 'alphatest', 'flag')
+               'flowing', 'flowingalpha', 'alpha', 'skatepark', 'videoscreen', 'alphatest', 'flag', 'diffuse', 'decal')
     for (cls, key), row in collections.rows.items():
         # dynamicobject: the props' m_params (dynamicobject_defaultPS c14..c15).
         # advertisement: m_params.y = 0.35 scales billboards (advertisement_defaultPS slot 34).
         # animated.flag: the cloth sway amplitudes, frequencies and phases (vertexanimate_defaultVS c8..c10).
-        for family in ('water', 'ocean', 'incandescent', 'dynamicobject', 'advertisement', 'animated'):
+        # environmentpark: the skate.Park pieces' c18 (.y the fog scale; alphatest row 1 its ambient, research b443).
+        for family in ('water', 'ocean', 'incandescent', 'dynamicobject', 'advertisement', 'animated', 'environmentpark'):
             if cls != key_hash('material_' + family):
                 continue
             fields, _ = collections.resolve(cls, key)

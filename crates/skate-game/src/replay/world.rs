@@ -36,12 +36,13 @@ fn tag_actors(
     held: Query<(&crate::living_world::peds::Pedestrian, &crate::living_world::ped_hand_props::HeldHandProp)>,
     actors: Query<(), With<ReplayActor>>,
 ) {
-    // A ped's held prop is drawn from the ped's live hand every frame; recorded as its own actor (keyed by its ped)
-    // it plays back with the ped instead of floating at the frozen live hand (desktop session 2026-10-20).
-    for (ped, prop) in &held {
+    // A ped's held prop is drawn from the ped's live hand every frame; recorded as its own actor it plays back with the
+    // ped instead of floating at the frozen live hand (desktop session 2026-10-20). One id per prop object (b453:
+    // retail records each prop DMO by its own id), so a second prop on the same ped gets its own track.
+    for (_, prop) in &held {
         if actors.get(prop.entity).is_err() {
             if let Ok(mut e) = commands.get_entity(prop.entity) {
-                e.insert(ReplayActor { id: HAND_PROP_TAG | u64::from(ped.id.serial) });
+                e.insert(ReplayActor { id: HAND_PROP_TAG | (prop.entity.to_bits() & HAND_PROP_ID_MASK) });
             }
         }
     }
@@ -80,8 +81,9 @@ pub(crate) struct ReplayGhost;
 /// Traffic churns: 90 s of cars, peds and NPC skaters leaving can pass 64.
 pub(crate) const MAX_GHOSTS: usize = 256;
 
-/// Id tag of a ped's held hand prop (after `PROP_TAG`): one track per ped, whichever prop it holds.
+/// Id tag of a ped's held hand prop (after `PROP_TAG`), with the prop entity's bits below it: one track per prop.
 pub(crate) const HAND_PROP_TAG: u64 = 5 << 56;
+const HAND_PROP_ID_MASK: u64 = (1 << 56) - 1;
 
 /// Despawn an actor, keeping its drawn scene for the replay. Use instead of `despawn()` for anything that has a
 /// [`ReplayActor`] and [`ReplayJoints`]; anything else (or past the ghost cap) is simply despawned.
@@ -107,6 +109,29 @@ pub(crate) fn retire(commands: &mut Commands, entity: Entity) {
         if let Ok(e) = world.get_entity_mut(entity) {
             e.despawn();
         }
+    });
+}
+
+/// A jointless model actor (a ped's hand prop) leaving its recorded life: dropped from the hand, put away or culled.
+/// A hidden copy of its model stays where it was (same parent, so a held prop's hand-space keys stay right) under the
+/// replay id it was recorded with, and the original stops being that actor, so its track ends here; a dropped prop
+/// then starts a new prop track in world space (research b453: retail records the prop as its own actor for its
+/// whole life). Call before the original is detached or despawned. Nothing happens for an unrecorded entity.
+pub(crate) fn keep_model(commands: &mut Commands, entity: Entity) {
+    commands.queue(move |world: &mut World| {
+        let Ok(e) = world.get_entity(entity) else { return };
+        let (Some(actor), Some(scene), Some(transform)) =
+            (e.get::<ReplayActor>().copied(), e.get::<SceneRoot>().cloned(), e.get::<Transform>().copied()) else { return };
+        let parent = e.get::<ChildOf>().map(ChildOf::parent);
+        if !world.get_resource::<Replay>().is_some_and(|r| r.world.contains(actor.id)) {
+            return;
+        }
+        let mut ghost = world.spawn((Name::new("replay ghost prop"), ReplayGhost, actor, scene, transform, Visibility::Hidden));
+        if let Some(parent) = parent {
+            ghost.insert(ChildOf(parent));
+        }
+        info!("REPLAY_GHOST prop id={:#x}", actor.id);
+        world.entity_mut(entity).remove::<ReplayActor>();
     });
 }
 

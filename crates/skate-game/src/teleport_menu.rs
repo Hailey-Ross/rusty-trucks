@@ -10,6 +10,9 @@ pub(crate) struct Destination {
     /// The location's world row (megapark_full -> dist_megapark_full): a skate.Park world places its layout.
     #[serde(default)]
     pub world: Option<String>,
+    /// The label id `name` is the English text of (the Challenge Map sorts its leaves by it, b451).
+    #[serde(default)]
+    pub label_key: Option<String>,
     pub matrix: Option<[[f32; 4]; 4]>,
 }
 #[derive(Deserialize)]

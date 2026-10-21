@@ -96,7 +96,7 @@ pub(super) fn advance(
         let g = &skater.wipeout.settings().ground;
         let c = &skater.collision_feedback;
         bevy::log::info!(
-            "WIPEOUT_REASONS from={current:?} reasons={reasons:?} count={} flags_2480_bit3={} tick={} max_pose_error={:?} squash_limit={:.3} vehicle_contact={} vehicle_force={:.1} time_on_ground={:.3}",
+            "WIPEOUT_REASONS from={current:?} reasons={reasons:?} count={} flags_2480_bit3={} tick={} max_pose_error={:?} squash_limit={:.3} vehicle_contact={} vehicle_force={:.1} ped_force={:.1} side_on_trick={} trick_scalar={:.2} time_on_ground={:.3}",
             w.count,
             p.flags_2480 & (1 << 3) != 0,
             physics.ticks,
@@ -104,6 +104,11 @@ pub(super) fn advance(
             if c.flags.group_8 { g.vehicle_scalar } else { 1.0 } * g.max_squash,
             c.flags.group_8,
             c.maximum_group_8_force,
+            // A bail from a ped hit (research b448): the ped body parts' contact force (group 11, the ordinary
+            // force check) and whether the side-on mid-trick factor applied.
+            c.maximum_group_11_force,
+            p.flags_2472 & (1 << 15) != 0,
+            g.trick_scalar,
             p.time_on_ground_2752
         );
     }

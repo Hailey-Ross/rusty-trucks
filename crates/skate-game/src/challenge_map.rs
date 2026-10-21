@@ -126,7 +126,7 @@ mod tests {
     fn destination(id: &str, map: &str) -> Destination {
         let mut m = [[0.0; 4]; 4];
         m[3] = [1.0, 2.0, 3.0, 1.0];
-        Destination { id: id.into(), name: id.into(), map: map.into(), world: None, matrix: Some(m) }
+        Destination { id: id.into(), name: id.into(), map: map.into(), world: None, label_key: None, matrix: Some(m) }
     }
 
     #[test]

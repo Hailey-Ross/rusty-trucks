@@ -1423,9 +1423,9 @@ unhandled: {:?}", game.calls, stage.unhandled());
             eprintln!("skipped: no menu tables");
             return;
         }
-        data.map_nodes = skate_data::challenge_map::load(collections.entries(), "progression", &Default::default());
+        data.map_nodes = skate_data::challenge_map::load(collections.entries(), "progression", &Default::default(), &Default::default(), &|_| None);
         let mut menus = crate::retail_menus::RetailMenus::new(data, true);
-        assert!(menus.register_teleports(&["dist_downtown_aletown".to_owned()]) == 1);
+        assert!(menus.register_teleports(&[(skate_core::menus::EntryKind::FeLocation, "dist_downtown_aletown".to_owned(), "dist_downtown_aletown".to_owned())]) == 1);
         let registry = menus.registry;
         let context = skate_core::menus::MenuContext::new("FreePlay");
         let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
@@ -1661,6 +1661,47 @@ unhandled: {:?}", game.calls, stage.unhandled());
         assert!(counts.iter().all(|&n| n == counts[0]), "objects grow with every open: {counts:?}");
     }
 
+    /// The teleporter prompt (action overlay, Teleport state 2) draws its D-pad Up glyph: the movie's Construct sets
+    /// `mButtonImage = "DPad_Up"` and button_item2's constructor applies it after its child's construct (b452).
+    #[test]
+    fn the_teleport_prompt_shows_its_dpad_up_glyph() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/hud2/actionoverlay2") {
+            return;
+        }
+        let registry = crate::crossbar_host::test_registry();
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        for (value, name) in ["Off", "Challenge", "Teleport"].iter().enumerate() {
+            let global = stage.vm.global;
+            stage.vm.set(global, format!("kActionOverlayState_{name}"), Value::Number(value as f64)).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("SignUpHUD".into())], &mut game).unwrap();
+        stage.call_path("_global.ScreenManager.OpenScreen", vec![Value::Text("source/screens/hud2/actionoverlay2.swf".into()),
+            Value::Text("popup".into()), Value::Text("0".into()), Value::Text("SignUpHUD".into())], &mut game).unwrap();
+        for _ in 0..30 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text("2".into())], &mut game).unwrap();
+        for _ in 0..60 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
+        let prompts: Vec<&str> = draws.iter().filter(|d| d.texture.starts_with("prompt/")).map(|d| d.texture.as_str()).collect();
+        eprintln!("TELEPORT_PROMPT draws {} prompts {prompts:?}", draws.len());
+        assert!(prompts.contains(&"prompt/DPad_Up"), "prompts drawn: {prompts:?}; unhandled: {:?}", stage.unhandled());
+    }
+
     fn retail_screen_manager(close: bool) {
         let Some(root) = crate::apt_imports::test_menu_set() else {
             return;
@@ -1736,10 +1777,16 @@ unhandled: {:?}", game.calls, stage.unhandled());
         let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
         let missing: Vec<_> = draws
             .iter()
-            .filter(|d| d.fill.textured() && set.image(&d.texture).is_none())
+            // Button prompts (`prompt/<button>`) are the engine's own glyphs (prompt_glyphs.rs), not exported textures.
+            .filter(|d| d.fill.textured() && !d.texture.starts_with("prompt/") && set.image(&d.texture).is_none())
             .map(|d| d.texture.clone())
             .collect();
         eprintln!("draws: {} (textured {})", draws.len(), draws.iter().filter(|d| d.fill.textured()).count());
+        // mDLC's X (button_item2 constructor, b452) draws before InitializeMenu hides the banner, but like retail it sits
+        // above the stage until the animatein slide (root frame 0 places mDLC at y -112, research b467): never on screen.
+        for d in draws.iter().filter(|d| d.texture.starts_with("prompt/")) {
+            assert!(d.vertices.iter().all(|v| v.position[1] < 0.), "{} drawn on stage before InitializeMenu", d.texture);
+        }
         if std::env::var("SKATE3_DUMP_DRAWS").is_ok() {
             // Retail crossbar IntroComplete posts SetState(InitialiseMenu = 2) (8261B9E8).
             stage

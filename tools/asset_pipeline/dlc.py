@@ -105,6 +105,34 @@ def big_paths(package, entry) -> list[str]:
     return [e.path.replace('\\', '/') for e in index._parse()]
 
 
+def unlocks(dlc: Path | None) -> list[dict]:
+    """The `KIND,name` lines of every package's `data/unlocks/*.unlock` text files (research b458: retail rebuilds its
+    second unlock list from them, `82505220`, and the Challenge Map's location test asks it), as
+    {source, kind, name}; read from the package without copying its BIGs. Kinds stay as written (LOCATIONS, ...)."""
+    from tools.owned_game.big import BigArchive
+    result = []
+    for package in packages(dlc):
+        for entry in package.files():
+            if not entry.path.lower().endswith('.big'):
+                continue
+            head = package.read(entry, 0, 48)
+            index = BigArchive.__new__(BigArchive)
+            index.path = Path(entry.path)
+            index.file_size = entry.size
+            index.metadata = package.read(entry, 0, int.from_bytes(head[12:16], 'big') + int.from_bytes(head[16:20], 'big'))
+            for item in index._parse():
+                path = item.path.replace('\\', '/').lower()
+                if not (path.startswith('data/unlocks/') and path.endswith('.unlock')):
+                    continue
+                text = BigArchive.decode(item, package.read(entry, item.offset, item.stored_size)).decode('latin-1')
+                for line in text.splitlines():
+                    kind, _, name = line.strip().partition(',')
+                    if kind and name.strip():
+                        result.append({'source': package.display_name, 'file': path.rsplit('/', 1)[-1],
+                                       'kind': kind.strip().upper(), 'name': name.strip()})
+    return result
+
+
 def extract_bigs(dlc: Path | None, work: Path, wanted=None) -> list[Path]:
     """Copies each package's BIG archives to `work/<package file>/<big>` (kept while the size matches) and returns
     their paths. `wanted(entry_paths)` sees the BIG's entry list (read from its index) and limits which are copied."""

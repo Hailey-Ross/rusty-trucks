@@ -58,6 +58,16 @@ Engine (`crates/skate-game/src/park_layout.rs`):
   near-vertical bit as 82C1E568, owner tag `PIECE_OWNER_TAG` below the moving-rail tags).
 - Render (`map_render.rs`): the pieces spawn as `ParkPiece` entities (never `PropInstance`).
 
+Park start (the user's retail video, 2026-10-21: "in retail you spawn at the top of the big ramp"):
+- The `.park` editor tail's first matrix is the park's player start (b425 section 4 had it as "likely the saved editor
+  camera or player start"): Stadium - Full (241.2, 37.1, -91.0) on top of the big ramp, the video's first frame and
+  ours match. `park_layout.parse` reads it (`start`); `teleports.py` gives a park row its layout's start instead of
+  its location's locator, except a location with its own artwork and locator (`startpark_progression`, ours: not
+  traced for those). Test `test_the_editor_tail_holds_the_park_start`.
+- Tint: the recomp draws the pieces untinted (the deck beige), our port tinted as Skate 3's code and data give it
+  (b445; the deck's record (126, 100, 47)). The user (2026-10-21): "the shaders in ours are already better than the
+  recomp, the recomp is definitely not quite right"; decision "Keep the tints".
+
 Park teleporters (research b438; the user, 2026-10-20: "you set them to the same 'channel' and then when a player
 gets close a little dialog appears on screen asking if they want to tp"):
 - The teleporter pieces have no model. The disc vault class `Hash_D01B99210BA7323C` gives each one a channel 0..3
@@ -83,12 +93,43 @@ Movable pieces (block 2; research b435):
   the Stadium start loads the barrier with its type data, collision, grab spline and rail.
 - Open: their initial sleep state (descriptor bytes +0x50..+0x54), census culling of layout pieces.
 
+Park shading (research b433, b439 to b443):
+- The pieces' materials use Skate 3's own programs, families 50 / 51 / 52 for `environmentpark.diffuse` / `.decal` /
+  `.alphatest` (`retail_material.py`; `retail_world.wgsl` branch `fam >= 50u && fam <= 52u`, ALU slots cited). Diffuse:
+  albedo = diffuse squared times the piece's tint; the tangent normal is not normalised before the frame; the light is
+  the tangent-frame pseudo light (kd, as dynamicobject's) times min(lerp(dynamic shadow colour, 1, visibility),
+  lerp(exponential shadow colour, 1, saturate(10 N.L) x visibility), projected lightmap), with no direct N.L,
+  counter light or ambient; the specular reflects the world's literal light, unshadowed; fog scale m_params.y. Decal:
+  the same, with the decal mixed in by its alpha before the tint and the detail normal. Alphatest: dynamicobject's
+  shape with the occlusion in place of its shadow; output alpha = the raw diffuse alpha, tested at 30 / 255
+  (`GREATEREQUAL`, blend state 1, b441), two-sided.
+- Data: the tint per piece (layout record, white default; b439: the renderer's slots start white and take the
+  record's), the shadow colours per park world (the world row's two Vector4 fields when its park bool is set; other
+  worlds (0.2, 0.2, 0.2), the retail code constant; written into each layout's sidecar as `shadow_colours`), and the
+  park materials' `m_params` rows (vault class `material_environmentpark`, now in `render-parameters.json`; an older
+  install falls back to the retail fog scale 1). The engine gives each piece a material with its `ParkDraw` (tint +
+  colours), one per distinct value (at most 97 per layout).
+- Projected lightmap (b439, b440, b444): each park world row names a lightmap (`Hash_AA9212BDE5A603B4`) and its
+  x0, x1, z0, z1 bounds; the textures are 512 x 512 DXT1 RX2s (disc `miscboot.big` `data/content/textures/`: megapark,
+  startpark, downtown, industrial; the Create pack: backlot, downtownlightmapnight; the San Van pack: zenplaza).
+  Setup binds the layout's lightmap as every piece material's lightmap channel and writes `projected_lightmap`
+  (texture, bounds) into the sidecar; the shader samples it once at retail's projection, u = (z - z0) / dz +
+  y lz / (ly |dz|), v = (x - x0) / dx - y lx / (ly |dx|) (the `|d|` form kept as retail has it, also for Back Lot's
+  reversed bounds), L = the sun direction toward the sun [code for the convention; that L equals our render
+  location's sun direction is not traced, b444], used linearly inside the occlusion min. All 11 park layouts get
+  theirs.
+- Decal UVs: the piece export first wrote only the diffuse UV set, so the decal programs fell back to it. The user
+  (2026-10-21, Stadium - Full): "It looked like they are not mapped to it properly, it seemed like the right texture,
+  but like it was offset weirdly on the object". Each mesh now carries its decal UV set (`decode_decal_uvs`, as the
+  map exporter writes it); after the fix: "that time it looked much better".
+- Ours: our one shadow map feeds both of retail's shadow terms; the lightmap sampler addressing (retail's sampler
+  state was not found; ours repeats); the alphatest specular's occlusion channel (green taken).
+
 Not retail (ours, the same outcome): a layout change reloads the map instead of re-applying in place; piece rails
 join the static pass, so under the 40-record cap they come before the props (retail queries them after the DMO
 provider; parks have few props).
 
-NOT RETAIL YET: the `environmentpark.*` shaders and the tint (pieces draw with the fallback family; b433 has the
-shader inputs and the change list); the movable pieces (block 2: b435); the DLC packs' recipe precedence.
+NOT RETAIL YET: the parks' projected lightmaps (see "Park shading"); the DLC packs' recipe precedence.
 
 ## Moddability and multiplayer
 

@@ -542,6 +542,9 @@ pub(crate) struct WorldMaterial {
     pub page_7: Handle<Image>,
     #[texture(12, dimension = "cube_array")]
     pub cubes: Handle<Image>,
+    /// The per-draw inputs of the environmentpark programs (skate.Park pieces; [ParkDraw]).
+    #[uniform(13)]
+    pub park: ParkDraw,
     pub class: RenderClass,
 }
 
@@ -566,7 +569,33 @@ impl WorldMaterial {
             page_6: pages[6].clone(),
             page_7: pages[7].clone(),
             cubes,
+            park: ParkDraw::default(),
             class,
+        }
+    }
+}
+
+/// The per-draw inputs of the environmentpark programs (research b442 / b443): the piece's tint (`i_tint_colour`,
+/// multiplies the squared diffuse; the layout record, white by default, b439) and its world's g_DynamicShadowColour /
+/// g_ExponentialShadowColour (a park world's row; (0.2, 0.2, 0.2) elsewhere, the retail code constant). Unused by
+/// every other program.
+#[derive(bevy::render::render_resource::ShaderType, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ParkDraw {
+    pub tint: Vec4,
+    pub dynamic_shadow: Vec4,
+    pub exponential_shadow: Vec4,
+    /// The world's projected lightmap bounds (x0, x1, z0, z1; research b440), bound as the material's lightmap
+    /// channel; zero = none (neutral 1).
+    pub lightmap_bounds: Vec4,
+}
+
+impl Default for ParkDraw {
+    fn default() -> Self {
+        Self {
+            tint: Vec4::ONE,
+            dynamic_shadow: Vec4::new(0.2, 0.2, 0.2, 1.0),
+            exponential_shadow: Vec4::new(0.2, 0.2, 0.2, 1.0),
+            lightmap_bounds: Vec4::ZERO,
         }
     }
 }
@@ -821,6 +850,9 @@ impl Definition {
 
     pub(crate) fn supported(&self, tuning: &MaterialTuning) -> bool {
         (1..=13).contains(&self.family)
+            // environmentpark_*PS (skate.Park pieces, research b442): their m_params rows fall back to the retail
+            // fog scale when an older install lacks them (Request::new).
+            || (50..=52).contains(&self.family)
             || self.family == TRANSPARENT_ENVIRONMENT_FAMILY
             || self.family == ADVERTISEMENT_FAMILY
             || self.family == INCANDESCENT_TRANSPARENT_FAMILY
@@ -1019,6 +1051,9 @@ pub(crate) struct MaterialTable {
     /// renderable geometry contribution.
     entries: Vec<Option<MaterialEntry>>,
     materials: HashMap<(u16, RenderClass), Handle<WorldMaterial>>,
+    /// The untinted materials, to derive tinted ones from ([MaterialTable::tinted]).
+    values: HashMap<(u16, RenderClass), WorldMaterial>,
+    tinted: HashMap<(u16, RenderClass, [u32; 13]), Handle<WorldMaterial>>,
     slabs: u16,
 }
 
@@ -1038,6 +1073,26 @@ impl MaterialTable {
             .get(&(slab, class))
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// [MaterialTable::material] with a skate.Park piece's draw inputs (its tint, its world's shadow colours): one
+    /// material per distinct (slab, class, inputs), sharing the plain one's buffers and pages.
+    pub(crate) fn tinted(&mut self, slab: u16, class: RenderClass, draw: ParkDraw, sink: &mut impl AssetSink<WorldMaterial>) -> Handle<WorldMaterial> {
+        if draw == ParkDraw::default() {
+            return self.material(slab, class);
+        }
+        let bits = |v: Vec4| v.truncate().to_array().map(f32::to_bits);
+        let [a, b, c] = [bits(draw.tint), bits(draw.dynamic_shadow), bits(draw.exponential_shadow)];
+        let l = draw.lightmap_bounds.to_array().map(f32::to_bits);
+        let key = (slab, class, [a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], l[0], l[1], l[2], l[3]]);
+        if let Some(handle) = self.tinted.get(&key) {
+            return handle.clone();
+        }
+        let Some(mut material) = self.values.get(&(slab, class)).cloned() else { return self.material(slab, class) };
+        material.park = draw;
+        let handle = sink.add(material);
+        self.tinted.insert(key, handle.clone());
+        handle
     }
 
     pub(crate) fn slab_count(&self) -> usize {
@@ -1150,6 +1205,8 @@ impl MaterialTable {
         let mut table = Self {
             entries: vec![None; map.materials.len()],
             materials: HashMap::new(),
+            values: HashMap::new(),
+            tinted: HashMap::new(),
             slabs: 0,
         };
         let mut slab = Slab::new(&page_sizes);
@@ -1204,14 +1261,9 @@ impl MaterialTable {
         let pages = std::array::from_fn(|class| slab.upload_page(class, map, images));
         let cubes = slab.upload_cubes(map, images);
         for class in RenderClass::ALL {
-            let material = materials.add(WorldMaterial::with_pages(
-                params.clone(),
-                slots.clone(),
-                &pages,
-                cubes.clone(),
-                class,
-            ));
-            self.materials.insert((index, class), material);
+            let value = WorldMaterial::with_pages(params.clone(), slots.clone(), &pages, cubes.clone(), class);
+            self.values.insert((index, class), value.clone());
+            self.materials.insert((index, class), materials.add(value));
         }
     }
 }
@@ -1376,6 +1428,11 @@ impl Request {
             for (to, from) in water.iter_mut().zip(rows) {
                 *to = Vec4::from_array(*from);
             }
+        }
+        if matches!(definition.family, 50..=52) && !tuning.rows.contains_key(&definition.shader) {
+            // An install from before the environmentpark rows (render_parameters.py): the retail rows'
+            // m_params[0].y fog scale 1 (research b443: diffuse / decal / alphatest all 1), nothing else.
+            water[0] = Vec4::new(0., 1., 0., 0.);
         }
         if definition.family == 14 {
             water[1] = Vec4::new(
@@ -2651,9 +2708,9 @@ mod tests {
         // and the world floor constant stays a lightmapped-receiver rule.
         assert!(branch.contains("fetch_directional_shadow") && branch.contains("& 5u)==5u"));
         assert!(!branch.contains("frame_state.shadow.rgb"));
-        assert!(src.contains("if fam == 15u { fog_a *= p.water[0].y; }"));
+        assert!(src.contains("if fam == 15u || (fam >= 50u && fam <= 52u) { fog_a *= p.water[0].y; }"));
         // Normal maps are sampled for this family.
-        assert!(src.contains("(fam <= 6u || fam == 13u || fam == 15u)"));
+        assert!(src.contains("(fam <= 6u || fam == 13u || fam == 15u || (fam >= 50u && fam <= 52u))"));
     }
 
     #[test]

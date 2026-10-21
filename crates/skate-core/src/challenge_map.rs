@@ -94,7 +94,10 @@ impl ChallengeMapState {
             .map_children(&node)
             .into_iter()
             .filter(|n| registry.visible(&n.entry, ctx))
-            .map(|n| Row { entry: n.entry.clone(), label: n.label.clone(), enabled: registry.enabled(&n.entry, ctx) })
+            // A map_category header is never greyed (OnMenuGetItemEnabled `82646D18` defaults to enabled, b454); it is
+            // a header clip the cursor skips.
+            .map(|n| Row { entry: n.entry.clone(), label: n.label.clone(),
+                enabled: n.entry.kind == EntryKind::MapCategory || registry.enabled(&n.entry, ctx) })
             .collect()
     }
 
@@ -172,7 +175,8 @@ impl ChallengeMapState {
     pub fn select(&mut self, registry: &MenuRegistry, ctx: &MenuContext, index: usize) -> Action {
         let rows = self.rows(registry, ctx);
         let Some(row) = rows.get(index) else { return Action::None };
-        if !row.enabled {
+        // A map_category header row does nothing (`826475B8`, research b454).
+        if !row.enabled || row.entry.kind == EntryKind::MapCategory {
             return Action::None;
         }
         if row.entry.kind.is_map_folder() {

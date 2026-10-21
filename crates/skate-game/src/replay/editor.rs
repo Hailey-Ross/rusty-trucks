@@ -248,7 +248,15 @@ impl Editor {
     /// The camera at `time` on the skater root: the key in effect (a soft key blends into the next soft key of the
     /// same camera), and its lens; (None, None) = the recorded camera at its own lens.
     pub fn pose(&self, time: f64, root: &bevy::prelude::Transform) -> (Option<bevy::prelude::Transform>, Option<f32>) {
-        let Some(i) = self.active(time) else { return (None, None) };
+        let Some((_, camera, lens)) = self.camera_at(time) else { return (None, None) };
+        let fov = (lens != self.camera_rules.lens_default || camera != super::camera_key::CameraKey::Game)
+            .then(|| super::camera_key::lens_fov(lens));
+        (super::camera_key::pose(&camera, root), fov)
+    }
+
+    /// The camera key at `time` (soft keys blended) with the index of its clip camera, and its lens.
+    pub fn camera_at(&self, time: f64) -> Option<(usize, super::camera_key::CameraKey, f32)> {
+        let i = self.active(time)?;
         let (mut camera, mut lens) = (self.cameras[i].camera, self.cameras[i].lens);
         if let Some(next) = self.cameras.get(i + 1).filter(|n| self.cameras[i].soft && n.soft) {
             let a = self.cameras[i].frame as f64;
@@ -258,9 +266,7 @@ impl Editor {
                 lens += (next.lens - lens) * u;
             }
         }
-        let fov = (lens != self.camera_rules.lens_default || camera != super::camera_key::CameraKey::Game)
-            .then(|| super::camera_key::lens_fov(lens));
-        (super::camera_key::pose(&camera, root), fov)
+        Some((i, camera, lens))
     }
 
     /// D-pad Left / Right released: the previous / next marker (the screen's "Skip to previous / next marker"),
@@ -311,9 +317,13 @@ impl Editor {
 
     /// D-pad Up released, answered Yes (b407, `82613910` -> `82C7FD60`): remove the key at the cursor. A clip marker
     /// also takes every soft key in the clips on both sides, up to the next hard key each way (`82C7FB08`; retail's
-    /// own text, ID_REPLAY_EDITOR_POPUP_CLIPMARKER). NOT RETAIL YET: retail also resets the merged clip's speed and
-    /// shake (channel 0); our speed / shake lanes keep their values.
-    pub fn remove_marker(&mut self, time: f64) -> bool {
+    /// own text, ID_REPLAY_EDITOR_POPUP_CLIPMARKER). On the camera channel a clip marker delete also resets the merged
+    /// clip (research b460, `825086F0`): the surviving key before it gets the default lens (clamped to the lens
+    /// range), and speed / shake take their lane defaults: over the whole merged span without the film pack (retail
+    /// removes the marker on channels 0 / 5 / 4 / 1 together), only the value in effect at the cursor with it
+    /// (`channels`). Look lanes and soft key deletes are untouched. Retail's near clip (channel 1 element 0xE, 0.1) has
+    /// no counterpart here. Values are data (`CameraRules`, the lanes' `LaneSpec::default`).
+    pub fn remove_marker(&mut self, time: f64, channels: bool) -> bool {
         let Some(i) = self.key_near(time) else { return false };
         if self.cameras[i].soft {
             self.cameras.remove(i);
@@ -321,6 +331,22 @@ impl Editor {
             let lo = self.cameras[..i].iter().rposition(|k| !k.soft).map_or(0, |p| p + 1);
             let hi = self.cameras[i + 1..].iter().position(|k| !k.soft).map_or(self.cameras.len(), |p| i + 1 + p);
             self.cameras.drain(lo..hi);
+            if self.channel == 0 {
+                let (start, end) = self.head_frames();
+                let from = lo.checked_sub(1).map_or(start, |p| self.cameras[p].frame);
+                let to = self.cameras.get(lo).map_or(end, |k| k.frame);
+                for lane in [Lane::Speed, Lane::Shake] {
+                    let _ = if channels {
+                        self.edit.reset_at(self.clip, lane, self.frame(time))
+                    } else {
+                        self.edit.reset_span(self.clip, lane, from, to)
+                    };
+                }
+                if let Some(p) = lo.checked_sub(1) {
+                    let (min, max) = self.camera_rules.lens_range;
+                    self.cameras[p].lens = self.camera_rules.lens_default.clamp(min, max);
+                }
+            }
         }
         self.editing = None;
         true
@@ -454,9 +480,10 @@ mod tests {
         assert!(e.adjust_row(20.0, -1));
         assert_eq!(e.lane_value(Lane::Shake, 21.0), 3);
         assert_eq!((e.skip(15.0, true), e.skip(25.0, false), e.skip(25.0, true)), (20.0, 20.0, 28.0));
-        assert!(e.remove_marker(20.0));
-        assert!(e.cameras.is_empty(), "the camera key went; the speed lane keeps its value");
-        assert!((e.speed(21.0) - 0.9).abs() < 1e-6);
+        assert!(e.remove_marker(20.0, false));
+        // b460: the merged clip (here the whole clip) takes the speed / shake defaults.
+        assert!(e.cameras.is_empty(), "the camera key went");
+        assert_eq!((e.speed(21.0), e.lane_value(Lane::Shake, 21.0)), (1.0, 0));
     }
 
     /// Camera keys (b405): picking a basic camera inserts a hard key at the playhead (the pose holds and cuts), an
@@ -543,12 +570,41 @@ mod tests {
         assert_eq!(e.marker_kind(18.0), Some(MarkerKind::Key));
         assert_eq!(e.marker_kind(16.0), None);
         assert!(e.drop_needs_confirm(9.0) && !e.drop_needs_confirm(16.0));
-        // A key marker goes alone.
-        assert!(e.remove_marker(20.0));
+        // Lane values to watch: speed 50 from 14, shake 2 from 16, a look marker at 15, a speed marker at 26.
+        let f = |t: f64| e.frame(t);
+        let (f14, f15, f16, f26) = (f(14.0), f(15.0), f(16.0), f(26.0));
+        e.edit.clips[e.clip].markers[Lane::Speed.index()] = vec![(f14, 50), (f26, 70)];
+        e.edit.clips[e.clip].markers[Lane::Shake.index()] = vec![(f16, 2)];
+        e.edit.clips[e.clip].markers[Lane::Brightness.index()] = vec![(f15, 40)];
+        e.cameras[0].lens = 50.0;
+        // A key marker goes alone, with no reset.
+        assert!(e.remove_marker(20.0, false));
         assert_eq!(e.cameras.len(), 6);
+        assert_eq!(e.lane_value(Lane::Speed, 15.0), 50);
         // The clip marker at 14 takes 8, 10 and 18; the hard keys at 4 and 24 stay.
-        assert!(e.remove_marker(14.0));
+        assert!(e.remove_marker(14.0, false));
         assert_eq!(e.cameras.iter().map(|k| (k.frame, k.soft)).collect::<Vec<_>>(), vec![(e.frame(4.0), false), (e.frame(24.0), false)]);
-        assert!(!e.remove_marker(14.0));
+        assert!(!e.remove_marker(14.0, false));
+        // b460: the merged clip 4..24 takes the speed / shake defaults and the key at 4 the default lens; the clip
+        // after 24 keeps its speed; look lanes are untouched.
+        assert_eq!((e.lane_value(Lane::Speed, 15.0), e.lane_value(Lane::Shake, 17.0)), (100, 0));
+        assert_eq!(e.lane_value(Lane::Speed, 27.0), 70);
+        assert_eq!(e.lane_value(Lane::Brightness, 16.0), 40);
+        assert_eq!(e.cameras[0].lens, e.camera_rules.lens_default);
+    }
+
+    /// b460, with the film pack's channels: only the lane value in effect at the cursor resets.
+    #[test]
+    fn a_clip_delete_with_the_film_pack_resets_only_the_values_at_the_cursor() {
+        use bevy::prelude::Transform;
+        let mut e = Editor::open(0.0, 30.0, EditLimits::default()).unwrap();
+        let (root, view) = (Transform::IDENTITY, Transform::from_xyz(0.0, 2.0, 5.0));
+        for (t, row) in [(20.0, 1), (28.0, 0)] {
+            assert!(e.pick_camera(row, t, &view, &root).is_some(), "{t}");
+        }
+        let (f22, f29) = (e.frame(22.0), e.frame(29.0));
+        e.edit.clips[e.clip].markers[Lane::Speed.index()] = vec![(f22, 50), (f29, 30)];
+        assert!(e.remove_marker(28.0, true));
+        assert_eq!(e.edit.clips[e.clip].markers[Lane::Speed.index()], vec![(f22, 100), (f29, 30)]);
     }
 }

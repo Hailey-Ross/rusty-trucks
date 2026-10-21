@@ -190,6 +190,32 @@ class Emitters(unittest.TestCase):
         with self.assertRaises(ValueError):
             audio.ems_emitters(struct.pack('>I', 2) + bytes(72))
 
+    def test_a_packs_emitter_file_places_its_banks_including_its_own(self):
+        # b432: a pack's .ems is its map's own emitter file; its sounds name the pack's loose banks or disc banks.
+        from types import SimpleNamespace
+
+        class Archive:
+            def __init__(self, files):
+                self.files = files
+                self.entries = [SimpleNamespace(path=p) for p in files]
+
+            def read(self, entry):
+                return self.files[entry.path]
+
+        def ems(*sounds):
+            return struct.pack('>I', len(sounds)) + b''.join(audio.EMS_RECORD.pack(
+                1, 0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, s, 1.0, 1.0, 1.0, 1.0) for s in sounds)
+        own, disc, reverb = audio.name_id('cage_rattle_1'), audio.name_id('frogs'), audio.name_id('room')
+        attributes = {own: {'bank_file': 'cage_rattle_1.abk'}, disc: {'bank_file': 'frogs.abk'},
+                      reverb: {'bank_file': 'reverb_room.abk'}}
+        files = Archive({'data/audio/frogs.abk': b'', 'data/audio/reverb_room.abk': b'',
+                         'data/audio/reverb_city.ems': ems(reverb)})
+        pack = Archive({'data/audio/DLC_sanitarium.ems': ems(own, disc), 'data/audio/cage_rattle_1.abk': b''})
+        from .audio_export import emitters
+        listed, placed = emitters(files, attributes, [pack])
+        self.assertEqual([r['bank'] for r in listed['DLC_sanitarium']], ['cage_rattle_1', 'frogs'])
+        self.assertEqual(placed, {'cage_rattle_1.abk', 'frogs.abk'}, 'not the disc reverb file (no sfx_ prefix)')
+
 
 class EmitterAttributes(unittest.TestCase):
     def test_inherited_fields_resolve_through_parents(self):

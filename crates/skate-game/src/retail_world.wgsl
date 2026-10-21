@@ -94,7 +94,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     var overlay_sample = vec3<f32>(0.5);
     var art = vec4<f32>(0.0);
     var masks = vec3<f32>(0.0);
-    if (flags & 1u) != 0u && (fam <= 6u || fam == 13u || fam == 15u) { nm = bindings::sample_normal_map(slot,i.uv,g).rgb; }
+    if (flags & 1u) != 0u && (fam <= 6u || fam == 13u || fam == 15u || (fam >= 50u && fam <= 52u)) { nm = bindings::sample_normal_map(slot,i.uv,g).rgb; }
     if (flags & 2u) != 0u && fam != 2u {
         detail = bindings::sample_detail_map(slot,bindings::scaled_uv(i.uv,p.surface.z),g_detail).rg;
     }
@@ -103,7 +103,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         if (flags & 128u) != 0u { detail = bindings::load_detail(slot,vec2<i32>(0),0).rg; }
     }
     if (flags & 4u) != 0u { overlay_sample = bindings::sample_macro_map(slot,bindings::scaled_uv(i.uv,p.surface.x),g_macro).rgb; }
-    if (flags & 8u) != 0u && (fam == 3u || fam == 4u) { art = bindings::sample_decal_map(slot,i.color.xy,g_decal); }
+    if (flags & 8u) != 0u && (fam == 3u || fam == 4u || fam == 51u) { art = bindings::sample_decal_map(slot,i.color.xy,g_decal); }
     if (flags & 16u) != 0u { masks = bindings::sample_specular_map(slot,i.uv,g).rgb; }
     var wn = normalize(i.world_normal);
     let dp1 = dpdx(i.world_position.xyz);
@@ -394,8 +394,72 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         if fam == 11u { lin *= p.family.w; }
         // transparentincandescent_defaultPS 14: output alpha = diffuse alpha.
         if fam == 18u { alpha = a.a; }
-    } else if fam == 15u {
-        // dynamicobject_defaultPS (props). Instruction numbers are the shader's
+    } else if fam >= 50u && fam <= 52u {
+        // environmentpark{diffuse,decal,alphatest}_defaultPS: the skate.Park pieces (research b442, slot numbers of
+        // the diffuse program; doc 39 "Park shading"). Tint and the two shadow colours: ParkDraw (b443).
+        let park = bindings::material_park;
+        // 14..28: 2 * normal - 1, NOT normalised before the frame (diffuse); decal adds the detail normal
+        // (2 * detail - 2); alphatest is shaped like dynamicobject: detail added, normalised.
+        var nt = nm*2.0-1.0;
+        if fam != 50u && (flags & 2u) != 0u { nt = vec3<f32>(nm.xy*2.0+detail*2.0-2.0,nm.z*2.0-1.0); }
+        if fam == 52u { nt = nt*inverseSqrt(max(dot(nt,nt),1e-12)); }
+        let n = normalize(nt.x*kt+nt.y*kb+nt.z*wn);
+        // 57..81: the tangent-frame pseudo light, as dynamicobject's.
+        let kd = (0.58*sign(dot(kt,sun))*nt.x+0.62*sign(dot(kb,sun))*nt.y+0.39*nt.z)*2.39562;
+        let nl = dot(n,sun);
+        var csm = 1.0;
+        if frame_state.shadow.w>0.0 {
+            let view_z=(frame::view.view_from_world*i.world_position).z;
+            for (var light_id=0u; light_id<frame::lights.n_directional_lights; light_id+=1u) {
+                if (frame::lights.directional_lights[light_id].flags & 5u)==5u {
+                    csm=fetch_directional_shadow(light_id,i.world_position,wn,view_z);
+                    break;
+                }
+            }
+        }
+        // 29..30, 54..56, 66..67, 77..78: min(lerp(dynamic colour, 1, blurred visibility), lerp(exponential colour,
+        // 1, saturate(10 N.L) * exponential visibility), projected lightmap). Retail has two shadow terms; our one
+        // shadow map feeds both (ours).
+        // The park's projected lightmap (skateparkProjectedLightmap, one tap, used linearly; b439 / b440 / b444):
+        // g_skateparkProjectedTransform from the world's bounds, the ground projection along the sun (L = the sun
+        // direction, toward the sun): u = (z - z0) / dz + y lz / (ly |dz|), v = (x - x0) / dx - y lx / (ly |dx|).
+        // Texture rows are flipped at export (map_writer), so v is flipped back. No bounds: neutral 1.
+        var plm = vec3<f32>(1.0);
+        let lb = park.lightmap_bounds;
+        if lb.y != lb.x && lb.w != lb.z && (flags & 32u) != 0u {
+            let w = i.world_position.xyz;
+            let dx = lb.y-lb.x;
+            let dz = lb.w-lb.z;
+            let ly = select(sun.y,1e-4,abs(sun.y)<1e-4);
+            let u = (w.z-lb.z)/dz+w.y*sun.z/(ly*abs(dz));
+            let v = (w.x-lb.x)/dx-w.y*sun.x/(ly*abs(dx));
+            plm = bindings::sample_lightmap(slot,vec2<f32>(u,1.0-v),0.0).rgb;
+        }
+        let occ = min(min(mix(park.dynamic_shadow.rgb,vec3<f32>(1.0),csm),
+            mix(park.exponential_shadow.rgb,vec3<f32>(1.0),saturate(10.0*nl)*csm)),plm);
+        // 15, 19: diffuse^2 (decal: lerp to decal^2 by decal alpha first) times the tint.
+        if fam == 51u && (flags & 8u) != 0u { d = mix(d,art.rgb*art.rgb,art.a); }
+        d *= park.tint.rgb;
+        var light = kd*occ;
+        if fam == 52u {
+            // alphatest: dynamicobject's direct + counter + ambient (m_params[1]), occ in place of its shadow.
+            let counter = p.water[1].w*saturate(dot(n,vec3<f32>(-sun.x,sun.y,-sun.z)));
+            light = kd*(saturate(nl)*occ+vec3<f32>(counter)+p.water[1].xyz);
+        }
+        lin = light*d;
+        if (flags & 16u) != 0u {
+            // The world literal light reflected about n, power 10 + 290 * specular.g, not shadowed (alphatest:
+            // times occ, one channel; which one is open, green taken as the world path does).
+            let lit = vec3<f32>(-0.14,0.5,0.9);
+            let reflected = lit-2.0*n*dot(n,lit);
+            let ks = pow(max(saturate(dot(vd,-reflected)),1e-6),10.0+290.0*masks.y);
+            var s = ks*vec3<f32>(2.1,1.8,1.5)*masks.x;
+            if fam == 52u { s *= occ.g; }
+            lin += s;
+        }
+        // alphatest 112: oC0.w = the raw diffuse alpha; the others are opaque.
+        alpha = select(1.0,a.a,fam == 52u);
+    } else if fam == 15u {        // dynamicobject_defaultPS (props). Instruction numbers are the shader's
         // ALU slots; see doc 27 "D9". c9 g_vLightDir is the authored sun
         // direction, c14/c15 m_params are p.water[0]/p.water[1].
         // 12, 20..24: detail normal added in tangent space.
@@ -506,7 +570,8 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     var fog_a = 1.0+p.fog_color.a*f;
     if fam <= 8u || fam == 12u || fam == 13u || (fam >= 16u && fam <= 20u) { fog_a *= p.surface.w; }
     // dynamicobject_defaultPS 98, 101: m_params[0].y scales the fogged light.
-    if fam == 15u { fog_a *= p.water[0].y; }
+    // environmentpark_*PS: the same m_params[0].y fog scale (research b442).
+    if fam == 15u || (fam >= 50u && fam <= 52u) { fog_a *= p.water[0].y; }
     var xe = max((lin*fog_a+p.fog_color.rgb*f)*p.mode.w,vec3<f32>(0.0));
     // Reduced curve is the full curve with the linear input capped at one.
     // advertisement_defaultPS 36..41 use the same reduced curve.

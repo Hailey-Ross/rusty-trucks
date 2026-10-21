@@ -121,6 +121,8 @@ struct MarkerAsk {
     delete: Option<editor::MarkerKind>,
     time: f64,
     shown: bool,
+    /// The film pack's channels are on (a clip delete resets only the lane values at the cursor, b460).
+    channels: bool,
 }
 
 /// Retail's marker questions (b407, strings from the movie's language table; No / Yes): delete a clip marker
@@ -145,7 +147,7 @@ fn marker_popup(delete: Option<editor::MarkerKind>) -> skate_core::fe_popup::Pop
 fn apply_marker_ask(replay: &mut Replay, ask: MarkerAsk) {
     let Some(editor) = replay.editor.as_mut() else { return };
     if ask.delete.is_some() {
-        editor.remove_marker(ask.time);
+        editor.remove_marker(ask.time, ask.channels);
     } else if let Err(e) = editor.drop_marker(ask.time) {
         info!("REPLAY_EDITOR marker refused: {e:?}");
     }
@@ -201,8 +203,10 @@ pub(crate) struct Replay {
     /// The cursor the audio feed last published up to, and whether it moved forward this frame.
     fed: Option<f64>,
     audible: bool,
-    /// How far the free camera may go from the player (m); None = retail's [`FREE_CAMERA_LEASH`]. Data, mod-settable.
-    pub(crate) free_camera_leash: Option<f32>,
+    /// The replay cameras' leash and world collision (retail defaults; `sdk.replay.set_camera`).
+    pub(crate) camera_collision: camera_collision::CameraCollision,
+    /// The mod whose `sdk.replay.set_camera` is in force (last writer wins).
+    camera_owner: Option<String>,
     /// The quit warning is up (waiting for its answer).
     quit_pending: bool,
     /// A marker delete / drop waiting for its confirm popup.
@@ -373,10 +377,30 @@ impl Replay {
         self.limits_owner = Some(owner.to_string());
     }
 
-    /// A mod stopped: its markers and its limits go.
+    /// `sdk.replay.set_camera`: the camera collision switch, radius and leash; all absent restores retail's.
+    pub(crate) fn set_camera(&mut self, owner: &str, collide: Option<bool>, radius: Option<f32>, leash: Option<f32>) {
+        let retail = camera_collision::CameraCollision::default();
+        if collide.is_none() && radius.is_none() && leash.is_none() {
+            if self.camera_owner.as_deref() == Some(owner) {
+                self.camera_collision = retail;
+                self.camera_owner = None;
+            }
+            return;
+        }
+        self.camera_collision = camera_collision::CameraCollision {
+            enabled: collide.unwrap_or(retail.enabled),
+            radius: radius.unwrap_or(retail.radius),
+            leash: leash.unwrap_or(retail.leash),
+            ..retail
+        };
+        self.camera_owner = Some(owner.to_string());
+    }
+
+    /// A mod stopped: its markers, its limits and its camera rules go.
     pub(crate) fn clear_owner(&mut self, owner: &str) {
         self.markers.retain(|m| m.owner != owner);
         self.set_limits(owner, None, None);
+        self.set_camera(owner, None, None, None);
     }
 
     /// Every mod stopped.
@@ -384,6 +408,8 @@ impl Replay {
         self.markers.clear();
         self.world.limits = self.base_limits();
         self.limits_owner = None;
+        self.camera_collision = Default::default();
+        self.camera_owner = None;
     }
 
     /// Read-only state for the mod snapshot (`replay_state`).
@@ -517,8 +543,8 @@ impl Plugin for ReplayPlugin {
         // The NPC skaters' and peds' fade (spawn fade-in, leave fade, camera-distance fade).
         components::track::<crate::living_world::npc_skaters::NpcFade>(app);
         // Their one-shot sounds (speech stays out: retail blocks speech in replay).
-        messages::track::<crate::world_audio::VehicleHorn>(app);
-        messages::track::<crate::world_audio::VehicleAlarm>(app);
+        // The horn / alarm as a recorded STATE, not one-shots (b409): a seek or rewind into a sounding one plays it.
+        components::track::<crate::world_audio::VehicleHornState>(app);
         messages::track::<crate::world_audio::PedTazerEvent>(app);
         messages::track::<crate::world_audio::PedBodyFallEvent>(app);
         app.init_resource::<Replay>()
@@ -581,6 +607,7 @@ fn editor_controls(
     pad: &crate::input::RawInput,
     keys: &ButtonInput<KeyCode>,
     dt: f32,
+    sound: &mut Option<&'static str>,
 ) -> bool {
     use skate_core::replay_edit::session::EditorMode;
     let cursor = replay.cursor;
@@ -680,15 +707,23 @@ fn editor_controls(
             // cursor after retail's question (b407: key ids 0x21 / 0x20 in `82612C28`).
             if released & DPAD_DOWN != 0 || keys.just_pressed(KeyCode::KeyM) {
                 if editor.drop_needs_confirm(cursor) {
-                    ask = Some(MarkerAsk { delete: None, time: cursor, shown: false });
+                    ask = Some(MarkerAsk { delete: None, time: cursor, shown: false, channels });
                 } else if let Err(e) = editor.drop_marker(cursor) {
                     info!("REPLAY_EDITOR marker refused: {e:?}");
                 }
             }
+            // Retail's sounds (b459, `82613650`): `editor_up_marker` as the question opens (none on Yes),
+            // `core_error` when no marker is under the cursor.
             if released & DPAD_UP != 0 || keys.just_pressed(KeyCode::KeyN) {
                 match editor.marker_kind(cursor) {
-                    Some(kind) => ask = Some(MarkerAsk { delete: Some(kind), time: cursor, shown: false }),
-                    None => info!("REPLAY_EDITOR delete refused: no marker at the cursor"),
+                    Some(kind) => {
+                        ask = Some(MarkerAsk { delete: Some(kind), time: cursor, shown: false, channels });
+                        *sound = Some("editor_up_marker");
+                    }
+                    None => {
+                        *sound = Some("core_error");
+                        info!("REPLAY_EDITOR delete refused: no marker at the cursor");
+                    }
                 }
             }
             let (start, end) = editor.heads();
@@ -765,6 +800,29 @@ impl Replay {
         editor.pose(self.cursor, root)
     }
 
+    /// [`Self::editor_camera`] held out of the world by retail's constraint (b449). View only: the stored keys keep
+    /// their pose (whether retail rewrites them on playback is open). A new shot or a cursor jump is a cut.
+    pub(crate) fn guarded_editor_camera(&self, root: &Transform, guard: &mut CameraGuard,
+        world: Option<&skate_core::physics::board_world::BoardWorld>) -> (Option<Transform>, Option<f32>) {
+        let (pose, fov) = self.editor_camera(root);
+        let shot = self.editor.as_ref().and_then(|e| e.camera_at(self.cursor));
+        let (Some(mut pose), Some((index, key, _))) = (pose, shot) else {
+            *guard = CameraGuard::default();
+            return (pose, fov);
+        };
+        let cut = guard.shot != Some(index) || (self.cursor - guard.cursor).abs() > CameraGuard::CUT_SECONDS;
+        let old = if cut { None } else { guard.last };
+        let free = matches!(key, camera_key::CameraKey::Free { .. });
+        let c = camera_collision::constrain(old, pose.translation, root.translation, free, &self.camera_collision,
+            |from, to, radius| world.and_then(|w| camera_collision::sweep(w, from, to, radius)));
+        pose.translation = c.position;
+        if let Some(look) = camera_key::look_point(&key, root).filter(|_| c.relook) {
+            pose.look_at(look, Vec3::Y);
+        }
+        *guard = CameraGuard { last: Some(c.position), shot: Some(index), cursor: self.cursor };
+        (Some(pose), fov)
+    }
+
     pub(crate) fn shake(&self) -> Option<Transform> {
         let editor = self.editor.as_ref()?;
         let level = editor.lane_value(skate_core::replay_edit::Lane::Shake, self.cursor);
@@ -774,6 +832,20 @@ impl Replay {
         let (q, p) = skate_core::replay_edit::shake::sample(&self.shake_clips, level, t)?;
         Some(Transform::from_translation(Vec3::from_array(p)).with_rotation(Quat::from_xyzw(q[0], q[1], q[2], q[3]).normalize()))
     }
+}
+
+/// The editor camera's last accepted position for the world constraint (retail keeps it in the constraint object,
+/// +0x40), the clip camera it belongs to and the cursor it was taken at.
+#[derive(Default)]
+pub(crate) struct CameraGuard {
+    last: Option<Vec3>,
+    shot: Option<usize>,
+    cursor: f64,
+}
+
+impl CameraGuard {
+    /// OURS: a cursor step longer than this (s) is a jump (scrub to a marker, rewind), not camera motion.
+    const CUT_SECONDS: f64 = 0.25;
 }
 
 pub(crate) fn world_live(replay: Option<Res<Replay>>) -> bool {
@@ -798,6 +870,7 @@ pub(crate) fn controls(
     look_screen: Option<Res<ReplayLookScreen>>,
     mut sounds: MessageWriter<crate::ui_audio::FrontendSound>,
     mut export: Option<ResMut<export_run::ReplayExport>>,
+    physics: Option<Res<crate::physics::GamePhysics>>,
 ) {
     if replay.exporting || export.as_ref().is_some_and(|e| e.busy()) {
         input.discard_gameplay();
@@ -952,8 +1025,15 @@ pub(crate) fn controls(
             }
             return;
         }
-    } else if editor_controls(&mut replay, look_screen.as_ref().is_some_and(|s| s.0), pressed, released, &pad, &keys, dt) {
-        return;
+    } else {
+        let mut sound = None;
+        let used = editor_controls(&mut replay, look_screen.as_ref().is_some_and(|s| s.0), pressed, released, &pad, &keys, dt, &mut sound);
+        if let Some(name) = sound {
+            sounds.write(crate::ui_audio::FrontendSound::named(name));
+        }
+        if used {
+            return;
+        }
     }
     // Retail: RB starts / stops playback (`82C7F0A8` stops); stick or D-pad input resumes a stopped replay
     // (`82C7FFB8`, research b386 / b387). Space is the PC key for RB.
@@ -1003,8 +1083,9 @@ pub(crate) fn controls(
         }
     }
     let player = replay.sample().map(|(a, b, t)| blend(a.root, b.root, t).translation);
-    let leash = replay.free_camera_leash.unwrap_or(FREE_CAMERA_LEASH);
+    let rules = replay.camera_collision;
     if let Some(camera) = replay.free_camera.as_mut() {
+        let old = camera.translation;
         let (mut yaw, mut pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
         yaw -= axis(pad.right[0]) * dt * 2.0;
         pitch += axis(pad.right[1]) * dt * 2.0;
@@ -1027,20 +1108,13 @@ pub(crate) fn controls(
             3.0
         };
         camera.translation += (heading * Vec3::new(x, 0.0, -z) + Vec3::Y * y) * dt * speed;
+        // Retail's leash and world collision (`82683680`, b381 / b449); Free keeps its rotation.
         if let Some(player) = player {
-            camera.translation = leashed(camera.translation, player, leash);
+            let world = physics.as_deref().map(crate::physics::GamePhysics::world);
+            camera.translation = camera_collision::constrain(Some(old), camera.translation, player, true, &rules,
+                |from, to, radius| world.and_then(|w| camera_collision::sweep(w, from, to, radius))).position;
         }
     }
-}
-
-/// Retail's replay free camera is pulled back when it is farther than 40 m from the player (`82683680` ->
-/// `82682CB0`, research b381).
-pub(crate) const FREE_CAMERA_LEASH: f32 = 40.0;
-
-/// `camera` pulled onto the sphere of `radius` around `player` when it is outside it.
-fn leashed(camera: Vec3, player: Vec3, radius: f32) -> Vec3 {
-    let offset = camera - player;
-    if offset.length() > radius { player + offset.normalize_or_zero() * radius } else { camera }
 }
 
 #[derive(Component)]
@@ -1158,13 +1232,14 @@ fn update_ui(
 }
 
 mod components;
+pub(crate) mod camera_collision;
 pub(crate) mod camera_key;
 pub(crate) mod editor;
 pub(crate) mod export;
 pub(crate) mod export_run;
 mod messages;
 mod world;
-pub(crate) use world::retire;
+pub(crate) use world::{keep_model, retire};
 
 #[cfg(test)]
 mod tests;

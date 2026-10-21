@@ -2292,9 +2292,9 @@ Change:
 - Movie set version 9 (`main/extras` added; an older set forces Refresh Game Files). The asset check now checks the
   set the menus load (`SKATE3_MENU_MOVIES` when set).
 - NOT RETAIL YET / ours: the keyboard look; who posts retail's first SetState(10); the zombie mode gate (retail's mode
-  values 0 / 3 / 4 not decoded; ours: Free Play). Rows 1-6 greyed for now: rows 1-3 because the engine has no unlock
-  store and nothing locks those shoes or the park yet, Credits / Licenses / Skate Reel until FE 25 / FE 3 / FE 24 are
-  ported. The other retail cheat codes change things the engine does not have and are not listed.
+  values 0 / 3 / 4 not decoded; ours: Free Play). Rows 1-3 (the code unlocks) unlock directly (`ExtrasRules::default`
+  in `skate-core/src/extras.rs`); Credits / Licenses / Skate Reel stay greyed until FE 25 / FE 3 / FE 24 are ported
+  (Licenses: the FE 3 viewer work is kept, WIP, user 2026-10-19). The other retail cheat codes change things the engine does not have and are not listed.
 
 Verification: skate-core `extras`, `text_entry`, `cheats` tests (10); `extras_host` test;
 `retail_extras_screen_lists_its_rows_and_opens_cheat_entry` (data-gated: the real movie lists the rows through our

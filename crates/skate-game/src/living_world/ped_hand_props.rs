@@ -237,6 +237,8 @@ pub(crate) fn sync_hand_props(
             let thrown = at.and_then(|at| mind.brain.update_hand_prop_release(&s, at)).or_else(|| mind.brain.update_litter());
             if let Some(velocity) = thrown.or(mind.hand_prop_release.take()) {
                 commands.entity(e).remove::<HeldHandProp>();
+                // The held frames keep their hand-space track on a hidden copy; the dropped prop starts its own (b453).
+                crate::replay::keep_model(&mut commands, h.entity);
                 let room = released.0.len() < s.max_live;
                 let id = physics.as_deref_mut().and_then(|p| release(&mut commands, p, h, velocity, &globals, &children, &mesh_parts, &meshes, room));
                 match id {
@@ -255,6 +257,7 @@ pub(crate) fn sync_hand_props(
             }
             let want = mind.brain.hand_prop.has().then(|| mind.brain.hand_prop.key.clone()).flatten();
             if want.as_deref() != Some(h.key.as_str()) {
+                crate::replay::keep_model(&mut commands, h.entity);
                 commands.entity(h.entity).despawn();
                 commands.entity(e).remove::<HeldHandProp>();
                 mind.brain.hand_prop.holding = false;
@@ -318,6 +321,7 @@ pub(crate) fn sync_hand_props(
             return true;
         }
         physics.remove_runtime_prop(id);
+        crate::replay::keep_model(&mut commands, entity);
         if let Ok(mut model) = commands.get_entity(entity) {
             model.despawn();
         }

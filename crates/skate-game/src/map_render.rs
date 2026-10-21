@@ -250,13 +250,13 @@ impl PreparedScene {
                     &mut self.world_materials,
                     &mut self.images,
                     &mut self.params,
-                    false,
+                    None,
                 );
             }
-            // The skate.Park layout the map was loaded with (park_layout.rs): its placed pieces, fixed.
-            // NOT RETAIL YET: drawn with the fallback shading; the environmentpark shaders and the per-piece tint are
-            // research b433 (tint multiplies the linear albedo).
+            // The skate.Park layout the map was loaded with (park_layout.rs): its placed pieces, fixed, each drawn with
+            // its tint and its world's shadow colours (the environmentpark families, doc 39 "Park shading").
             if let Some((pieces, objects)) = crate::park_layout::load_package(asset_root, map) {
+                let draws = crate::park_layout::load_draws(asset_root, map);
                 crate::skate_world::spawn_instances(
                     &pieces,
                     &objects,
@@ -267,7 +267,7 @@ impl PreparedScene {
                     &mut self.world_materials,
                     &mut self.images,
                     &mut self.params,
-                    true,
+                    Some(&draws),
                 );
             }
         }

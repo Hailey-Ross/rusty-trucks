@@ -217,6 +217,15 @@ pub(crate) fn pose(key: &CameraKey, root: &Transform) -> Option<Transform> {
     }
 }
 
+/// The point a Follow / Tripod `key` looks at for `root` (the same point [`pose`] aims at); None for Free and Game.
+pub(crate) fn look_point(key: &CameraKey, root: &Transform) -> Option<Vec3> {
+    let base = root.translation + Vec3::Y * CameraRules::default().look_target_height;
+    match *key {
+        CameraKey::Follow { look_height, .. } | CameraKey::Tripod { look_height, .. } => Some(base + Vec3::Y * look_height),
+        CameraKey::Game | CameraKey::Free { .. } => None,
+    }
+}
+
 /// Vertical field of view (radians) of a lens in mm. NOT RETAIL YET: a 24 mm high gate (retail's mm -> FOV is open).
 pub(crate) fn lens_fov(mm: f32) -> f32 {
     2.0 * (12.0 / mm.max(1.0)).atan()

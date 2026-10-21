@@ -350,6 +350,16 @@ pub enum Command {
         #[serde(default)]
         byte_budget: Option<u64>,
     },
+    /// Override the replay cameras' world collision (switch, sphere radius m) and leash (m); all absent restores
+    /// retail's (on, 0.1, 40).
+    ReplaySetCamera {
+        #[serde(default)]
+        collide: Option<bool>,
+        #[serde(default)]
+        radius: Option<f32>,
+        #[serde(default)]
+        leash: Option<f32>,
+    },
     /// Audio extension 4 (doc 16 L2): write one input of a retail MixMap controller (`value` absent
     /// = release it: the input gets back the value before this mod's first write).
     AudioSetMixmapInput {
@@ -774,6 +784,9 @@ impl Command {
             // 1 s to 10 min at 60 frames per second; 1 MiB to 1 GiB.
             Self::ReplaySetLimits { max_frames, byte_budget } => max_frames.is_none_or(|f| (60..=36_000).contains(&f))
                 && byte_budget.is_none_or(|b| (1 << 20..=1 << 30).contains(&b)),
+            // Up to a 2 m sphere; a 1 m to 1 km leash.
+            Self::ReplaySetCamera { radius, leash, .. } => radius.is_none_or(|r| (0.0..=2.0).contains(&r))
+                && leash.is_none_or(|l| (1.0..=1000.0).contains(&l)),
             Self::WorldSetTuning { domain, patch } => crate::world_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::world_tuning::valid_patch(domain, p)),
             Self::AudioSetTuning { domain, patch } => crate::audio_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::audio_tuning::valid_patch(domain, p)),
             Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
@@ -1080,6 +1093,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::ReplayOpen { .. } => "replay_open",
         Command::ReplayMarker { .. } => "replay_marker",
         Command::ReplaySetLimits { .. } => "replay_set_limits",
+        Command::ReplaySetCamera { .. } => "replay_set_camera",
         Command::WorldAudioSpawn { .. } => "world_audio_spawn",
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
@@ -2667,6 +2681,10 @@ mod world_audio_tests {
             (json!({"kind":"replay_set_limits"}), true),
             (json!({"kind":"replay_set_limits","max_frames":10}), false),
             (json!({"kind":"replay_set_limits","byte_budget":1}), false),
+            (json!({"kind":"replay_set_camera","collide":false}), true),
+            (json!({"kind":"replay_set_camera"}), true),
+            (json!({"kind":"replay_set_camera","radius":5.0}), false),
+            (json!({"kind":"replay_set_camera","leash":0.5}), false),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(c.validate(), ok, "{value}");
@@ -2690,6 +2708,7 @@ mod world_audio_tests {
                 sdk.replay.marker('kickflip')
                 sdk.replay.set_limits({max_frames = 1800})
                 sdk.replay.set_limits(nil)
+                sdk.replay.set_camera({collide = false, leash = 80})
             end
             return M
         "#).unwrap();
@@ -2700,7 +2719,8 @@ mod world_audio_tests {
         let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
         let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
         assert_eq!(kinds, ["world_set_tuning", "world_set_tuning", "request", "world_reset_moved_props", "world_reset_prop", "world_upright_prop", "world_spawn_prop", "world_remove_prop",
-            "replay_open", "replay_marker", "replay_set_limits", "replay_set_limits"]);
+            "replay_open", "replay_marker", "replay_set_limits", "replay_set_limits", "replay_set_camera"]);
+        assert!(matches!(&cmds[12], Command::ReplaySetCamera { collide: Some(false), radius: None, leash: Some(80.0) }));
         assert!(matches!(&cmds[11], Command::ReplaySetLimits { max_frames: None, byte_budget: None }), "nil restores");
         assert!(cmds.iter().all(Command::validate));
         assert!(matches!(&cmds[1], Command::WorldSetTuning { patch: None, .. }), "nil restores");

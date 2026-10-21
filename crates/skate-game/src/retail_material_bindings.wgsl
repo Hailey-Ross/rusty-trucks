@@ -58,6 +58,14 @@ const PAGE_CLASSES: u32 = 8u;
 @group(#{MATERIAL_BIND_GROUP}) @binding(10) var page_7: texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(11) var repeat_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(12) var cubes: texture_cube_array<f32>;
+// The environmentpark per-draw inputs (retail_render.rs ParkDraw: tint, the world's two shadow colours).
+struct ParkDraw {
+    tint: vec4<f32>,
+    dynamic_shadow: vec4<f32>,
+    exponential_shadow: vec4<f32>,
+    lightmap_bounds: vec4<f32>,
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(13) var<uniform> material_park: ParkDraw;
 fn page_class(packed: u32) -> u32 { return (packed >> 16u) & 0xffu; }
 fn page_layer(packed: u32) -> u32 { return packed & 0xffffu; }
 

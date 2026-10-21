@@ -315,6 +315,48 @@ impl ReplayEdit {
         Ok(markers.binary_search_by_key(&frame, |m| m.0).map(|i| markers.remove(i)).is_ok())
     }
 
+    /// A clip marker delete's reset over the merged span `from..to` (research b460: `825086F0` writes the lane default
+    /// at the merged clip's key, `82C82490` speed / `8250A6E8` shake): the lane's markers in the span go, the lane's
+    /// default (data, `EditLimits::lanes`) holds from `from`, and the value in effect at `to` is kept from `to` on.
+    pub fn reset_span(&mut self, clip: usize, lane: Lane, from: u32, to: u32) -> Result<(), EditError> {
+        let default = self.limits.lanes[lane.index()].default;
+        let c = self.clips.get(clip).ok_or(EditError::NoClip)?;
+        let (from, to) = (from.clamp(c.start, c.end), to.clamp(c.start, c.end));
+        let after = (to < c.end).then(|| self.value_at(clip, lane, to)).flatten();
+        let c = &mut self.clips[clip];
+        let markers = &mut c.markers[lane.index()];
+        markers.retain(|m| m.0 < from || m.0 >= to);
+        if from == c.start {
+            c.values[lane.index()] = default;
+            c.set[lane.index()] = true;
+        } else {
+            let i = markers.partition_point(|m| m.0 < from);
+            markers.insert(i, (from, default));
+        }
+        if let Some(after) = after {
+            if !markers.iter().any(|m| m.0 == to) && after != default {
+                let i = markers.partition_point(|m| m.0 < to);
+                markers.insert(i, (to, after));
+            }
+        }
+        Ok(())
+    }
+
+    /// The film pack's form of that reset (b460): only the lane value in effect at `frame` (its last marker at or before
+    /// it, else the clip's value) takes the lane default; no marker is removed.
+    pub fn reset_at(&mut self, clip: usize, lane: Lane, frame: u32) -> Result<(), EditError> {
+        let default = self.limits.lanes[lane.index()].default;
+        let c = self.clips.get_mut(clip).ok_or(EditError::NoClip)?;
+        match c.markers[lane.index()].iter_mut().rev().find(|m| m.0 <= frame) {
+            Some(m) => m.1 = default,
+            None => {
+                c.values[lane.index()] = default;
+                c.set[lane.index()] = true;
+            }
+        }
+        Ok(())
+    }
+
     /// A lane's editor value at `frame`: the last marker at or before it, else the clip's value (stepped, no ramp).
     pub fn value_at(&self, clip: usize, lane: Lane, frame: u32) -> Option<i32> {
         let c = self.clips.get(clip)?;
