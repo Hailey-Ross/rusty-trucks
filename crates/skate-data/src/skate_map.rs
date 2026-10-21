@@ -258,43 +258,96 @@ impl<'a> Reader<'a> {
 #[derive(Clone, Copy)]
 struct StoredBlock<'a> { expected: usize, method: u32, bytes: &'a [u8] }
 impl StoredBlock<'_> {
-    fn decode(&self) -> Result<Vec<u8>, String> {
-        let Self { expected, method, bytes } = *self;
-        let decoded = match method {
-            0 => bytes.to_vec(),
-            1 => {
-                // The decoded size is known, so the buffer is allocated once at its final
-                // length: doubling from a smaller start would hold the old and new buffers at
-                // once, and a 140 MiB vertex block grows past 256 MiB doing it (findings 58 §3.6).
-                let mut result = Vec::with_capacity(expected);
-                let mut decoder = flate2::read::ZlibDecoder::new(bytes);
-                decoder
-                    .by_ref()
-                    .take(expected as u64 + 1)
-                    .read_to_end(&mut result)
-                    .map_err(|e| format!("SKATE DEFLATE: {e}"))?;
-                if decoder.total_in() as usize != bytes.len() {
-                    return Err("SKATE compressed block has unused input".into());
-                }
-                result
-            }
-            2 => {
-                let mut result = Vec::with_capacity(expected);
-                zstd::stream::read::Decoder::new(bytes)
-                    .map_err(|e| e.to_string())?
-                    .take(expected as u64 + 1)
-                    .read_to_end(&mut result)
-                    .map_err(|e| format!("SKATE Zstandard: {e}"))?;
-                result
-            }
-            3..=10 => return storage_v15::decode(method, bytes, expected),
-            _ => return Err(format!("Unsupported SKATE storage method {method}")),
+    /// Rejects a declared size the stored bytes could never decode to, before
+    /// anything is reserved for it. Deflate writes at most 1032 bytes per stored
+    /// byte (two bits per 258-byte match), Zstandard at most 32768 (four bytes
+    /// per RLE block of up to 128 KiB). A SKATE15 transform writes at most four
+    /// bytes per byte of its payload (an index varint is at least one byte), and
+    /// the payload follows a 4-byte size as Zstandard (3..=6) or deflate (7..=10).
+    fn check_size(&self) -> Result<(), String> {
+        let most = |method: u32, stored: usize| match method {
+            0 => stored,
+            1 => stored.saturating_mul(1032),
+            _ => stored.saturating_mul(32768),
         };
-        if decoded.len() != expected {
-            return Err("SKATE decoded block size mismatch".into());
+        let limit = match self.method {
+            0..=2 => most(self.method, self.bytes.len()),
+            3..=10 => most(if self.method <= 6 { 2 } else { 1 }, self.bytes.len().saturating_sub(4)).saturating_mul(4),
+            _ => return Ok(()),
+        };
+        if self.expected > limit {
+            return Err(format!(
+                "SKATE block declares {} bytes, more than its {} stored bytes can decode to",
+                self.expected,
+                self.bytes.len()
+            ));
         }
+        Ok(())
+    }
+    fn decode(&self) -> Result<Vec<u8>, String> {
+        self.check_size()?;
+        if (3..=10).contains(&self.method) {
+            return storage_v15::decode(self.method, self.bytes, self.expected);
+        }
+        let mut decoded = exact_buffer(self.expected)?;
+        self.decode_into(&mut decoded)?;
         Ok(decoded)
     }
+    /// Appends the block's `expected` decoded bytes to `out`, which should
+    /// already have room for them.
+    fn decode_into(&self, out: &mut Vec<u8>) -> Result<(), String> {
+        self.check_size()?;
+        let Self { expected, method, bytes } = *self;
+        let start = out.len();
+        let ended = match method {
+            0 => {
+                let ended = bytes.len() == expected;
+                if ended {
+                    out.extend_from_slice(bytes);
+                }
+                ended
+            }
+            1 => {
+                let mut decoder = flate2::read::ZlibDecoder::new(bytes);
+                let ended = read_declared(&mut decoder, expected, out)
+                    .map_err(|e| format!("SKATE DEFLATE: {e}"))?;
+                if ended && decoder.total_in() as usize != bytes.len() {
+                    return Err("SKATE compressed block has unused input".into());
+                }
+                ended
+            }
+            2 => {
+                let mut decoder = zstd::stream::read::Decoder::new(bytes).map_err(|e| e.to_string())?;
+                read_declared(&mut decoder, expected, out).map_err(|e| format!("SKATE Zstandard: {e}"))?
+            }
+            3..=10 => {
+                out.extend_from_slice(&storage_v15::decode(method, bytes, expected)?);
+                true
+            }
+            _ => return Err(format!("Unsupported SKATE storage method {method}")),
+        };
+        if !ended || out.len() - start != expected {
+            return Err("SKATE decoded block size mismatch".into());
+        }
+        Ok(())
+    }
+}
+/// An empty buffer with room for exactly `len` bytes. Growing one from a
+/// smaller start doubles past the final size while the old buffer is still
+/// alive: a 140.3 MiB vertex block asked for 256 MiB and failed on a 3 GiB heap
+/// (findings 58 §3.6).
+fn exact_buffer(len: usize) -> Result<Vec<u8>, String> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(len)
+        .map_err(|_| format!("SKATE decoded block of {len} bytes cannot be reserved"))?;
+    Ok(buffer)
+}
+/// Reads at most `expected` bytes into `out`, then reports whether the stream
+/// ends there, so a block that decodes longer never grows `out`.
+fn read_declared(reader: &mut impl Read, expected: usize, out: &mut Vec<u8>) -> std::io::Result<bool> {
+    reader.by_ref().take(expected as u64).read_to_end(out)?;
+    Ok(reader.read(&mut [0; 1])? == 0)
 }
 
 /// Parses the three geometry sections from their own buffers: decompressed blocks for v9+,
@@ -641,7 +694,11 @@ impl SkateMap {
             }
             let expected = width as usize * height as usize * 4;
             let block = if version >= 9 {
-                let StoredBlock { expected, method, bytes } = r.stored_block(expected)?;
+                let block = r.stored_block(expected)?;
+                // Textures decode only when their page is built, where a failure can no longer
+                // fail the load, so an impossible size has to be caught here.
+                block.check_size()?;
+                let StoredBlock { expected, method, bytes } = block;
                 TextureBlock { expected, method, bytes: bytes.to_vec() }
             } else {
                 let bytes = r.u()? as usize;
@@ -651,7 +708,7 @@ impl SkateMap {
                 TextureBlock { expected, method: 0, bytes: r.take(bytes)?.to_vec() }
             };
             let block = if version >= 15 && block.method == 11 {
-                let index = u32::from_le_bytes(block.bytes[..4].try_into()
+                let index = u32::from_le_bytes(block.bytes.as_slice().try_into()
                     .map_err(|_| "Invalid SKATE texture reference size")?) as usize;
                 let source = texture_blocks.get(index).ok_or("Invalid SKATE forward texture reference")?;
                 if source.expected != expected { return Err("SKATE texture reference size mismatch".into()); }
@@ -832,5 +889,68 @@ impl SkateMap {
             routes,
             extensions,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn stored(method: u32, data: &[u8]) -> Vec<u8> {
+        match method {
+            0 => data.to_vec(),
+            1 => {
+                let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+                encoder.write_all(data).unwrap();
+                encoder.finish().unwrap()
+            }
+            _ => zstd::stream::encode_all(data, 1).unwrap(),
+        }
+    }
+
+    #[test]
+    fn blocks_decode_into_exactly_their_declared_size() {
+        // Past the 8 MiB the decoder used to start from before doubling.
+        let data: Vec<u8> = (0..9u32 << 20).map(|i| (i % 251) as u8).collect();
+        for method in 0..=2 {
+            let bytes = stored(method, &data);
+            let decoded = StoredBlock { expected: data.len(), method, bytes: &bytes }.decode().unwrap();
+            assert_eq!(decoded, data);
+            assert_eq!(decoded.capacity(), data.len(), "method {method} regrew its buffer");
+        }
+    }
+
+    #[test]
+    fn a_block_that_decodes_longer_fails_without_growing_its_buffer() {
+        for method in 0..=2 {
+            let bytes = stored(method, &[7; 4096]);
+            let mut out = exact_buffer(1024).unwrap();
+            assert!(StoredBlock { expected: 1024, method, bytes: &bytes }.decode_into(&mut out).is_err());
+            assert_eq!(out.capacity(), 1024, "method {method}");
+        }
+    }
+
+    #[test]
+    fn short_streams_trailing_input_and_unknown_methods_fail() {
+        let mut bytes = stored(1, &[7; 64]);
+        assert!(StoredBlock { expected: 65, method: 1, bytes: &bytes }.decode().is_err());
+        bytes.push(42);
+        assert!(StoredBlock { expected: 64, method: 1, bytes: &bytes }.decode().unwrap_err().contains("unused input"));
+        assert!(StoredBlock { expected: 1, method: 0, bytes: &[] }.decode().is_err());
+        assert!(StoredBlock { expected: 0, method: 99, bytes: &[] }.decode().is_err());
+    }
+
+    #[test]
+    fn a_tiny_block_declaring_1_gib_fails_without_reserving_it() {
+        for method in 0..=10 {
+            let bytes = stored(method.min(2), &[0; 16]);
+            let block = StoredBlock { expected: 1 << 30, method, bytes: &bytes };
+            let mut out = Vec::new();
+            let error = block.decode_into(&mut out).unwrap_err();
+            assert!(error.contains("declares"), "method {method}: {error}");
+            assert_eq!(out.capacity(), 0, "method {method}");
+            assert!(block.decode().unwrap_err().contains("declares"), "method {method}");
+        }
     }
 }
