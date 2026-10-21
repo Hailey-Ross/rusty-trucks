@@ -62,8 +62,8 @@ fn verify(
             if mode == "markers" {
                 let (a, b) = (start + (end - start) / 3.0, start + (end - start) * 2.0 / 3.0);
                 if let Some(e) = replay.editor.as_mut() {
-                    let _ = e.drop_marker(a);
-                    let _ = e.drop_marker(b);
+                    let _ = e.drop_marker(a, false);
+                    let _ = e.drop_marker(b, false);
                 }
                 replay.seek(b);
             }
@@ -96,9 +96,11 @@ fn verify(
             for (component, presses) in [(2, 5), (3, 4)] {
                 e.tint = component;
                 for _ in 0..presses {
-                    e.adjust_row(at, 1);
+                    e.adjust_row(1);
                 }
             }
+            // X: a soft key with the live values (b461).
+            e.commit_pack(at, true);
         }
     }
     // SKATE_VERIFY_REPLAY_EXPORT=<file.mp4>: export the open replay (as Save to PC) a second after it opened; the

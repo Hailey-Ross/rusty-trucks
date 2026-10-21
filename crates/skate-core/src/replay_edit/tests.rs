@@ -30,55 +30,122 @@ fn replay_editor_steps_clamps_and_wraps_like_retail() {
 }
 
 #[test]
-fn replay_editor_lanes_step_at_markers_without_ramps() {
+fn replay_editor_keys_keep_retail_spacing_and_cap() {
     let mut edit = ReplayEdit::default();
-    let clip = edit.add_clip(100, 400).unwrap();
-    edit.set_marker(clip, Lane::Speed, 200, 50).unwrap();
-    edit.set_marker(clip, Lane::Speed, 300, 20).unwrap();
-    assert_eq!(edit.value_at(clip, Lane::Speed, 150), Some(100));
-    assert_eq!(edit.value_at(clip, Lane::Speed, 200), Some(50));
-    assert_eq!(edit.value_at(clip, Lane::Speed, 299), Some(50));
-    assert_eq!(edit.value_at(clip, Lane::Speed, 350), Some(20));
-    assert!((edit.effect_at(clip, Lane::Speed, 350).unwrap() - 0.2).abs() < 1e-6);
-    // Same frame replaces; values clamp to the lane's range; outside the clip is refused.
-    edit.set_marker(clip, Lane::Speed, 300, 5).unwrap();
-    assert_eq!(edit.value_at(clip, Lane::Speed, 300), Some(10));
-    assert_eq!(edit.set_marker(clip, Lane::Speed, 50, 50), Err(EditError::OutsideClip));
-    assert_eq!(edit.remove_marker(clip, Lane::Speed, 200), Ok(true));
-    assert_eq!(edit.value_at(clip, Lane::Speed, 250), Some(100));
-    // Trimming drops markers outside the new span.
-    edit.trim(clip, 100, 250).unwrap();
-    assert!(edit.clips[clip].markers[Lane::Speed.index()].is_empty());
-}
-
-#[test]
-fn replay_editor_refuses_markers_past_the_retail_cap() {
-    let mut edit = ReplayEdit::default();
-    // Span 10000: markers 90 frames apart clear the 0.0089 spacing (89 frames).
+    // Span 1000: 0.0089 = 8.9 frames; a key within 8 frames of the cursor is "at the cursor".
+    let clip = edit.add_clip(0, 1000).unwrap();
+    assert_eq!(edit.insert_hard(clip, Lane::Shake, 5), Err(EditError::TooClose));
+    assert_eq!(edit.insert_hard(clip, Lane::Shake, 995), Err(EditError::TooClose));
+    assert_eq!(edit.insert_hard(clip, Lane::Shake, 1200), Err(EditError::OutsideClip));
+    edit.insert_hard(clip, Lane::Shake, 500).unwrap();
+    assert_eq!(edit.insert_hard(clip, Lane::Shake, 506), Err(EditError::TooClose));
+    assert_eq!(edit.key_near(clip, Lane::Shake, 506), Some(0));
+    edit.insert_hard(clip, Lane::Shake, 520).unwrap();
+    assert_eq!(edit.clips[clip].markers[Lane::Shake.index()].len(), 2);
+    // The cap (retail 100, `82613500`).
     let clip = edit.add_clip(0, 10_000).unwrap();
     for k in 1..=100 {
-        edit.set_marker(clip, Lane::Brightness, 90 * k, 20).unwrap();
+        edit.insert_hard(clip, Lane::Brightness, 90 * k).unwrap();
     }
+    assert_eq!(edit.insert_hard(clip, Lane::Brightness, 9500), Err(EditError::NoMoreMarkers));
+    // Trimming keeps every key (the heads only clip the take, b472).
+    edit.trim(clip, 0, 1000).unwrap();
     assert_eq!(edit.clips[clip].markers[Lane::Brightness.index()].len(), 100);
-    assert_eq!(edit.set_marker(clip, Lane::Brightness, 9500, 20), Err(EditError::NoMoreMarkers));
-    // Editing the marker at the cursor still works at the cap.
-    assert_eq!(edit.set_marker(clip, Lane::Brightness, 95, 40), Ok(()));
-    assert_eq!(edit.value_at(clip, Lane::Brightness, 90), Some(40));
 }
 
+/// b465 / b466: a fresh clip has no keys; a commit that adds no key to an empty lane is lost (the lane reads its
+/// default), unless a mod turns `empty_lane_commit` on.
 #[test]
-fn replay_editor_keeps_retail_marker_spacing() {
+fn a_commit_on_an_empty_lane_is_lost_like_retail() {
     let mut edit = ReplayEdit::default();
-    // Span 1000: 0.0089 = 8.9 frames.
-    let clip = edit.add_clip(0, 1000).unwrap();
-    assert_eq!(edit.set_marker(clip, Lane::Shake, 5, 1), Err(EditError::TooClose));
-    assert_eq!(edit.set_marker(clip, Lane::Shake, 995, 1), Err(EditError::TooClose));
-    edit.set_marker(clip, Lane::Shake, 500, 1).unwrap();
-    // Within 8 frames of it is the same marker (at the cursor): its value changes, no second marker.
-    edit.set_marker(clip, Lane::Shake, 506, 2).unwrap();
-    assert_eq!(edit.clips[clip].markers[Lane::Shake.index()], [(500, 2)]);
-    edit.set_marker(clip, Lane::Shake, 520, 3).unwrap();
-    assert_eq!(edit.clips[clip].markers[Lane::Shake.index()].len(), 2);
+    let clip = edit.add_clip(0, 900).unwrap();
+    assert_eq!(edit.commit(clip, Lane::Speed, 300, 50, false), Ok(Commit::Lost));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 300), Some(100));
+    assert_eq!(edit.commit(clip, Lane::Brightness, 300, 40, false), Ok(Commit::Lost));
+    assert!(!edit.lane_set(clip, Lane::Brightness, 300));
+    // After a D-pad Down key at 10 s the same commit lands on the segment under the playhead.
+    edit.insert_hard(clip, Lane::Speed, 300).unwrap();
+    assert_eq!(edit.commit(clip, Lane::Speed, 450, 50, false), Ok(Commit::Segment));
+    assert_eq!((edit.value_at(clip, Lane::Speed, 299), edit.value_at(clip, Lane::Speed, 300)), (Some(100), Some(50)));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 899), Some(50));
+    // A mod lets the empty-lane commit land on the whole clip.
+    let limits = EditLimits { empty_lane_commit: true, ..Default::default() };
+    let mut modded = ReplayEdit::new(limits);
+    let clip = modded.add_clip(0, 900).unwrap();
+    assert_eq!(modded.commit(clip, Lane::Speed, 300, 50, false), Ok(Commit::Segment));
+    assert_eq!(modded.value_at(clip, Lane::Speed, 10), Some(50));
+}
+
+/// b461 tests 1 / 2 / 4 / 5: the base game's B writes the segment between the clip markers (hard keys on speed and
+/// shake), the neighbours keep their values, and over a hard key nothing is written.
+#[test]
+fn a_base_commit_writes_the_segment_between_clip_markers() {
+    let mut edit = ReplayEdit::default();
+    let clip = edit.add_clip(0, 1200).unwrap();
+    for f in [600, 840, 1020] {
+        edit.insert_hard(clip, Lane::Speed, f).unwrap();
+        edit.insert_hard(clip, Lane::Shake, f).unwrap();
+    }
+    assert_eq!(edit.commit(clip, Lane::Speed, 900, 50, false), Ok(Commit::Segment));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 839), Some(100));
+    assert_eq!((edit.value_at(clip, Lane::Speed, 840), edit.value_at(clip, Lane::Speed, 1019)), (Some(50), Some(50)));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 1020), Some(100));
+    assert_eq!(edit.commit(clip, Lane::Shake, 630, 2, false), Ok(Commit::Segment));
+    assert_eq!((edit.value_at(clip, Lane::Shake, 700), edit.value_at(clip, Lane::Shake, 850)), (Some(2), Some(0)));
+    // Over the 840 key: nothing.
+    assert_eq!(edit.commit(clip, Lane::Speed, 842, 20, false), Ok(Commit::Lost));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 900), Some(50));
+    // The lane's keys stay exactly the clip markers.
+    let frames: Vec<u32> = edit.clips[clip].markers[Lane::Speed.index()].iter().map(|k| k.frame).collect();
+    assert_eq!(frames, [600, 840, 1020]);
+}
+
+/// b461 tests 7 / 9 / 10 / 11, b463 / b464: the film pack's soft keys. X adds one (an empty lane too), A adds one only
+/// next to a soft key, A over a soft key writes its segment (a soft next key shares the value), over a hard key
+/// nothing. Speed ramps across soft keys, rounded half up; it holds up to a hard key.
+#[test]
+fn pack_commits_add_soft_keys_and_speed_ramps_into_them() {
+    let mut edit = ReplayEdit::default();
+    let clip = edit.add_clip(0, 1800).unwrap();
+    // X on an empty lane: a soft key at 20 s (frame 600) with 50; the clip's start ramps 100 -> 50 into it.
+    assert_eq!(edit.commit(clip, Lane::Speed, 600, 50, true), Ok(Commit::SoftKey));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 300), Some(75));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 1500), Some(50), "ends at the clip end (a cut) on its own value");
+    // A next to that soft key adds a second one at 40 s: 30 s = 75, and 50.5 rounds half up.
+    assert!(!edit.clips[clip].cut_both_sides(Lane::Speed, 1200));
+    assert_eq!(edit.commit(clip, Lane::Speed, 1200, 100, true), Ok(Commit::SoftKey));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 900), Some(75));
+    assert_eq!(edit.sample(clip, Lane::Speed, 606), Some(50.5));
+    assert_eq!(edit.value_at(clip, Lane::Speed, 606), Some(51));
+    assert!((edit.lane_effect(clip, Lane::Speed, 900).unwrap() - 0.75).abs() < 1e-6);
+    // A over the 20 s soft key: that key and the shared next soft key (40 s) take the value.
+    assert_eq!(edit.commit(clip, Lane::Speed, 603, 30, false), Ok(Commit::Segment));
+    assert_eq!((edit.value_at(clip, Lane::Speed, 900), edit.value_at(clip, Lane::Speed, 1200)), (Some(30), Some(30)));
+    assert_eq!(edit.clips[clip].markers[Lane::Speed.index()].len(), 2);
+    // A hard key splits without changing the curve.
+    let mut edit = ReplayEdit::default();
+    let clip = edit.add_clip(0, 1800).unwrap();
+    edit.commit(clip, Lane::Speed, 600, 50, true).unwrap();
+    edit.commit(clip, Lane::Speed, 1200, 100, true).unwrap();
+    edit.insert_hard(clip, Lane::Speed, 900).unwrap();
+    assert_eq!((edit.value_at(clip, Lane::Speed, 750), edit.value_at(clip, Lane::Speed, 1050)), (Some(63), Some(88)));
+    // Over the hard key: nothing.
+    assert_eq!(edit.commit(clip, Lane::Speed, 900, 10, false), Ok(Commit::Lost));
+    // Segments cut on both sides: A writes the segment, no key.
+    let mut edit = ReplayEdit::default();
+    let clip = edit.add_clip(0, 1800).unwrap();
+    edit.insert_hard(clip, Lane::Speed, 600).unwrap();
+    assert!(edit.clips[clip].cut_both_sides(Lane::Speed, 750));
+    assert_eq!(edit.commit(clip, Lane::Speed, 750, 50, false), Ok(Commit::Segment));
+    assert_eq!((edit.value_at(clip, Lane::Speed, 599), edit.value_at(clip, Lane::Speed, 1700)), (Some(100), Some(50)));
+    assert_eq!(edit.clips[clip].markers[Lane::Speed.index()].len(), 1);
+    // Removing a hard key takes the soft keys around it up to the next hard key.
+    edit.commit(clip, Lane::Speed, 1200, 70, true).unwrap();
+    assert_eq!(edit.remove_key(clip, Lane::Speed, 1203), Some(true));
+    edit.commit(clip, Lane::Speed, 1200, 70, true).unwrap();
+    assert_eq!(edit.remove_key(clip, Lane::Speed, 600), Some(false));
+    assert!(edit.clips[clip].markers[Lane::Speed.index()].is_empty());
+    assert_eq!(edit.remove_key(clip, Lane::Speed, 600), None);
 }
 
 #[test]
@@ -128,8 +195,8 @@ fn replay_look_replaces_the_world_grade_terms_it_sets() {
     assert!((look.record.near.contrast - 2.0).abs() < 1e-6);
     let grey = apply(&build(&look.record.near), [1.0, 0.0, 0.0]);
     assert!((grey[0] - grey[1]).abs() < 1e-5 && (grey[1] - grey[2]).abs() < 1e-5, "{grey:?}");
-    // A tint marker shows from its frame on.
-    edit.set_marker(clip, Lane::TintA, 500, 250).unwrap();
+    // A tint key shows from its frame on.
+    edit.commit(clip, Lane::TintA, 500, 250, true).unwrap();
     assert_eq!(edit.look_at(clip, 499, &base).unwrap().tint[3], 0.0);
     assert!((edit.look_at(clip, 500, &base).unwrap().tint[3] - 250.0 / 255.0).abs() < 1e-6);
 }
@@ -188,18 +255,18 @@ fn look_lanes_ramp_between_markers_and_a_committed_neutral_value_still_overrides
     let clip = edit.add_clip(0, 1000).unwrap();
     let mut base = ColourMatrixRecord::default();
     base.near.add = [0.05; 3];
-    // Brightness markers 0 at 200 and +100 at 600: ramps between them, holds after, unset before the first.
-    edit.set_marker(clip, Lane::Brightness, 200, 0).unwrap();
-    edit.set_marker(clip, Lane::Brightness, 600, 100).unwrap();
+    // Brightness soft keys 0 at 200 and +100 at 600: ramps between them, holds after, unset before the first.
+    edit.commit(clip, Lane::Brightness, 200, 0, true).unwrap();
+    edit.commit(clip, Lane::Brightness, 600, 100, true).unwrap();
     assert_eq!(edit.look_at(clip, 100, &base).unwrap().record.near.add, [0.05; 3]);
-    // At the first marker the committed neutral 0 replaces the world's 0.05 (retail's OVERRIDE flag).
+    // At the first key the committed neutral 0 replaces the world's 0.05 (retail's OVERRIDE flag).
     assert_eq!(edit.look_at(clip, 200, &base).unwrap().record.near.add, [0.0; 3]);
     assert!((edit.look_at(clip, 400, &base).unwrap().record.near.add[0] - 0.5).abs() < 1e-6);
     assert!((edit.look_at(clip, 900, &base).unwrap().record.far.add[1] - 1.0).abs() < 1e-6);
-    // Speed stays stepped.
-    edit.set_marker(clip, Lane::Speed, 200, 50).unwrap();
-    edit.set_marker(clip, Lane::Speed, 600, 100).unwrap();
-    assert_eq!(edit.lane_effect(clip, Lane::Speed, 400), Some(0.5));
+    // Shake's level steps at its keys (b464).
+    edit.commit(clip, Lane::Shake, 200, 1, true).unwrap();
+    edit.commit(clip, Lane::Shake, 600, 3, true).unwrap();
+    assert_eq!(edit.value_at(clip, Lane::Shake, 599), Some(1));
 }
 
 /// b460: a clip marker delete resets speed / shake over the merged span (lane default from the span's start, the
@@ -208,7 +275,7 @@ fn look_lanes_ramp_between_markers_and_a_committed_neutral_value_still_overrides
 fn a_clip_delete_resets_the_merged_span_to_the_lane_defaults() {
     let mut edit = ReplayEdit::default();
     let clip = edit.add_clip(0, 300).unwrap();
-    edit.clips[clip].markers[Lane::Speed.index()] = vec![(100, 50), (200, 70)];
+    edit.clips[clip].markers[Lane::Speed.index()] = vec![LaneKey::hard(100, 50), LaneKey::hard(200, 70)];
     edit.reset_span(clip, Lane::Speed, 80, 250).unwrap();
     assert_eq!(edit.value_at(clip, Lane::Speed, 79), Some(100));
     assert_eq!(edit.value_at(clip, Lane::Speed, 80), Some(100));
@@ -216,17 +283,17 @@ fn a_clip_delete_resets_the_merged_span_to_the_lane_defaults() {
     assert_eq!(edit.value_at(clip, Lane::Speed, 250), Some(70), "the clip right of the span keeps its value");
     // From the clip start: the clip value takes the default, no marker at the start.
     edit.clips[clip].values[Lane::Shake.index()] = 2;
-    edit.clips[clip].markers[Lane::Shake.index()] = vec![(120, 3)];
+    edit.clips[clip].markers[Lane::Shake.index()] = vec![LaneKey::hard(120, 3)];
     edit.reset_span(clip, Lane::Shake, 0, 150).unwrap();
     assert_eq!(edit.clips[clip].values[Lane::Shake.index()], 0);
-    assert_eq!(edit.clips[clip].markers[Lane::Shake.index()], vec![(150, 3)]);
+    assert_eq!(edit.clips[clip].markers[Lane::Shake.index()], vec![LaneKey::hard(150, 3)]);
     // To the clip end: nothing to restore.
     edit.reset_span(clip, Lane::Shake, 0, 300).unwrap();
     assert!(edit.clips[clip].markers[Lane::Shake.index()].is_empty());
     // The pack's form: the marker in effect at the frame takes the default, the others stay.
-    edit.clips[clip].markers[Lane::Speed.index()] = vec![(100, 50), (200, 70)];
+    edit.clips[clip].markers[Lane::Speed.index()] = vec![LaneKey::hard(100, 50), LaneKey::hard(200, 70)];
     edit.reset_at(clip, Lane::Speed, 150).unwrap();
-    assert_eq!(edit.clips[clip].markers[Lane::Speed.index()], vec![(100, 100), (200, 70)]);
+    assert_eq!(edit.clips[clip].markers[Lane::Speed.index()], vec![LaneKey::hard(100, 100), LaneKey::hard(200, 70)]);
     edit.clips[clip].values[Lane::Speed.index()] = 40;
     edit.reset_at(clip, Lane::Speed, 50).unwrap();
     assert_eq!(edit.clips[clip].values[Lane::Speed.index()], 100);
@@ -237,4 +304,32 @@ fn a_clip_delete_resets_the_merged_span_to_the_lane_defaults() {
     let clip = modded.add_clip(0, 300).unwrap();
     modded.reset_span(clip, Lane::Speed, 0, 300).unwrap();
     assert_eq!(modded.value_at(clip, Lane::Speed, 10), Some(50));
+}
+/// b472: the encoded length counts each speed segment at its start value inside the heads, truncated per segment.
+#[test]
+fn encoded_length_counts_speed_segments_inside_the_heads() {
+    let mut edit = ReplayEdit::default();
+    // B: soft keys 100 -> 50 -> 100 over 0..1800 count at their start values: 600 + 1200 + 600 = 80 s.
+    let clip = edit.add_clip(0, 1800).unwrap();
+    edit.commit(clip, Lane::Speed, 600, 50, true).unwrap();
+    edit.commit(clip, Lane::Speed, 1200, 100, true).unwrap();
+    assert_eq!(edit.encoded_seconds(), 80);
+    // C: a hard key at 900 with 50, heads 300..1200: 600 + 600 = 40 s; C2: heads 1000..1500 past the key: 33 s.
+    let mut edit = ReplayEdit::default();
+    let clip = edit.add_clip(0, 1800).unwrap();
+    edit.insert_hard(clip, Lane::Speed, 900).unwrap();
+    edit.commit(clip, Lane::Speed, 1000, 50, false).unwrap();
+    edit.trim(clip, 300, 1200).unwrap();
+    assert_eq!(edit.encoded_seconds(), 40);
+    edit.trim(clip, 1000, 1500).unwrap();
+    assert_eq!(edit.encoded_seconds(), 33);
+    assert_eq!(edit.value_at(clip, Lane::Speed, 1100), Some(50), "the key before the in head still holds");
+    // D: 34 segments of 10 frames at 30 % truncate to 33 frames each: 1122 frames = 37 s (a float sum gives 38).
+    let mut edit = ReplayEdit::default();
+    let clip = edit.add_clip(0, 340).unwrap();
+    edit.clips[clip].values[Lane::Speed.index()] = 30;
+    edit.clips[clip].markers[Lane::Speed.index()] = (1..34).map(|k| LaneKey::hard(10 * k, 30)).collect();
+    assert_eq!(edit.encoded_seconds(), 37);
+    // E: no clips.
+    assert_eq!(ReplayEdit::default().encoded_seconds(), 0);
 }

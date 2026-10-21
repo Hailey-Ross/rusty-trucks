@@ -148,7 +148,7 @@ fn apply_marker_ask(replay: &mut Replay, ask: MarkerAsk) {
     let Some(editor) = replay.editor.as_mut() else { return };
     if ask.delete.is_some() {
         editor.remove_marker(ask.time, ask.channels);
-    } else if let Err(e) = editor.drop_marker(ask.time) {
+    } else if let Err(e) = editor.drop_marker(ask.time, ask.channels) {
         info!("REPLAY_EDITOR marker refused: {e:?}");
     }
 }
@@ -630,13 +630,31 @@ fn editor_controls(
             let step = i32::from(pressed & DPAD_RIGHT != 0 || keys.just_pressed(KeyCode::ArrowRight))
                 - i32::from(pressed & DPAD_LEFT != 0 || keys.just_pressed(KeyCode::ArrowLeft));
             if step != 0 {
-                editor.adjust_row(cursor, step);
+                editor.adjust_row(step);
             }
+            // B closes the menu: the base game commits the live speed / shake there (`82507438(E, 0)`); the film pack
+            // cancels (b461).
             if pressed & B != 0 || keys.just_pressed(KeyCode::Escape) {
+                if !channels {
+                    editor.commit_base(cursor);
+                }
                 editor.session.mode = EditorMode::Timeline;
             }
+            // The film pack's commits on a lane row: A (a soft key next to soft keys, else the segment) and X (always a
+            // soft key, not on shake); both back to the timeline (b461). Refused over a hard key.
+            let lane_row = channels && editor.row_lane(editor.row).is_some();
+            if lane_row && (pressed & X != 0 || keys.just_pressed(KeyCode::KeyX)) && editor.commit_pack(cursor, true) {
+                editor.session.mode = EditorMode::Timeline;
+            }
+            if lane_row && (pressed & A != 0 || keys.just_pressed(KeyCode::Enter)) {
+                if editor.commit_pack(cursor, false) {
+                    editor.session.mode = EditorMode::Timeline;
+                } else {
+                    *sound = Some("core_error");
+                }
+            }
             // A on a basic camera row: that camera from the current view, then its key edit mode (b401).
-            if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
+            if !lane_row && (pressed & A != 0 || keys.just_pressed(KeyCode::Enter)) {
                 if let Some((view, root)) = view_root {
                     if let Some(mode) = editor.pick_camera(editor.row, cursor, &view, &root) {
                         editor.session.mode = match mode {
@@ -661,7 +679,12 @@ fn editor_controls(
                 zoom: dpad(DPAD_RIGHT, DPAD_LEFT),
             };
             editor.edit_key(input, dt);
+            // Leaving a key edit runs the base game's commit too (`82508930` leave states 7..10 -> `82507438(E, 0)`,
+            // b462); it lands only when no camera key is under the cursor.
             if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
+                if !channels {
+                    editor.commit_base(cursor);
+                }
                 editor.session.mode = EditorMode::Timeline;
             }
             true
@@ -686,19 +709,33 @@ fn editor_controls(
             editor.session.mode = EditorMode::Trim;
             true
         }
-        // A on a camera key re-edits it (b405, `82612C28`); elsewhere the Pro Edit Menu on the camera in effect.
+        // A (b462 / b463, `82612C28` case 2) on the active channel: a soft camera key re-edits it; a soft lane key
+        // snaps the cursor to it and opens the effects menu; a hard key, or the clip's ends, is refused (`core_error`);
+        // elsewhere the effects menu on the camera in effect. The menu loads its live values as it opens.
         _ if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) => {
             play = Some(false);
-            if let Some(mode) = editor.reopen_at(cursor) {
-                editor.session.mode = match mode {
-                    7 => EditorMode::FollowKey,
-                    8 => EditorMode::TripodKey,
-                    9 => EditorMode::GameKey,
-                    _ => EditorMode::FreeKey,
-                };
-            } else {
-                editor.row = editor.active_row(cursor);
-                editor.session.mode = EditorMode::Effects;
+            match editor.a_target(cursor, channels) {
+                editor::ATarget::CameraKey => {
+                    if let Some(mode) = editor.reopen_at(cursor) {
+                        editor.session.mode = match mode {
+                            7 => EditorMode::FollowKey,
+                            8 => EditorMode::TripodKey,
+                            9 => EditorMode::GameKey,
+                            _ => EditorMode::FreeKey,
+                        };
+                    }
+                }
+                editor::ATarget::Effects(snap) => {
+                    let at = snap.unwrap_or(cursor);
+                    seek = snap;
+                    editor.row = editor.active_row(at);
+                    if channels && editor.channel != 0 {
+                        editor.row = editor::CHANNELS[editor.channel].1[0];
+                    }
+                    editor.load_live(at, channels);
+                    editor.session.mode = EditorMode::Effects;
+                }
+                editor::ATarget::Refused => *sound = Some("core_error"),
             }
             true
         }
@@ -706,16 +743,16 @@ fn editor_controls(
             // D-pad Down drops a marker, asking first inside a run of soft keys; D-pad Up deletes the marker at the
             // cursor after retail's question (b407: key ids 0x21 / 0x20 in `82612C28`).
             if released & DPAD_DOWN != 0 || keys.just_pressed(KeyCode::KeyM) {
-                if editor.drop_needs_confirm(cursor) {
+                if editor.drop_needs_confirm(cursor, channels) {
                     ask = Some(MarkerAsk { delete: None, time: cursor, shown: false, channels });
-                } else if let Err(e) = editor.drop_marker(cursor) {
+                } else if let Err(e) = editor.drop_marker(cursor, channels) {
                     info!("REPLAY_EDITOR marker refused: {e:?}");
                 }
             }
             // Retail's sounds (b459, `82613650`): `editor_up_marker` as the question opens (none on Yes),
             // `core_error` when no marker is under the cursor.
             if released & DPAD_UP != 0 || keys.just_pressed(KeyCode::KeyN) {
-                match editor.marker_kind(cursor) {
+                match editor.marker_kind(cursor, channels) {
                     Some(kind) => {
                         ask = Some(MarkerAsk { delete: Some(kind), time: cursor, shown: false, channels });
                         *sound = Some("editor_up_marker");
@@ -825,9 +862,19 @@ impl Replay {
 
     pub(crate) fn shake(&self) -> Option<Transform> {
         let editor = self.editor.as_ref()?;
-        let level = editor.lane_value(skate_core::replay_edit::Lane::Shake, self.cursor);
+        // The level's clip steps at the segment's start; amplitude and frequency ramp to the next soft key's level
+        // (SHAKE_TYPE stepped, SHAKE_AMPLITUDE / FREQUENCY interpolated, b464).
         let levels = self.shake_levels.unwrap_or_else(skate_core::replay_edit::shake::retail_levels);
-        let level = levels.get(usize::try_from(level).ok()?).copied().flatten();
+        let level_of = |v: i32| usize::try_from(v).ok().and_then(|i| levels.get(i).copied().flatten());
+        let frame = editor.frame(self.cursor);
+        let segment = editor.edit.clips[editor.clip].segment(skate_core::replay_edit::Lane::Shake, frame);
+        let u = if segment.end > segment.start { (frame.clamp(segment.start, segment.end) - segment.start) as f32 / (segment.end - segment.start) as f32 } else { 0.0 };
+        let level = level_of(segment.from).map(|mut l| {
+            let (amplitude, frequency) = level_of(segment.to).map_or((0.0, 0.0), |n| (n.amplitude, n.frequency));
+            l.amplitude += (amplitude - l.amplitude) * u;
+            l.frequency += (frequency - l.frequency) * u;
+            l
+        });
         let t = self.cursor - editor.heads().0;
         let (q, p) = skate_core::replay_edit::shake::sample(&self.shake_clips, level, t)?;
         Some(Transform::from_translation(Vec3::from_array(p)).with_rotation(Quat::from_xyzw(q[0], q[1], q[2], q[3]).normalize()))
@@ -1162,13 +1209,21 @@ pub(crate) struct ReplayLookScreen(pub bool);
 
 fn publish_feed(replay: Res<Replay>, mut feed: ResMut<ReplayFeed>) {
     let (start, end) = replay.bounds();
+    let (length_seconds, length_valid) = match replay.editor.as_ref() {
+        Some(e) => (e.edit.encoded_seconds(), e.edit.can_share()),
+        None => {
+            let seconds = (end - start).max(0.0).round() as u32;
+            (seconds, seconds <= skate_core::replay_edit::EditLimits::default().share_max_seconds)
+        }
+    };
     let next = crate::replay_menu_host::ReplayScreenFeed {
         active: replay.active,
         instant: replay.active && replay.editor.is_none(),
         position: if end > start { (replay.cursor - start) / (end - start) } else { 1.0 },
         playing: replay.playing,
         panel: !replay.panel_hidden,
-        length_seconds: (end - start).max(0.0).round() as u32,
+        length_seconds,
+        length_valid,
         help: replay.active && replay.help_open,
         help_turns: replay.help_turns,
         mode: replay.editor.as_ref().map_or(5, |e| e.mode()),

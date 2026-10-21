@@ -204,7 +204,7 @@ retail"):
 - **A** (retail: open the full editor) and **Y** (retail: cycle the edit channel, film DLC only) do nothing until
   the editor exists. The free camera is PC only now (C, WASD / Q / E, right mouse; was Y on the pad): retail's
   instant replay has no free camera.
-- Not ported: the open sound (retail UI sound 0x394015B68783BE9E), the online instant replay mode.
+- Not ported: the online instant replay mode. (The open sound is ported: see "The opening sound (2026-10-20)"; research b468 confirmed retail plays it once on Back, behind the same 150-frame check.)
 Tests: the controller test (open, scrub, jump, RB, stick resume, B), the quit warning (No stays, Yes leaves) and the
 5 s minimum.
 
@@ -626,3 +626,65 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   the tone pass mixes it in as its last step (`retail_tone.wgsl`), the same result as the quad drawn right after the
   grade, under the UI, and carried into Save to PC. Open: whether retail's tint lands before or after its grade
   (inferred after, medium).
+
+## M2 step 8: edits land on commit, hard and soft lane keys (2026-10-21, research b461 to b466)
+
+### Problem
+Our editor wrote a marker at the cursor on every Left / Right press, stepped every lane except the looks, and let a
+value set on an empty lane apply to the whole clip. Retail does none of that.
+
+### Retail (evidence)
+- Left / Right only step the menu's live value (`8250ADF8` / `8250AB28` call nothing but the DLC check) [code]. The
+  live values load from the take only when the effects menu opens (`82508930` state 0xB -> `825079A0`; without the
+  pack speed and shake, with it the active channel only) [code].
+- The commit is `82507438`. Base game: B closes the menu and writes speed and shake into the segment under the
+  playhead, unless a marker is under it; leaving a camera key edit (states 7..10) runs the same commit. Film pack: B
+  cancels; A writes (a soft key at the playhead only when the segment touches a soft key, `82508828`), X always adds a
+  soft key, except on shake; over a hard key nothing [code].
+- Lanes hold hard keys (cuts: D-pad Down, `82C7F610` on channels 0, 5, 4 together without the pack,
+  `82835F08(take, 1)` on the active channel with it) and soft keys (A / X). Each segment has a start and an end record;
+  a soft key shares one record with the segment before it (`82C892D8`, `82C879D8`) [code].
+- Playback `82C89A50`: interpolated elements ramp linearly from a segment's start to its end record (TIME_SCALE speed
+  registered interpolated, `82C8FAD8`; the looks; shake amplitude / frequency), stepped elements take the start
+  (SHAKE_TYPE); int elements round floor + (fraction >= 0.5, `8209975C`) [code, b463 / b464].
+- A fresh instant replay opens on a blank take: no keys on any lane (`82C88428`; `82836AB8` is unreachable) [code,
+  b466]. With no keys the sampler reads the lane default, so a commit that adds no key to an empty lane is lost:
+  in the base game, speed set and closed with B before any D-pad Down marker stays 100 % [code, medium-high, b465;
+  no recomp trace yet].
+- A in the timeline over a hard key, or at the clip's ends, plays `core_error` and does nothing (`loc_826130AC`);
+  over a soft key the playhead snaps to it (`825088B8`) [code].
+
+### Change
+- `skate_core::replay_edit`: `LaneKey { frame, value, end, soft }`, `Clip::ends`, `Clip::segment`,
+  `Clip::cut_both_sides`; `ReplayEdit::insert_hard` (keeps the curve), `commit` (-> `Commit::Segment / SoftKey /
+  Lost`), `remove_key` (a hard key takes the soft keys around it), `sample` (per segment ramp), `value_at` (retail
+  rounding), `lane_effect`. Speed ramps (`LaneSpec { interpolate: true, round: true }`).
+- `replay/editor.rs`: `Editor::live`, `load_live`, `adjust_row` (live only), `commit_base`, `commit_pack`,
+  `channel_lanes`, `a_target`; D-pad Down / Up and the delete question work on the active channel's lane with the
+  pack. `replay.rs` binds B / A / X and the key edit exit to them; the camera shake ramps amplitude and frequency
+  across a segment.
+- Data (`EditLimits`, Lua-reachable with the other limits): `round_threshold` (0.5), `empty_lane_commit` (false =
+  retail; a mod may let an empty-lane commit write the whole clip), per lane `interpolate` / `round`.
+
+### Verification
+skate-core `replay_edit` 15 tests (new: spacing and cap on keys, the lost empty-lane commit and its mod switch, the
+base commit between clip markers, soft keys with the speed ramp, half-up rounding and the hard-key split), skate-game
+replay 44 tests (new: the film pack lane channels). Not play-tested.
+
+### The encoded length and the heads (b472) and the replay screen natives (b470)
+- Retail `8250B590` [code]: per segment of the speed lane (hard and soft keys alike, positions over the whole take),
+  the frames inside the in / out heads divided by the segment's START value x 0.01 (a ramp is not averaged), truncated
+  per segment, summed; seconds = trunc(sum x 1/30 + 0.5). Heads only clip: a segment straddling the in head counts
+  at its own start value, so retail keeps every key when a head moves. Ours: `Clip::take` (the span the lanes run
+  over), `trim` keeps the keys, `encoded_seconds` as above with `EditLimits::length_round_bias` (0.5). A lane without
+  keys counts as one segment at the clip's value (ours; b472 did not read the empty-lane count).
+- The replay screen feed (`replay.rs` `publish_feed`): the length is `encoded_seconds()` while the editor is open,
+  and `IsEncodedLengthValid` reads the feed's `length_valid` from `EditLimits::share_max_seconds` (the host's own 60 s
+  constant is gone). `CanDisplayShowHide` is true in editor modes 5, 6 and 1, as retail `825ADF00` (was instant
+  only). Retail's `GetCursorPosition` returns a frame number where ours returns the fraction; the movie ignores it
+  (it draws from GetPlayheadPosition), so it stays.
+- Tests: `encoded_length_counts_speed_segments_inside_the_heads` (b472 cases B, C, C2, D, E), the host natives test.
+
+### Open
+- A recomp trace of the base case (no marker, speed 50, B, play) would settle b465's medium-high reading.
+- What shake level type 3 vs 4 looks like (the shake consumer is not read).

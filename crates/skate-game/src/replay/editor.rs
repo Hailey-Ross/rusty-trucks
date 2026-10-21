@@ -3,7 +3,7 @@
 //! instant replay opens it (`82613988`: leave instant, mode 6, SetState 21, 9).
 use skate_core::replay_edit::{
     session::{EditorMode, EditorSession},
-    EditError, EditLimits, Lane, ReplayEdit,
+    Commit, EditError, EditLimits, Lane, ReplayEdit,
 };
 
 /// The row of the game camera (key type 3 -> row 2 in `8250A8E8`, b398), the clip's camera until another is picked.
@@ -44,6 +44,9 @@ pub(crate) struct Editor {
     /// The Create pack's edit channel (`GetMode`, 0..6) and tint component cursor (`GetCurrentTint`, 0 R .. 3 A).
     pub channel: usize,
     pub tint: usize,
+    /// The effects menu's live values per lane (retail E+0x19C speed, E+0x1B8 shake, the look fields; b461 / b462):
+    /// loaded from the take when the menu opens, stepped by Left / Right, written only by a commit.
+    pub live: [i32; 9],
     /// Recording time of timeline frame 0, and the timeline's frames per second.
     base: f64,
     fps: f64,
@@ -64,6 +67,17 @@ pub(crate) struct Editor {
 pub(crate) enum MarkerKind {
     Clip,
     Key,
+}
+
+/// Where A in the timeline goes (b462 / b463).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ATarget {
+    /// The effects menu, the cursor snapped to a soft lane key first (Some).
+    Effects(Option<f64>),
+    /// Re-edit the soft camera key at the cursor.
+    CameraKey,
+    /// `core_error`, nothing else (a hard key, or outside the marker window).
+    Refused,
 }
 
 /// One camera key on the timeline (b405): inserted at the playhead when a camera row is picked; a basic camera's key is
@@ -97,7 +111,8 @@ impl Editor {
         let clip = edit.add_clip(0, frames).ok()?;
         let mut session = EditorSession::instant();
         session.mode = EditorMode::Timeline;
-        Some(Self { session, edit, clip, row: 0, channel: 0, tint: 0, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default() })
+        let live = edit.limits.lanes.map(|s| s.default);
+        Some(Self { session, edit, clip, row: 0, channel: 0, tint: 0, live, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default() })
     }
 
     pub fn frame(&self, time: f64) -> u32 {
@@ -121,7 +136,7 @@ impl Editor {
     }
 
     pub fn speed(&self, time: f64) -> f64 {
-        f64::from(self.edit.effect_at(self.clip, Lane::Speed, self.frame(time)).unwrap_or(1.0))
+        f64::from(self.edit.lane_effect(self.clip, Lane::Speed, self.frame(time)).unwrap_or(1.0))
     }
 
     /// Move the in / out points by whole timeline frames (LB held: the sticks, `82610F18` mode 2). A move that
@@ -179,7 +194,7 @@ impl Editor {
     pub fn key_near(&self, time: f64) -> Option<usize> {
         let frame = self.frame(time);
         let c = &self.edit.clips[self.clip];
-        let near = ((self.edit.limits.marker_spacing * (c.end - c.start) as f32).floor() as u32).max(1);
+        let near = ((self.edit.limits.marker_spacing * (c.take[1] - c.take[0]) as f32).floor() as u32).max(1);
         self.cameras.iter().position(|k| k.frame.abs_diff(frame) <= near)
     }
 
@@ -283,47 +298,84 @@ impl Editor {
         self.time(target)
     }
 
-    /// D-pad Down released: a camera key at the cursor holding the camera in effect there (a hard key: the marker the
-    /// timeline draws, b403 / b405); refused at a key, at the clip's ends (the marker spacing) or at the cap (retail's
-    /// error sound / popup, `82613500` / `82613598`).
-    pub fn drop_marker(&mut self, time: f64) -> Result<(), EditError> {
+    /// The lanes of the Create pack's active channel (1 speed .. 6 the four tint components); none on the camera
+    /// channel or without the pack.
+    pub fn channel_lanes(&self, channels: bool) -> &'static [Lane] {
+        const LANES: [&[Lane]; 7] = [&[], &[Lane::Speed], &[Lane::Shake], &[Lane::Brightness], &[Lane::Contrast], &[Lane::Saturation], &TINT_LANES];
+        if channels { LANES[self.channel % 7] } else { &[] }
+    }
+
+    /// D-pad Down released (b461 / b462): a hard key at the cursor that keeps the values in effect. Without the pack a
+    /// camera key holding the camera in effect plus hard keys on speed and shake (`82C7F610`: channels 0, 5, 4
+    /// together); with the pack a key on the active channel only (`82835F08(take, 1)`). Refused at a key, at the clip's
+    /// ends (the marker spacing) or at the cap (retail's error sound / popup, `82613500` / `82613598`).
+    pub fn drop_marker(&mut self, time: f64, channels: bool) -> Result<(), EditError> {
+        let frame = self.frame(time);
+        let lanes = self.channel_lanes(channels);
+        if !lanes.is_empty() {
+            for &lane in lanes {
+                self.edit.insert_hard(self.clip, lane, frame)?;
+            }
+            return Ok(());
+        }
         if self.cameras.len() >= MAX_CAMERA_KEYS {
             return Err(EditError::NoMoreMarkers);
         }
-        let frame = self.frame(time);
-        let c = &self.edit.clips[self.clip];
-        let at = (frame as f32 - c.start as f32) / (c.end - c.start).max(1) as f32;
-        let spacing = self.edit.limits.marker_spacing;
-        if self.key_near(time).is_some() || at <= spacing || at >= 1.0 - spacing {
+        if self.key_near(time).is_some() || !self.edit.in_marker_window(self.clip, frame) {
             return Err(EditError::TooClose);
         }
         let (camera, lens) = self.active(time).map_or((super::camera_key::CameraKey::Game, self.camera_rules.lens_default), |i| (self.cameras[i].camera, self.cameras[i].lens));
         let i = self.cameras.partition_point(|k| k.frame < frame);
         self.cameras.insert(i, CamKey { frame, camera, lens, soft: false });
+        if !channels {
+            for lane in [Lane::Speed, Lane::Shake] {
+                // A lane key already at the frame (a mod's edit) stays; the camera key is the marker.
+                let _ = self.edit.insert_hard(self.clip, lane, frame);
+            }
+        }
         Ok(())
     }
 
-    /// What D-pad Up asks about before removing the key at the cursor (b407, `82613650` via `82508D88`): a hard key is
-    /// a clip marker, a soft key a key marker; None = no key there (retail's error sound).
-    pub fn marker_kind(&self, time: f64) -> Option<MarkerKind> {
-        self.key_near(time).map(|i| if self.cameras[i].soft { MarkerKind::Key } else { MarkerKind::Clip })
+    /// What D-pad Up asks about before removing the key at the cursor (b407, `82613650` via `82508D88`, on the active
+    /// channel): a hard key is a clip marker, a soft key a key marker; None = no key there (retail's error sound).
+    pub fn marker_kind(&self, time: f64, channels: bool) -> Option<MarkerKind> {
+        let kind = |soft: bool| if soft { MarkerKind::Key } else { MarkerKind::Clip };
+        match self.channel_lanes(channels).first() {
+            Some(&lane) => {
+                let i = self.edit.key_near(self.clip, lane, self.frame(time))?;
+                Some(kind(self.edit.clips[self.clip].markers[lane.index()][i].soft))
+            }
+            None => self.key_near(time).map(|i| kind(self.cameras[i].soft)),
+        }
     }
 
     /// D-pad Down's confirm (b407, `82508828`): retail asks before a clip marker lands inside a run of soft keys (the
-    /// key in effect is soft); not at the cap, whose refusal comes first (`82613500`).
-    pub fn drop_needs_confirm(&self, time: f64) -> bool {
-        self.cameras.len() < MAX_CAMERA_KEYS && self.active(time).is_some_and(|i| self.cameras[i].soft)
+    /// key in effect on the active channel is soft); not at the cap, whose refusal comes first (`82613500`).
+    pub fn drop_needs_confirm(&self, time: f64, channels: bool) -> bool {
+        match self.channel_lanes(channels).first() {
+            Some(&lane) => {
+                let c = &self.edit.clips[self.clip];
+                let keys = &c.markers[lane.index()];
+                keys.len() < self.edit.limits.max_markers_per_lane && c.segment(lane, self.frame(time)).key.is_some_and(|i| keys[i].soft)
+            }
+            None => self.cameras.len() < MAX_CAMERA_KEYS && self.active(time).is_some_and(|i| self.cameras[i].soft),
+        }
     }
 
-    /// D-pad Up released, answered Yes (b407, `82613910` -> `82C7FD60`): remove the key at the cursor. A clip marker
-    /// also takes every soft key in the clips on both sides, up to the next hard key each way (`82C7FB08`; retail's
-    /// own text, ID_REPLAY_EDITOR_POPUP_CLIPMARKER). On the camera channel a clip marker delete also resets the merged
-    /// clip (research b460, `825086F0`): the surviving key before it gets the default lens (clamped to the lens
-    /// range), and speed / shake take their lane defaults: over the whole merged span without the film pack (retail
-    /// removes the marker on channels 0 / 5 / 4 / 1 together), only the value in effect at the cursor with it
-    /// (`channels`). Look lanes and soft key deletes are untouched. Retail's near clip (channel 1 element 0xE, 0.1) has
-    /// no counterpart here. Values are data (`CameraRules`, the lanes' `LaneSpec::default`).
+    /// D-pad Up released, answered Yes (b407, `82613910` -> `82C7FD60`): remove the key at the cursor on the active
+    /// channel. A clip marker also takes every soft key in the clips on both sides, up to the next hard key each way
+    /// (`82C7FB08`; retail's own text, ID_REPLAY_EDITOR_POPUP_CLIPMARKER). On the camera channel a clip marker delete
+    /// also resets the merged clip (research b460, `825086F0`): the surviving key before it gets the default lens
+    /// (clamped to the lens range), and speed / shake take their lane defaults: over the whole merged span without the
+    /// film pack (retail removes the marker on channels 0 / 5 / 4 / 1 together), only the value in effect at the cursor
+    /// with it (`channels`). Look lanes and soft key deletes are untouched. Retail's near clip (channel 1 element 0xE,
+    /// 0.1) has no counterpart here. Values are data (`CameraRules`, the lanes' `LaneSpec::default`).
     pub fn remove_marker(&mut self, time: f64, channels: bool) -> bool {
+        let lanes = self.channel_lanes(channels);
+        if !lanes.is_empty() {
+            let frame = self.frame(time);
+            return lanes.iter().fold(false, |any, &lane| self.edit.remove_key(self.clip, lane, frame).is_some() || any);
+        }
         let Some(i) = self.key_near(time) else { return false };
         if self.cameras[i].soft {
             self.cameras.remove(i);
@@ -331,29 +383,95 @@ impl Editor {
             let lo = self.cameras[..i].iter().rposition(|k| !k.soft).map_or(0, |p| p + 1);
             let hi = self.cameras[i + 1..].iter().position(|k| !k.soft).map_or(self.cameras.len(), |p| i + 1 + p);
             self.cameras.drain(lo..hi);
-            if self.channel == 0 {
-                let (start, end) = self.head_frames();
-                let from = lo.checked_sub(1).map_or(start, |p| self.cameras[p].frame);
-                let to = self.cameras.get(lo).map_or(end, |k| k.frame);
-                for lane in [Lane::Speed, Lane::Shake] {
-                    let _ = if channels {
-                        self.edit.reset_at(self.clip, lane, self.frame(time))
-                    } else {
-                        self.edit.reset_span(self.clip, lane, from, to)
-                    };
-                }
-                if let Some(p) = lo.checked_sub(1) {
-                    let (min, max) = self.camera_rules.lens_range;
-                    self.cameras[p].lens = self.camera_rules.lens_default.clamp(min, max);
-                }
+            let (start, end) = self.head_frames();
+            let from = lo.checked_sub(1).map_or(start, |p| self.cameras[p].frame);
+            let to = self.cameras.get(lo).map_or(end, |k| k.frame);
+            for lane in [Lane::Speed, Lane::Shake] {
+                let _ = if channels {
+                    self.edit.reset_at(self.clip, lane, self.frame(time))
+                } else {
+                    self.edit.reset_span(self.clip, lane, from, to)
+                };
+            }
+            if let Some(p) = lo.checked_sub(1) {
+                let (min, max) = self.camera_rules.lens_range;
+                self.cameras[p].lens = self.camera_rules.lens_default.clamp(min, max);
             }
         }
         self.editing = None;
         true
     }
 
-    /// A lane's editor value at the cursor (`GetSimpleSpeedSetting` speed %, `GetShakeCamType` shake 0..3).
+    /// A in the timeline (b462 / b463, `82612C28` case 2) on the active channel: over a soft key the cursor snaps to
+    /// it (`825088B8`); over a hard key, or outside the clip's marker window, A is refused (`core_error`).
+    pub fn a_target(&self, time: f64, channels: bool) -> ATarget {
+        let frame = self.frame(time);
+        let c = &self.edit.clips[self.clip];
+        match self.channel_lanes(channels).first() {
+            Some(&lane) => match self.edit.key_near(self.clip, lane, frame) {
+                Some(i) if c.markers[lane.index()][i].soft => return ATarget::Effects(Some(self.time(c.markers[lane.index()][i].frame))),
+                Some(_) => return ATarget::Refused,
+                None => {}
+            },
+            None => match self.key_near(time) {
+                Some(i) if self.cameras[i].soft => return ATarget::CameraKey,
+                Some(_) => return ATarget::Refused,
+                None => {}
+            },
+        }
+        if self.edit.in_marker_window(self.clip, frame) { ATarget::Effects(None) } else { ATarget::Refused }
+    }
+
+    /// The effects menu opens (retail state 0xB, `825079A0`): the live values load from the take at the cursor.
+    /// Without the pack speed and shake; with it only the active channel's lanes (the others keep their values).
+    pub fn load_live(&mut self, time: f64, channels: bool) {
+        let frame = self.frame(time);
+        let lanes: &[Lane] = if channels { self.channel_lanes(true) } else { &[Lane::Speed, Lane::Shake] };
+        for &lane in lanes {
+            if let Some(v) = self.edit.value_at(self.clip, lane, frame) {
+                self.live[lane.index()] = v;
+            }
+        }
+    }
+
+    /// The base game's commit (`82507438(E, 0)`: B in the effects menu, or leaving a camera key edit): speed and shake
+    /// into the segment under the cursor, unless a camera key is there. Returns whether anything landed.
+    pub fn commit_base(&mut self, time: f64) -> bool {
+        if self.key_near(time).is_some() {
+            return false;
+        }
+        let frame = self.frame(time);
+        [Lane::Speed, Lane::Shake].into_iter().fold(false, |any, lane| {
+            matches!(self.edit.commit(self.clip, lane, frame, self.live[lane.index()], false), Ok(Commit::Segment)) || any
+        })
+    }
+
+    /// The film pack's commit on the active channel (`82507438` DLC branch): A (`x` false) adds a soft key only when
+    /// the segment touches a soft key (`82508828`), X (`x` true) always, but not on shake (b461). Returns whether the
+    /// commit ran (false: not a lane channel, X on shake, or the cursor on a hard key).
+    pub fn commit_pack(&mut self, time: f64, x: bool) -> bool {
+        let lanes = self.channel_lanes(true);
+        if lanes.is_empty() || (x && lanes == [Lane::Shake]) {
+            return false;
+        }
+        let frame = self.frame(time);
+        let c = &self.edit.clips[self.clip];
+        if self.edit.key_near(self.clip, lanes[0], frame).is_some_and(|i| !c.markers[lanes[0].index()][i].soft) {
+            return false;
+        }
+        let add = x || !c.cut_both_sides(lanes[0], frame);
+        for &lane in lanes {
+            let _ = self.edit.commit(self.clip, lane, frame, self.live[lane.index()], add);
+        }
+        true
+    }
+
+    /// A lane's value for the screen (`GetSimpleSpeedSetting` speed %, `GetShakeCamType` shake 0..3, the look values):
+    /// the live value while the effects menu is open, else the take's value at the cursor.
     pub fn lane_value(&self, lane: Lane, time: f64) -> i32 {
+        if self.session.mode == EditorMode::Effects {
+            return self.live[lane.index()];
+        }
         self.edit.value_at(self.clip, lane, self.frame(time)).unwrap_or(0)
     }
 
@@ -427,18 +545,15 @@ impl Editor {
         self.lane_value(TINT_LANES[component % 4], time)
     }
 
-    /// Left / Right in the effects menu: step the row's value at the cursor (a marker there, or the clip's value
-    /// before the first marker / near the ends). Returns whether it changed.
-    pub fn adjust_row(&mut self, time: f64, direction: i32) -> bool {
+    /// Left / Right in the effects menu: step the row's live value only (`8250ADF8` / `8250AB28` write no key; a
+    /// commit does). Returns whether it changed.
+    pub fn adjust_row(&mut self, direction: i32) -> bool {
         let Some(lane) = self.row_lane(self.row) else { return false };
-        let frame = self.frame(time);
-        let before = self.edit.value_at(self.clip, lane, frame);
         let spec = self.edit.limits.lanes[lane.index()];
-        let next = spec.adjust(before.unwrap_or(spec.default), direction);
-        if self.edit.set_marker(self.clip, lane, frame, next).is_err() {
-            let _ = self.edit.adjust(self.clip, lane, direction);
-        }
-        self.edit.value_at(self.clip, lane, frame) != before
+        let v = &mut self.live[lane.index()];
+        let before = *v;
+        *v = spec.adjust(*v, direction);
+        *v != before
     }
 
     /// The retail editor mode value (`+0x30`) the screen is in.
@@ -450,6 +565,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skate_core::replay_edit::LaneKey;
 
     #[test]
     fn opens_over_the_recording_trims_marks_and_slows() {
@@ -465,19 +581,27 @@ mod tests {
         }
         assert_eq!(e.heads(), (14.0, 28.0));
         e.trim_by(-90, 0, 600);
-        // Speed 100 % until a lowered value at the cursor slows it from there.
+        // Speed 100 % until a clip marker and a committed lower value slow the clip after it (b461).
         assert_eq!(e.speed(20.0), 1.0);
-        e.drop_marker(20.0).unwrap();
+        e.drop_marker(20.0, false).unwrap();
         assert_eq!(e.cameras.len(), 1, "a camera key (the timeline's marker)");
+        assert_eq!(e.edit.clips[e.clip].markers[Lane::Speed.index()].len(), 1, "and hard keys on speed and shake");
+        e.session.mode = EditorMode::Effects;
+        e.load_live(21.0, false);
         e.row = 7;
-        assert!(e.adjust_row(20.0, -1));
-        assert!((e.speed(21.0) - 0.9).abs() < 1e-6 && e.speed(15.0) == 1.0);
-        assert_eq!(e.lane_value(Lane::Speed, 20.0), 90);
+        assert!(e.adjust_row(-1));
+        assert_eq!(e.lane_value(Lane::Speed, 21.0), 90, "the menu shows the live value");
+        assert_eq!(e.speed(21.0), 1.0, "Left / Right write nothing");
         // Camera rows take no Left / Right; shake wraps 0..3.
         e.row = 0;
-        assert!(!e.adjust_row(20.0, 1));
+        assert!(!e.adjust_row(1));
         e.row = 8;
-        assert!(e.adjust_row(20.0, -1));
+        assert!(e.adjust_row(-1));
+        // B: the base commit, refused over the marker, else into the clip after it.
+        assert!(!e.commit_base(20.0));
+        assert!(e.commit_base(21.0));
+        e.session.mode = EditorMode::Timeline;
+        assert!((e.speed(21.0) - 0.9).abs() < 1e-6 && e.speed(15.0) == 1.0);
         assert_eq!(e.lane_value(Lane::Shake, 21.0), 3);
         assert_eq!((e.skip(15.0, true), e.skip(25.0, false), e.skip(25.0, true)), (20.0, 20.0, 28.0));
         assert!(e.remove_marker(20.0, false));
@@ -515,6 +639,12 @@ mod tests {
         // A on the Tripod key re-edits it (mode 8); not on a key: None.
         assert_eq!(e.reopen_at(5.0), Some(8));
         assert_eq!(e.reopen_at(7.0), None);
+        // A in the timeline (b462 / b463): over the hard Tripod key refused, over a soft key its edit, else the menu;
+        // the clip's very ends are refused.
+        assert_eq!(e.a_target(5.0, false), ATarget::Refused);
+        assert_eq!(e.a_target(10.0, false), ATarget::CameraKey);
+        assert_eq!(e.a_target(7.0, false), ATarget::Effects(None));
+        assert_eq!(e.a_target(0.0, false), ATarget::Refused);
     }
 
     /// The Create pack's channels (b410 / b411): Y cycles camera .. tint; Up / Down stay in the channel's rows (the tint
@@ -541,7 +671,8 @@ mod tests {
         e.move_row(1, true);
         e.move_row(1, true);
         assert_eq!(e.tint, 2);
-        assert!(e.adjust_row(5.0, 1));
+        e.session.mode = EditorMode::Effects;
+        assert!(e.adjust_row(1));
         assert_eq!(e.tint_value(2, 5.0), 25);
         assert_eq!((e.mode_value(5.0), e.mode_slider(5.0)), (-1, 2));
         // Brightness: +20 per press, slider notch v / 20 + 5.
@@ -551,8 +682,51 @@ mod tests {
             e.cycle_channel();
         }
         assert_eq!(e.channel, 3);
-        e.adjust_row(5.0, 1);
+        e.load_live(5.0, true);
+        e.adjust_row(1);
         assert_eq!((e.mode_value(5.0), e.mode_slider(5.0)), (20, 6));
+        // A on the empty lane is lost (b465); X adds a soft key with the value (b461).
+        assert!(e.commit_pack(5.0, false));
+        e.session.mode = EditorMode::Timeline;
+        assert_eq!(e.mode_value(5.0), 0);
+        assert!(e.commit_pack(5.0, true));
+        assert_eq!(e.mode_value(5.0), 20);
+        assert_eq!(e.marker_kind(5.0, true), Some(MarkerKind::Key));
+    }
+
+    /// The film pack's lane channels (b461 / b462): D-pad Down puts a hard key on the active lane only; A in the
+    /// timeline is refused on it and snaps to a soft key; A in a segment cut on both sides writes it, X adds a soft
+    /// key, X on shake does nothing; D-pad Up deletes on the lane.
+    #[test]
+    fn pack_lane_channels_drop_commit_and_delete_on_their_lane() {
+        let mut e = Editor::open(0.0, 30.0, EditLimits::default()).unwrap();
+        e.cycle_channel();
+        assert_eq!(e.channel_lanes(true), [Lane::Speed]);
+        e.drop_marker(10.0, true).unwrap();
+        assert!(e.cameras.is_empty() && e.edit.clips[e.clip].markers[Lane::Shake.index()].is_empty());
+        assert_eq!(e.marker_kind(10.0, true), Some(MarkerKind::Clip));
+        assert_eq!(e.a_target(10.0, true), ATarget::Refused);
+        // A at 15 s: the segment 10 s .. end is cut on both sides: written, no key.
+        e.load_live(15.0, true);
+        for _ in 0..5 {
+            e.adjust_row(-1);
+        }
+        assert!(e.commit_pack(15.0, false));
+        assert_eq!(e.edit.clips[e.clip].markers[Lane::Speed.index()].len(), 1);
+        assert!((e.speed(25.0) - 0.5).abs() < 1e-6 && e.speed(9.0) == 1.0);
+        // X at 20 s with 100: a soft key; the speed ramps 50 -> 100 from 10 s to 20 s, then holds.
+        e.live[Lane::Speed.index()] = 100;
+        assert!(e.commit_pack(20.0, true));
+        assert!((e.speed(15.0) - 0.75).abs() < 1e-6 && e.speed(25.0) == 1.0);
+        assert_eq!(e.marker_kind(20.0, true), Some(MarkerKind::Key));
+        assert_eq!(e.a_target(20.1, true), ATarget::Effects(Some(20.0)));
+        assert!(e.drop_needs_confirm(25.0, true) && !e.drop_needs_confirm(15.0, true));
+        // Shake: X does nothing.
+        e.cycle_channel();
+        assert!(!e.commit_pack(15.0, true));
+        e.channel = 1;
+        assert!(e.remove_marker(10.0, true), "the clip marker takes the soft key after it");
+        assert!(e.edit.clips[e.clip].markers[Lane::Speed.index()].is_empty());
     }
 
     /// Deleting (b407): a soft key goes alone; a clip marker takes the soft keys in the clips on both sides, up to
@@ -566,16 +740,16 @@ mod tests {
         for (t, row) in [(4.0, 1), (8.0, 6), (10.0, 6), (14.0, 0), (18.0, 4), (20.0, 4), (24.0, 2)] {
             assert!(e.pick_camera(row, t, &view, &root).is_some(), "{t}");
         }
-        assert_eq!(e.marker_kind(14.0), Some(MarkerKind::Clip));
-        assert_eq!(e.marker_kind(18.0), Some(MarkerKind::Key));
-        assert_eq!(e.marker_kind(16.0), None);
-        assert!(e.drop_needs_confirm(9.0) && !e.drop_needs_confirm(16.0));
+        assert_eq!(e.marker_kind(14.0, false), Some(MarkerKind::Clip));
+        assert_eq!(e.marker_kind(18.0, false), Some(MarkerKind::Key));
+        assert_eq!(e.marker_kind(16.0, false), None);
+        assert!(e.drop_needs_confirm(9.0, false) && !e.drop_needs_confirm(16.0, false));
         // Lane values to watch: speed 50 from 14, shake 2 from 16, a look marker at 15, a speed marker at 26.
         let f = |t: f64| e.frame(t);
         let (f14, f15, f16, f26) = (f(14.0), f(15.0), f(16.0), f(26.0));
-        e.edit.clips[e.clip].markers[Lane::Speed.index()] = vec![(f14, 50), (f26, 70)];
-        e.edit.clips[e.clip].markers[Lane::Shake.index()] = vec![(f16, 2)];
-        e.edit.clips[e.clip].markers[Lane::Brightness.index()] = vec![(f15, 40)];
+        e.edit.clips[e.clip].markers[Lane::Speed.index()] = vec![LaneKey::hard(f14, 50), LaneKey::hard(f26, 70)];
+        e.edit.clips[e.clip].markers[Lane::Shake.index()] = vec![LaneKey::hard(f16, 2)];
+        e.edit.clips[e.clip].markers[Lane::Brightness.index()] = vec![LaneKey::hard(f15, 40)];
         e.cameras[0].lens = 50.0;
         // A key marker goes alone, with no reset.
         assert!(e.remove_marker(20.0, false));
@@ -603,8 +777,8 @@ mod tests {
             assert!(e.pick_camera(row, t, &view, &root).is_some(), "{t}");
         }
         let (f22, f29) = (e.frame(22.0), e.frame(29.0));
-        e.edit.clips[e.clip].markers[Lane::Speed.index()] = vec![(f22, 50), (f29, 30)];
+        e.edit.clips[e.clip].markers[Lane::Speed.index()] = vec![LaneKey::hard(f22, 50), LaneKey::hard(f29, 30)];
         assert!(e.remove_marker(28.0, true));
-        assert_eq!(e.edit.clips[e.clip].markers[Lane::Speed.index()], vec![(f22, 100), (f29, 30)]);
+        assert_eq!(e.edit.clips[e.clip].markers[Lane::Speed.index()], vec![LaneKey::hard(f22, 100), LaneKey::hard(f29, 30)]);
     }
 }
