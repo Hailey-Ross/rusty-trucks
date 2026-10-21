@@ -178,8 +178,18 @@ data. Open: no recomp trace confirms retail plays the SkateSchool bed there.
 - Skies (`sky.py`): DLC worlds offered, each model read from its own pack first; MaloofMoneyCupDLC, AGPark and Zen
   get skies; the disc's 30 sky files are byte-identical. Sanatorium and the Create pack lots name render locations
   no vault holds: retail's lookup (TU3 0x82B6DE10) returns nothing and 0x827950A8 then selects `default` (research
-  b419), so `environment.world_environment` does the same and those maps get their skies. NOT RETAIL YET: Hawaiian
-  Dream's "sky" is no sky material (retail swaps in a multi-mesh copy built into the executable); it gets none yet.
+  b419), so `environment.world_environment` does the same and those maps get their skies. Hawaiian Dream's sky model has
+  six meshes (research b427 / b428): the dome (`sky.default`) and five scenery meshes (trees, rocks, mountains) drawn
+  with the world's environment effects. Retail's title update swaps the pack's model for a copy built into its
+  executable (0x828A1460; not on the disc), identical except material 2 = `environmentsimple.alphatest` without its
+  specular. Setup rebuilds that from the player's pack: materials bound per mesh by GUID (the backdrop binder), the
+  dome picked by its `sky.` shader, the override row in `tools/asset_pipeline/sky_overrides.json` (keyed by model name
+  like retail's check; a mod or a later find can add rows), and the scenery written as the map's render-only backdrop
+  package (`backdrop.write_model`, factored out of the district backdrops). The disc's 48 sky files and the three
+  district backdrops stay byte-identical (the Industrial proxy file differs between two runs of the unchanged code:
+  a separate, older nondeterminism). Verified on Hawaiian Dream: blue sky with the mountains behind the park
+  (SKATE_BACKDROP triangles=2161 materials=5, all families supported). Open: retail's draw order for the scenery
+  (b428). Tests `test_sky`.
 - Map names (`map_names.py`, wired in `install.py`): every map in `maps.json` gets `display` (its Skate 3 name) and
   `name_id`; the engine's lists show `display` (`map_library.rs`). Rule (ours, no retail screen lists maps by
   stream): the `map_category` row keyed like the world row, else the world row's own name, resolved in the disc's
