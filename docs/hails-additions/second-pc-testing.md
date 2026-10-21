@@ -367,11 +367,17 @@ sessions.
    times; a local copy is much faster than the network).
 2. Get the latest `hails-additions` (B: `git pull`, then build; A: Esc > EXTRAS > Updates).
 3. Point the game at the folder:
-   - **B, Steam launcher:** Tools > **Import DLC** > No (choose a folder) > `C:\Skate3\dlc`. The launcher copies the
-     packages into its own `dlc` folder. Then Tools > **Refresh game files**.
-   - **A, release ZIP:** in a command prompt in the game folder, `set SKATE3_DLC_DIR=C:\Skate3\dlc`, then start
-     `PLAY-WITH-LOG.bat` and open Extras > **Refresh Game Files**. Setup remembers the folder for later refreshes.
-4. The refresh converts the DLC maps, the menus and the DLC audio (a few minutes).
+   - **B, Steam launcher:** Tools > **Import DLC** > No (choose a folder) > `C:\Skate3\dlc`, or without the dialogs:
+     `powershell -ExecutionPolicy Bypass -File tools\steam-launcher\launcher.ps1 tool-dlc -Version hails-additions
+     -NoPrompt -Path C:\Skate3\dlc`. The launcher copies the packages into its own `dlc` folder and converts the new
+     ones at once (it runs Refresh game files itself).
+   - **A, release ZIP:** put the packages in a `dlc` folder next to `skate3rust.exe` and start the game: the Guide /
+     F1 / Esc menu says GAME FILES OUT OF DATE; open Extras > **Refresh Game Files**.
+4. The refresh converts the DLC maps, the menus and the DLC audio (a few minutes). The Title Update file is not a DLC
+   package: it is skipped.
+
+Before 2026-10-21 18:00 (hails-additions aba07209 and older) the refresh did not see newly imported packs ("GAME_FILES
+current"); a build with the fix (doc 38, "Importing DLC: the start-up check sees new packs") is needed for step 3.
 
 **What to test:** the DLC maps in Esc > MAPS and the Challenge Map's DLC folders, the teleporters (University to the
 Stadium; Hawaiian Dream's four up to the ramp tops; D-pad Up asks first), the skate.Park "Full" worlds, and in the

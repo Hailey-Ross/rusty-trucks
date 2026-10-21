@@ -15,7 +15,7 @@
 #   launcher.ps1 room <id>                                    apply the build size cap as before a build of <id>
 #   launcher.ps1 setup-check                                  what the first-time setup finds (see setup.ps1)
 # While a game runs, PLAYING.txt exists in the state folder: tools and agents should launch nothing while it does.
-param([string]$Entry, [string]$Label, [switch]$NoPrompt, [string]$Version)
+param([string]$Entry, [string]$Label, [switch]$NoPrompt, [string]$Version, [string]$Path)
 
 $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -72,8 +72,17 @@ function Dlc-Name([string]$Path) {
 }
 
 # Tools > Import DLC: pick package files (one or many) or a folder (every package inside, any depth); each Skate 3
-# package is copied to <dlc>\<display name>\<file>, other files are skipped. Returns the result line.
-function Import-Dlc {
+# package is copied to <dlc>\<display name>\<file>, other files (a title update, for example) are skipped. `$From` (the
+# launcher's -Path: a package file or a folder) imports without the dialogs, for scripts and the second PC. Returns the
+# result line; $script:DlcAdded counts the packages copied.
+function Import-Dlc([string]$From = '') {
+    $script:DlcAdded = 0
+    $packages = { param($folder) @(Get-ChildItem -LiteralPath $folder -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -ge 0xB000 } | ForEach-Object { $_.FullName }) }
+    if ($From) {
+        if (-not (Test-Path -LiteralPath $From)) { return "Import DLC: $From not found." }
+        $files = if (Test-Path -LiteralPath $From -PathType Leaf) { @($From) } else { & $packages $From }
+        return (Copy-Dlc $files)
+    }
     Add-Type -AssemblyName System.Windows.Forms
     $nl = [Environment]::NewLine
     # The tool runs in a windowless PowerShell under the launcher window: a topmost owner keeps the dialogs in front.
@@ -92,8 +101,12 @@ function Import-Dlc {
         $d = New-Object System.Windows.Forms.FolderBrowserDialog
         $d.Description = 'The folder with your Skate 3 DLC packages (subfolders too)'
         if ($d.ShowDialog($owner) -ne [System.Windows.Forms.DialogResult]::OK) { return 'Import DLC: cancelled.' }
-        $files = @(Get-ChildItem -LiteralPath $d.SelectedPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -ge 0xB000 } | ForEach-Object { $_.FullName })
+        $files = & $packages $d.SelectedPath
     } else { return 'Import DLC: cancelled.' }
+    return (Copy-Dlc $files)
+}
+
+function Copy-Dlc([string[]]$files) {
     $added = @(); $kept = @(); $skipped = 0
     foreach ($file in $files) {
         $name = Dlc-Name $file
@@ -108,8 +121,8 @@ function Import-Dlc {
     }
     if ($added.Count -gt 0 -or $kept.Count -gt 0) { $env:SKATE3_DLC_DIR = $DlcDir }
     $r = "Import DLC: $($added.Count) added" + $(if ($added) { " ($($added -join ', '))" } else { '' }) +
-        $(if ($kept) { ", $($kept.Count) already there" } else { '' }) + $(if ($skipped) { ", $skipped other files skipped" } else { '' }) + '.'
-    if ($added.Count -gt 0) { $r += ' Run Refresh game files (Tools) to convert them.' }
+        $(if ($kept) { ", $($kept.Count) already there" } else { '' }) + $(if ($skipped) { ", $skipped other files skipped (not Skate 3 DLC packages)" } else { '' }) + '.'
+    $script:DlcAdded = $added.Count
     return $r
 }
 
@@ -659,7 +672,7 @@ $Entries = [ordered]@{
     'tool-send'     = @{ Group = 'tools'; Name = 'Send the logs now';         Kind = 'tool';     Hint = 'Runs the after-session send (config.json after_session).' }
     'tool-recomp-update'  = @{ Group = 'tools'; Name = 'Recomp: get the newest build'; Kind = 'tool'; Hint = "Copies the main PC's newest recomp build (play-recomp.ps1 -Update)." }
     'tool-recomp-getsave' = @{ Group = 'tools'; Name = 'Recomp: get the main PC save'; Kind = 'tool'; Hint = "Copies the main PC's recomp save after backing up this PC's (play-recomp.ps1 -GetSave)." }
-    'tool-dlc'      = @{ Group = 'tools'; Name = 'Import DLC';                Kind = 'tool';     Hint = 'Copies your Skate 3 DLC packages (pick one or many files, or a folder) to the launcher; Refresh game files then converts them.' }
+    'tool-dlc'      = @{ Group = 'tools'; Name = 'Import DLC';                Kind = 'tool';     Hint = 'Copies your Skate 3 DLC packages (pick one or many files, or a folder) to the launcher and converts the new ones (Refresh game files).' }
     'tool-setup'    = @{ Group = 'tools'; Name = 'First-time setup';          Kind = 'tool';     Hint = 'Checks git, Rust, the C++ build tools and Python, and installs what is missing.' }
 }
 # The session traces a version's source contains; rust-traceall turns on all of them. SKATE_TRACE_ALL (newer
@@ -738,6 +751,21 @@ function Entry-Blocked([string]$Key, $V) {
 
 function Save-Result([string]$Text) { Set-Content -Path $LastSession -Value $Text -Encoding UTF8 }
 
+# Tools > Refresh game files for version $Ver: the game's own check without playing (--update-game-files); setup runs
+# only for what is out of date (also DLC packs added or removed since the last setup). Returns the result line.
+function Refresh-GameFiles($Ver) {
+    if (-not (Ensure-Version $Ver)) { return "Refresh game files: $($Ver.name) could not be built. Build log: $script:BuildLog" }
+    $d = Version-Dir $Ver
+    . (Join-Path $d 'scripts\Resolve-DevAssets.ps1')
+    $assets = Resolve-DevAssets -ProjectRoot $d
+    Write-Host "  Checking the game files ($assets)..."
+    $said = ''
+    & (Join-Path $d 'bin\skate3rust.exe') --update-game-files --assets $assets 2>&1 | ForEach-Object { $l = "$_"; if ($l -like 'GAME_FILES *') { $said = $l.Substring(11) }; Write-Host "  $l" }
+    $code = $LASTEXITCODE
+    # Setup published a new installation: the other versions' links follow at their next launch.
+    switch ($code) { 0 { return "Refresh game files: $said." } 2 { return 'Refresh game files: no game files yet. Convert them first (tools\setup-dev-assets.ps1).' } default { return "Refresh game files: $(if ($said) { $said } else { 'failed' }) (exit code $code)." } }
+}
+
 # The tools: no game session, the result goes to last_session.txt like a session's.
 function Run-Tool([string]$Key, $Ver) {
     $ErrorActionPreference = 'Continue'
@@ -756,21 +784,14 @@ function Run-Tool([string]$Key, $Ver) {
 $r" }
         }
         'tool-send' { $r = Send-Sessions }
-        'tool-dlc'  { $r = Import-Dlc }
+        'tool-dlc'  {
+            # New packs are converted at once (the laptop import, 2026-10-21: a separate Refresh step was easy to miss).
+            $r = Import-Dlc $Path
+            if ($script:DlcAdded -gt 0) { Write-Host '  Converting the new DLC (Refresh game files)...'; $r += "`r`n" + (Refresh-GameFiles $Ver) }
+        }
         'tool-recomp-update'  { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Recomp-Script) -Update; $r = "Recomp update: exit code $LASTEXITCODE" + $(if ($LASTEXITCODE -eq 0) { ' (done)' } else { ' - see above' }) }
         'tool-recomp-getsave' { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Recomp-Script) -GetSave; $r = "Recomp save: exit code $LASTEXITCODE" + $(if ($LASTEXITCODE -eq 0) { ' (done)' } else { ' - see above' }) }
-        'tool-refresh' {
-            if (-not (Ensure-Version $Ver)) { $r = "Refresh game files: $($Ver.name) could not be built. Build log: $script:BuildLog"; break }
-            $d = Version-Dir $Ver
-            . (Join-Path $d 'scripts\Resolve-DevAssets.ps1')
-            $assets = Resolve-DevAssets -ProjectRoot $d
-            Write-Host "  Checking the game files ($assets)..."
-            $said = ''
-            & (Join-Path $d 'bin\skate3rust.exe') --update-game-files --assets $assets 2>&1 | ForEach-Object { $l = "$_"; if ($l -like 'GAME_FILES *') { $said = $l.Substring(11) }; Write-Host "  $l" }
-            $code = $LASTEXITCODE
-            # Setup published a new installation: the other versions' links follow at their next launch.
-            $r = switch ($code) { 0 { "Refresh game files: $said." } 2 { 'Refresh game files: no game files yet. Convert them first (tools\setup-dev-assets.ps1).' } default { "Refresh game files: $(if ($said) { $said } else { 'failed' }) (exit code $code)." } }
-        }
+        'tool-refresh' { $r = Refresh-GameFiles $Ver }
     }
     Save-Result "$stamp  $Key [$($Ver.id)]`r`n$r"
     Write-Host ''
