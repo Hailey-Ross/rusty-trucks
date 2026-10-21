@@ -200,6 +200,15 @@ data. Open: no recomp trace confirms retail plays the SkateSchool bed there.
 - Audio (`audio_export.py`): the DLC rows join the disc's, the packs' `.ems` (7 files; Maloof's places the 7 disc loop
   banks b414 listed) and every DLC district's region layers keyed by label; the disc's 23 `.ems` are unchanged.
   Not yet: the new DLC beds and banks (After Dark `24_dlc_ambience`, the Create pack `25_dlc_ambience`, b418).
+- Map pictures (b417, `prepare_menu_movies.py` `dlc_world_maps`): each DLC world row's map name (`tMapInfo`) is read
+  against its own vault `.bin` and the packs' BIGs holding `data/fe/source/images/map/` join the dynamic image export,
+  so `world_maps` gets `dist_maloofmoneycupdlc` -> `DLC_Maloof_Map_512` and that picture is extracted. Other DLC
+  worlds keep their retail names on disc pictures (`dist_sanitariumdlc` -> `map_afterdark`, `dist_artgallerydlc` ->
+  `map_partypack`, `dlc_dw_megacompound` -> `map_danny`). The Challenge Map (`skate-data` `location_maps`) falls back
+  to a location's World field when its District names no world (Maloof's names the `map_category` row): NOT RETAIL
+  YET, which field retail reads there is unverified. Test
+  `a_dlc_location_whose_district_is_no_world_takes_its_world_field`; verified in the dev install after a `hud`
+  refresh (2026-10-21). Not play-tested.
 
 ## Teleporters (disc and DLC maps)
 
