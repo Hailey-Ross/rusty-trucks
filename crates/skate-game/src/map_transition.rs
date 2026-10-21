@@ -151,10 +151,12 @@ fn start(world: &mut World, entry: Entry) -> Result<Phase, String> {
     // Release the live world's visuals and collision before the new map is read
     // and decoded. A map change used to build the new map on top of the old
     // world, which ran the Switch heap out (findings 19 §6.3, doc 58 §3.3); the
-    // collision alone is 243 MiB for Downtown. If the new map then fails to
-    // load, `poll` reloads the map that was live.
+    // collision alone is 243 MiB for Downtown, and a running mod's rapier copy
+    // of it 220 MiB more. If the new map then fails to load, `poll` reloads the
+    // map that was live.
     crate::map_render::MapAssets::retire(world);
     world.resource_mut::<GamePhysics>().release_map_geometry()?;
+    crate::modding::release_ground(world);
     let config = world.resource::<Config>();
     let root = config.asset_root.clone();
     let difficulty = config.difficulty;
