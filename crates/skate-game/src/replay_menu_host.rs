@@ -44,8 +44,12 @@ pub struct ReplayScreenFeed {
     pub playing: bool,
     /// The panel (prompts and timeline) is shown.
     pub panel: bool,
-    /// The recording's length, s (`GetEncodedLength` 825AE488 reads it as a whole number).
+    /// The encoded length, s (`GetEncodedLength` 825AE488 reads it as a whole number): the recording in instant
+    /// mode, the edit's `encoded_seconds` in the editor (b472).
     pub length_seconds: u32,
+    /// The length is within the share limit (`IsEncodedLengthValid` 825ADF88; the limit is data,
+    /// `EditLimits::share_max_seconds`).
+    pub length_valid: bool,
     /// The help screen (FE 13, ReplayHelp) is open, and how many page turns were asked since the replay opened.
     pub help: bool,
     pub help_turns: u32,
@@ -80,9 +84,6 @@ fn tint_notch(value: i32) -> f64 {
 pub const HELP_INSTANT_REPLAY: f64 = 0.0;
 /// The help movie's SetState that turns the page (`NextHelpPage`).
 pub const HELP_NEXT_PAGE: i32 = 0;
-
-/// Retail `IsEncodedLengthValid` (825ADF88): valid while the length is under 0x3D (61) seconds.
-pub const SHARE_LIMIT_SECONDS: u32 = 60;
 
 #[derive(Clone, Debug, Default)]
 pub struct ReplayMenuHost {
@@ -205,11 +206,11 @@ impl ReplayMenuHost {
             "RefreshCursor" => Value::Undefined,
             "GetCursorPosition" | "GetPlayheadPosition" => Value::Number(feed.position.clamp(0.0, 1.0)),
             "GetEncodedLength" => Value::Text(self.length_text(language)),
-            "IsEncodedLengthValid" => Value::Bool(feed.length_seconds <= SHARE_LIMIT_SECONDS),
+            "IsEncodedLengthValid" => Value::Bool(feed.length_valid),
             // Ours on PC: the photo item shows (b390 table 2).
             "CanSaveMedia" => Value::Bool(true),
-            // NOT RETAIL YET: true in instant mode (b390 table 2, guess).
-            "CanDisplayShowHide" => Value::Bool(feed.instant),
+            // Retail 825ADF00: in editor modes 5 (instant), 6 (timeline) and 1 (playback) (b470).
+            "CanDisplayShowHide" => Value::Bool(matches!(feed.mode, 5 | 6 | 1)),
             // The help screen's mode: instant 0, the timeline 1 (kMainEditMode), the effects menu 2 (kEffectsMode).
             "GetHelpMode" => Value::Number(match feed.mode {
                 6 | 1 | 2 => 1.0,
@@ -285,14 +286,15 @@ mod tests {
             ("ID_COMMON_METRIC_TIME".to_owned(), "s".to_owned()),
         ]);
         let mut host = ReplayMenuHost { open: true, ..Default::default() };
-        host.feed = ReplayScreenFeed { instant: true, position: 0.5, playing: false, panel: true, length_seconds: 61, ..Default::default() };
+        host.feed = ReplayScreenFeed { instant: true, position: 0.5, playing: false, panel: true, length_seconds: 61, mode: 5, ..Default::default() };
+        assert_eq!(host.call(&mut vm, &language, "FEReplayMenu", "CanDisplayShowHide"), Some(Value::Bool(true)));
         assert_eq!(host.call(&mut vm, &language, "FEReplayMenu", "GetHelpMode"), Some(Value::Number(0.0)));
         assert_eq!(host.call(&mut vm, &language, "FEReplayMenu", "IsInstantReplayMode"), Some(Value::Bool(true)));
         assert_eq!(host.call(&mut vm, &language, "FEReplayMenu", "GetCursorPosition"), Some(Value::Number(0.5)));
         assert_eq!(host.call(&mut vm, &language, "FEReplayMenu", "GetEncodedLength"), Some(Value::Text("Estimated Video Length: 61 s".into())));
-        // 825ADF88: valid under 61 s.
+        // 825ADF88: valid under 61 s (decided by the feed from the edit limits).
         assert_eq!(host.call(&mut vm, &language, "FEReplayMenu", "IsEncodedLengthValid"), Some(Value::Bool(false)));
-        host.feed.length_seconds = 60;
+        host.feed.length_valid = true;
         assert_eq!(host.call(&mut vm, &language, "FEReplayMenu", "IsEncodedLengthValid"), Some(Value::Bool(true)));
         assert_eq!(host.call(&mut vm, &language, "Game", "IsInstantReplayMode"), None);
         host.post_changes();
