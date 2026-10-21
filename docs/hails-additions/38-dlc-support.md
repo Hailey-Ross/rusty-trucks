@@ -227,9 +227,15 @@ Change:
   (multiplayer refuses a map switch, as the Challenge Map does). Tests in the module.
 - Mods (`sdk.triggers.teleporter`, `sdk/ENGINE_API.md`): add, replace (same id as a retail teleporter) or remove
   teleporters; event `teleporter_used`; cleared when the mod stops.
-- NOT RETAIL YET: the prompt is our own text line (retail's action overlay Teleport state not ported yet, research
-  b426 running); without the retail menu stage the confirm is skipped; the arrival speed is the same reset as the
-  session marker's (b423: whether retail zeroes speed is open).
+- The prompt is Skate 3's own action overlay (research b426): `actionoverlay2` (template 59 SignUpHUD) joins the
+  menu movie set, opens once on the stage's popup layer, and the teleporter sends state 2 (the C++ value of
+  82665E88; the `kActionOverlayState_*` names are set on `_global` 0..6 because no movie defines them) with the title
+  through `SignUpPoster.GetTeleportTitle`, state 0 when it goes. A set exported before the movie keeps our text line
+  (no set version bump, so no forced refresh), and without the stage the confirm is skipped. Verified on University:
+  "Enter Stadium skate.Park" in the retail font with the logo glyph. OPEN: no D-pad Up glyph shows beside it (the
+  Teleport state sets no button type; where retail's glyph comes from is not found).
+- NOT RETAIL YET: the arrival speed is the same reset as the session marker's (b423: whether retail zeroes speed is
+  open).
 
 Verification (2026-10-20, verify switch `SKATE_VERIFY_TELEPORTER=<id>` with `--verify`: starts the skater in that
 teleporter's volume and presses once, no popup): University `tele_world_to_stadium` armed 4 teleporters, loaded

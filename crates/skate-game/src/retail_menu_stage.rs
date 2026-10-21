@@ -219,6 +219,9 @@ struct MenuStage {
     popup: crate::popup_host::PopupHost,
     popup_ids: Vec<(skate_core::fe_popup::PopupKind, i32)>,
     popup_dirty: bool,
+    /// The action overlay's AS id (None when the set lacks the movie) and the title it shows now.
+    signup_id: Option<i32>,
+    signup_shown: Option<String>,
     /// Retail Apt keys in key-table order (input.cfg expressions).
     apt_keys: Vec<AptKey>,
     pads: [FeInput; 4],
@@ -333,6 +336,12 @@ fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::P
     }
     for name in &names {
         stage.call_path("_global.ScreenManager.RegisterTemplate", vec![text(name)], fe)?;
+    }
+    // The action overlay's states (research b426): no movie defines the names and they are not strings in the image;
+    // the values are what the C++ component sends (82665E88: Teleport = 2), the order that of the movie's pool.
+    for (value, name) in ["Off", "Challenge", "Teleport", "PressStart", "DMOGrab", "OTS", "Disabled"].iter().enumerate() {
+        let global = stage.vm.global;
+        stage.vm.set(global, format!("kActionOverlayState_{name}"), Value::Number(value as f64))?;
     }
     for (i, key) in tables.iter().flat_map(|t| &t.keys).enumerate() {
         stage.call_path("_level0._root.RegisterAptInputEnum", vec![text(&key.name), text(&i.to_string())], fe)?;
@@ -477,6 +486,11 @@ fn setup(
                 open_screen_on(&mut stage, &path, "popup", template, &mut fe)?;
             }
         }
+        // The action overlay (template 59 SignUpHUD, the teleporter prompt): opened once like the popups, hidden
+        // until a teleporter shows it (state 2).
+        if movies.movies.contains_key(SIGNUP_MOVIE) {
+            open_screen_on(&mut stage, "hud2/actionoverlay2.swf", "popup", SIGNUP_TEMPLATE, &mut fe)?;
+        }
         Ok((stage, templates))
     })();
     match result {
@@ -614,6 +628,8 @@ fn setup(
                 popup: Default::default(),
                 popup_ids,
                 popup_dirty: false,
+                signup_id: movies.movies.contains_key(SIGNUP_MOVIE).then(|| as_id(SIGNUP_TEMPLATE)),
+                signup_shown: None,
                 chyron: false,
                 settings: Default::default(),
                 settings_titles: tables.map(|t| t.settings_titles).unwrap_or_default(),
@@ -678,6 +694,7 @@ fn update(
 ) {
     let ready = stage.as_ref().is_some_and(|s| !s.failed) && movies.is_some() && menus.is_some();
     popup_mods.stage_ready = ready;
+    popup_mods.signup_ready = ready && stage.as_ref().is_some_and(|s| s.signup_id.is_some());
     // The ported screens in this build's screen table (TU3 FE ids 56 and 45); none in tables extracted before
     // screens.
     let pause = backdrop.index(crate::fe_backdrop::PAUSE_SCREEN);
@@ -1305,6 +1322,17 @@ fn update(
         if std::mem::take(&mut ms.popup_dirty) {
             show_popup(&mut ms.stage, &ms.popups, &ms.popup_ids, &mut fe, &mut sounds)?;
         }
+        // The teleporter prompt (teleporters.rs): state 2 with the title when it appears or changes, 0 when it goes.
+        if let Some(signup) = ms.signup_id {
+            if popup_mods.signup_title != ms.signup_shown {
+                let title = popup_mods.signup_title.clone();
+                fe.signup_title = title.clone();
+                let state = if title.is_some() { 2 } else { 0 };
+                set_state(&mut ms.stage, signup, state, &mut fe)?;
+                info!("RETAIL_MENUS signup state {state} title={title:?}");
+                ms.signup_shown = title;
+            }
+        }
         // The instant replay screen after this frame's movie update: shown once its intro completed, then told what
         // changed in the replay.
         if let Some(replay_id) = ms.replay_id.filter(|_| fe.replay_menu.open) {
@@ -1840,6 +1868,10 @@ impl Default for TimelineLook {
 
 /// OpenScreen bridge (0x82D09140): path, AS layer ("screen" unless the caller names one), the template's visible flag
 /// ("0" for every menu template here), template name.
+/// The action overlay movie (research b426: template 59 SignUpHUD).
+const SIGNUP_MOVIE: &str = "source/screens/hud2/actionoverlay2";
+const SIGNUP_TEMPLATE: &str = "SignUpHUD";
+
 fn open_screen_on(stage: &mut Stage, path: &str, layer: &str, template: &str, fe: &mut FrontEnd) -> Result<(), String> {
     stage.call_path(
         "_global.ScreenManager.OpenScreen",

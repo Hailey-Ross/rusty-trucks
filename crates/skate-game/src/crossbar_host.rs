@@ -220,6 +220,8 @@ pub struct FrontEnd<'a> {
     pub image_slots: crate::image_renderer_host::ImageSlots,
     /// The popup host (FE screen 29): the shown popup and the choices made.
     pub popup: crate::popup_host::PopupHost,
+    /// The action overlay's teleporter title (`SignUpPoster.GetTeleportTitle`, 825C1020; teleporters.rs).
+    pub signup_title: Option<String>,
 }
 
 impl<'a> FrontEnd<'a> {
@@ -249,13 +251,14 @@ impl<'a> FrontEnd<'a> {
             tos: Default::default(),
             image_slots: Default::default(),
             popup: Default::default(),
+            signup_title: None,
         }
     }
 }
 
 impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     fn objects(&self) -> Vec<String> {
-        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "tos"]
+        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos"]
             .map(String::from)
             .to_vec()
     }
@@ -288,6 +291,10 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
         }
         if let Some(value) = self.offline_profile.call(vm, object, method)? {
             return Ok(value);
+        }
+        // The action overlay's sign-up text (research b426): the teleporter's title in the Teleport state.
+        if (object, method) == ("SignUpPoster", "GetTeleportTitle") || (object, method) == ("HUDComponents", "SignUp_GetChallengeTitle") {
+            return Ok(Value::Text(self.signup_title.clone().unwrap_or_default()));
         }
         if object == "tos" {
             if let Some(value) = self.tos.call(vm, method, &args)? {
