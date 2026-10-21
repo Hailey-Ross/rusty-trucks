@@ -63,7 +63,7 @@ def character(game_root, stage, work, report, log, converted=None):
     (private/'game.json').write_text(json.dumps(game_manifest),encoding='utf-8')
 
 
-def environment(game_root, stage, work, report, log, converted=None, game_exe=None):
+def environment(game_root, stage, work, report, log, converted=None, game_exe=None, dlc_vaults=()):
     private=stage/"assets/private"
     stock=private/"stock"
     report('Preparing retail sky domes')
@@ -79,7 +79,8 @@ def environment(game_root, stage, work, report, log, converted=None, game_exe=No
             return
         shutil.copytree(target,stage/'assets',dirs_exist_ok=True)
         availability.unlink(missing_ok=True)
-    attempt('skies',lambda assets:write_skies(game_root,assets,converted))
+    # DLC worlds' skies come from their own packs (b417), the disc's from miscload.big.
+    attempt('skies',lambda assets:write_skies(game_root,assets,converted,dlc_vaults))
     from .render_parameters import convert as write_render_parameters
     attempt('parameters',lambda assets:write_render_parameters(assets,converted))
     # Particle sprites (water splash; dust/leaf/... for later effects).
@@ -123,7 +124,7 @@ def livingworld(game_root, stage, work, report, log, converted=None):
     availability.unlink(missing_ok=True)
 
 
-def audio(game_root, stage, work, report, log, tools):
+def audio(game_root, stage, work, report, log, tools, dlc_jobs=(), dlc_vaults=()):
     private=stage/"assets/private"
     from .audio_export import VGMSTREAM_SHA, VGMSTREAM_URL, convert
     from .optional_content import CONTENT_ERRORS, note
@@ -132,7 +133,7 @@ def audio(game_root, stage, work, report, log, tools):
     try:
         try:vgmstream=engine.dependency(tools,'vgmstream-cli',VGMSTREAM_URL,VGMSTREAM_SHA,report)
         except OSError as error:raise RuntimeError(f'Could not download the audio decoder: {error}') from error
-        convert(game_root,private,work/'audio',vgmstream,report,log)
+        convert(game_root,private,work/'audio',vgmstream,report,log,dlc_jobs,dlc_vaults)
     except CONTENT_ERRORS as error:
         if (private/'audio').exists():shutil.rmtree(private/'audio')
         note(availability,'Game audio',error,report=report)

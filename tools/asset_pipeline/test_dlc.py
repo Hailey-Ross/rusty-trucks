@@ -96,6 +96,16 @@ class DlcInput(unittest.TestCase):
                 if env is not None:
                     os.environ[dlc.ENV] = env
 
+    def test_a_district_needs_its_sim_index_and_sim_cells(self):
+        s = 'data/content/world/stream/'
+        paths = [s + 'DIST_MaloofMoneyCupDLC/DIST_MaloofMoneyCupDLC_Sim.xst', s + 'DIST_MaloofMoneyCupDLC/cSim_0_0_high.xsf',
+                 # A proxy with an index but no cells, and loose files outside a stream folder, are not maps.
+                 s + 'DIST_AGParkProxy/DIST_AGParkProxy_Sim.xst', s + 'DIST_AGParkProxy/x.loc',
+                 'data/audio/DLC_Maloof.ems']
+        self.assertEqual(dlc.stream_districts(paths), ['DIST_MaloofMoneyCupDLC'])
+        self.assertTrue(dlc.has_maps(paths))
+        self.assertFalse(dlc.has_maps(paths[2:]))
+
     def test_language_tables_with_one_nul_more_or_less_pair_up(self):
         def table(strings, trailing):
             pool = b'\0'.join(s.encode() for s in strings) + trailing
