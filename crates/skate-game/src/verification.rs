@@ -17,6 +17,7 @@ struct Verification {
     requested: bool,
     captured: bool,
     photo: bool,
+    export: bool,
 }
 
 pub(crate) struct VerificationPlugin;
@@ -37,6 +38,7 @@ fn verify(
     skater: Res<SkaterRuntime>,
     camera: Res<crate::camera::CameraRuntime>,
     mut replay: ResMut<crate::replay::Replay>,
+    mut export: Option<ResMut<crate::replay::export_run::ReplayExport>>,
     mut state: ResMut<Verification>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -61,6 +63,17 @@ fn verify(
         if let Some(e) = replay.editor.as_mut().filter(|e| mode == "effects" && e.mode() == 6 && state.elapsed > replay_at + 1.5) {
             e.session.mode = skate_core::replay_edit::session::EditorMode::Effects;
             e.row = crate::replay::editor::GAME_CAMERA_ROW;
+        }
+    }
+    // SKATE_VERIFY_REPLAY_EXPORT=<file.mp4>: export the open replay (as Save to PC) a second after it opened; the
+    // capture waits until the export is done.
+    if let (Ok(path), Some(export)) = (std::env::var("SKATE_VERIFY_REPLAY_EXPORT"), export.as_mut()) {
+        if replay.active && !state.export && state.elapsed > replay_at + 1.0 {
+            state.export = true;
+            export.export_to(std::path::PathBuf::from(path));
+        }
+        if state.export && (replay.exporting || export.busy()) {
+            state.elapsed = state.elapsed.min(replay_at + 1.5);
         }
     }
     // SKATE_VERIFY_REPLAY_PHOTO=1: take a replay photo (as Yes on Take Photo) two seconds in.

@@ -111,6 +111,11 @@ pub(crate) struct NativeDecoder {
 impl Iterator for NativeDecoder {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
+        // A replay export pulls the runtime itself (one frame of sound per exported frame); the device plays
+        // silence meanwhile so the two never take the same blocks.
+        if crate::replay::export_run::DEVICE_MUTED.load(std::sync::atomic::Ordering::Relaxed) {
+            return Some(0.0);
+        }
         if self.at >= self.buffer.len() {
             match super::timing::lock(&self.shared, &super::timing::AUDIO_LOCK) {
                 Ok(mut runtime) => {

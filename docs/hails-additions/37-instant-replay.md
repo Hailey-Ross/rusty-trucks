@@ -376,10 +376,15 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   per clip in `replay/editor.rs`, the edit modes in `replay.rs` `editor_controls`, the pose and lens applied in
   `camera.rs` (before the shake), `GetCurrentCameraEditIndex` from the clip's camera, the edit states posted by the
   host. Rates are normalised to 30 Hz so any fps gives the same motion.
-- NOT RETAIL YET: one key per clip (retail keys live on the ICELITE camera channel; whether a basic camera holds one pose
-  is open), the skater root for retail's objects 2 / 4, the pad mapping (left stick turns, right stick distance /
-  move, D-pad up / down height, left / right lens; retail's axis table unread), the lens to FOV (24 mm high gate), and
-  the curves between keys (not needed with one key). The advanced cameras (rows 4..6) are not ported.
+- One pose per clip is retail for the basic cameras (b404: their setup clears the channel's keys and the sampler
+  `82C89A50` holds the value without keys). NOT RETAIL YET: the skater root for retail's objects 2 / 4, the pad mapping
+  (left stick turns, right stick distance / move, D-pad up / down height, left / right lens; retail's axis table
+  unread), the lens to FOV (24 mm high gate). The advanced cameras (rows 4..6, keyed poses on the cubic curve below)
+  are not ported.
+- Retail's key curve (b404, for the advanced cameras): keys at u16 fractions of the clip, cubic Hermite per segment
+  `v(u) = ((a u + b) u + m0) u + p0` (a = m0 + m1 - 2d, b = 3d - 2 m0 - m1), tangents linear (m = d) unless the
+  element's CUBIC flag is set, then the non-uniform Catmull-Rom (Bessel) tangent across a soft key, times the key's
+  TANGENT (0..8, default 1); hard keys cut; some elements are stepped.
 - Verified: `follow_orbits_in_the_skater_frame_with_retail_caps` (orbit pose, 90 degrees in one second at full stick,
   pitch and lens clamps), full bin 850 passed. No screenshot (the user is gaming: no windows). Not play-tested.
 
@@ -397,3 +402,45 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   channel keys carrying the values), no hard markers (Advanced cameras), one segment per clip.
 - Verified: `timeline_draws_the_camera_band_and_the_keys`, full bin 850 before the test was added. No screenshot (the
   user is gaming). Not play-tested.
+
+## The opening sound (2026-10-20)
+- Retail plays UI sound 0x394015B68783BE9E as Back opens the instant replay (`825EB998`, b389); in our front-end sound
+  table that key is the fe record `editor_select` (level 0.88). `replay.rs` sends `FrontendSound::named("editor_select")`
+  on open (`OPEN_SOUND`, data). Test: `retail_quit_warning_and_minimum_length` checks the message. Not heard yet.
+
+## M4 step 1: the export encoder (Save to PC) (2026-10-20)
+- User: "Add `windows` (Recommended)" (for "Save to PC": Windows' own encoder). `skate-game` now depends on `windows`
+  =0.58.0 on Windows only (the version already in the lockfile; one added lockfile line), features MediaFoundation,
+  Com, LibraryLoader, Shell (for the save dialog next).
+- `replay/export.rs`: `ExportSettings` (size, 30 fps, bitrates, 48 kHz; data), `VideoSink` with two backends chosen at
+  open: Media Foundation (H.264 + AAC in an .mp4 through the sink writer; its functions loaded at run time from
+  mfplat.dll / mfreadwrite.dll, research b383, so the exe still starts on N editions without them; top-down BGRA frames,
+  interleaved 16-bit stereo sound, hardware encoders allowed) and the fallback, PNG frames + a WAV in `<name>_frames`.
+  Log `REPLAY_EXPORT` when the fallback is taken.
+- Verified: `exports_frames_and_sound_to_a_file` wrote a real 2 s .mp4 (1.19 MB) with Windows' encoder on this PC, no
+  window. Not yet built in the release (/MT, static) link setup.
+- Next: render the clip frame by frame (replay cursor at the export rate, the world image read back from
+  `SceneTarget`), the sound rendered offline from the replay audio, the save dialog, and the Finished menu with a
+  "Save to PC" row (needs the game window to test: not while the user plays).
+
+## M4 step 2: Save to PC (the Finished menu, the save dialog, lock-step rendering) (2026-10-20)
+- B / Back in the replay (instant or editor) now opens our Finished menu with the retail strings: title
+  `ID_REPLAYEDITOR_TITLE`, rows "Save to PC" (ours; data) and `ID_REPLAYEDITOR_EXIT` (retail's Exit = the quit, b387);
+  B cancels. Retail's Upload / Save Replay rows need sign-in and storage and are not offered. Without the exporter
+  resource the quit warning stays.
+- Save to PC: the Windows save dialog (`IFileSaveDialog`, .mp4, its own thread), then `replay/export_run.rs` renders
+  the clip (the editor's in / out points, else the recording) lock-step at 30 fps: per output frame the replay cursor
+  is set, a one-shot `Readback` of `SceneTarget` brings back that frame's world image (rows unpadded from 256 bytes,
+  RGBA -> BGRA, cut to an even size), and exactly 48000 / 30 samples of sound are pulled from the audio runtime the
+  replay feeds (256-sample blocks, the fraction carried); the audio device plays silence meanwhile
+  (`DEVICE_MUTED`), so the two never take the same blocks. Frames and sound go over a bounded channel to the encoder
+  thread (`export::open_sink`: Media Foundation .mp4, else PNG + WAV). The controls are off while it runs; a popup
+  says where the file went (or why it failed). Logs `REPLAY_EXPORT start / done / failed`.
+- Verified: `the_finished_menu_offers_save_to_pc_and_exit`, `readback_rows_are_unpadded_and_swapped_to_bgra`, the
+  encoder test; full bin 854 passed. Verify switch: `SKATE_VERIFY_REPLAY_EXPORT=<file.mp4>`.
+- First game run (2026-10-20 evening, the user paused gaming): wgpu refused the readback (the scene image had no
+  COPY_SRC usage); fixed in `graphics_menu.rs` (a usage flag only, rendering unchanged). Then a 10.5 s replay exported
+  in about 9.4 s to a 16 MB .mp4 (1280 x 800, 30 fps, H.264 + AAC). Checked: the encoder test now decodes a frame back
+  (Media Foundation's source reader) and finds a white top half on top (upright, colours right); the game export's first
+  frame decoded to PNG shows the world without UI; its audio decodes to 10.5 s of 48 kHz stereo (quiet ambience, the
+  skater standing still). The save dialog itself (B > Save to PC) is not clicked through yet; the user tests it.
