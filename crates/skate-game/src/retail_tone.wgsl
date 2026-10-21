@@ -3,9 +3,10 @@
 @group(0) @binding(1) var source_sampler: sampler;
 @group(0) @binding(2) var<storage, read> exposure: vec4<f32>;
 // The retail colour grade (postfx_visualfxPS): near rows 0..2, far rows 3..5 (rgb . row.xyz + row.w), the depth
-// weights (mult.x, mult.y, add.x, add.y) and (camera near, 0, 0, 0). The base record is the identity.
+// weights (mult.x, mult.y, add.x, add.y), (camera near, 0, 0, 0) and the replay tint RGBA (row 8). The base record is
+// the identity.
 @group(0) @binding(3) var depth: texture_depth_2d;
-@group(0) @binding(4) var<uniform> grade: array<vec4<f32>, 8>;
+@group(0) @binding(4) var<uniform> grade: array<vec4<f32>, 9>;
 
 fn graded(c: vec3<f32>, base: u32) -> vec3<f32> {
     let v = vec4<f32>(c, 1.0);
@@ -31,6 +32,9 @@ fn fragment(i: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let xy = i.uv*2.0-1.0;
     let edge = smoothstep(0.55,1.3,length(xy));
     gamma *= 1.0-saturate(exposure.w)*edge;
+    // The replay's tint overlay (row 8, b413): straight alpha over the finished frame, in display space like retail's
+    // full-screen quad (SRC_ALPHA / INV_SRC_ALPHA). Alpha 0 leaves the frame unchanged.
+    gamma = mix(gamma, grade[8].rgb, saturate(grade[8].a));
     // Bevy's final output attachment performs sRGB encoding. The retail
     // curve already includes gamma; invert sRGB here to avoid encoding twice.
     let linear = select(gamma/12.92,pow((gamma+0.055)/1.055,vec3<f32>(2.4)),gamma>vec3<f32>(0.04045));

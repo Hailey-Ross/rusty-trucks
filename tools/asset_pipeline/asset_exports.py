@@ -27,12 +27,13 @@ def core(game_root, stage, work, report, log, converted=None):
     return converted
 
 
-def hud(game_root, stage, work, report, log, converted=None):
+def hud(game_root, stage, work, report, log, converted=None, dlc=None):
     private=stage/"assets/private"
     stock=private/"stock"
     report('Preparing original scoring and session-marker HUD assets')
+    # The player's DLC packages (optional) add the Create pack's replay editor movie and text.
     engine.run(engine.task(engine.TOOLS/'prepare_runtime_huds.py', '--game', game_root,
-             '--assets', stage/'assets', '--work', work/'hud'), log, report)
+             '--assets', stage/'assets', '--work', work/'hud', *(('--dlc', dlc) if dlc else ())), log, report)
     report('Extracting the Trick Guide demo clips')
     engine.run(engine.task(engine.TOOLS/'prepare_trick_guide_scene.py', '--game', game_root,
              '--assets', stage/'assets', '--work', work/'scene'), log, report)

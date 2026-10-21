@@ -543,3 +543,25 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   show the look rows. Port: the DLC pipeline extracts replay_editor3 + its language table from the user's package,
   CCF0007 counts as owned on PC (user: always on), the stage loads replay_editor3 when present; without the package
   our own one-line channel / value overlay (ours). Details in `.local/research/b410-replay-look-rows-ui.md`.
+- replay_editor3 handlers (b411, 2026-10-20) [code; main checked the state 24 loads in `82612328` and Y's state 23
+  after `82507FC8` in `82612C28`]: Y cycles the channel 0..6 (wraps) and posts state 23 (kUpdateMode by
+  elimination); entering the effects panel posts 22 then 4 for every channel; on the Tint channel Up / Down move the
+  component cursor R, G, B, A (wraps) and post 24 (kRefreshTint by elimination), other channels post 5; Left / Right
+  post 6 and snap a tint to steps of 25 (`(v +- 25) * 0.04 + 0.5`, truncated, x 25; clamp 0..250). New natives:
+  GetModeValue (raw brightness / contrast / saturation, else -1), GetCurrentTintValue (raw component, else -1).
+  Template 71 = `replay2/replay_editor3.swf` (with CCF0007), 72 = `replay2/replay_editor2.swf`. Open: the movie's
+  own constants for kUpdateMode / kRefreshTint / kReplayMode_* (from our export of the movie), whether B reverts edits.
+- DLC package reader (2026-10-20): `tools/owned_game/stfs.py` reads the user's STFS packages (header, file table,
+  consecutive files past the interleaved hash tables); tested on the Create Park Upgrade package: the 95,990,656-byte
+  `creator_00000000.big` copies out and parses (1262 entries, `creator0.ver` = `695423:sk8build`). It carries
+  `data/fe/source/screens/replay2/replay_editor3.*`, `replay_help2.*` and the creator language pair
+  (`LANGUAGE_Labels_creator_skate3ng-dlc_creator.BIN` + English); the labels table ends with one NUL where the disc's
+  end with two (one string short of the parser's count).
+- Tint overlay (b413, 2026-10-20) [code; main checked `827FE770`'s counter read at +0x347AC, its blend state call
+  `82CFC990` and the draw `824FA4A0`]: retail draws lane 6 as one constant colour on a full-screen quad, straight alpha
+  (SRC_ALPHA / INV_SRC_ALPHA), after the scene and before the front end's Render2D, so the HUD, menus and the editor
+  are never tinted; the setter `82C81AC8` sets TINT_OVERRIDE, the consumer `82688E78` copies R, G, B, A to the overlay
+  and clears it when the override is off [code, agent]. Ours: the grade gets a ninth row (RGBA, alpha 0 = none) and
+  the tone pass mixes it in as its last step (`retail_tone.wgsl`), the same result as the quad drawn right after the
+  grade, under the UI, and carried into Save to PC. Open: whether retail's tint lands before or after its grade
+  (inferred after, medium).

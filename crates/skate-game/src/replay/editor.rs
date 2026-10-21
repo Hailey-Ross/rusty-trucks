@@ -11,7 +11,29 @@ pub(crate) const GAME_CAMERA_ROW: usize = 2;
 /// The effects menu rows without the DLC (research b398, input `82612038`, item table `8302CCE0`): rows 0..6 pick the
 /// key's camera (A: 0..3 the basic cameras, `camera_key`; the advanced 4..6 are not ported), row 7 speed and row 8
 /// shake take Left / Right (`8250ADF8` / `8250AB28`). Data: a mod may reorder or extend it.
-pub(crate) const EFFECT_ROWS: [Option<Lane>; 9] = [None, None, None, None, None, None, None, Some(Lane::Speed), Some(Lane::Shake)];
+pub(crate) const EFFECT_ROWS: [Option<Lane>; 13] = [
+    None, None, None, None, None, None, None,
+    Some(Lane::Speed), Some(Lane::Shake),
+    // The Create pack's look items (b410 `8250B218`: 9 brightness, 10 contrast, 11 saturation, 12 tint; the tint's
+    // lane is the component under the tint cursor).
+    Some(Lane::Brightness), Some(Lane::Contrast), Some(Lane::Saturation), Some(Lane::TintR),
+];
+
+/// Rows the base screen (replay_editor2) cycles: the cameras, speed and shake.
+pub(crate) const BASE_ROWS: usize = 9;
+
+/// The Create pack's edit channels (Y cycles them, b405 / b410 / b411): the label string ids (`GetModeText`) and the
+/// effects menu's items per channel. Data: a mod may relabel or reorder them.
+pub(crate) const CHANNELS: [(&str, &[usize]); 7] = [
+    ("ID_REPLAYEDITOR_CHANNEL_CAMERA", &[0, 1, 2, 3, 4, 5, 6]),
+    ("ID_REPLAYEDITOR_CHANNEL_SPEED", &[7]),
+    ("ID_REPLAYEDITOR_CHANNEL_SHAKE", &[8]),
+    ("ID_REPLAYEDITOR_CHANNEL_BRIGHTNESS", &[9]),
+    ("ID_REPLAYEDITOR_CHANNEL_CONTRAST", &[10]),
+    ("ID_REPLAYEDITOR_CHANNEL_SATURATE", &[11]),
+    ("ID_REPLAYEDITOR_CHANNEL_TINT", &[12]),
+];
+const TINT_LANES: [Lane; 4] = [Lane::TintR, Lane::TintG, Lane::TintB, Lane::TintA];
 
 pub(crate) struct Editor {
     pub session: EditorSession,
@@ -19,6 +41,9 @@ pub(crate) struct Editor {
     pub clip: usize,
     /// The effects menu's row (`GetEditIndex`).
     pub row: usize,
+    /// The Create pack's edit channel (`GetMode`, 0..6) and tint component cursor (`GetCurrentTint`, 0 R .. 3 A).
+    pub channel: usize,
+    pub tint: usize,
     /// Recording time of timeline frame 0, and the timeline's frames per second.
     base: f64,
     fps: f64,
@@ -72,7 +97,7 @@ impl Editor {
         let clip = edit.add_clip(0, frames).ok()?;
         let mut session = EditorSession::instant();
         session.mode = EditorMode::Timeline;
-        Some(Self { session, edit, clip, row: 0, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default() })
+        Some(Self { session, edit, clip, row: 0, channel: 0, tint: 0, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default() })
     }
 
     pub fn frame(&self, time: f64) -> u32 {
@@ -313,10 +338,73 @@ impl Editor {
         (c.start, c.end)
     }
 
+    /// A row's lane: the tint item edits the component under the tint cursor.
+    pub fn row_lane(&self, row: usize) -> Option<Lane> {
+        if row == 12 {
+            return Some(TINT_LANES[self.tint % 4]);
+        }
+        EFFECT_ROWS.get(row).copied().flatten()
+    }
+
+    /// Y in the timeline (Create pack, `82612C28` case 4): the next channel, wrapping; the effects menu opens on its
+    /// first row (the camera channel keeps a camera row).
+    pub fn cycle_channel(&mut self) {
+        self.channel = (self.channel + 1) % CHANNELS.len();
+        let rows = CHANNELS[self.channel].1;
+        if !rows.contains(&self.row) {
+            self.row = rows[0];
+        }
+    }
+
+    /// Up (-1) / Down (+1) in the effects menu. Base screen: every row, wrapping. Create pack: the camera channel's
+    /// rows wrap (`8250A9C8` / `8250AA78`); on the tint channel the component cursor wraps R .. A (`82612328`); the
+    /// other channels have one row. Returns whether the tint cursor moved (retail posts kRefreshTint for it).
+    pub fn move_row(&mut self, direction: i32, channels: bool) -> bool {
+        let wrap = |value: usize, len: usize| (value as i32 + direction).rem_euclid(len as i32) as usize;
+        if !channels {
+            self.row = wrap(self.row.min(BASE_ROWS - 1), BASE_ROWS);
+            return false;
+        }
+        let rows = CHANNELS[self.channel].1;
+        if self.channel == 6 {
+            self.tint = wrap(self.tint, 4);
+            return true;
+        }
+        let at = rows.iter().position(|&r| r == self.row).unwrap_or(0);
+        self.row = rows[wrap(at, rows.len())];
+        false
+    }
+
+    /// `GetModeValue` (825AE070): the raw brightness / contrast / saturation at the cursor on channels 3 / 4 / 5, else -1.
+    pub fn mode_value(&self, time: f64) -> i32 {
+        match self.channel {
+            3 => self.lane_value(Lane::Brightness, time),
+            4 => self.lane_value(Lane::Contrast, time),
+            5 => self.lane_value(Lane::Saturation, time),
+            _ => -1,
+        }
+    }
+
+    /// `GetModeSliderValue` (825AE0B8): the slider notch 0..10 (brightness v / 20 + 5, contrast (v - 10) / 2,
+    /// saturation v / 10), else 2.
+    pub fn mode_slider(&self, time: f64) -> i32 {
+        match self.channel {
+            3 => self.lane_value(Lane::Brightness, time) / 20 + 5,
+            4 => (self.lane_value(Lane::Contrast, time) - 10) / 2,
+            5 => self.lane_value(Lane::Saturation, time) / 10,
+            _ => 2,
+        }
+    }
+
+    /// A tint component at the cursor (0 R .. 3 A), raw.
+    pub fn tint_value(&self, component: usize, time: f64) -> i32 {
+        self.lane_value(TINT_LANES[component % 4], time)
+    }
+
     /// Left / Right in the effects menu: step the row's value at the cursor (a marker there, or the clip's value
     /// before the first marker / near the ends). Returns whether it changed.
     pub fn adjust_row(&mut self, time: f64, direction: i32) -> bool {
-        let Some(lane) = EFFECT_ROWS.get(self.row).copied().flatten() else { return false };
+        let Some(lane) = self.row_lane(self.row) else { return false };
         let frame = self.frame(time);
         let before = self.edit.value_at(self.clip, lane, frame);
         let spec = self.edit.limits.lanes[lane.index()];
@@ -400,6 +488,44 @@ mod tests {
         // A on the Tripod key re-edits it (mode 8); not on a key: None.
         assert_eq!(e.reopen_at(5.0), Some(8));
         assert_eq!(e.reopen_at(7.0), None);
+    }
+
+    /// The Create pack's channels (b410 / b411): Y cycles camera .. tint; Up / Down stay in the channel's rows (the tint
+    /// cursor wraps R .. A); Left / Right edit the channel's lane; the natives' values follow.
+    #[test]
+    fn create_pack_channels_edit_the_look_lanes() {
+        let mut e = Editor::open(0.0, 20.0, EditLimits::default()).unwrap();
+        // Base screen: Up from row 0 wraps to shake (row 8).
+        assert!(!e.move_row(-1, false));
+        assert_eq!(e.row, 8);
+        e.row = 0;
+        // Camera channel: rows 0..6 wrap.
+        e.move_row(-1, true);
+        assert_eq!(e.row, 6);
+        for (channel, row, label) in [(1, 7, "SPEED"), (2, 8, "SHAKE"), (3, 9, "BRIGHTNESS"), (4, 10, "CONTRAST"), (5, 11, "SATURATE"), (6, 12, "TINT")] {
+            e.cycle_channel();
+            assert_eq!((e.channel, e.row), (channel, row));
+            assert!(CHANNELS[channel].0.ends_with(label));
+        }
+        // Tint: the cursor wraps, Right on blue steps it by 25.
+        assert!(e.move_row(-1, true));
+        assert_eq!(e.tint, 3);
+        e.move_row(1, true);
+        e.move_row(1, true);
+        e.move_row(1, true);
+        assert_eq!(e.tint, 2);
+        assert!(e.adjust_row(5.0, 1));
+        assert_eq!(e.tint_value(2, 5.0), 25);
+        assert_eq!((e.mode_value(5.0), e.mode_slider(5.0)), (-1, 2));
+        // Brightness: +20 per press, slider notch v / 20 + 5.
+        e.cycle_channel();
+        assert_eq!(e.channel, 0);
+        for _ in 0..3 {
+            e.cycle_channel();
+        }
+        assert_eq!(e.channel, 3);
+        e.adjust_row(5.0, 1);
+        assert_eq!((e.mode_value(5.0), e.mode_slider(5.0)), (20, 6));
     }
 
     /// Deleting (b407): a soft key goes alone; a clip marker takes the soft keys in the clips on both sides, up to

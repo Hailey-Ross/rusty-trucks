@@ -26,6 +26,10 @@ pub mod movie_state {
     pub const MOVE_START: i32 = 1000;
     pub const MOVE_END: i32 = 1001;
     pub const LB_MOVE: i32 = 1005;
+    /// The Create pack's screen (replay_editor3, b411; names by elimination from its constant pool): the edit channel
+    /// changed (Y, kUpdateMode) and the tint component cursor moved (kRefreshTint).
+    pub const UPDATE_MODE: i32 = 23;
+    pub const REFRESH_TINT: i32 = 24;
 }
 
 /// What the screen reads from the replay each frame (local player only; a serialisable snapshot).
@@ -58,6 +62,18 @@ pub struct ReplayScreenFeed {
     pub row: u32,
     pub speed: i32,
     pub shake: i32,
+    /// The Create pack's screen (replay_editor3): the edit channel (`GetMode`), its raw value (`GetModeValue`) and
+    /// slider notch (`GetModeSliderValue`), the tint cursor (`GetCurrentTint`) and the four tint components (raw).
+    pub channel: u32,
+    pub mode_value: i32,
+    pub mode_slider: i32,
+    pub tint: u32,
+    pub tints: [i32; 4],
+}
+
+/// A tint component as the slider's notch 0..10 (retail snaps it to steps of 25 with k = 0.04, `8250B0B8`).
+fn tint_notch(value: i32) -> f64 {
+    (value as f32 * 0.04 + 0.5).trunc() as f64
 }
 
 /// The help movie's mode for `GetHelpMode` (its kInstantReplayMode = 0; the editor modes follow from 1).
@@ -130,9 +146,15 @@ impl ReplayMenuHost {
             if l.row != feed.row {
                 self.states.push(movie_state::REFRESH_EFFECTS);
             }
-            if l.speed != feed.speed || l.shake != feed.shake {
+            if l.tint != feed.tint {
+                self.states.push(movie_state::REFRESH_TINT);
+            }
+            if l.speed != feed.speed || l.shake != feed.shake || l.mode_value != feed.mode_value || l.tints != feed.tints {
                 self.states.push(movie_state::UPDATE_EFFECTS);
             }
+        }
+        if last.as_ref().is_some_and(|l| l.channel != feed.channel) {
+            self.states.push(movie_state::UPDATE_MODE);
         }
         if let Some(l) = last.as_ref() {
             if l.heads.0 != feed.heads.0 {
@@ -204,6 +226,22 @@ impl ReplayMenuHost {
             "GetEndHeadPosition" => Value::Number(f64::from(feed.heads.1)),
             // NOT RETAIL YET: "Zoom {0:d} mm" with the camera lens (b376); the camera keys are not ported.
             "GetCameraZoomString" => Value::Text(String::new()),
+            // The Create pack's screen (replay_editor3; b410 / b411): the edit channel and its label id, the channel's
+            // raw value and slider notch, the tint cursor, the selected component raw, and each component as a notch
+            // (snapped to 25, `8250B0B8`: (v * 0.04 + 0.5) truncated).
+            "GetMode" => Value::Number(f64::from(feed.channel)),
+            "GetModeText" => Value::Text(
+                crate::replay::editor::CHANNELS.get(feed.channel as usize).map_or("ID_REPLAYEDITOR_CHANNEL_SETTING", |c| c.0).into(),
+            ),
+            "GetModeValue" => Value::Number(f64::from(feed.mode_value)),
+            "GetModeSliderValue" => Value::Number(f64::from(feed.mode_slider)),
+            "GetCurrentTint" => Value::Number(if feed.channel == 6 { f64::from(feed.tint) } else { -1.0 }),
+            "GetCurrentTintValue" => Value::Number(if feed.channel == 6 { f64::from(feed.tints[feed.tint as usize % 4]) } else { -1.0 }),
+            "GetCurrentSliderTintValue" => Value::Number(tint_notch(feed.tints[feed.tint as usize % 4])),
+            "GetRedTintValue" => Value::Number(tint_notch(feed.tints[0])),
+            "GetGreenTintValue" => Value::Number(tint_notch(feed.tints[1])),
+            "GetBlueTintValue" => Value::Number(tint_notch(feed.tints[2])),
+            "GetAlphaTintValue" => Value::Number(tint_notch(feed.tints[3])),
             _ => return None,
         })
     }
@@ -212,6 +250,32 @@ impl ReplayMenuHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_pack_natives_and_states() {
+        let mut vm = Vm::new();
+        let language = std::collections::BTreeMap::new();
+        let mut host = ReplayMenuHost { open: true, ..Default::default() };
+        host.feed = ReplayScreenFeed { active: true, mode: 11, channel: 6, tint: 2, tints: [0, 0, 130, 250], mode_value: -1, mode_slider: 2, ..Default::default() };
+        let call = |host: &mut ReplayMenuHost, vm: &mut Vm, name: &str| host.call(vm, &language, "FEReplayMenu", name);
+        assert_eq!(call(&mut host, &mut vm, "GetMode"), Some(Value::Number(6.0)));
+        assert_eq!(call(&mut host, &mut vm, "GetModeText"), Some(Value::Text("ID_REPLAYEDITOR_CHANNEL_TINT".into())));
+        assert_eq!(call(&mut host, &mut vm, "GetCurrentTint"), Some(Value::Number(2.0)));
+        assert_eq!(call(&mut host, &mut vm, "GetCurrentTintValue"), Some(Value::Number(130.0)));
+        // 130 snaps to 125 (notch 5); 250 is notch 10.
+        assert_eq!(call(&mut host, &mut vm, "GetCurrentSliderTintValue"), Some(Value::Number(5.0)));
+        assert_eq!(call(&mut host, &mut vm, "GetAlphaTintValue"), Some(Value::Number(10.0)));
+        host.post_changes();
+        host.states.clear();
+        host.feed.tint = 3;
+        host.post_changes();
+        assert!(host.states.contains(&movie_state::REFRESH_TINT));
+        host.states.clear();
+        host.feed.channel = 0;
+        host.post_changes();
+        assert!(host.states.contains(&movie_state::UPDATE_MODE));
+        assert_eq!(call(&mut host, &mut vm, "GetCurrentTint"), Some(Value::Number(-1.0)));
+    }
 
     #[test]
     fn natives_answer_from_the_feed_and_edges_become_states() {

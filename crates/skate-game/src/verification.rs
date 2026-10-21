@@ -85,6 +85,21 @@ fn verify(
             e.session.mode = skate_core::replay_edit::session::EditorMode::Effects;
             e.row = crate::replay::editor::GAME_CAMERA_ROW;
         }
+        // "look": the Create pack's tint channel (Y six times), its effects panel with the blue component raised to
+        // 125 and the alpha to 100 at the playhead (the tint overlay shows over the frame).
+        let at = replay.cursor();
+        if let Some(e) = replay.editor.as_mut().filter(|e| mode == "look" && e.mode() == 6 && state.elapsed > replay_at + 1.5) {
+            while e.channel != 6 {
+                e.cycle_channel();
+            }
+            e.session.mode = skate_core::replay_edit::session::EditorMode::Effects;
+            for (component, presses) in [(2, 5), (3, 4)] {
+                e.tint = component;
+                for _ in 0..presses {
+                    e.adjust_row(at, 1);
+                }
+            }
+        }
     }
     // SKATE_VERIFY_REPLAY_EXPORT=<file.mp4>: export the open replay (as Save to PC) a second after it opened; the
     // capture waits until the export is done.
