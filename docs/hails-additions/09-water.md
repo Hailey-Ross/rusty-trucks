@@ -1212,3 +1212,35 @@ Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes 
 - **Change (look layer, not retail):** basins keep their own diffuse (University's: black); the donor still gives
   the waves, the specular and the reflection rows (`retail_world.wgsl`). Capture after: dark blue water with sun glints
   on the moving waves, no leaves. Not looked at by the user yet.
+
+## Better Water: fountain basins in line with the Aletown canal (2026-10-21, laptop session)
+
+- **Problem:** after the basins kept their own colour (section above), the user: "pcu library water fountain water is
+  just too blue. try to bring it in line with the canal water from downtown aletown".
+- **Cause [code + data]:** University's fountain diffuse is black and its specular mask plain white (about 0.9, b356),
+  so a basin pixel is almost only the steel-blue tinted sky reflection. The canal gets its colour from its own diffuse,
+  under a flat mask of about 0.18 (`pool_S_30per`).
+- **Change (look layer, not retail):** `WaterLook` keys, frame-state row `fountain_body`: `fountain_colour` (the
+  basin's body colour under the lighting, linear rgb) and `fountain_reflection` (share of the material's mask on
+  basins). Steep cascades keep their own. Mods: `sdk.graphics.water_look` keys of the same names (colour 0..1 per
+  channel, reflection 0..2), released on disable. Log: `WATER_BODY` per water material (family, body area, bounds) at
+  map load, so a water report can name the body (PCU basin: x 340..343, z -330..-283, y 67.9).
+- **Ripple:** the user, same session: "the fountain doesnt ripple enough". With a flat colour the basin shows its waves
+  only through the lighting, and the waves barely tilt it (luma stdev 1.8 over the water vs the canal's 13 to 17).
+  Third key `fountain_ripple` (frame-state row `fountain_ripple`): a gain on the basin normal's tilt (0..8). Better
+  Water's `fountain_waves` goes 0.5 -> 1 and `fountain_tile` 4 -> 2 m (finer ripple).
+- **Matching [captures, `--verify` with dev mod `.local/poc-tests/fountain-mods`, `.local/poc-tests/fountain-capture.sh`,
+  stats `.local/poc-tests/crop-stats.py`]:** the camera 2.7 to 3.3 m over the water looking along it, water-only crops.
+
+  | | mean sRGB | blue - red | luma stdev |
+  |---|---|---|---|
+  | Aletown canal (Better Water) | 70..86, 79..96, 88..104 | 18 | 12.7..17.5 |
+  | PCU basin, before (b1841cc5 look) | 105, 128, 138 | 33 | 1.8 |
+  | PCU basin, matched to the canal | 84, 96, 106 | 22 | 10.0 |
+  | PCU basin, new defaults (user: "go for a littlw more blue gray tint") | 83, 98, 113 | 30 | 10.9 |
+
+  Defaults: `fountain_colour` {0.018, 0.024, 0.032} (canal match {0.018, 0.022, 0.026}, then a little more blue-grey on the
+  user's look at the capture), `fountain_reflection` 0.15, `fountain_ripple` 7. Reflection 0
+  barely changed the basin (100, 122, 128), so the colour, not the sky, made it blue.
+- **Verification:** `basins_take_their_colour_and_reflection_from_the_look`, `fountains_only_with_better_water_and_mods_can_set_them`
+  (`water_look`), the frame-state encoder test. Not looked at by the user yet.

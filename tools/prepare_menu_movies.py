@@ -31,7 +31,7 @@ from vendor.skate3_ui.scene_graph import AssetCache, SceneFlattener
 from vendor.skate3_ui.actions import Actions
 
 FORMAT = 'skate3-menu-movies'
-VERSION = 11  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies; 6: the challenge map; 7: named runtime images (challenge map pictures); 8: the Skate Profile (FE 61); 9: Extras (FE 18); 10: the text viewer (FE 3); 11: the replay editor and help (FE 12 / 13)
+VERSION = 12  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies; 6: the challenge map; 7: named runtime images (challenge map pictures); 8: the Skate Profile (FE 61); 9: Extras (FE 18); 10: the text viewer (FE 3); 11: the replay editor and help (FE 12 / 13); 12: every DLC pack's text tables (Challenge Map DLC location names)
 # Menu screens the engine's retail menus start from (pause menu, Game Settings,
 # Freeskate options, the screen manager and its helpers). Library movies are
 # found through imports, not listed.

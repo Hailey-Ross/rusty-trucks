@@ -414,9 +414,15 @@ Not yet run end to end: the launcher's import followed by its automatic refresh 
   movies it exports (the Create pack, `dlc_archives`); the map packs carry no menu movie, so their text tables never
   reached the menus' language. The map lists read them by another path (`map_names.py`), so MAPS was right.
 - **Change:** `dlc_text_archives` reads the text of every pack with front-end language tables; movies still come only
-  from the exported packs, and a disc label keeps its text. The script is part of the hud group's version
-  (`tools/asset_pipeline/versions.py`), so a copy with this build sees its menus as out of date and offers the
-  refresh.
+  from the exported packs, and a disc label keeps its text. The menu movie set's version goes from 11 to 12
+  (`tools/prepare_menu_movies.py` and `retail_menu_movies::VERSION`), so the asset check reports the hud group as
+  out of date and Refresh Game Files rebuilds it.
+- **Why the version bump [laptop, 2026-10-21 18:45]:** without it the laptop's copy at f21c445b reported
+  "ASSET_CHECK done in 228 ms: 0 problem(s)" and "GAME_FILES current: nothing to refresh". The script is in the hud
+  group's fingerprint (`tools/asset_pipeline/versions.py`), but Refresh Game Files (`setup.rs`
+  `update_game_files_now`) decides only from the asset check, which reads the manifest version, not the
+  fingerprints. Open question: whether a script-only converter change should reach Refresh Game Files by
+  fingerprint as well.
 - **Verification [data]:** the user's 8 packs give 786 labels with all four names ("Maloof Money Cup 2010 NYC",
   "Danny Way's Hawaiian Dream", "The Sanatorium", "Art Gallery"); test
   `test_a_map_pack_names_its_location_in_the_menu_text` (data-gated on the Maloof pack). Not play-tested.

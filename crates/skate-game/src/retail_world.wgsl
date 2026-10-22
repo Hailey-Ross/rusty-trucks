@@ -290,10 +290,11 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             vn=water_n;
         }
         // Water look fountains: flat family 30 pixels (basins) take the map's large-water program, with the
-        // donor's PCA textures (macro = normal, detail = normal2; its diffuse in decal is no longer read) and rows (p.fountain, bound
+        // donor's PCA textures (macro = normal, detail = normal2; its diffuse in decal is not read) and rows (p.fountain, bound
         // by retail_render::bind_fountain_donor) in world space at fountain.x metres per tile; steep pixels
         // (cascades) keep their own flow and gain foam. Blended by slope so stepped fountains do not seam.
         var mult=p.water[0].y;
+        var mask_share=1.0;
         var spec_floor=p.water[3].y;
         var spec_power=p.water[3].z;
         var foam=0.0;
@@ -325,9 +326,15 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
                 let up=vec3<f32>(0.0,1.0,0.0);
                 // Body calming as on the large water, but never below the look's fountain floor.
                 let size=select(1.0,max(frame_state.fountain.y,saturate(log2(max(p.decal.y,1.0)/100.0)/log2(40.0))),frame_state.water_look.w>0.5);
-                let basin_n=normalize(2.0*up+2.0*(first-up)*(0.6+0.4*size)+(second-up)*2.0*size*size);
-                // The basin keeps its own diffuse: the donor's (University's pool floor with its leaves) read as a
-                // pale painted sheet in a fountain (laptop session 2026-10-21); the donor gives the waves only.
+                let calm_n=normalize(2.0*up+2.0*(first-up)*(0.6+0.4*size)+(second-up)*2.0*size*size);
+                // The look's tilt gain (fountain_ripple.x): a flat basin colour shows the waves only through the lighting.
+                let basin_n=normalize(vec3<f32>(calm_n.x*frame_state.fountain_ripple.x,calm_n.y,calm_n.z*frame_state.fountain_ripple.x));
+                // The basin does not take the donor's diffuse (University's pool floor with its leaves read as a
+                // pale painted sheet); its colour and reflection share come from the look (fountain_body), matched to
+                // the Aletown canal: its own black diffuse under the white mask read "just too blue" (laptop
+                // sessions 2026-10-21). The donor gives the waves only.
+                d=mix(frame_state.fountain_body.rgb,d,steep);
+                mask_share=mix(frame_state.fountain_body.w,1.0,steep);
                 water_n=normalize(mix(basin_n,water_n,steep));
                 vn=mix(basin_n,vn,steep);
                 mult=mix(q[0].y,mult,steep);
@@ -352,7 +359,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         }
         let kd=dot(water_n,vec3<f32>(0.58*sign(sun.x),0.62*sign(sun.y),0.39))*2.39562;
         var wm=vec2<f32>(0.0);
-        if (flags & 16u)!=0u { wm=saturate(bindings::sample_specular_map(slot,sample_uv,g).xz-spec_floor); }
+        if (flags & 16u)!=0u { wm=saturate(bindings::sample_specular_map(slot,sample_uv,g).xz-spec_floor)*mask_share; }
         let reflected_light=2.0*water_n*dot(water_n,sun)-sun;
         let ks=pow(max(saturate(dot(vd,reflected_light)),1e-6),spec_power);
         var spec=ks*wm.x*vec3<f32>(2.1,1.8,1.5)*saturate(lml.g-0.1);

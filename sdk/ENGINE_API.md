@@ -330,6 +330,9 @@ EXTRAS toggle "Better Water" sets `enabled`). With
 | `wave_rate` | 0.75 | 1 |
 | `scroll_rate` | 0.5 | 1 |
 | `seamless_clock` | true | true (false: the scroll restarts every 10 s) |
+| `fountain_colour` (basin body colour, linear rgb 0..1) | {0.018, 0.024, 0.032} | basins keep their own |
+| `fountain_reflection` (basin share of its reflection mask, 0..2) | 0.15 | 1 |
+| `fountain_ripple` (basin wave tilt gain, 0..8) | 7 | 1 |
 
 `sdk.graphics.water_look(patch)` replaces any of these keys; `nil` restores the
 player's look. One mod at a time; unknown keys or out-of-range values fail the
