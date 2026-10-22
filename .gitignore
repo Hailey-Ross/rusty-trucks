@@ -116,5 +116,7 @@ mods/world-audio-test/logs/
 
 # Second PC: settings of tools/second-pc/play-and-send.ps1, and copies of it an older guide put at the root
 /send-sessions.txt
+/share-sessions.txt
+/shared-sessions.txt
 /PLAY-AND-SEND.bat
 /play-and-send.ps1

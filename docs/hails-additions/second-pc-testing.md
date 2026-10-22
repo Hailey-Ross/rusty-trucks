@@ -229,6 +229,31 @@ with the config above), or `tools\second-pc\PLAY-AND-SEND.bat` (runs `PLAY.bat`,
 - What was sent is listed in the second PC's `logs\sent.txt` (full paths: a moved folder sends everything again);
   delete a line to send that item again.
 
+## Share sessions via GitHub
+
+For players without the network share (any PC with the Steam launcher). Off until the player turns it on.
+
+- **Turn on / off:** "Share sessions: OFF / ON" on the play screen and in Tools. Turning it on shows what is shared
+  first; the choice is stored in `share-sessions.txt` at the launcher's checkout root (`mode=github`, `consent=1`,
+  optional `repo=owner/name`).
+- **Which repository:** the played version's checkout remote (`git remote get-url origin`): upstream builds go to
+  SK8-ENGINE/skate-3-rust-engine, ours to Hailey-Ross/rusty-trucks. `repo=` in the settings overrides it; a folder
+  without git reads `share-repo.txt` next to the script. The launcher-only download ships the script next to
+  launcher.ps1.
+- **After each session** (and Tools > "Share the last session via GitHub"): `tools\second-pc\share-session-issue.ps1`
+  packs the new game logs, launcher build logs and trace / recomp folders (recomp folders with captured sound
+  `audio.f32` never go) into `logs\shared\session-<time>.zip`, in 25 MB parts (`.zip.001`, ...) when bigger, with
+  the Windows user name, home folder and PC name replaced by `<user>`, `<home>`, `<pc>` in text files and names.
+  It opens `issues/new?template=session-report.md` on that repository with the build and notes filled in and selects
+  the zip in Explorer; the player drags it in and submits. Nothing is posted without that. What was packed is listed in
+  `shared-sessions.txt`. Issues on public repositories are public.
+- **Template:** `.github/ISSUE_TEMPLATE/session-report.md` (label `session-report`). A markdown template, because issue
+  forms ignore a prefilled `body`. A repository without it still gets a plain issue with the body filled in.
+- **Main PC:** `fetch-github-sessions.ps1 -Folder <main PC folder>` also downloads the zips attached to open
+  `session-report` issues into `<Folder>\github-<issue>-<login>\` (parts joined) and records the issue in
+  `fetched-issues.txt`; `-Close` also comments and closes it. The zips come from other players: they are unpacked
+  into their own folder and nothing in them is run.
+
 ## Recomp trace sessions
 
 The second PC can also play the traced Skate 3 recompilation (the research hooks of

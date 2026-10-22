@@ -4,9 +4,43 @@
 param(
     # The shared session folder (the one setup-main-pc.ps1 shared).
     [Parameter(Mandatory)][string]$Folder,
-    [string]$Repo = 'Hailey-Ross/rusty-trucks'
+    [string]$Repo = 'Hailey-Ross/rusty-trucks',
+    # Also comment on and close each fetched session-report issue (otherwise they are only recorded as fetched).
+    [switch]$Close
 )
 $ErrorActionPreference = 'Stop'
+
+# Players' session reports: docs/hails-additions/second-pc-testing.md#share-sessions-via-github
+$fetchedFile = Join-Path $Folder 'fetched-issues.txt'
+$fetched = @{}
+if (Test-Path $fetchedFile) { foreach ($n in Get-Content $fetchedFile) { $fetched[$n] = $true } }
+$issues = @(& gh issue list --repo $Repo --state open --label session-report --limit 100 --json number,author | ConvertFrom-Json)
+foreach ($issue in $issues | Where-Object { -not $fetched["$($_.number)"] }) {
+    $view = & gh issue view $issue.number --repo $Repo --json body,comments | ConvertFrom-Json
+    $text = (@($view.body) + @($view.comments | ForEach-Object { $_.body })) -join "`n"
+    $urls = @([regex]::Matches($text, 'https://github\.com/user-attachments/files/\d+/[^\s)\]]+\.zip(\.\d{3})?') | ForEach-Object { $_.Value } | Select-Object -Unique)
+    if ($urls.Count -eq 0) { Write-Host "Issue #$($issue.number): no zip attached yet."; continue }
+    $dest = Join-Path $Folder ("github-{0}-{1}" -f $issue.number, $issue.author.login)
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    foreach ($g in $urls | Group-Object { (Split-Path $_ -Leaf) -replace '\.\d{3}$', '' }) {
+        $zip = Join-Path $env:TEMP ("issue-{0}-{1}" -f $issue.number, $g.Name)
+        $out = [IO.File]::Create($zip)
+        try {
+            foreach ($u in $g.Group | Sort-Object) {
+                $part = "$zip.part"
+                Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $part
+                $b = [IO.File]::ReadAllBytes($part); $out.Write($b, 0, $b.Length)
+                Remove-Item $part
+            }
+        } finally { $out.Close() }
+        Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force
+        Remove-Item $zip
+        Write-Host "Issue #$($issue.number): unpacked $($g.Name) ($($g.Count) part(s)) into $dest"
+    }
+    Add-Content -Path $fetchedFile -Value "$($issue.number)"
+    if ($Close) { & gh issue close $issue.number --repo $Repo --comment 'Thanks, the session was fetched.' | Out-Null; Write-Host "Issue #$($issue.number): closed." }
+}
+
 $prs = & gh pr list --repo $Repo --state open --limit 100 --json number,headRefName | ConvertFrom-Json |
     Where-Object { $_.headRefName -like 'session-logs/*' }
 if (-not $prs) { Write-Host 'FETCH_DONE no session-log pull requests open.'; return }

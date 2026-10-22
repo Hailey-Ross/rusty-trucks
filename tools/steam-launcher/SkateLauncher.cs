@@ -282,6 +282,9 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     static string RunningGames() {
         string r = "";
         foreach (var n in GameNames) if (Process.GetProcessesByName(n).Length > 0) r += (r == "" ? "" : ", ") + n + ".exe";
+        // A Refresh Game Files run (launcher.ps1 Refresh-GameFiles) is named instead of its exe (USER-ASKS 72).
+        string marker = Path.Combine(StateDir(), "REFRESHING.txt");
+        if (r != "" && File.Exists(marker)) { try { r = "Refresh game files (" + File.ReadAllText(marker).Trim() + ")"; } catch { } }
         return r;
     }
     void RefreshStatus() {
@@ -372,8 +375,35 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             if (row.Length > 8 && row[8] != "") item.Records = row[8].Split('|');
             p.Items.Add(item);
         }
+        if (group == "rust" || group == "tools") p.Items.Add(ShareItem());
         if (group == "tools") p.Items.Add(new Item("Clear builds and build caches", "Frees disk space: everything, or one version's build cache or whole build. Asks before deleting.", true, delegate { pages.Push(ClearPage()); }));
         if (p.Items.Count == 0) p.Items.Add(new Item("Nothing here yet", "See README.md to set these up.", false, null));
+        return p;
+    }
+    // docs/hails-additions/second-pc-testing.md#share-sessions-via-github
+    Item ShareItem() {
+        var item = new Item("", "", false, null);
+        item.Run = delegate {
+            if (St("share").StartsWith("on ")) { Run("share-off"); RefreshStatus(); ShowShare(item); }
+            else pages.Push(ConsentPage(item));
+        };
+        ShowShare(item);
+        return item;
+    }
+    void ShowShare(Item item) {
+        string s = St("share");
+        bool on = s.StartsWith("on ");
+        item.Text = s == "" ? "Share sessions via GitHub" : "Share sessions: " + (on ? "ON" : "OFF");
+        item.Hint = s == "" ? "Not in this launcher version." : on ? "After each session the logs are packed and a GitHub issue opens on " + s.Substring(3) + ". Press to turn off."
+            : s == "no repo" ? "This version has no GitHub repository to send to." : "Off. Press to read what is shared and turn it on.";
+        item.On = s != "" && s != "no repo";
+    }
+    Page ConsentPage(Item toggle) {
+        var p = new Page { Title = "Share sessions via GitHub" };
+        p.Items.Add(new Item("Turn it on", "After each session the launcher zips the new logs and opens a GitHub issue on the repository of the version you play, in your browser. You drag the zip in and press Submit; nothing is sent without that.", true,
+            delegate { Run("share-on"); RefreshStatus(); ShowShare(toggle); pages.Pop(); }));
+        p.Items.Add(new Item("Not now", "Sharing stays off.", true, delegate { pages.Pop(); }));
+        p.Items.Add(new Item("What is shared", "Game logs, trace folders and launcher build logs of this PC, with your Windows user name, home folder and PC name replaced. Not shared: saves, game files, recomp sound captures. Issues on public repositories are public. Turn it off here or in Tools at any time.", false, null));
         return p;
     }
     static string Gb(long bytes) { return (bytes / 1073741824.0).ToString("0.0") + " GB"; }

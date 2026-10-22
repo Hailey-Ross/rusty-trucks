@@ -90,6 +90,7 @@ jobs:
           d=launcher-out/skate-launcher
           mkdir -p "$d"
           (cd tools/steam-launcher && cp SkateLauncher.cs build.bat launcher.bat launcher.ps1 setup.ps1 README.md config.example.json versions.example.json "../../$d/")
+          cp tools/second-pc/share-session-issue.ps1 "$d/"
           printf 'Standalone launcher: its config, state and versions stay in this folder (README.md).\n' > "$d/STANDALONE.txt"
           printf 'build %s\ncommit %s\n' "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" > "$d/LAUNCHER-VERSION.txt"
           for f in "$d"/*; do sed -i 's/\r$//; s/$/\r/' "$f"; done

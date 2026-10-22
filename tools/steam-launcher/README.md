@@ -172,6 +172,7 @@ A shortcut without launch options opens the menu.
 | `tool-build` | update the launcher, then fetch and build the selected version now |
 | `tool-self-update` | update the launcher to the newest `hails-additions` on the fork (see Updating the launcher itself) |
 | `tool-send` | the `after_session` send now |
+| `tool-share` | pack the new logs and open a GitHub issue (Share sessions on; `share-on` / `share-off` toggle it, see docs/hails-additions/second-pc-testing.md#share-sessions-via-github) |
 | `tool-recomp-update`, `tool-recomp-getsave` | `play-recomp.ps1 -Update` / `-GetSave` |
 | `tool-setup` | `setup.ps1 -Install` |
 | `clear-cache <id\|all>`, `clear-build <id\|all>` | delete a version's build cache (its cargo target folder) or its whole build (that plus `bin\`); Tools > Clear builds runs these |

@@ -175,6 +175,7 @@ function Fetch-Version($v, [string]$Dir) {
     # a stall limit, so a credential helper or a dead network fails the fetch instead of hanging the launcher.
     $keep = $env:GIT_TERMINAL_PROMPT; $env:GIT_TERMINAL_PROMPT = '0'
     & git -C $Dir -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch -q $s.Fetch "+refs/heads/$($v.branch):$($s.Ref)" 2>$null | Out-Host
+    if ($LASTEXITCODE -ne 0) { Write-Host "  Could not reach $($s.Fetch) (git fetch failed); using the last fetched $($v.branch)." }
     $env:GIT_TERMINAL_PROMPT = $keep
     return $s.Ref
 }
@@ -449,11 +450,14 @@ function Ensure-Version($v) {
     $head = (Invoke-Git $d rev-parse --short HEAD)
     if ($v.dev) {
         # A working-tree build: the commit plus a hash of the uncommitted changes, so editing the tree rebuilds it.
-        $diff = (Invoke-Git $d diff HEAD) -join "`n"
-        if ($diff) {
-            $sha = [System.Security.Cryptography.SHA1]::Create()
-            $hash = -join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($diff)) | Select-Object -First 6 | ForEach-Object { $_.ToString('x2') })
-            $head = "$head+$hash"
+        # Hashed as raw bytes by git (diff written to a file), so the console code page cannot change it.
+        $null = Invoke-Git $d diff --quiet HEAD
+        if ($LASTEXITCODE -eq 1) {
+            $tmp = [IO.Path]::GetTempFileName()
+            $null = Invoke-Git $d diff --binary "--output=$tmp" HEAD
+            $hash = "$(Invoke-Git $d hash-object $tmp)".Trim()
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+            if ($hash.Length -ge 12) { $head = "$head+$($hash.Substring(0, 12))" }
         }
     }
     $built = ''; if (Test-Path $marker) { $built = (Get-Content $marker -Raw).Trim() }
@@ -498,6 +502,13 @@ function Ensure-Version($v) {
 
 $GameNames = @('skate3', 'skate3rust', 'rpcs3')
 function Running-Games { @(Get-Process $GameNames -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessName + '.exe' } | Sort-Object -Unique) }
+
+# What runs, for messages: a Refresh Game Files run by name (REFRESHING.txt), else the game processes.
+function Running-Holder {
+    $r = Join-Path $StateDir 'REFRESHING.txt'
+    if ((Test-Path $r) -and (Running-Games).Count -gt 0) { return "Refresh game files ($((Get-Content $r -Raw).Trim()))" }
+    (Running-Games) -join ', '
+}
 
 # A game can outlive the script that started it: Refresh Game Files restarts the game into setup and back (the
 # laptop's session check and send ran while setup was still converting, 2026-10-18). Wait until none runs.
@@ -647,6 +658,40 @@ function Send-Sessions {
     return "Send: $($out[-1])"
 }
 
+# docs/hails-additions/second-pc-testing.md#share-sessions-via-github
+$ShareSettings = Join-Path $Repo 'share-sessions.txt'
+function Share-Script {
+    foreach ($s in (Join-Path $Here 'share-session-issue.ps1'), (Join-Path $Repo 'tools\second-pc\share-session-issue.ps1')) { if (Test-Path $s) { return $s } }
+    return $null
+}
+function Share-Run([string]$Root, [string[]]$More) {
+    $s = Share-Script
+    if (-not $s) { return @('share: not available in this launcher') }
+    return @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $s -Root $Root -Settings $ShareSettings @More | ForEach-Object { "$_" } | Where-Object { $_ })
+}
+function Share-Status([string]$Root) {
+    if (-not (Share-Script)) { return '' }
+    $s = @{}
+    if (Test-Path $ShareSettings) { foreach ($l in Get-Content $ShareSettings) { if ($l -match '^\s*([^=#]+?)\s*=\s*(.*)$') { $s[$Matches[1]] = $Matches[2].Trim() } } }
+    if ($s['mode'] -ne 'github' -or $s['consent'] -ne '1') { return 'off' }
+    $slug = $s['repo']
+    if (-not $slug -and $Root) {
+        $ErrorActionPreference = 'Continue'
+        $url = & git.exe -C $Root remote get-url origin 2>$null | Select-Object -First 1
+        $ErrorActionPreference = 'Stop'
+        if ($url -match 'github\.com[:/]+([^/]+)/([^/]+?)(\.git)?/?$') { $slug = "$($Matches[1])/$($Matches[2])" }
+    }
+    if (-not $slug) { return 'no repo' }
+    return "on $slug"
+}
+function Share-Sessions([string]$Root) {
+    if ((Share-Status $Root) -notlike 'on *') { return '' }
+    Write-Host '  Packing the session for GitHub...'
+    $out = Share-Run $Root @()
+    $said = @($out | Where-Object { $_ -notlike 'https://*' })
+    return "Share: $(if ($said) { $said[-1] } else { 'no output.' })"
+}
+
 # The second PC's recomp tools (tools\second-pc\play-recomp.ps1 -Update / -GetSave): config.json "recomp_script", else
 # that script once the second PC is set up (send-sessions.txt at the checkout root).
 function Recomp-Script {
@@ -670,6 +715,7 @@ $Entries = [ordered]@{
     'tool-build'    = @{ Group = 'tools'; Name = 'Update and build the selected version'; Kind = 'tool'; Hint = 'Fetches its branch and builds it now, so the next launch starts at once.' }
     'tool-self-update' = @{ Group = 'tools'; Name = 'Update the launcher';    Kind = 'tool';     Hint = 'Brings the launcher to the newest hails-additions on the fork and rebuilds it (also at every start and before Update and build).' }
     'tool-send'     = @{ Group = 'tools'; Name = 'Send the logs now';         Kind = 'tool';     Hint = 'Runs the after-session send (config.json after_session).' }
+    'tool-share'    = @{ Group = 'tools'; Name = 'Share the last session via GitHub'; Kind = 'tool'; Hint = "Packs the new logs and opens a GitHub issue on the selected version's repository; you drop the zip in. Needs Share sessions turned on." }
     'tool-recomp-update'  = @{ Group = 'tools'; Name = 'Recomp: get the newest build'; Kind = 'tool'; Hint = "Copies the main PC's newest recomp build (play-recomp.ps1 -Update)." }
     'tool-recomp-getsave' = @{ Group = 'tools'; Name = 'Recomp: get the main PC save'; Kind = 'tool'; Hint = "Copies the main PC's recomp save after backing up this PC's (play-recomp.ps1 -GetSave)." }
     'tool-dlc'      = @{ Group = 'tools'; Name = 'Import DLC';                Kind = 'tool';     Hint = 'Copies your Skate 3 DLC packages (pick one or many files, or a folder) to the launcher and converts the new ones (Refresh game files).' }
@@ -764,6 +810,7 @@ function Entry-Blocked([string]$Key, $V) {
             if ($null -ne $h -and $h.Count -eq 0) { return "$($V.name) can't refresh from here (built before the launcher refresh): use the game's Extras > Refresh Game Files." }
         }
         'tool-send'     { return (Send-Blocked) }
+        'tool-share'    { if ((Share-Status (Version-Dir $V)) -notlike 'on *') { return 'Turn on Share sessions via GitHub first (play screen or Tools).' } }
         { $_ -like 'tool-recomp-*' } { if (-not (Recomp-Script)) { return 'Not set up: this PC has no recomp share (tools\second-pc, see docs\hails-additions\second-pc-testing.md), or set recomp_script in config.json.' } }
     }
     if ($e.Recomp) {
@@ -789,8 +836,13 @@ function Refresh-GameFiles($Ver) {
     $assets = Resolve-DevAssets -ProjectRoot $d
     Write-Host "  Checking the game files ($assets)..."
     $said = ''
-    & (Join-Path $d 'bin\skate3rust.exe') --update-game-files --assets $assets 2>&1 | ForEach-Object { $l = "$_"; if ($l -like 'GAME_FILES *') { $said = $l.Substring(11) }; Write-Host "  $l" }
-    $code = $LASTEXITCODE
+    # REFRESHING.txt names the refresh to anything that waits for the game to close (USER-ASKS 72).
+    $marker = Join-Path $StateDir 'REFRESHING.txt'
+    Set-Content -Path $marker -Value $Ver.name -Encoding utf8
+    try {
+        & (Join-Path $d 'bin\skate3rust.exe') --update-game-files --assets $assets 2>&1 | ForEach-Object { $l = "$_"; if ($l -like 'GAME_FILES *') { $said = $l.Substring(11) }; Write-Host "  $l" }
+        $code = $LASTEXITCODE
+    } finally { Remove-Item $marker -ErrorAction SilentlyContinue }
     # Setup published a new installation: the other versions' links follow at their next launch.
     switch ($code) { 0 { return "Refresh game files: $said." } 2 { return 'Refresh game files: no game files yet. Convert them first (tools\setup-dev-assets.ps1).' } default { return "Refresh game files: $(if ($said) { $said } else { 'failed' }) (exit code $code)." } }
 }
@@ -813,6 +865,7 @@ function Run-Tool([string]$Key, $Ver) {
 $r" }
         }
         'tool-send' { $r = Send-Sessions }
+        'tool-share' { $r = Share-Sessions (Version-Dir $Ver); if (-not $r) { $r = 'Share: off.' } }
         'tool-dlc'  {
             # New packs are converted at once (the laptop import, 2026-10-21: a separate Refresh step was easy to miss).
             $r = Import-Dlc $Path
@@ -830,7 +883,7 @@ $r" }
 function Launch([string]$Key, [string]$Lbl) {
     $e = $Entries[$Key]
     if (-not $e) { Save-Result "Unknown entry: $Key"; return }
-    if ((Running-Games).Count -gt 0) { Save-Result 'Not started: another game is running.'; return }
+    if ((Running-Games).Count -gt 0) { Save-Result "Not started: $(Running-Holder) is running."; return }
     $ver = Get-Version $Version
     $blocked = Entry-Blocked $Key $ver
     if ($blocked) { Save-Result "Not started: $blocked"; Write-Host "  $blocked"; return }
@@ -909,6 +962,8 @@ function Launch([string]$Key, [string]$Lbl) {
     if ($ver) { $env:SKATE_SEND_LOGS_DIR = Version-Dir $ver }
     $sendResult = Send-Sessions
     if ($sendResult) { $summary = (@($summary, $sendResult) | Where-Object { $_ }) -join "`r`n" }
+    $shareResult = Share-Sessions $(if ($ver) { Version-Dir $ver } else { $Repo })
+    if ($shareResult) { $summary = (@($summary, $shareResult) | Where-Object { $_ }) -join "`r`n" }
     $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     Save-Result ("$stamp  $Key $Lbl$verText`r`n$summary")
 }
@@ -990,6 +1045,7 @@ if ($Entry -eq 'status') {
     $last = if (Test-Path $LastSession) { ((Get-Content $LastSession) -join ' / ') } else { 'No session yet.' }
     "last`t$last"
     $sb = Send-Blocked; "send`t$(if (-not (Send-Script)) { 'off' } elseif ($sb) { $sb } else { 'on' })"
+    "share`t$(Share-Status (Version-Dir $v))"
     "setup_missing`t$(Setup-Missing)"
     # The launcher's own commit and the fork's newest (as of the last check at start), for the main screen.
     $lc = Launcher-Commit; $fc = Fork-Commit
@@ -1049,6 +1105,8 @@ if ($Entry -in @('clear-cache', 'clear-build')) {
 }
 if ($Entry -eq 'room') { Make-Room (Get-Version $(if ($Label) { $Label } else { $Version })); exit 0 }
 if ($Entry -eq 'send') { $r = Send-Sessions; if (-not $r) { $r = 'Send: no after_session in config.json.' }; $r; exit 0 }
+if ($Entry -eq 'share-on') { Share-Run (Version-Dir (Get-Version '')) @('-Consent'); exit 0 }
+if ($Entry -eq 'share-off') { Share-Run (Version-Dir (Get-Version '')) @('-Revoke'); exit 0 }
 if ($Entry -eq 'list') { $Entries.Keys | ForEach-Object { '{0,-20} {1}' -f $_, $Entries[$_].Name }; exit 0 }
 if ($Entry) { Launch $Entry $Label; exit 0 }
 
