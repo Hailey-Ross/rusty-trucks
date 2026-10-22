@@ -18,6 +18,7 @@ pub mod centre_of_mass_filter;
 pub mod constraint_batch;
 mod constraint_frames;
 pub mod contact;
+pub mod contact_reduction;
 pub mod grind_contact;
 pub mod grind_air;
 pub mod grind_forces;

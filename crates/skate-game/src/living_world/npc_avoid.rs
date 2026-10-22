@@ -71,11 +71,11 @@ fn length(v: [f32; 3]) -> f32 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
-/// Right of a direction in the ground plane (the same axis as `avoid::steer_point`).
+/// Right of a direction in the ground plane, d x up (the same axis as `avoid::steer_point`; b527).
 pub(crate) fn right_of(d: [f32; 3]) -> [f32; 3] {
     let l = d[0].hypot(d[2]);
     if l > 1e-6 {
-        [d[2] / l, 0.0, -d[0] / l]
+        [-d[2] / l, 0.0, d[0] / l]
     } else {
         [1.0, 0.0, 0.0]
     }
