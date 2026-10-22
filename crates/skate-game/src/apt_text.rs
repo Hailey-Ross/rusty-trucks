@@ -39,6 +39,10 @@ pub struct TextAssets {
     pub fallback: Option<String>,
 }
 
+/// Text for our own string ids (ours, not on the disc), added under the disc's language table and replaced by any
+/// language table that carries the id.
+pub const ENGINE_STRINGS: &[(&str, &str)] = &[("ID_HAILS_REPLAY_SAVE_TO_PC", "Save to PC")];
+
 /// Font ids handed to script-named fonts in `TextAssets::fonts` (below every character id).
 pub const NAMED_FONT_BASE: i32 = -1_000_000;
 /// Retail's one secondary-font rule, 825D6B68: an APT font named "Futura Shadow" (8220BD44, stricmp
@@ -149,6 +153,9 @@ impl TextAssets {
         let mut out = Self::default();
         out.language =
             serde_json::from_value(json["language"].clone()).map_err(|e| e.to_string())?;
+        for (id, text) in ENGINE_STRINGS {
+            out.language.entry((*id).to_owned()).or_insert_with(|| (*text).to_owned());
+        }
         for c in json["characters"]
             .as_array()
             .ok_or("HUD characters missing")?
@@ -297,6 +304,14 @@ mod font_pair_tests {
         let mut m = movie();
         m["characters"][0]["font"]["name"] = json!("Futura Std Medium");
         assert!(TextAssets::load(&m).unwrap().fonts[&3].foreground.is_none());
+    }
+
+    #[test]
+    fn our_string_ids_have_text_a_language_table_can_replace() {
+        let set = |language: serde_json::Value| TextAssets::load(&serde_json::json!({"language": language, "characters": []})).unwrap();
+        assert_eq!(set(serde_json::json!({})).localize(crate::replay::export_run::SAVE_TO_PC), "Save to PC");
+        let ours = set(serde_json::json!({"ID_HAILS_REPLAY_SAVE_TO_PC": "Auf PC speichern"}));
+        assert_eq!(ours.localize(crate::replay::export_run::SAVE_TO_PC), "Auf PC speichern");
     }
 
     /// 82CA1BB0: break at the last space once the line is too wide, `^` forces a break, a long word overhangs.

@@ -222,9 +222,21 @@ impl SkaterRuntime {
         velocity: Option<[f32; 3]>,
         on_board: bool,
     ) -> Result<(), String> {
-        self.player_input.request_teleport_ex(transform, velocity)?;
+        // One move, retail's actor reply (825926F8 -> 82DB8998, b471); the host teleport it used to add on top was a
+        // second reset a tick earlier. A request while one is in flight is refused so two cannot stack.
+        if self.teleport_pending() {
+            return Err("A pending teleport must complete before replacement".into());
+        }
+        self.player_input.set_arrival_velocity(velocity)?;
         self.teleport_state.request_manual(transform, on_board);
         Ok(())
+    }
+
+    /// A teleport is in flight: a host request, a reply not yet published, or a 702 reset not yet applied (b471).
+    pub(crate) fn teleport_pending(&self) -> bool {
+        self.player_input.pending_teleport().is_some()
+            || self.teleport_state.has_pending_reply()
+            || self.player_input.physical.state.flag_61 != 0
     }
 
     /// An AI skater's respawn destination for the next wipeout-end teleport (instead of the checkpoint history).

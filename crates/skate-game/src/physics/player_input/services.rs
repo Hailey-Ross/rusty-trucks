@@ -121,6 +121,12 @@ impl<C: PlayerInputCallbacks> InputPhaseServices for Services<'_, C> {
             let target = self.host.published_board_transform;
             self.callbacks
                 .teleport(self.board, self.ground, target, player, physical, output)?;
+            // A mod's arrival velocity (`travel`, ours) after the one reset of the reply path (b471).
+            if self.pending_teleport.is_none() {
+                if let Some(v) = self.pending_velocity.take() {
+                    apply_board_linvel(self.board, v);
+                }
+            }
         }
         if player.flags_1296 & (1 << 19) != 0 {
             let deck = self.board.part_transforms()[6];

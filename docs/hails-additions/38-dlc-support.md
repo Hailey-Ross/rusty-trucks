@@ -426,3 +426,19 @@ Not yet run end to end: the launcher's import followed by its automatic refresh 
 - **Verification [data]:** the user's 8 packs give 786 labels with all four names ("Maloof Money Cup 2010 NYC",
   "Danny Way's Hawaiian Dream", "The Sanatorium", "Art Gallery"); test
   `test_a_map_pack_names_its_location_in_the_menu_text` (data-gated on the Maloof pack). Not play-tested.
+
+## One move per teleport (2026-10-21, research b471 / b473)
+
+- **Problem [code]:** every teleport (teleporters, Challenge Map, teleport menu, debug camera, mods, the session marker
+  return) moved the skater TWICE: `travel_ex` queued the host teleport (reset on the next tick) and the actor reply
+  (702, reset the tick after). `placements()` rose by 2; a mod's arrival velocity was zeroed by the second reset.
+- **Retail [code, b471]:** one move, the actor reply `825926F8` -> `82D431F0` -> `82D43280` -> `82DB88C8` ->
+  `82DB8998`; the marker return is the same single reply (b473).
+- **Change:** `travel_ex` asks the reply only (`request_manual`) and refuses while a teleport is in flight
+  (`SkaterRuntime::teleport_pending`: a host request, a reply not yet published, or a 702 reset not yet applied). A
+  mod's velocity (ours) is applied after the single reset (`set_arrival_velocity`). The session marker return,
+  climbing's drop check and the mod attachment dismount use the same predicate and single move.
+- **Tests:** `travel_is_one_placement_and_refuses_a_second_request`, `travel_keeps_the_mods_arrival_velocity`
+  (asset-gated, pass on the dev assets); regression: boundary, air timeout, checkpoint reply pass;
+  `marker_reply_restores_on_foot` fails as before (pre-existing, gotchas). The rest of b475 (ground fit-up on
+  arrival) and b476 (45 arrivals too high) are still open. Not play-tested.

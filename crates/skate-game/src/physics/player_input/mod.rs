@@ -81,6 +81,18 @@ impl PlayerInputRuntime {
         Ok(())
     }
 
+    /// A mod's arrival velocity for the next actor-reply teleport (ours, no retail counterpart; b471 item 2): applied
+    /// after the single 702 reset, None = at rest as retail.
+    pub fn set_arrival_velocity(&mut self, velocity: Option<[f32; 3]>) -> Result<(), String> {
+        if let Some(v) = velocity {
+            if v.iter().any(|x| !x.is_finite() || x.abs() > 200.0) {
+                return Err("Teleport velocity out of range".into());
+            }
+        }
+        self.pending_velocity = velocity;
+        Ok(())
+    }
+
     pub fn load(data: &Collections) -> Result<Self, String> {
         let mut physical = PhysicalPlayerInput::default();
         reset_outputs(&mut physical);

@@ -286,3 +286,63 @@ fn checkpoint_reply(on_foot: bool) {
     }
     assert!(saw_ready && restored_ticks > 60);
 }
+
+/// b471 T1 / T5: a teleport is ONE placement (retail's actor reply), and a second request while it is in flight is
+/// refused. Before the fix the host teleport added a second reset a tick earlier (placements rose by 2).
+#[test]
+#[ignore = "requires private stock animation banks and collections"]
+fn travel_is_one_placement_and_refuses_a_second_request() {
+    travel_once(None);
+}
+
+/// b471 T4: a mod's arrival velocity survives the single reset.
+#[test]
+#[ignore = "requires private stock animation banks and collections"]
+fn travel_keeps_the_mods_arrival_velocity() {
+    travel_once(Some([2.0, 0.0, 0.0]));
+}
+
+fn travel_once(velocity: Option<[f32; 3]>) {
+    let root = std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT");
+    let root = std::path::Path::new(&root);
+    let assets = skate_data::GameAssets::load(root).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(root, &assets).unwrap();
+    let mut physics = GamePhysics::load(root).unwrap();
+    let mut skater = SkaterRuntime::load(root, &graphs, &physics, "normal").unwrap();
+    let mut controls = PlayerControls::default();
+    let mut input = crate::input::ControllerInput::default();
+    let mut camera = crate::camera::CameraRuntime::load(root).unwrap();
+    let mut target = [[0.0f32; 4]; 4];
+    let mut before = 0;
+    for tick in 0..130 {
+        if tick == 60 {
+            target = skater.animated_skeleton.roots.animation_to_world;
+            target[3][2] += 5.0;
+            before = skater.placements();
+            skater.travel(target, velocity).unwrap();
+            assert!(skater.teleport_pending());
+            assert!(skater.travel(target, None).is_err(), "a second request while one is in flight");
+        }
+        input.sample_raw_for_test(XboxState { buttons: 0, triggers: [0; 2], left: [0; 2], right: [0; 2] });
+        let mut actions = input.player_actions();
+        controls.update(
+            &mut actions,
+            physics.settings.step.simulation.time_step,
+            physics.settings.input_magnitude_threshold,
+            skater.player_input.physical.scoring.capabilities_204,
+        );
+        frame::advance(&mut physics, &mut skater, &mut controls, &graphs, &mut actions, true, &mut camera)
+            .unwrap_or_else(|error| panic!("Travel tick{tick}: {error}"));
+        if tick > 60 && !skater.teleport_pending() && skater.placements() == before + 1 {
+            if let Some(v) = velocity {
+                let got = physics.board.bodies()[6].rates.linear_velocity;
+                assert!((got.x - v[0]).abs() < 0.3, "arrival velocity {got:?}");
+                return;
+            }
+        }
+        assert_finite(&physics, &skater, tick);
+    }
+    assert_eq!(skater.placements(), before + 1, "one placement per teleport");
+    let position = physics.board.bodies()[6].rates.position;
+    assert!((position.z - target[3][2]).abs() < 0.5, "landed at the target: {position:?}");
+}
