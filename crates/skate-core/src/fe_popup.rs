@@ -1,13 +1,5 @@
-//! The front end's popups (doc 31 "Popups"): retail's popup list on the FE stack object (TU3, research
-//! `.local/research/menus-m6/fe-popup.md`). A caller fills an sPopupInfo (defaults `sub_82D0B0B0`) and pushes it
-//! (`sub_82D0A8D0`): it gets the next id and joins a list sorted by priority, ascending; ties keep arrival order, so
-//! the newest of the highest priority is last, and the last one is shown (FE vt+24 `sub_825EC530`). The player's
-//! choice goes to the popup's callback as (id, choice, user) (host vt+64 `sub_825EF698`), then, with auto-remove on
-//! (the default), the popup leaves the list (`sub_82D0A628`) and the next last one shows. Clear-all
-//! (`sub_82D0A738`) calls back every popup not marked to survive it with choice -2 and drops it.
-//!
-//! Callbacks are stable string ids (never code pointers), so requests and events are plain data a mod can send and
-//! receive, and a multiplayer build could serialise them.
+//! The front end's popups: retail's priority-sorted popup list (82D0A8D0, 825EC530, 82D0A628, 82D0A738).
+//! Details: docs/hails-additions/31-retail-menus.md#fe-popups
 
 /// Which retail movie shows it (sPopupInfo +1436: 0 Sk8Popup, 1 Sk8AutoSavePopup, 2 / 3 Sk8SmallPopup).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -1105,3 +1105,73 @@ Change (`crates/skate-game/src/system_timing.rs`, research b214 / b268 `.local/r
   close after its ~20 ms run: flaky).
 - **Open:** a measured after-profile; further exact candidates in `.local/research/b327-solve-speedup-candidates.md`
   (the `solve_queries` timer also covers the prop step and mod maps, so split it before optimising "queries").
+
+## Code reference: frame_timing/hitch.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/frame_timing/hitch.rs`; each comment there links its section here.
+
+### Frame hitch line
+
+`FRAME_HITCH` log line: one line per hitch frame (rate-limited), so a reported stutter can be placed and attributed from the session log alone (logs must diagnose).
+
+A frame is a hitch when it took longer than `factor` x its expected time (the overlay's rule, [`super::stats::expected_ms`]: the median frame without physics plus its fixed steps x the median step cost; the line's `median_ms=` is that expected time) or longer than `floor_ms`. The line carries the frame's split (main-thread CPU, physics loop, wait outside the schedules), the wall time of the main stages (fixed: input / controls / physics, and inside the physics tick: animation graphs, collision and solve, finish, scoring; frame: assets / physics present / animation / audio pass), the game thread's wait for the audio render lock, the player (state, airborne, trick, position, tick), the entity count and the audio load (mixer voices, AEMS instances of the last block).
+
+Observation only: the marker systems write only [`HitchSpans`] and read clocks; the phase timers are relaxed atomics around the physics phases. Gameplay is identical with or without it.
+
+Thresholds are data ([`HitchConfig`], defaults below), overridable without a rebuild through `SKATE_FRAME_HITCH` (`off`, or `factor=2,floor_ms=50,interval_s=0.5`).
+
+## Code reference: trace_all.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/trace_all.rs`; each comment there links its section here.
+
+### Trace all
+
+`SKATE_TRACE_ALL=1`: one play session records every session trace and diagnostic the engine has, whatever the launcher remembered to set.
+
+[`apply`] runs first thing in the game process (before any thread, before the log subscriber) and switches on every diagnostic below by setting its own environment switch, so every existing reader (including the ones cached in `OnceLock`s deep in audio and physics) sees it unchanged. Output files the launcher did not name go next to the ones it did (or `<exe dir>/logs/trace-all- <unix seconds>`). Diagnostics only: nothing here changes the game (see `frame_timing::tests::game_is_identical_with_trace_all_on_or_off`).
+
+What trace-all does differently from the single switches, so a whole session stays cheap: the performance report rolls for the whole session instead of exiting after 25 s (`performance.rs`), GPU timestamp queries are used only when the adapter has them (`app.rs`) and only on one frame in `SKATE_PERF_GPU_EVERY` (30 by default, `performance.rs`), the render phase split is sampled in windows (`performance.rs`), every log line goes through a bounded writer thread instead of a blocking stderr write (`profiling.rs`), and a few per-session lines log more often (`HELD_PROP`).
+
+## Code reference: system_timing.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/system_timing.rs`; each comment there links its section here.
+
+### System timing
+
+Opt-in per-system cost readout (`SKATE_SYSTEM_TIMING=1`, also under trace-all): once per second one `SYSTEM_TIMING` log line with the systems that took the most wall time, as mean ms per frame, the longest single run and the run count. Bevy opens a `system` span (field `name`) around every system run (the `trace` feature is always on, research b214); this layer names each span once when Bevy creates it and adds up the time between enter and exit per name, with no allocation per run. Parallel systems overlap, so the per-system numbers add up to more than the frame; they show where the CPU goes, the frame log shows the frame. Off: the layer is not installed at all.
+
+`SKATE_FIXED_TIMING=1` (research b214 / b268): the same spans inside the fixed step only, once per second one `FIXED_TIMING` line with the step's wall time, the time any fixed system or command application ran (`busy`), the rest (`gaps`: executor and sync points), and every fixed-schedule system per step. The step is the span of `FixedMain::run_fixed_main` (one per step, single-threaded); fixed systems run on pool threads with no span parent, so the window is a global flag, and render systems that overlap it are kept apart by schedule membership.
+
+## Code reference: physics/manual_landing_log.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/physics/manual_landing_log.rs`; each comment there links its section here.
+
+### Manual landing log
+
+`MANUAL_LANDING` diagnostic line, one per landing (logs must diagnose: landings that "should have" gone into a manual and did not). Engine logging only, no gameplay effect.
+
+- **Asked for:** the Manual intent (the stick's forward / back value) on the landing tick, how long it was held before touching down, and the motion graph's `ManualEngageTime` intent at touchdown (retail's motion graph only takes the Manual transition with `HasIntent ManualEngageTime > 0.2`, from InAirStatic / BoardAdjusts).
+- **Where the graph was:** the motion graph state (id and authored name) and the playing clip at touchdown, so a landing from a trick or grab state (no Manual transition) is visible.
+- **Granted:** the manual (balance) state flag (`+340`) comes on within [`WINDOW`] after the landing. "Why not" names what the log can see: no stick, the stick let go before the wheels came down, or the graph declined it with the stick held.
+
+## Code reference: game_audio/hitch_parts.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/game_audio/hitch_parts.rs`; each comment there links its section here.
+
+### Audio hitch parts
+
+Per-system wall time of the game audio's frame systems, summed per frame and read (and reset) by the `FRAME_HITCH` line (`frame_timing/hitch.rs`), so a hitch names the audio system that took the time (audio stage hitches of 150 to 870 ms while towed fast had no log event to explain them). `bank_load` is the game-thread part of `Native::ensure_bank` (inside `emitters` and the other callers).
+
+## Code reference: app.rs, performance.rs, frame_timing/stats.rs
+
+- `app.rs` `wgpu_features`: trace-all (`SKATE_TRACE_ALL=1`) never requires the GPU timestamp features: Bevy's default
+  `Functionality` priority already requests every feature the adapter has, so the queries are on where the GPU
+  supports them and device creation cannot fail where it does not (`log_gpu_timing` says which).
+- `performance.rs`: with trace-all the harness never exits; it rolls for the whole session in windows of
+  `ROLLING_WINDOW` seconds, a writer thread rewrites the JSON after every window (each window's summary plus the newest
+  window's render diagnostics; per-frame samples are in the frame log); the game thread only pushes one sample per
+  frame into a preallocated buffer and hands the full buffer over once per window.
+- `frame_timing/stats.rs` hitch: a frame longer than `HITCH_FACTOR` x its expected time (needs `HITCH_MIN_HISTORY`
+  previous frames). Expected = the median of the previous `HITCH_HISTORY` frames without their physics loop, plus the
+  frame's fixed steps x the median cost of one step (`expected_ms`). A frame that runs the ~6 ms fixed step every other
+  frame at ~180 fps is a normal frame, not a hitch (2026-10-19 laptop log: 9,912 of 9,918 flagged frames were that).

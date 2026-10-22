@@ -1,13 +1,5 @@
-//! The HandGrabs component's skitch part (`sub_824EC3E0` -> `sub_824EC488`). Retail (TU3, evidence only;
-//! re-implemented; `.local/research/audio/b141-skitch-audio.md`, main read the packer, bridge and reader):
-//! - the packer `sub_827A1B78` sets record `+152` bit `0x100` while the physical state is 104 (Skitching,
-//!   `0x827A29EC`); the bridge `sub_824B0DA8` copies it to audio state `+744` ([`AudioState::skitching`]);
-//! - the component updates only for the local player; on the rising edge of `+744` it releases its two voices and
-//!   starts the `aud_splicer` `handgrab` pair (field `3A6CB8809410A268` Skate_Collisions, `04B0B78035ED5EC6`
-//!   Skate_Metal) through the eEQChain bus of field `CCDFABBAEEA33EAE`, start block `[0, 1, 0, dt, 1, 1]`; the
-//!   falling edge only clears the latch (the one-shots run out);
-//! - MixMap `HandGrabs.in0` is 32767 while the latch is set, else 0 (the MixMap's own player fades the board's
-//!   volume by it).
+//! The HandGrabs component's skitch part (824EC3E0 -> 824EC488; b141).
+//! Retail mechanism: docs/hails-additions/11-audio.md#handgrabs-skitch-audio
 
 use super::AudioState;
 use super::contacts::SpliceHost;

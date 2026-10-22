@@ -697,3 +697,192 @@ The Finished menu's "Save to PC" row (ours; retail's rows need sign-in) was a li
 `our_string_ids_have_text_a_language_table_can_replace`. b470 item 5 (2026-10-21, later): the editor and the instant
 replay's share check now read one `Replay::edit_limits` (retail defaults), and `sdk.replay.set_limits{share_max_seconds
 = n}` (1..600 s) sets its share limit; nil or the mod's disable restores 60 s. Test in `replay/tests.rs` (limits).
+
+## Code reference: replay_edit.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/replay_edit.rs`; each comment there links its section here.
+
+### Replay editor model
+
+The replay editor's model (M2): clips trimmed out of the recording, each with its effect lanes of hard and soft keys, and retail's length rules. Pure data, engine independent; the game draws and plays it.
+
+Retail (FEReplayMenu host `823011D8`, editor state `DAT_83067084`; research b343, b344, b376 to b381):
+- The editor opens once the recording holds at least 150 frames (`8250B8F8`, > 149).
+- The timeline counts 30 fps frames (`825ADD90`, 30.0 at 0x820D4924).
+- Encoded length = round(sum over clips of (end - start) / (speed% x 0.01) / 30 + 0.5) s; sharing needs <= 60 s (`825ADF88`, `cmplwi 60`).
+- Effect values per clip (record +0x50 speed, +0x54.. the look): speed 10..100 % step 10 default 100 (slows only; `82506CD8` stores 100), shake 0..3 wrapping (`8250A6E8`), brightness -100..100 step 20, contrast 10..30 step 2, saturation 0..100 step 10, tint R / G / B / A 0..250 step 25 (`8250AB28`, `8250B218`).
+- Effect lanes (b461 to b466): per lane hard keys (cuts, D-pad Down) and soft keys (A / X commits). Each segment between keys has a start and an end value and ramps linearly on interpolated lanes (speed, the looks); a soft key shares its value with the end of the segment before it. Left / Right only step a live value; a commit writes it (the base game's B: the segment under the playhead; the film pack's A / X: a soft key). A fresh clip has no keys, and a write that adds no key to an empty lane is lost, as in retail.
+- Lane values reach the screen as: brightness = the colour matrix add term, contrast, saturation (near and far bands), each replacing the world block while set; tint = an RGBA screen overlay (b380).
+
+Every limit is data ([`EditLimits`], [`LaneSpec`]) so a mod can change them (for example allow speeds over 100 %).
+
+### Trigger scrub
+
+Retail's trigger scrub, data driven. Per console frame (`frame_hz`, the 360's ~30 fps): target = (RT - LT) x `max_rate`, the rate moves `smoothing` of the way to it, clamps to +-`max_rate`, and stops inside the dead band; the playhead moves by the rate as a fraction of the whole recording (`82610F18` -> `825071B8` -> `82C7EF90`, research b387 / b388).
+
+### Lane commit
+
+Commit `value` on `lane` at `frame` (retail `82507438` -> the lane setters, b461 / b463 / b464 / b465):
+- over a hard key: nothing;
+- over a soft key: that key's segment takes the value (start and end; a soft next key shares it);
+- `add_key` (X always; A unless the segment is cut on both sides): a soft key at `frame` with the value, its segment ending on it when it ends at a cut (the segment before now ramps into it);
+- else the segment under the playhead takes the value (the base game's B).
+
+On a lane without keys a write that adds no key is lost, as in retail, unless [`EditLimits::empty_lane_commit`] says otherwise. A soft key that has no room is not added and the write falls back to the segment (retail's insert fails and the setter takes its single write).
+
+### Clip look
+
+The look at `frame`: the world grade `base` with the clip's set look lanes replacing their terms (retail's consumers `82686DF0` / `82687FD8` / `826888B8` write an override copy of the world colour block, research b380 / b408): brightness = the add term on R, G, B, contrast, saturation, in both bands (retail's far band takes the near saturation). Values ramp between markers. Plus the tint lanes as an RGBA screen overlay (0 alpha = none).
+
+### Encoded length
+
+Retail's encoded length in seconds (`8250B590`, research b472): per segment of the speed lane (hard and soft keys alike), its frames inside the heads stretched by the segment's START value (a ramp is not averaged), truncated to whole frames; the sum at the timeline rate, plus `length_round_bias`, truncated. A lane without keys is one segment at the clip's value (ours: b472 did not read retail's empty-lane count).
+
+## Code reference: replay/world.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/replay/world.rs`; each comment there links its section here.
+
+### Replay world actors
+
+Every drawn actor in the replay: NPC skaters, peds, traffic cars and props are recorded as drawn (root and joint local transforms, after their presenters) and played back from the recording instead of freezing, as retail's DataTracker records the census actors and skaters every frame (b364, `sub_827BF090`). Mods reach it through the components: any entity with a [`ReplayActor`] (and optionally [`ReplayJoints`]) is recorded.
+
+## Code reference: replay/editor.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/replay/editor.rs`; each comment there links its section here.
+
+### Drop marker
+
+D-pad Down released (b461 / b462): a hard key at the cursor that keeps the values in effect. Without the pack a camera key holding the camera in effect plus hard keys on speed and shake (`82C7F610`: channels 0, 5, 4 together); with the pack a key on the active channel only (`82835F08(take, 1)`). Refused at a key, at the clip's ends (the marker spacing) or at the cap (retail's error sound / popup, `82613500` / `82613598`).
+
+### Remove marker
+
+D-pad Up released, answered Yes (b407, `82613910` -> `82C7FD60`): remove the key at the cursor on the active channel. A clip marker also takes every soft key in the clips on both sides, up to the next hard key each way (`82C7FB08`; retail's own text, ID_REPLAY_EDITOR_POPUP_CLIPMARKER). On the camera channel a clip marker delete also resets the merged clip (research b460, `825086F0`): the surviving key before it gets the default lens (clamped to the lens range), and speed / shake take their lane defaults: over the whole merged span without the film pack (retail removes the marker on channels 0 / 5 / 4 / 1 together), only the value in effect at the cursor with it (`channels`). Look lanes and soft key deletes are untouched. Retail's near clip (channel 1 element 0xE, 0.1) has no counterpart here. Values are data (`CameraRules`, the lanes' `LaneSpec::default`).
+
+## Code reference: replay_edit/shake.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/replay_edit/shake.rs`; each comment there links its section here.
+
+### Replay camera shake
+
+The replay editor's camera shake (the Pro Edit Menu's Shake row; research b376, b399, b400). Retail plays short recorded handheld-camera clips (`data/scene/ICELite.bin`, 30 keys per second, six channels: rotation x / y / z and position x / y / z, each -1..1) through the evaluator `82C8AF50`, which builds a rotation + translation and multiplies it into the camera matrix (camera space). Levels (`8250A6E8`): Off; Low = clip 3 ("Jog") at 0.35; Medium = clip 3 at 1.0; High = clip 4 ("RunFast") at 1.0; the same value is the amplitude and the frequency. Every value is data (mod-overridable).
+
+### Shake sample
+
+The shake at `t` seconds into the take: (rotation quaternion `[x, y, z, w]`, translation `[x, y, z]`) in camera space, or None when off or the clip is empty. Key position `f = t x freq x key_rate`, keys `i = floor(f) mod n` and `i + 1`; rotation per key `(qx g, qz g, -qy g)` with `w = sqrt(1 - |xyz|)` (retail's double square root, confirmed in the recomp), lerped per component without renormalising; translation `(-pz g, -px g, py g)` from key `i` only (retail reads key `i` twice) [code `82C8AF50`, b399].
+
+## Code reference: replay_buffer.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/replay_buffer.rs`; each comment there links its section here.
+
+### Replay buffer
+
+Instant replay recording of every drawn actor (NPC skaters, peds, cars, props, mod bodies).
+
+Retail records presentation data, never a re-simulation: one tracker frame per sim step (60 / s), at most 5400 frames in a byte ring that evicts the oldest (DataTracker `82726170` / `82DBBAF8`, b345 / b346). Skater poses are LOCAL joint rotations as 4 x i16 quaternions (scale 32767), interpolated per joint between frames with nlerp (b365 to b367, decoder `8278ABE0`). This buffer keeps one track of keys per actor, keyed by a stable u64 id, and writes a key only when the quantised pose changed, so a resting prop costs one key for the whole window.
+
+Engine independent: the caller supplies frame times and poses as plain arrays.
+
+## Code reference: replay/camera_key.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/replay/camera_key.rs`; each comment there links its section here.
+
+### Replay basic cameras
+
+The replay editor's basic cameras (Pro Edit Menu rows 0..3; research b401 / b402): Follow orbits the skater in its frame (space 0 on the skater), Tripod keeps its eye in the world and looks at the skater, Free is a world pose, Game is the recorded gameplay camera with only the lens to change. Controls run per console frame (30 Hz) with retail's caps (`82C826D0`, `82509558`). Every limit and rate is data ([`CameraRules`]).
+
+A basic camera is one pose for the whole clip: its setup clears the channel's keys and the sampler holds the live value without keys (b404, `82C89A50`); keyed poses are the Advanced cameras'. The look object 4 is the skater root (b406, traced). NOT RETAIL YET: the skater root as the eye object 2 (b406: likely the game camera's frame), the pad mapping (retail's axis table `[pad+0xC]+4` is unread), and the lens to field of view (a 24 mm high film gate).
+
+## Code reference: replay/camera_collision.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/replay/camera_collision.rs`; each comment there links its section here.
+
+### Replay camera collision
+
+The replay cameras' world constraint (research b449): retail runs it on every evaluated replay camera (`82C8B698` -> `82683680`): first the 40 m leash to the player (`82682CB0`), then a swept sphere from the last accepted camera position to the new one with a slide along the hit plane, plus a line-of-sight sweep from the player to the camera (`82682D80`). No smoothing and no minimum height: corrections land in full on the same frame. Every value is data ([`CameraCollision`], `sdk.replay.set_camera`). NOT RETAIL YET: the 0.8 m / world radius triggers, the sweep's collision layers (ours: the map and its external queries, no actors) and who raises retail's snap request (+0x183; ours: a camera cut, see [`Constrained`]).
+
+## Code reference: replay_edit/curve.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/replay_edit/curve.rs`; each comment there links its section here.
+
+### Replay key curve
+
+Retail's replay camera key curve (research b404, sampler `82C89A50`): keys at fractions of the clip (u16 / 65535 of its length; the clip's start and end are implicit keys), one cubic Hermite per segment `v(u) = ((a u + b) u + m0) u + p0` with `d = p1 - p0`, `a = m0 + m1 - 2d`, `b = 3d - 2 m0 - m1`. Tangents are linear (`m = d`) unless the element's CUBIC flag is set at the key; then, across a soft key, the non-uniform Catmull-Rom (Bessel) tangent `m = d dn / (dn + dc) + dN (dc / dn) dc / (dn + dc)` (`82C89828`, epsilon 1e-5), scaled by the key's TANGENT (0..8, default 1). A hard key has its own in and out values (a cut); stepped elements hold the segment's start value. Pure math, engine independent.
+
+## Code reference: replay/export_run.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/replay/export_run.rs`; each comment there links its section here.
+
+### Replay export run
+
+Driving a replay export (M4; research b383): the Finished menu's "Save to PC" row asks where to save (the Windows save dialog on its own thread), then renders the clip lock-step: each output frame sets the replay cursor, reads the world image back from `SceneTarget` (`Readback`, rows padded to 256 bytes), pulls exactly one frame of sound from the audio runtime (48000 / fps samples; the device output is muted meanwhile so the two never race for blocks) and hands both to the encoder thread (`export::open_sink`) over a bounded channel. Ours on PC; retail's Finished menu offers Upload / Save Replay only when signed in (b387).
+
+## Code reference: replay/export.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/replay/export.rs`; each comment there links its section here.
+
+### Replay export encoder
+
+Replay export ("Save to PC", ours on PC): frames and sound into a video file. Windows' own encoder (Media Foundation: H.264 + AAC in an .mp4, research b383) when it is there; else the frames as PNG files and the sound as a WAV in a folder of the same name, so an N edition without the Media Feature Pack still exports. Media Foundation's functions are loaded at run time (`LoadLibraryW` / `GetProcAddress`): linking them would stop the game from starting where the DLLs are missing. Settings are data (`ExportSettings`).
+
+## Code reference: replay/components.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/replay/components.rs`; each comment there links its section here.
+
+### Replay component tracks
+
+Per-actor component tracks: the world actors' audio state (traffic engines, ped feet and speech state, NPC skaters' audio records, velocities) recorded with the actors and written back during playback, so the world's sound follows the recording as retail's audio runs on the recorded actor state (b375, b378 channels A1..A3). Values hold until they change (stepwise, no blending). Any `Component + Clone + PartialEq` registered with [`track`] works the same, a mod-facing hook for later providers.
+
+## Code reference: replay_edit/session.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/replay_edit/session.rs`; each comment there links its section here.
+
+### Replay editor session
+
+The replay editor's session: its mode and the key bindings that move between modes, as data with retail's defaults. Retail keeps the mode in the editor state (`[DAT_83067084]+0x30`); FE screen 12's input handler `826127B8` switches on it with FE key indices, and its per-frame update `82610F18` runs the held actions (research b386, b387, b389). Only transitions the research proved are in [`retail_bindings`]; the rest (camera key edit entry, modes 0xC / 0xD, the Finished popup's items) come with the screen host.
+
+## Code reference: replay_menu_host.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/replay_menu_host.rs`; each comment there links its section here.
+
+### Replay screen natives
+
+The instant replay screen's natives (FE 12, template Replay2, `replay2/replay_editor2`; research b385 / b390 / b391): `FEReplayMenu.*` answered from a per-frame snapshot of the replay ([`ReplayScreenFeed`], published by `replay.rs`), and the screen states the C++ posts back (the facade's SetScreenState, applied by `retail_menu_stage` after the call returns), as the Trick Guide host does.
+
+## Code reference: replay/messages.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/replay/messages.rs`; each comment there links its section here.
+
+### Replay one-shot messages
+
+One-shot messages recorded with their frame time and written again when the playback cursor crosses that time going forward: the world's one-shot sounds (horns, car alarms, tazers, ped body falls) come back in the replay, as retail's audio runs on the recorded state (b375, b378 channel A4). Speech is not recorded (retail blocks speech in replay). Any `Message + Clone` registered with [`track`] works the same.
+
+## Code reference: replay.rs (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-game/src/replay.rs`; each comment there links its section here.
+
+### Editor keys
+
+The editor's own keys (research b386, modes 6 / 2 / 0xB); true = the frame's input is used up. RB plays from the cursor (from the in point when at the out point), LB held trims with the sticks, the D-pad released drops / removes markers and jumps to the in / out points, A opens the effects menu (Up / Down row, Left / Right value, B back to the timeline).
+
+## Help screen, Start and the panel while the retail screen loads (2026-10-22, USER-ASKS 256)
+
+Research b500 (`.local/research/b500-replay-help-camera.md`); main checked our side (retail_menu_stage.rs Start
+handling, replay.rs help block and panel gate).
+
+- **Problem (laptop session 2026-10-22 10:25):** "Opening the Help menu allows you to do things behind it, for
+  instance when hitting A for the next page it opens other things behind the help screen" and "When opening the
+  replay, the old menu appears for a moment before the retail ui appears."
+- **Cause:** one Start press opened our help AND pushed the pause menu (FE 54) underneath (the log has both in the same
+  frame); with the pause menu up, the help's input block no longer ran, so A and the D-pad drove the hidden pause menu.
+  The Bevy panel showed until the retail movie reported its intro complete.
+- **Retail [code, b500]:** the help's handler 82616B40 takes A (next page) and B (close) only; input goes to the top
+  screen only (825EC0E8); Start (825EB998) pushes no pause menu while a screen is on top.
+- **Change:** `retail_menu_stage.rs`: Start pushes no pause menu while the replay screen is open. `replay.rs`: the help
+  closes on B only; `RetailReplayUi` carries "the retail screen is loading" and the Bevy panel stays hidden then (up to
+  3 s, then it shows as the fallback). Log lines `REPLAY_HELP open / page n / close` and `REPLAY_EDITOR mode a -> b
+  channel x -> y`.
+- **Editor camera ("I couldn't move the camera around and pressing Y appeared to do nothing"):** by retail's design the
+  sticks move the camera only while editing a camera key (A on the timeline, a Follow / Tripod / Free row, A); the
+  Game row changes the lens only; Y (Create pack) cycles the edit channel, and after Y moves off "camera", A opens that
+  channel's rows instead of the camera rows (b386, b401, b402, b405, b411). Ours follows that. The new REPLAY_EDITOR
+  line shows which mode a session reached.

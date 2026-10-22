@@ -1,10 +1,5 @@
-//! Retail's replay camera key curve (research b404, sampler `82C89A50`): keys at fractions of the clip (u16 / 65535 of
-//! its length; the clip's start and end are implicit keys), one cubic Hermite per segment
-//! `v(u) = ((a u + b) u + m0) u + p0` with `d = p1 - p0`, `a = m0 + m1 - 2d`, `b = 3d - 2 m0 - m1`. Tangents are linear
-//! (`m = d`) unless the element's CUBIC flag is set at the key; then, across a soft key, the non-uniform Catmull-Rom
-//! (Bessel) tangent `m = d dn / (dn + dc) + dN (dc / dn) dc / (dn + dc)` (`82C89828`, epsilon 1e-5), scaled by the key's
-//! TANGENT (0..8, default 1). A hard key has its own in and out values (a cut); stepped elements hold the segment's
-//! start value. Pure math, engine independent.
+//! Retail replay camera key curve (b404, sampler 82C89A50; tangent 82C89828). Pure math.
+//! Formulas: docs/hails-additions/37-instant-replay.md#replay-key-curve
 
 /// One key of one element: where (a clip fraction), the value arriving and leaving (equal for a soft key), whether
 /// the element's CUBIC flag is set there, and its TANGENT scale.

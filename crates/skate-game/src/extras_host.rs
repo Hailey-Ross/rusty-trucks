@@ -1,8 +1,5 @@
-//! The Extras screen's natives and the cheat code flow (doc 31 "Extras and cheat codes", research b320 / b304 / b305):
-//! Game.Extras_GetNumOptions / _GetOptionTitle / _MenuTitle and the menu picker's Game.OnMenuGetItemEnabled /
-//! OnMenuHilight / OnMenuSelect while FE 18 is on top. Rows and states are `skate_core::extras`; the cheat matcher
-//! `skate_core::cheats`; the text entry and its on-screen keyboard `skate_core::text_entry`. The stage applies what
-//! this host queues (screen states, row actions) after the movie call returns.
+//! The Extras screen's natives and the cheat code flow (b320 / b304 / b305) while FE 18 is on top.
+//! Details: docs/hails-additions/31-retail-menus.md#extras-natives
 use crate::apt_vm::{to_integer, Value};
 use skate_core::extras::{Extras, ExtrasAction, ExtrasRules};
 

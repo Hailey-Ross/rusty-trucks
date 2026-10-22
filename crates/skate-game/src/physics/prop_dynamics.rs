@@ -1,29 +1,5 @@
-//! Dynamic rigid bodies for DMO prop instances (Phase 2a).
-//!
-//! Every spawned prop gets a box body built on the TU3 rigid-body integrator
-//! (`integrate_body_rates`): gravity and cool-down/sleep come from the retail
-//! simulation step; the mass properties are the retail rounded-box finalize
-//! path (`primitive_mass_properties`) with the instance's scaled template AABB.
-//! Density is the authored MOBJ per-object value (`ObjectPhysics`, schema 3+);
-//! friction, restitution and linear / angular drag come from the prop type's
-//! retail DMO data ([`PropDynamics::set_type_data`]), with the authored MOBJ
-//! values (project defaults friction 0.55, restitution 0.05, damping
-//! 0.05/0.15) only for props whose type data is missing.
-//!
-//! Narrowphase uses the recovered GP pair query (`primitive_pair_contacts`):
-//! box vs static-world triangles, box vs box for other props, and box vs the
-//! skater's board/skeleton volumes for pushes. Contact response is the retail
-//! row solver the board uses (ContactBatchBuild 82AE10C8 rows, 25 iterations
-//! of 82AE27D0, `PropSolverSettings`); the engine's older impulse pass stays
-//! selectable as a mod option. Sleep is the retail counter (integrator
-//! 82AE6590, sleep pass 82DC3130) with the DMO island values.
-//!
-//! Props start asleep and cost one AABB test per skater volume per tick. A
-//! skater contact or a moving prop wakes them. Moved instances re-bake their
-//! triangle range in the prop collision layer so skater queries stay exact.
-//! The held (carried) prop is exempt from both skater pushes and the rebake:
-//! while carried it is velocity-driven and its layer triangles are parked far
-//! below the world so they cannot push the carrier.
+//! Dynamic rigid bodies for DMO prop instances: retail integrator, mass, contact rows and sleep.
+//! Details: docs/hails-additions/27-dynamic-props.md#prop-body-model
 use bevy::prelude::*;
 use skate_core::{
     math::{Basis3, Vector3},
@@ -57,11 +33,7 @@ pub(crate) struct PropBox {
     pub half_extents: Vector3,
 }
 
-/// Every tunable of the prop impulse pass and the skater push. One value set
-/// is the default for all props; `PropTuningTable` can replace it per prop
-/// type (the MOBJ template name, the stable id a mod uses). The defaults are
-/// #15's constants plus the 2026-10-05 caps (doc 26, "Board stuck inside a
-/// prop"); no retail values for DMO contact response are recovered yet.
+/// Tunables of the prop impulse pass and the skater push, per prop type via `PropTuningTable`: docs/hails-additions/27-dynamic-props.md#prop-tuning
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PropTuning {
     /// Contact band of the prop pair queries (m).
@@ -72,10 +44,7 @@ pub(crate) struct PropTuning {
     /// Fraction of the penetration removed per tick (Baumgarte; older
     /// impulse pass only).
     pub penetration_correction: f32,
-    /// Upper bound on the positional correction of one body in one tick (m;
-    /// older impulse pass only, retail rows have no cap).
-    /// A body deep inside geometry comes out over several ticks instead of
-    /// being thrown out in one.
+    /// Max positional correction of one body per tick (m; older impulse pass only, retail rows have no cap).
     pub max_depenetration_per_tick: f32,
     /// Older impulse pass only: restitution applies only above this closing
     /// speed (m/s); below it
@@ -92,10 +61,7 @@ pub(crate) struct PropTuning {
     /// Push speed used when a skater volume is inside the prop but not
     /// closing (m/s): nudges an overlapping prop apart.
     pub penetration_push_speed: f32,
-    /// After this many consecutive ticks in which a skater volume sits inside
-    /// a prop without closing on it, the overlap nudge stops so the prop can
-    /// cool down and sleep (the skater's own contacts still separate it).
-    /// 0 disables the nudge entirely.
+    /// Ticks a skater volume may sit inside a prop without closing before the overlap nudge stops; 0 = no nudge.
     pub stuck_release_ticks: u32,
     /// Replaces the render-AABB contact box of this prop type.
     pub collision_box: Option<PropBox>,
@@ -133,19 +99,7 @@ pub(crate) struct PropTuningTable {
     pub upright: PropUprightSettings,
 }
 
-/// Retail DMO self-righting ("Upright", doc 27 "Upright"). The phone's
-/// per-object Upright posts cMsgUprightDMO; the DMO manager slot +40 82C4B8C0
-/// sets DMO+4464 bit 0x40 and zeroes the timer DMO+4376. While the bit is set
-/// the DMO update 82C56780 adds `tick_seconds` to the timer and clears the bit
-/// once it exceeds `window_seconds`, then (same update) 82C573D0 measures the
-/// angle between the body's up row and world up: below `stop_angle_deg` the
-/// bit and timer are cleared; otherwise it builds an angular command that the
-/// DMO's own angular slot 37 (82C52EE0 -> 82D9CCF0) writes into the body's
-/// angular accumulator (+160), waking the body and marking it commanded.
-/// External yaw commands (82C52E68) are refused while the bit is set; the
-/// linear Move Object command (82C52DC0) is not gated. The defaults are the
-/// retail constants; every field is a mod knob
-/// (`sdk.world.set_tuning('props', {upright = {...}})`), reset on mod disable.
+/// Retail DMO self-righting (82C4B8C0, 82C56780, 82C573D0), every field a mod knob: docs/hails-additions/27-dynamic-props.md#upright-window
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PropUprightSettings {
     /// Window length (retail 2.0 s, 0x82060C50).
@@ -198,11 +152,7 @@ impl Default for PropUprightSettings {
     }
 }
 
-/// The righting command of 82C573D0 for a body with orientation `basis`,
-/// angular velocity `w` and body vector `a` (retail: the vector at the
-/// physics state block +72; which body quantity that is has not been
-/// identified, see [`PropDynamics::upright_vector`]). `None` = tilt below
-/// `stop_angle_deg` (window ends). Pure and deterministic.
+/// Righting command of 82C573D0 (body vector `a` not identified); `None` = tilt below `stop_angle_deg`.
 pub(crate) fn upright_command(basis: Basis3, w: Vector3, a: Vector3, s: &PropUprightSettings) -> Option<Vector3> {
     let up = mul_basis(basis, Vector3::new(0.0, 1.0, 0.0));
     let up_len = length(up);
@@ -232,18 +182,10 @@ pub(crate) fn upright_command(basis: Basis3, w: Vector3, a: Vector3, s: &PropUpr
     Some(scale(sub(scale(axis, speed), keep), s.command_rate))
 }
 
-/// Island settings of the DMO simulation. Retail 8275DCC8 passes a 52-byte
-/// block to the simulation ctor 82DC2840, which copies +16 -> island +176
-/// (solver iterations), +32 -> island +172 (sleep energy) and +36 -> island
-/// +168 (sleep counter cap; also the sleep pass threshold sim +204). The
-/// defaults are those retail values; every field is a mod knob
-/// (`sdk.world.set_tuning('props', {solver = {...}})`), reset on mod disable.
+/// DMO island settings (8275DCC8 -> 82DC2840), every field a mod knob: docs/hails-additions/27-dynamic-props.md#dmo-island-settings
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PropSolverSettings {
-    /// Contact solve: true = the retail row solver (rows built by
-    /// ContactBatchBuild 82AE10C8, iterated by 82AE27D0, the same skate-core
-    /// path the board uses); false = the engine's older impulse pass with
-    /// penetration slop / fraction / cap (NOT RETAIL, kept as a mod option).
+    /// true = retail row solver (82AE10C8 rows, 82AE27D0); false = older impulse pass (NOT RETAIL, mod option).
     pub row_solver: bool,
     /// Row solver iterations per step (retail 25).
     pub iterations: u32,
@@ -255,10 +197,7 @@ pub(crate) struct PropSolverSettings {
     pub sleep_frames: u32,
     /// Bodies the sleep pass puts to sleep per step at most (retail 100).
     pub max_sleeps_per_step: u32,
-    /// The engine's rest snap (NOT RETAIL): zero the velocities of a touching
-    /// body whose energy is below `sleep_energy`. Retail has no snap; off by
-    /// default, kept as a mod option (with the old 0.5 / 30 sleep values it
-    /// reproduces the pre-2026-10-08 settling).
+    /// Engine rest snap (NOT RETAIL, off by default, mod option): zero a touching body below `sleep_energy`.
     pub rest_snap: bool,
     /// The bail clamp (retail `82C530F0`, doc 27 "What wakes a resting prop"): when a bailing actor's volume
     /// touches a prop, the prop's velocity is capped and it is woken, so bailing into a prop does not throw it.
@@ -275,6 +214,9 @@ pub(crate) struct PropSolverSettings {
     /// `82C56BA0`; spawns `82C4E940` -> `82E0E338` give the same pair, trace .local/research/prop-types). The on-foot
     /// walker's queries reject types 13 and 14, so only the heavier props are ground for it.
     pub walkable_mass: f32,
+    /// true = the skater pushes props through their box (the older model, NOT RETAIL, mod option); false = through
+    /// their mesh: docs/hails-additions/27-dynamic-props.md#skater-vs-prop-mesh
+    pub skater_push_box: bool,
 }
 
 impl Default for PropSolverSettings {
@@ -292,15 +234,12 @@ impl Default for PropSolverSettings {
             bail_heavy_mass: 200.0,
             bail_blend: 0.5,
             walkable_mass: 5.5,
+            skater_push_box: false,
         }
     }
 }
 
-/// Retail's bail clamp `82C530F0` on one prop: `w` = inverse mass (motion record +0x7C, b209), `d` = the prop's
-/// own velocity as its transform tracker measures it (`[dmo+0xA4]+0x90`, last tick's displacement / dt, written by
-/// `82E0C578` from the DMO update, b210); ours: the prop's velocity before this tick's skater pushes. The linear velocity is pulled into the ball of radius `mag` around `n * mag`
-/// (n = d / |d|, mag = blend x (max(cap, |d|) + cap), cap = factor x w); the spin is capped at the angular factor x w,
-/// or zeroed for a heavy prop (and the linear cap is 0). Returns (linear, angular); `None` for a static body (w = 0).
+/// Retail bail clamp 82C530F0 on one prop; `None` for a static body: docs/hails-additions/27-dynamic-props.md#bail-clamp-82c530f0
 pub(crate) fn bail_clamp(s: &PropSolverSettings, w: f32, d: Vector3, linear: Vector3, angular: Vector3) -> Option<(Vector3, Vector3)> {
     if !(w > 0.0) {
         return None;
@@ -345,11 +284,7 @@ pub(crate) const LOCAL_PUSHER: u64 = 0;
 /// cannot see them while it is carried.
 pub(crate) const HELD_PARK: Vector3 = Vector3::new(0.0, -10000.0, 0.0);
 
-/// Props get their own simulation step (retail: the DMO simulation, its own
-/// island settings, 8275DCC8 -> 82DC2840): sleep counter cap 2 and sleep
-/// energy 1e-5 ([`PropSolverSettings`] defaults; the step applies the live
-/// settings). The board's simulation carries cool_down = 0 (the host never
-/// sleeps it).
+/// The props' own simulation step (8275DCC8 -> 82DC2840) with the live `PropSolverSettings`.
 pub(crate) fn prop_simulation(
     base: skate_core::physics::rigid_body::RetailSimulationStep,
 ) -> skate_core::physics::rigid_body::RetailSimulationStep {
@@ -500,13 +435,7 @@ pub(crate) struct PropBody {
     physics: skate_data::skate_map::ObjectPhysics,
 }
 
-/// Friction pair `[static, dynamic]` of a retail body contact material block.
-/// The block is three floats at physics component +48 / +52 / +56 = {static
-/// friction, dynamic friction, restitution (DMO data +272)}, written by
-/// 82C550A8 and pointed at by every body's +80; the collision-object builders
-/// 82DC3A68 / 82DC4158 / 82DC4588 copy it to CO +116..+124 and aaCollision
-/// 8277A508 combines two objects' blocks with 82763078 (static max, dynamic
-/// max, restitution min = [`combine_contact_materials`]).
+/// Friction pair `[static, dynamic]` of a retail contact material block (82C550A8, 82763078): docs/hails-additions/27-dynamic-props.md#contact-material-block
 pub(crate) type MaterialBlock = [f32; 2];
 
 /// Retail commanded friction pair {0.03 (0x8208EA80), 0.02 (0x821E9580)}
@@ -517,14 +446,7 @@ pub(crate) const RETAIL_COMMANDED_MATERIAL: MaterialBlock = [0.03, 0.02];
 /// y > 0.65 (0x820BB0EC); sets DMO+4465 bit 0x08.
 pub(crate) const RETAIL_UPRIGHT_COS: f32 = 0.65;
 
-/// Per prop type material data. Retail reads these from the DMO type data
-/// (DMO+4380 -> +4, ctor 82C51E28): the layout of the type's vault record of
-/// class `livingworld_dynamicobject_characteristics` (see [`dmo_type_blocks`]).
-/// Each body carries the retail values of its type (resolved at map load from
-/// the installation's stock vault); a mod's `carry.by_template` entry
-/// overrides them field by field. A `None` left after both falls back to the
-/// authored MOBJ material (only props whose type record is missing, e.g. an
-/// older setup without the type map: NOT RETAIL YET there).
+/// Per prop type material data from the DMO type record; mod `carry.by_template` overrides: docs/hails-additions/27-dynamic-props.md#per-type-material-data
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PropMaterialBlocks {
     /// Friction pair while commanded; `None` = `MoveCommandRules::commanded_material`.
@@ -545,10 +467,7 @@ pub(crate) struct PropMaterialBlocks {
     /// `record_272_speed_scale`): retail 82C4B960 sets it (1 or 2) only when
     /// DMO data +312 is set. `None` = false.
     pub record_272: Option<bool>,
-    /// Linear drag of this prop type's rigid body (DMO data +308 `LinearDrag`,
-    /// copied to Inertia +32 by 82C4E568). Per second: the integrator 82AE6590
-    /// rebuilds velocity as displacement x max(frequency - drag, 0), i.e.
-    /// `v *= 1 - drag dt` per fixed step. `None` = the authored MOBJ damping.
+    /// Linear drag (DMO data +308, 82C4E568), per second: `v *= 1 - drag dt`; `None` = authored MOBJ damping.
     pub linear_drag: Option<f32>,
     /// Angular drag (DMO data +336 `AngularDrag` -> Inertia +36, same rule).
     /// `None` = the authored MOBJ damping.
@@ -563,11 +482,7 @@ pub(crate) struct PropMaterialBlocks {
     /// Angular speed cap in rad/s (DMO data +296 -> Inertia +28, same rule).
     /// `None` = unbounded.
     pub maximum_angular_velocity: Option<f32>,
-    /// Box inertia shape (DMO data +16 scale, +32 offset): 82C4E568 takes the
-    /// body's AABB half extents x scale + offset as the box 82C47FC8 fills
-    /// the inverse tensor from. `None` = the class default record's
-    /// [`DMO_DEFAULT_INERTIA_SCALE`] / zero when another body field is set,
-    /// else the authored box inertia.
+    /// Box inertia scale (DMO data +16, offset +32; 82C4E568, 82C47FC8): docs/hails-additions/27-dynamic-props.md#box-inertia-shape
     pub inertia_scale: Option<[f32; 3]>,
     pub inertia_offset: Option<[f32; 3]>,
     /// The ped-plugin check (`82C56DB0`, research b136 / b137): per-axis rotation tolerance from the authored pose in
@@ -607,20 +522,7 @@ impl PropMaterialBlocks {
 /// Vault class of the per-type DMO data.
 pub(crate) const DMO_TYPE_CLASS: &str = "livingworld_dynamicobject_characteristics";
 
-/// Retail values of one DMO type, read from its record of
-/// [`DMO_TYPE_CLASS`] (parents included). The DMO constructor 82C51E28 keeps
-/// the record's layout at DMO+4380 -> +4; schema layout offsets (skaterschema):
-/// +272 restitution (`Hash_5CCD5998E03C299B`), +312 upright flag
-/// (`Hash_C4D8A03586A31915`, -> DMO+4465 bit 0x10 and 82C4B960's record+272),
-/// +316 / +324 upright pair (`Hash_E0101A9DFD63DEE9` / `Hash_CDA7A31C5EDBEB6E`),
-/// +320 / +328 default pair (`Hash_6E0BB4F5881A4841` / `Hash_086956BCA2187458`),
-/// read by 82C53EF8 / 82C550A8; +308 `LinearDrag` and +336 `AngularDrag`,
-/// read by 82C4E568 into the body's Inertia (+32 / +36), with +304 mass
-/// (`Hash_E5778CDD4576D890`), +292 / +296 velocity caps
-/// (`Hash_4890392C91829954` / `Hash_BAA01E2BA1237455`) and the +16 / +32
-/// inertia box scale / offset vectors (`Hash_F4D1C84C36A854AC` /
-/// `Hash_D3CDE380DBB3ADC0`). The held pair is the retail constant
-/// (`commanded_material`), not type data.
+/// Retail values of one DMO type record (82C51E28 layout, offsets, hashes): docs/hails-additions/27-dynamic-props.md#dmo-type-record-layout
 pub(crate) fn dmo_type_blocks(
     collections: &skate_data::collections::Collections,
     record: &str,
@@ -676,10 +578,7 @@ pub(crate) fn dmo_type_priority(collections: &skate_data::collections::Collectio
     Ok((value != u32::MAX).then_some(value))
 }
 
-/// How a Move Object command reaches the held body (retail interface slot 9
-/// -> 82C4C370 / 82C4C3E0 -> 82D9CC78 / 82D9CCF0, spec section 7). The
-/// defaults are the retail behaviour; every field is a mod knob
-/// (`sdk.world.set_tuning('carry', ...)`), cleared on mod disable.
+/// How a Move Object command reaches the held body (slot 9, 82C4C370 / 82C4C3E0); mod knobs, cleared on disable.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MoveCommandRules {
     /// Friction pair every commanded body switches to (retail {0.03, 0.02});
@@ -717,11 +616,7 @@ impl Default for MoveCommandRules {
 }
 
 impl MoveCommandRules {
-    /// The body's own contact material block (82C53EF8 / 82C54BF0 ->
-    /// 82C550A8): while commanded {held pair, restitution}; otherwise the free
-    /// pair, which for a type with the upright flag (data +312 bit 0) is the
-    /// upright pair while `up_y > upright_cos` (82C54B00) and the default pair
-    /// when tipped. Pure function of the commanded bit and the up axis.
+    /// The body's own contact material block (82C550A8): commanded, upright or default pair: docs/hails-additions/27-dynamic-props.md#body-material-choice
     pub(crate) fn body_material(&self, template: &str, authored: RetailContactMaterial, commanded: bool, up_y: f32) -> RetailContactMaterial {
         self.typed_body_material(&self.blocks(template, None, &PropMaterialBlocks::default()), authored, commanded, up_y)
     }
@@ -830,6 +725,18 @@ pub(crate) struct PropDynamics {
     bailing: Vec<u64>,
     /// Pushers that are not a 75 kg skater (`set_actor_push_mass`): actor id, kg. Peds' body A (10 kg, b342).
     actor_push_mass: Vec<(u64, f32)>,
+    /// Static triangles only props collide with, read after the step's world (`set_props_only_world`).
+    props_only: Option<BoardWorld>,
+    /// `SKATE_PROP_WATCH="x y z r"`: the prop nearest that point logs `PROP_WATCH` every tick (the recomp's DMOROWS
+    /// counterpart): docs/hails-additions/27-dynamic-props.md#prop-watch-line
+    watch: Option<([f32; 4], Option<u32>)>,
+}
+
+/// `SKATE_PROP_WATCH`: four numbers `x y z r` (spaces or commas).
+fn parse_watch(spec: &str) -> Option<[f32; 4]> {
+    let v: Vec<f32> = spec.split([' ', ',']).filter(|s| !s.is_empty()).map(str::parse).collect::<Result<_, _>>().ok()?;
+    let spec: [f32; 4] = v.try_into().ok()?;
+    (spec.iter().all(|x| x.is_finite()) && spec[3] >= 0.0).then_some(spec)
 }
 
 /// First id of bodies created mid-game: ids from here up to [`PROP_GRAB_TAG`]
@@ -1047,11 +954,7 @@ impl PropBody {
 const SPAWN_POSE_EPSILON: f32 = 1e-4;
 
 impl PropDynamics {
-    /// One box body per collision-layer instance, asleep at its authored pose.
-    /// Placement rows are the world images of the local axes; their lengths
-    /// are the constant per-axis scale folded into the box extents. Density,
-    /// damping, friction, restitution and sleep flags come from the authored
-    /// MOBJ physics block (`ObjectPhysics`).
+    /// One box body per collision-layer instance, asleep at its authored pose, with the MOBJ physics block.
     pub(crate) fn new(
         objects: &[skate_data::skate_map::StaticObject],
         instances: &[crate::skate_world::PropCollisionInstance],
@@ -1095,6 +998,8 @@ impl PropDynamics {
             grinded: None,
             bailing: Vec::new(),
             actor_push_mass: Vec::new(),
+            props_only: None,
+            watch: std::env::var("SKATE_PROP_WATCH").ok().and_then(|s| parse_watch(&s)).map(|spec| (spec, None)),
         }
     }
 
@@ -1117,12 +1022,7 @@ impl PropDynamics {
         id
     }
 
-    /// Create a body mid-game (retail: the DMO manager creates a physics DMO for
-    /// a released hand prop) on collision instance `instance` (added with
-    /// `PropCollisionLayer::add_instance` at the same pose). Awake, moving at the
-    /// spec's velocities, with the prop type's tuning and type data like a map
-    /// prop. Returns false when the triangles give no body (no volume) or `id`
-    /// is taken.
+    /// Create an awake body mid-game (retail: DMO for a released hand prop); false = no volume or `id` taken.
     pub(crate) fn spawn_body(&mut self, instance: usize, id: u32, spec: &RuntimeProp) -> bool {
         if self.by_id.contains_key(&id) {
             return false;
@@ -1200,11 +1100,7 @@ impl PropDynamics {
         self.by_id.get(&id).is_some_and(|&i| self.bodies[i].runtime)
     }
 
-    /// One box body for a prop instance asleep at its placement `t` (row-vector
-    /// affine: rows are the world images of the local axes, their lengths the
-    /// per-axis scale folded into the box extents) with the authored physics block.
-    /// `None` for an instance without triangles or mass. Shared by the map load and
-    /// [`Self::spawn_body`].
+    /// One asleep box body at placement `t` (rows = scaled local axes); `None` without triangles or mass.
     #[allow(clippy::too_many_arguments)]
     fn build_body(
         instance: usize,
@@ -1335,14 +1231,7 @@ impl PropDynamics {
         self.move_rules.blocks(&body.template, key, &retail)
     }
 
-    /// Body `index`'s Inertia (82C4E568, filled once when retail builds the
-    /// body and never switched by the commanded block): with type data, mass
-    /// (data +304), velocity caps (+292 / +296), drag (+308 / +336) and the box
-    /// inertia of the AABB half extents x +16 + +32 ([`dmo_body_inertia`]); a
-    /// mod's `carry.by_template` fields over it. Fields neither sets keep the
-    /// authored MOBJ values (density mass, box inertia, damping, no caps: NOT
-    /// RETAIL YET, only without type data). Pure function of the type data,
-    /// the mod rules and the authored box, so every peer gets the same.
+    /// Body `index`'s Inertia (82C4E568): type data, then mod rules, then authored MOBJ: docs/hails-additions/27-dynamic-props.md#body-inertia-82c4e568
     fn body_inertia(&self, index: usize) -> RetailInertiaDynamics {
         let body = &self.bodies[index];
         let blocks = self.body_blocks(body);
@@ -1463,6 +1352,11 @@ impl PropDynamics {
         self.actor_push_mass.extend_from_slice(actors);
     }
 
+    /// Static triangles props collide with and the skater does not (skate.Park IgnoreFuser pieces).
+    pub(crate) fn set_props_only_world(&mut self, world: Option<BoardWorld>) {
+        self.props_only = world;
+    }
+
     fn rails_of(&self, body: &PropBody) -> Option<&std::sync::Arc<[crate::grind_world::props::PropRail]>> {
         self.grind_rails.get(body.template.split('/').next().unwrap_or_default())
     }
@@ -1485,12 +1379,7 @@ impl PropDynamics {
         crate::grind_world::props::PropRailPoses(out)
     }
 
-    /// Every prop with grab splines as a grab-scene object of the world-object provider (scene `+4084`, query mode
-    /// bit 0x04; single-player worlds use it, not the DMO provider, b54): template origin and basis as the frame,
-    /// points scaled like the body, linear velocity as the record vector, type-2 records. Ids: object
-    /// `PROP_GRAB_TAG | grab slot`, spline / geometry `PROP_GRAB_TAG | grab slot << 6 | index`
-    /// ([`Self::prop_of_grab_key`] maps a key back to the prop id). NOT RETAIL YET: the assembly is a stand-in
-    /// with the object id (the `+172` object is not identified).
+    /// Props with grab splines as grab-scene objects (scene +4084, b54; NOT RETAIL YET assembly): docs/hails-additions/27-dynamic-props.md#prop-grab-objects
     pub(crate) fn grab_objects(&self) -> Vec<skate_core::player::offboard::grab_scene::Object> {
         self.bodies.iter().filter(|b| !b.dormant).filter_map(Self::grab_object_of).collect()
     }
@@ -1524,11 +1413,7 @@ impl PropDynamics {
                     provider: Provider::LivingWorld,
                     disabled: false,
                     assembly_ready: true,
-                    // 82585F58 (b227): the part (assembly+8) is the prop's one body, its rates (part+0x4C) the body's
-                    // rigid body: words 56..65 = its Inertia (inverse tensor, inverse mass, spherical, max linear /
-                    // angular velocity, drags; the tensor's w lane is not read), +144 = angular velocity, +160 =
-                    // centre of mass. Move Object reads +216 only as a null gate (82D442D0 / 82D44A10), so the
-                    // stable prop id serves as part and rates identity.
+                    // 82585F58 (b227): the part is the prop's one body; +216 is only a null gate: docs/hails-additions/27-dynamic-props.md#prop-grab-assembly-82585f58
                     assembly: Some(AssemblyData {
                         identity: id,
                         first_part: Some(PartData {
@@ -1641,18 +1526,7 @@ impl PropDynamics {
         self.stats
     }
 
-    /// Prop volume against static world triangles: the physics/world query
-    /// (TU3 8277B720 via triangle dispatch 8277BC58), NOT the GP volume-pair
-    /// query 82AD43A8. The world query forwards the query context's object
-    /// byte (+61) into triangle fixup (82AD3130), which for objects accepts a
-    /// contact across a welded flat edge (cosine 1, no convex bit) while the
-    /// normal stays within convexity_epsilon of the face (acos(1 - 0.01) =
-    /// 8.1 deg) and does not reject disabled vertices. The pair query passes
-    /// false and drops every such contact: a box lying a few degrees tilted
-    /// on a tiled floor lost all floor manifolds and fell through (docs 26,
-    /// "contact gap"). Limit = the body's own padding, the same gap the
-    /// static resolver accepts (`gap > contact_padding` is skipped there);
-    /// no velocity prediction, as the prop solver has no speculative rows.
+    /// Prop vs static world: object world query 8277B720, not the pair query 82AD43A8: docs/hails-additions/27-dynamic-props.md#prop-world-query
     fn world_query_for(&self, index: usize) -> WorldContactSettings {
         WorldContactSettings {
             volume_padding: self.bodies[index].tuning.contact_padding,
@@ -1661,6 +1535,28 @@ impl PropDynamics {
             convexity_epsilon: self.pair.convexity_epsilon,
             is_object: true,
         }
+    }
+
+    /// A skater volume against the prop's own posed triangles (deepest contact), `None` when the prop has none so the
+    /// box stands in: docs/hails-additions/27-dynamic-props.md#skater-vs-prop-mesh
+    fn skater_mesh_manifold(
+        &self,
+        layer: &crate::skate_world::PropCollisionLayer,
+        index: usize,
+        volume: &BoardWorldVolume,
+    ) -> Option<Option<PrimitiveContactManifold>> {
+        let range = layer.instances().get(self.bodies[index].instance)?.range.clone();
+        let triangles = layer.world().triangles().get(range).filter(|t| !t.is_empty())?;
+        let settings = WorldContactSettings { is_object: false, ..self.world_query_for(index) };
+        let depth = |m: &PrimitiveContactManifold| {
+            m.points[..m.count].iter().map(|p| dot(sub(p.a, p.b), m.normal)).fold(f32::MAX, f32::min)
+        };
+        Some(
+            triangles
+                .iter()
+                .filter_map(|t| primitive_triangle_world_contacts(volume.primitive, t.triangle, volume.motion.linear_velocity, settings))
+                .min_by(|a, b| depth(a).total_cmp(&depth(b))),
+        )
     }
 
     /// Pair query settings with this body's contact band.
@@ -1710,10 +1606,7 @@ impl PropDynamics {
         Some((b.rates.position, b.rates.basis, b.half_extents, b.rates.linear_velocity, b.rates.angular_velocity, b.inertia))
     }
 
-    /// Stream one body out (`dormant` true: asleep, still, its collision parked at [`HELD_PARK`]) or back in (asleep
-    /// as at map load; at its authored spawn pose when `authored`, as retail respawns a culled DMO from its placement
-    /// record, research b98). Refused (None) for the held prop and unknown ids; returns the layer instance to rebake
-    /// and the pose (origin, basis) for streaming in, or the park for streaming out.
+    /// Stream one body out (parked at [`HELD_PARK`]) or back in (b98); `None` for the held prop or unknown ids.
     pub(crate) fn set_dormant(&mut self, id: u32, dormant: bool, authored: bool) -> Option<(usize, Vector3, Basis3)> {
         if self.held == Some(id) || self.is_dormant(id) == dormant {
             return None;
@@ -1869,15 +1762,13 @@ impl PropDynamics {
         PropGroundProbe { center, half_height, ground }
     }
 
-    /// HELD_PROP (held prop ~1/s, released prop ~1/s for `RELEASE_LOG_SECONDS`)
-    /// and PROP_BELOW_GROUND (an awake prop centre more than its half height
-    /// under the floor, once per prop per `BELOW_GROUND_LOG_SECONDS`). Probes
-    /// run only for the held/released prop and, twice a second, awake bodies.
+    /// HELD_PROP and PROP_BELOW_GROUND log lines (held / released prop, awake bodies twice a second).
     fn log_diagnostics(&mut self, world: &BoardWorld) {
         let per_second = (1.0 / self.simulation.time_step.max(1e-4)).round().max(1.0) as u64;
         if self.released.is_some_and(|(_, until)| self.tick > until) {
             self.released = None;
         }
+        self.log_watch();
         let held_every = if crate::trace_all::on() { (per_second / HELD_PROP_HZ_TRACE_ALL).max(1) } else { per_second };
         if self.tick % held_every == 0 {
             let watched = [self.held.map(|id| (id, "held")), self.released.map(|(id, _)| (id, "released"))];
@@ -1925,6 +1816,34 @@ impl PropDynamics {
         }
     }
 
+    fn log_watch(&mut self) {
+        let Some((spec, armed)) = self.watch else { return };
+        let index = match armed {
+            Some(id) => self.by_id.get(&id).copied(),
+            None => {
+                let distance = |b: &PropBody| {
+                    let p = b.rates.position;
+                    ((p.x - spec[0]).powi(2) + (p.y - spec[1]).powi(2) + (p.z - spec[2]).powi(2)).sqrt()
+                };
+                let nearest = (0..self.bodies.len())
+                    .filter(|&i| distance(&self.bodies[i]) <= spec[3])
+                    .min_by(|&a, &b| distance(&self.bodies[a]).total_cmp(&distance(&self.bodies[b])));
+                if let Some(i) = nearest {
+                    let body = &self.bodies[i];
+                    info!("PROP_WATCH_ARM id={} template={} distance={:.2} tick={}", body.id, body.template, distance(body), self.tick);
+                    self.watch = Some((spec, Some(body.id)));
+                }
+                nearest
+            }
+        };
+        let Some(body) = index.map(|i| &self.bodies[i]) else { return };
+        let (p, v, w, up) = (body.rates.position, body.rates.linear_velocity, body.rates.angular_velocity, body.rates.basis.columns[1]);
+        info!(
+            "PROP_WATCH tick={} id={} pos=[{:.4}, {:.4}, {:.4}] v=[{:.4}, {:.4}, {:.4}] w=[{:.4}, {:.4}, {:.4}] up=[{:.4}, {:.4}, {:.4}] contacts={} asleep={}",
+            self.tick, body.id, p.x, p.y, p.z, v.x, v.y, v.z, w.x, w.y, w.z, up[0], up[1], up[2], body.contacts, body.asleep
+        );
+    }
+
     fn is_held(&self, index: usize) -> bool {
         self.held == Some(self.bodies[index].id)
     }
@@ -1945,28 +1864,7 @@ impl PropDynamics {
         })
     }
 
-    /// Move Object command for the held prop, as retail interface slot 9
-    /// applies it (spec section 7: 8275FF00 queue -> flush 827601F0 -> DMO
-    /// handler 82C4C370 / 82C4C3E0 -> sinks 82D9CC78 / 82D9CCF0), once per
-    /// 60 Hz physics step, before this step's contact solve:
-    /// - skipped for an unknown, locked or non-dynamic body (retail gates
-    ///   DMO+4464 bit 0x08 and component+36; props have no lock state yet);
-    /// - wakes the body and clears its sleep counter on EVERY command
-    ///   (82ADF7B8), zero or not;
-    /// - linear: an acceleration with no mass factor at the centre of mass
-    ///   (`v += L dt`, no torque; the accumulator +144 already holds gravity,
-    ///   which our integrator adds for every prop); the vertical argument is
-    ///   dropped (82C4C370 forwards only &linear);
-    /// - angular: the yaw command replaces the angular accumulator (+160 =
-    ///   (0, Y, 0), no inertia factor): any torque queued on the body is
-    ///   discarded and `w += (0, Y, 0) dt`; contacts still change pitch and
-    ///   roll in the solve;
-    /// - marks the body commanded, so its parameter block switches to the
-    ///   commanded block on its next step (82C53EF8).
-    ///
-    /// The command lasts one step: the carry re-sends it every tick and our
-    /// prop step runs once per tick (no substeps). `grip` is used only when a
-    /// mod turns `apply_at_com` off. Returns false if the id is unknown.
+    /// Move Object command for the held prop as retail slot 9 applies it, once per step: docs/hails-additions/27-dynamic-props.md#move-object-command-slot-9
     pub(crate) fn apply_move_command(&mut self, id: u32, linear: Vector3, yaw: f32, grip: Vector3, time_step: f32) -> bool {
         let Some(&index) = self.by_id.get(&id) else {
             return false;
@@ -2007,13 +1905,7 @@ impl PropDynamics {
         true
     }
 
-    /// Start the self-righting window of one body (retail cMsgUprightDMO ->
-    /// DMO manager slot +40 82C4B8C0: DMO+4464 |= 0x40, timer DMO+4376 = 0).
-    /// Retail sets it only when the DMO's slot 28 test (82C564D8, physics body
-    /// field +28) returns 0, the same test that offers Upright on the phone
-    /// (82666748 -> 82C4B578); that field is not decoded, so ours refuses only
-    /// an unknown id or a body without dynamics (NOT RETAIL YET). Restarting an
-    /// open window zeroes the timer, as retail does. Returns false if refused.
+    /// Open one body's self-righting window (cMsgUprightDMO -> 82C4B8C0); false if refused: docs/hails-additions/27-dynamic-props.md#upright-start
     pub(crate) fn upright(&mut self, id: u32) -> bool {
         let Some(&index) = self.by_id.get(&id) else {
             return false;
@@ -2031,23 +1923,12 @@ impl PropDynamics {
         self.by_id.get(&id).is_some_and(|&i| self.bodies[i].upright_timer.is_some())
     }
 
-    /// Body vector A of 82C573D0 (retail: the vector at the physics state
-    /// block +72; it scales the gain blend and picks the fallback axis by
-    /// A.x > A.z). Which body quantity that block holds is not identified;
-    /// ours uses the body-space inverse inertia diagonal (NOT RETAIL YET).
+    /// Body vector A of 82C573D0 (state block +72, not identified); ours: body-space inverse inertia (NOT RETAIL YET).
     fn upright_vector(body: &PropBody) -> Vector3 {
         body.inertia.inverse_tensor
     }
 
-    /// The DMO update's righting pass (82C56780), once per step before the
-    /// contact solve, for every body with an open window (asleep or not): the
-    /// timer advances and closes the window past `window_seconds` (that
-    /// update still sends its command); a tilt under `stop_angle_deg` closes
-    /// it and zeroes the timer; otherwise the command goes through the DMO's
-    /// angular slot 37 (82C52EE0): skipped for a body without dynamics, else
-    /// wake, mark commanded (DMO+4465 0x02) and replace the angular
-    /// accumulator (82D9CCF0 writes +160), integrated like the Move Object
-    /// yaw command (`w += C dt`).
+    /// Righting pass of the DMO update 82C56780, before the contact solve: docs/hails-additions/27-dynamic-props.md#upright-pass-82c56780
     fn apply_upright(&mut self, time_step: f32) {
         let settings = self.tuning.upright;
         let replaces = self.move_rules.yaw_replaces_torque;
@@ -2189,10 +2070,7 @@ impl PropDynamics {
         Some((b.plugin_rotation_tolerance?, b.plugin_max_distance?))
     }
 
-    /// Return one body to its authored spawn pose, at rest and asleep (the
-    /// receiving end of retail's cMsgResetDMO; how retail moves it, teleport or
-    /// fade, is not decoded yet: NOT RETAIL YET, an instant teleport). Returns the
-    /// collision instance so the caller can rebake its triangles.
+    /// Reset one body to its authored spawn pose, asleep (cMsgResetDMO; instant teleport, NOT RETAIL YET).
     pub(crate) fn reset_to_spawn(&mut self, id: u32) -> Option<usize> {
         if self.is_runtime(id) {
             return None;
@@ -2215,10 +2093,7 @@ impl PropDynamics {
         self.step_with_actors(world, layer, skater_volumes, &[]);
     }
 
-    /// [`Self::step`] with other skaters' volumes too (NPC skaters, doc 26 fix 19): retail NPC
-    /// skaters are full skaters, so their board and body push a DMO by the same contact rule as
-    /// the player's. `others` = (stable actor id, volume), sorted by actor id; the local
-    /// player's volumes go first ([`LOCAL_PUSHER`]), so the push order is deterministic.
+    /// [`Self::step`] with NPC skaters' volumes too (`others` sorted by actor id, local player first).
     pub(crate) fn step_with_actors(
         &mut self,
         world: &BoardWorld,
@@ -2257,17 +2132,16 @@ impl PropDynamics {
                     if !body_bounds.overlaps(volume_bounds) {
                         continue;
                     }
-                    let box_primitive = self.bodies[index].box_primitive();
-                    let Some(manifold) = primitive_pair_contacts(
-                        volume.primitive,
-                        box_primitive,
-                        self.pair_for(index),
-                    ) else {
+                    let mesh = if self.tuning.solver.skater_push_box { None } else { self.skater_mesh_manifold(layer, index, volume) };
+                    let on_mesh = mesh.is_some();
+                    let Some(manifold) = mesh.unwrap_or_else(|| {
+                        primitive_pair_contacts(volume.primitive, self.bodies[index].box_primitive(), self.pair_for(index))
+                    }) else {
                         continue;
                     };
                     let pushes = self.stats.skater_pushes;
                     let push_mass = self.actor_push_mass.iter().find(|a| a.0 == actor).map(|a| a.1);
-                    let contact = self.push_from_skater(index, volume, &manifold, push_mass);
+                    let contact = self.push_from_skater(index, volume, &manifold, push_mass, on_mesh);
                     if self.stats.skater_pushes > pushes {
                         self.bodies[index].pushed_by = Some(actor);
                     }
@@ -2288,11 +2162,7 @@ impl PropDynamics {
                         body.wake();
                     }
                 }
-                // A skater volume parked inside the box (the board under a
-                // bench seat, inside the render AABB) would otherwise nudge
-                // the prop every tick forever: it never sleeps and rebakes
-                // its triangles every tick. Count those ticks; past
-                // `stuck_release_ticks` only real hits push it.
+                // A skater volume parked inside the box would nudge it forever; past `stuck_release_ticks` only real hits push.
                 let release = self.bodies[index].tuning.stuck_release_ticks;
                 let body = &mut self.bodies[index];
                 body.stuck_ticks = if closing {
@@ -2315,10 +2185,7 @@ impl PropDynamics {
         // Awake bodies in body order (deterministic; plain indices).
         let awake: Vec<usize> = (0..self.bodies.len()).filter(|&i| !self.bodies[i].asleep && !self.bodies[i].dormant).collect();
         self.stats.awake = awake.len() as u32;
-        // Parameter block swap (82C53EF8): a body commanded since its last
-        // step runs on the commanded block, otherwise on its free block;
-        // the switch happens on the step the commanded bit changes. The
-        // command flag lasts one step (retail shifts 0x02 -> 0x01).
+        // Parameter block swap (82C53EF8): commanded since the last step -> commanded block; the flag lasts one step.
         let mut commanded_now = vec![false; self.bodies.len()];
         for &index in &awake {
             let body = &mut self.bodies[index];
@@ -2329,23 +2196,19 @@ impl PropDynamics {
         // Retail: every awake body's contact rows go through one shared row
         // solve (contact stage 82DC30A8 -> 82AE27D0, island +176 iterations)
         // and only then does any body integrate (BatchIntegrator).
-        let rows = solver.row_solver.then(|| self.row_corrections(world, &awake, solver.iterations));
+        let props_only = self.props_only.take();
+        let worlds: Vec<&BoardWorld> = std::iter::once(world).chain(props_only.as_ref()).collect();
+        let rows = solver.row_solver.then(|| self.row_corrections(&worlds, &awake, solver.iterations));
         let mut sleeps = 0u32;
         for &index in &awake {
             let held = self.is_held(index);
             let commanded = commanded_now[index];
-            // The held prop is a normal dynamic body: pitch, roll, gravity
-            // and contacts stay with the simulation (retail Move Object sends
-            // only a horizontal + yaw command, 82D45318), so it can tip and
-            // the floor holds it.
+            // The held prop stays a normal dynamic body (Move Object is horizontal + yaw only, 82D45318), so it can tip.
             let corrections = match &rows {
                 Some(rows) => rows[index],
-                None => self.contact_corrections(index, world),
+                None => self.contact_corrections(index, &worlds),
             };
-            // A commanded (or held) body never snaps to rest or sleeps.
-            // Sleep: retail clears the sleep counter on every command
-            // (82ADF7B8 in both slot 9 sinks), so a commanded body cannot
-            // freeze. Held covers placement (`carry_to`, NOT RETAIL).
+            // Commanded or held bodies never rest or sleep (82ADF7B8 clears the counter on every command).
             let body_sleep_capable = self.bodies[index].enable_sleep && !held && !commanded;
             // Rest snap (NOT RETAIL, mod option `rest_snap`): only while
             // something is touching the body, so it never zeroes a fall.
@@ -2401,27 +2264,27 @@ impl PropDynamics {
             self.bodies[index].baked = Some(pose);
             self.stats.rebakes += 1;
         }
+        drop(worlds);
+        self.props_only = props_only;
         self.log_diagnostics(world);
         self.tick += 1;
     }
 
-    /// Skater volumes treat the prop as a pushable weight: the prop receives a
-    /// fraction of the closing speed through the reduced mass of the pair, as
-    /// an impulse at the contact point. The skater's own response still comes
-    /// from the exact triangle layer.
+    /// Skater volumes push the prop by a share of the closing speed through the pair's reduced mass.
     fn push_from_skater(
         &mut self,
         index: usize,
         volume: &BoardWorldVolume,
         manifold: &PrimitiveContactManifold,
         push_mass: Option<f32>,
+        on_mesh: bool,
     ) -> SkaterContact {
         let tuning = self.bodies[index].tuning;
-        // The overlap nudge stops once the volume has sat inside for
+        // The overlap nudge (ours, box only) stops once the volume has sat inside for
         // `stuck_release_ticks`; from then on slow drift (solver jitter of a
         // parked board) does not push either, only a real hit does.
         let stuck = self.bodies[index].stuck_ticks >= tuning.stuck_release_ticks;
-        let nudge = if stuck { 0.0 } else { tuning.penetration_push_speed };
+        let nudge = if stuck || on_mesh { 0.0 } else { tuning.penetration_push_speed };
         let hit_floor = if stuck { tuning.penetration_push_speed } else { 0.0 };
         // The manifold normal points from the prop (B) toward the skater (A).
         let push = scale(manifold.normal, -1.0);
@@ -2451,14 +2314,7 @@ impl PropDynamics {
         if strongest <= 0.0 {
             return contact;
         }
-        // Momentum-style transfer: the skater shares its closing speed through
-        // the reduced mass of the pair, so a 20 kg box skips away while a
-        // 500 kg ramp barely budges. Δv = strongest × transfer × M/(M+m).
-        // Board hits carry the full transfer; body bumps are capped to a
-        // nudge speed so walking into a prop cannot keep accelerating it.
-        // Board and body pushes are both capped along the push direction
-        // (#15 capped only body bumps), so a board held against a prop cannot
-        // keep accelerating it either.
+        // dv = strongest x transfer x M/(M+m); board and body pushes are both capped along the push direction.
         let mass = 1.0 / self.bodies[index].inertia.inverse_mass;
         let pusher = push_mass.unwrap_or(tuning.skater_push_mass).max(0.0);
         let reduced = mass * pusher / (pusher + mass).max(1e-6);
@@ -2542,18 +2398,10 @@ impl PropDynamics {
         }
     }
 
-    /// Retail contact solve for every awake prop at once: one row per
-    /// manifold point (A = the prop, B = the triangle or the other prop,
-    /// normal from B toward A as the pair queries return it), built by the
-    /// retail ContactBatchBuild (82AE10C8: targets in displacement units,
-    /// predicted separation v dt + separation + a dt^2, restitution -v dt e)
-    /// and iterated `iterations` times by 82AE27D0 (contacts only). Returns
-    /// the per-body correction buffers, indexed by body (the integrator turns
-    /// the +0 / +32 pair into velocity, +16 / +48 into position only).
-    /// No slop, no correction fraction, no per-tick cap (retail has none).
+    /// Retail contact rows for every awake prop (82AE10C8 build, 82AE27D0 iterations): docs/hails-additions/27-dynamic-props.md#prop-contact-rows
     fn row_corrections(
         &mut self,
-        world: &BoardWorld,
+        worlds: &[&BoardWorld],
         awake: &[usize],
         iterations: u32,
     ) -> Vec<RetailReactionCorrections> {
@@ -2595,7 +2443,7 @@ impl PropDynamics {
             let bounds = self.bodies[index].bounds().expanded(tuning.contact_padding + 0.05);
             let a = self.row_body(index);
             let support = self.row_support(world_reaction, Vector3::ZERO);
-            for range in world.candidate_ranges(Some(bounds)) {
+            for (world, range) in worlds.iter().flat_map(|w| w.candidate_ranges(Some(bounds)).into_iter().map(move |r| (*w, r))) {
                 for triangle in &world.triangles()[range] {
                     let Some(manifold) = primitive_triangle_world_contacts(
                         box_primitive,
@@ -2632,10 +2480,7 @@ impl PropDynamics {
                     self.bodies[other].contacts += 1;
                     self.row_body(other)
                 } else {
-                    // An asleep prop is an immovable support; a hard hit
-                    // (closing faster than 1 m/s) wakes it for the next step
-                    // (NOT RETAIL YET: retail merges touching bodies into the
-                    // island; the wake rule is ours).
+                    // Asleep prop = immovable support; a hit closing over 1 m/s wakes it (NOT RETAIL YET: retail merges islands).
                     let closing = manifold.points[..manifold.count]
                         .iter()
                         .map(|pair| dot(self.bodies[index].velocity_at(pair.a), manifold.normal))
@@ -2660,7 +2505,7 @@ impl PropDynamics {
     /// Impulse and positional corrections for one awake body against the
     /// static world and every other prop box (asleep props are immovable).
     /// The engine's older pass (NOT RETAIL), used when `row_solver` is off.
-    fn contact_corrections(&mut self, index: usize, world: &BoardWorld) -> RetailReactionCorrections {
+    fn contact_corrections(&mut self, index: usize, worlds: &[&BoardWorld]) -> RetailReactionCorrections {
         let mut corrections = RetailReactionCorrections::default();
         let box_primitive = self.bodies[index].box_primitive();
         let tuning = self.bodies[index].tuning;
@@ -2668,14 +2513,9 @@ impl PropDynamics {
         let world_query = self.world_query_for(index);
         let bounds = self.bodies[index].bounds().expanded(tuning.contact_padding + 0.05);
         let mut contacts = 0u32;
-        // All static manifolds of this tick first: every one resolves from the
-        // same pre-contact velocity, so the closing impulse is shared over
-        // ALL simultaneous points, not per triangle. Per-triangle sharing
-        // applied the full impulse once per touching triangle (a box edge on
-        // a tiled floor touches ~10), which launched a tipping bench at
-        // 15 m/s (2026-10-08 street drag trace).
+        // All static manifolds first: the closing impulse is shared over every simultaneous point, not per triangle.
         let mut manifolds = Vec::new();
-        for range in world.candidate_ranges(Some(bounds)) {
+        for (world, range) in worlds.iter().flat_map(|w| w.candidate_ranges(Some(bounds)).into_iter().map(move |r| (*w, r))) {
             for triangle in &world.triangles()[range] {
                 let Some(manifold) = primitive_triangle_world_contacts(
                     box_primitive,
@@ -2782,10 +2622,7 @@ impl PropDynamics {
                 } else {
                     0.0
                 };
-                // Each manifold point applies its share of the impulse: with
-                // N simultaneous points at the same closing speed (a face
-                // landing flat), the unshared impulses would sum to N× the
-                // needed correction and bounce the body off the surface.
+                // Each point applies its share, so N simultaneous points do not sum to N times the correction.
                 let impulse = -(1.0 + restitution) * vn / (denominator * share);
                 let mut delta = scale(normal, impulse * inverse_mass);
                 let mut spin = mul_basis(
@@ -2929,10 +2766,7 @@ fn volume_bounds(
     }
 }
 
-/// Prop tuning a mod (or the engine) sets: the default plus per prop type
-/// overrides by MOBJ template name. Setting it back to `default()` restores
-/// the shipped values (mod disable). Applied to the live props before each
-/// physics tick and again after a map load builds new props.
+/// Prop tuning set by a mod or the engine: default plus per-template overrides; `default()` restores shipped values.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub(crate) struct PropTuningSettings(pub PropTuningTable);
 
@@ -3005,10 +2839,7 @@ mod tests {
         }
     }
 
-    /// The static world material the game gives prop contacts
-    /// (`PhysicsSettings::floor_material`, agCollision 8277C5D8 context
-    /// 83034F34 / 38 / 3C): {0, 0, 1}, so the max / max / min combine keeps
-    /// the prop's own block.
+    /// Static world material for prop contacts (8277C5D8, context 83034F34): {0, 0, 1}, so the prop's block wins.
     fn floor_material() -> RetailContactMaterial {
         RetailContactMaterial { static_friction: 0.0, dynamic_friction: 0.0, restitution: 1.0 }
     }
@@ -3054,6 +2885,20 @@ mod tests {
             [3, 2, 6], [3, 6, 7], // +Z
             [0, 5, 1], [0, 4, 5], // -Z
         ];
+        shape_fixture(origin, corners.to_vec(), faces.to_vec())
+    }
+
+    /// One prop of the given triangles (outward winding) at `origin`.
+    fn shape_fixture(
+        origin: [f32; 3],
+        corners: Vec<[f32; 3]>,
+        faces: Vec<[u32; 3]>,
+    ) -> (
+        BoardWorld,
+        crate::skate_world::PropCollisionLayer,
+        PropDynamics,
+    ) {
+        let index_count = faces.len() as u32 * 3;
         let vertex = |position| skate_data::skate_map::Vertex {
             position,
             normal: [0., 1., 0.],
@@ -3106,7 +2951,7 @@ mod tests {
                 1., 0., 0., 0., 1., 0., 0., 0., 1., origin[0], origin[1], origin[2],
             ],
             first_index: 0,
-            index_count: 36,
+            index_count,
             first_collision: 0,
             collision_count: 0,
             rails: vec![],
@@ -3119,6 +2964,42 @@ mod tests {
     }
 
     const REST_Y: f32 = super::super::ground::HEIGHT + 0.5;
+
+    #[test]
+    fn prop_watch_spec_parses_four_numbers() {
+        assert_eq!(parse_watch("60.26 1.45 -119.35 2"), Some([60.26, 1.45, -119.35, 2.0]));
+        assert_eq!(parse_watch("1,2,3,0.5"), Some([1.0, 2.0, 3.0, 0.5]));
+        assert_eq!(parse_watch("1 2 3"), None);
+        assert_eq!(parse_watch("1 2 3 -1"), None);
+        assert_eq!(parse_watch("1 2 x 4"), None);
+    }
+
+    /// A skate.Park IgnoreFuser piece is in no skater world, but props land on it (b485 / b492).
+    #[test]
+    fn props_rest_on_props_only_pieces() {
+        let y = super::super::ground::HEIGHT + 1.0;
+        let plate = [[[-2., y, -2.], [-2., y, 2.], [2., y, 2.]], [[-2., y, -2.], [2., y, 2.], [2., y, -2.]]];
+        let pieces = crate::park_layout::Pieces {
+            collision: plate.iter().map(|&points| skate_data::skate_map::Collision {
+                points, surface: 0, material: 1, native_edges: Some([0x60; 3]),
+            }).collect(),
+            ranges: vec![0..2], materials: vec![], rails: vec![],
+            fuse: crate::park_layout::FuseRules::default(), unfused: vec![true], tags: vec![],
+        };
+        let rest = |props_only: bool| {
+            let (world, mut layer, mut dynamics) = fixture([0., y + 2.5, 0.]);
+            if props_only {
+                dynamics.set_props_only_world(crate::skate_world::props_only_world(&pieces, floor_material()).unwrap());
+            }
+            dynamics.bodies[0].wake();
+            for _ in 0..240 {
+                dynamics.step(&world, &mut layer, &[]);
+            }
+            dynamics.bodies[0].rates.position.y
+        };
+        assert!((rest(true) - (y + 0.5)).abs() < 0.1, "on the piece: {}", rest(true));
+        assert!((rest(false) - REST_Y).abs() < 0.1, "through it to the floor: {}", rest(false));
+    }
 
     /// A prop dropped from the air falls, settles on the floor and sleeps; its
     /// collision triangles are re-baked at the new pose.
@@ -3177,10 +3058,7 @@ mod tests {
         id
     }
 
-    /// A prop created mid-game on a map without placed props flies with its
-    /// throw velocity, lands, sleeps and collides like a map prop; it has no
-    /// authored pose (not "moved", no reset); removing it parks its triangles
-    /// and the next prop of the same size reuses the slot.
+    /// A mid-game prop on a map without placed props flies, lands and sleeps; removal parks it and frees the slot.
     #[test]
     fn runtime_prop_is_thrown_lands_and_is_removed() {
         let world = super::super::ground::Terrain::Flat.world(floor_material());
@@ -3345,6 +3223,7 @@ mod tests {
                 max_depenetration_per_tick: f32::INFINITY,
                 ..PropTuning::default()
             },
+            solver: PropSolverSettings { skater_push_box: true, ..Default::default() },
             ..Default::default()
         }
     }
@@ -3374,10 +3253,7 @@ mod tests {
         (awake, rebakes, pushes, travel)
     }
 
-    /// Reproduction: with #15's push a parked deck inside a heavy bench box
-    /// nudges it every tick (0.5 m/s floor, close to what ground friction
-    /// takes off again), so the bench never sleeps and rebakes its triangles
-    /// (and the whole prop layer's query index) every tick.
+    /// Repro: #15's push nudged a bench around a parked deck every tick, so it never slept and rebaked every tick.
     #[test]
     fn legacy_push_keeps_bench_awake_with_parked_deck() {
         let (awake, rebakes, pushes, travel) = park_deck_in_bench(Some(legacy_tuning()), 600, 300);
@@ -3423,6 +3299,36 @@ mod tests {
 
     /// The board push is capped like the body bump: a board held against a
     /// light prop cannot drive it past `board_push_speed`.
+    /// Laptop session 2026-10-22 (Black Box quarter pipe): a wheel gliding up a ramp prop's slope is inside the prop's
+    /// box but outside its mesh; it must not shove the ramp away.
+    #[test]
+    fn riding_up_a_ramp_prop_does_not_shove_it() {
+        let corners = vec![
+            [-1., -0.5, -1.], [1., -0.5, -1.], [1., -0.5, 1.], [-1., -0.5, 1.], [1., 0.5, -1.], [1., 0.5, 1.],
+        ];
+        let faces = vec![[0, 1, 2], [0, 2, 3], [0, 3, 5], [0, 5, 4], [1, 4, 5], [1, 5, 2], [0, 4, 1], [3, 2, 5]];
+        let (world, mut layer, mut dynamics) = shape_fixture([0., REST_Y, 0.], corners, faces);
+        let start = dynamics.bodies[0].rates.position;
+        let normal = scale(Vector3::new(-1., 2., 0.), 1. / 5f32.sqrt());
+        let along = scale(Vector3::new(2., 1., 0.), 1. / 5f32.sqrt());
+        let radius = 0.1;
+        for tick in 0..30 {
+            let x = start.x - 0.6 + tick as f32 * 0.04;
+            let surface = Vector3::new(x, start.y + (x - start.x) * 0.5, start.z);
+            let volumes = [BoardWorldVolume {
+                collision_group: 4,
+                body: CollisionBody::Board(BodyId::Deck),
+                primitive: ContactPrimitive::Sphere(Sphere { center: add(surface, scale(normal, radius - 0.005)), radius }),
+                motion: skate_core::physics::board_world::VolumeMotion { linear_velocity: scale(along, 6.0), ..Default::default() },
+                material: material(),
+            }];
+            dynamics.step(&world, &mut layer, &volumes);
+        }
+        let d = sub(dynamics.bodies[0].rates.position, start);
+        let moved = dot(d, d).sqrt();
+        assert!(moved < 0.01, "the ramp moved {moved} m under the rider");
+    }
+
     #[test]
     fn board_push_speed_is_capped() {
         let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 0.]);
@@ -3449,10 +3355,7 @@ mod tests {
         assert!(fastest > 0.1, "push still applies: {fastest}");
     }
 
-    /// Depenetration in the engine's older impulse pass (mod option
-    /// `row_solver = false`) is bounded per tick: a box dropped deep into the
-    /// floor rises at most `max_depenetration_per_tick` per tick from the
-    /// positional correction.
+    /// Older impulse pass: a box deep in the floor rises at most `max_depenetration_per_tick` per tick.
     #[test]
     fn depenetration_is_bounded_per_tick() {
         let (world, mut layer, mut dynamics) = fixture([0., REST_Y - 0.4, 0.]);
@@ -3610,10 +3513,7 @@ mod tests {
         words
     }
 
-    /// Video bug (2026-10-05, Aletown spawn): sprinting (A, raw bit 21) past
-    /// props grabbed them and dragged them along. A is the retail sprint
-    /// button, so pressing or holding it must never grab, and a prop passed
-    /// at a run stays where it was.
+    /// Sprint (A, raw bit 21) never grabs: a prop passed at a run stays put.
     #[test]
     fn sprinting_past_a_prop_does_not_grab_it() {
         let (world, mut layer, mut dynamics) = fixture([0.8, REST_Y, 1.2]);
@@ -3714,11 +3614,7 @@ mod tests {
         assert!(heading_of(&dynamics, 7) > 0.1);
     }
 
-    /// What the retail controller math alone predicts for a centre push on a
-    /// free point mass (no contacts, no friction): 82D45318 steps 1 to 10
-    /// (`move_object::command`) read the body velocity before the step and
-    /// the slot 9 sink adds the sent command as an acceleration in the same
-    /// step (`v += L dt`, spec 7.5). Returns the speed after every tick.
+    /// Retail controller math alone for a centre push on a free point mass (82D45318, `v += L dt`); speed per tick.
     fn predicted_centre_push(mass: f32, move_z: f32, ticks: usize) -> Vec<f32> {
         use skate_core::player::offboard::move_object::{command, MoveObjectController, MoveObjectInput};
         let t = crate::physics::prop_carry::CarryLocomotion::default().move_object;
@@ -3749,11 +3645,7 @@ mod tests {
             .collect()
     }
 
-    /// Object-relative stick (82D45318): with the prop grabbed by the centre
-    /// of its near face, the left stick in any direction never turns it
-    /// (zero lever, the left stick has no rotation share), Z pushes / pulls
-    /// along the grab-edge normal and X slides along the edge, and the
-    /// skater stays on the grab frame.
+    /// Object-relative stick (82D45318): the left stick never turns a centre-grabbed prop; Z push / pull, X slide.
     #[test]
     fn move_object_left_stick_moves_the_prop_in_the_edge_frame() {
         for step in 0..8 {
@@ -3856,10 +3748,7 @@ mod tests {
         idle.update(&mut dynamics, tick(), at);
         assert_eq!(idle.held(), None);
     }
-    /// Move Object step 3: a prop with an authored grab spline is carried by
-    /// that record (82D444A0 / 82D45D30), not the box stand-in: the grip sits
-    /// on the spline, the facing is minus its approach vector, and the grip
-    /// arc stays bound while the prop is pushed.
+    /// A prop with a grab spline is carried by that record (82D444A0 / 82D45D30), not the box stand-in.
     #[test]
     fn a_prop_with_grab_splines_is_carried_by_its_authored_record() {
         let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 1.2]);
@@ -4022,10 +3911,7 @@ mod tests {
             previous = h;
         }
         assert_eq!(carry.held(), Some(7));
-        // 82D45318: w = -(curve x MvRot x gain), sent as (0, w, 0) about +Y
-        // (right-handed, test `positive_yaw_rate_turns_local_z_toward_plus_x`),
-        // so a positive MvRot turns the prop clockwise seen from above (the
-        // unwrapped heading atan2(z.x, z.z) decreases).
+        // 82D45318: w = -(curve x MvRot x gain) about +Y, so a positive MvRot turns the prop clockwise from above.
         assert!(turned < -0.3, "positive MvRot did not turn the prop clockwise: {turned} rad");
         let up = dynamics.bodies[0].rates.basis.columns[1][1];
         assert!(up > 0.99, "a yaw command tipped the prop: up_y {up}");
@@ -4069,14 +3955,7 @@ mod tests {
         assert!(turned < -0.05, "the off-centre push did not turn the bench with its torque: {turned}");
     }
 
-    /// A held right stick turns the prop at the retail yaw-rate target and no
-    /// faster. 82D45318 [code, 0x82D45BC8..0x82D45CD0]: yaw error = w - 60 x
-    /// (facing change since the previous tick, +384), PID 20 / 0 / 40 with the
-    /// output accumulating (integral action) and clamped to 6 rad/s^2. The
-    /// retail math on a free yaw body (`yaw_rate_feedback_settles_at_the_target_rate`
-    /// in skate-core) spins up at 0.1 rad/s per tick, peaks 0.6 % over |w| and
-    /// settles at |w| with zero steady error; the expectation here is |w| from
-    /// the command itself (curve BFB3BEF0BB2661C0(|lever|) x rot x gain +1160).
+    /// A held right stick turns the prop at the retail yaw-rate target (82D45318 PID): docs/hails-additions/27-dynamic-props.md#move-object-yaw-rate-pid
     #[test]
     fn held_right_stick_turn_rate_stays_bounded() {
         let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 1.2]);
@@ -4352,10 +4231,7 @@ mod tests {
         (up.y / length(up)).clamp(-1., 1.).acos().to_degrees()
     }
 
-    /// 82C573D0 values: stop under 10 deg, axis up x world-up, speed
-    /// 3 x (min(tilt, 70 deg) - 5 deg) for |A| <= 1.1, command
-    /// (target - w_axis - 0.1 w_perp) x 60, fallback to the body's X / Z axis
-    /// above 120 deg.
+    /// 82C573D0 righting values: docs/hails-additions/27-dynamic-props.md#upright-command-values-82c573d0
     #[test]
     fn upright_command_matches_retail_constants() {
         let s = PropUprightSettings::default();
@@ -4746,10 +4622,7 @@ mod tests {
         asleep: bool,
     }
 
-    /// Grab the prop from behind, push it `seconds` along +Z (full stick) across
-    /// the curb with the skater following the grab frame, release, then let it
-    /// settle 3 s. The held id is fed back through `set_held` like
-    /// `GamePhysics::update_prop_carry`.
+    /// Push a held prop `seconds` along +Z across the curb, release, settle 3 s (held id via `set_held`).
     fn drag_and_release(half: [f32; 3], seconds: f32) -> DragRun {
         let world = street_world();
         let (_, mut layer, mut dynamics) = box_fixture([0., SIDEWALK_Y + half[1], 0.], half);
@@ -4808,11 +4681,7 @@ mod tests {
         }
     }
 
-    /// One ped walking back and forth along z (x = 0, head-on) while a bin is dragged toward it by
-    /// the real carry path (Move Object) for 1 s, held still for 3 s, then released and left 3 s. Obstacles come from
-    /// `obstacle_boxes` through the game's input mapping; the ped steps with
-    /// `NavObstacles::resolve_step` (the rule `advance_peds` uses). Returns (ped steps that went deeper into
-    /// the prop, past the re-cut tolerance, ticks held + cut, ticks held + moving, the obstacles after rest, spawn, rest).
+    /// A ped walking head-on while Move Object drags a bin at it, holds, then releases it; returns counts and poses.
     fn ped_vs_dragged_bin(params: skate_core::living_world::peds::ObstacleParams) -> (u32, u32, u32, skate_core::living_world::peds::NavObstacles, Vector3, Vector3) {
         use skate_core::living_world::peds::NavObstacles;
         let half = [0.35, 0.5, 0.35];
@@ -4878,11 +4747,7 @@ mod tests {
         (entered, held_cut, held_moving, o, spawn, dynamics.position_of(id).unwrap())
     }
 
-    /// Peds vs a prop held by Move Object (user 2026-10-08: peds walk through it while it is held).
-    /// Retail [code]: the hold sets only DMO+4464 bit 0x20; the obstacle-off gate is a different
-    /// word (+144+4252), so a held prop stays a NavPower obstacle (cut when slower than 0.4 m/s,
-    /// moving avoider when faster). Ours: cut, or solid for the ped's step while moving. The
-    /// earlier rule (held = ignored) is the control: the ped then walks into the prop.
+    /// Peds vs a held prop: retail keeps it a NavPower obstacle: docs/hails-additions/27-dynamic-props.md#held-prop-as-ped-obstacle
     #[test]
     fn peds_do_not_walk_through_a_held_prop_and_see_it_where_it_rests() {
         use skate_core::living_world::peds::ObstacleParams;
@@ -4914,10 +4779,7 @@ mod tests {
         assert!(leg(rest).is_some() && leg(spawn).is_none());
     }
 
-    /// Prop sinking (2026-10-07): every dragged template stays on the floor
-    /// (box bottom never more than a few cm into it), rests on the street
-    /// after release and does not slide back toward its spawn. Tipping is
-    /// allowed (retail leaves pitch / roll to the physics).
+    /// Every dragged template stays on the floor, rests after release and does not slide back; tipping is allowed.
     #[test]
     fn dragged_props_rest_on_the_floor_after_release() {
         let mut failures = Vec::new();
@@ -4941,10 +4803,7 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
-    /// Tipping stays (user: "props should still be able to tip.. they do in
-    /// retail"): a tall prop pushed off-centre from the street into the curb
-    /// face tips (the command has no pitch / roll term, the contacts decide),
-    /// and never ends under the floor.
+    /// A tall prop pushed off-centre into the curb tips (the contacts decide) and never ends under the floor.
     #[test]
     fn pushing_a_tall_prop_into_the_curb_can_tip_it() {
         let world = street_world();
@@ -4986,10 +4845,7 @@ mod tests {
         assert!(!dynamics.ground_probe(id, &world).unwrap().below_ground(), "the tipped prop went under the floor");
     }
 
-    /// Retail props do not tip from a push (spec 7.4): the command acts at the
-    /// centre of mass with no pitch / roll term and the held prop runs on the
-    /// commanded block, so a straight full push on flat ground keeps a 1 m
-    /// cube and the bin upright (tipping comes from obstacles, test above).
+    /// A straight full push on flat ground does not tip a prop (spec 7.4: command at the centre of mass).
     #[test]
     fn straight_push_on_flat_ground_does_not_tip_a_cube_or_the_bin() {
         for (name, half) in [("cube", [0.5f32, 0.5, 0.5]), ("bin", [0.28, 0.41, 0.27])] {
@@ -5029,12 +4885,7 @@ mod tests {
         }
     }
 
-    /// The commanded block (82C53EF8): a commanded body switches to it on its
-    /// next step and back to its free block on the step after the commands
-    /// stop. The block is the body's own material, combined with the other
-    /// side by 82763078 (static max, dynamic max, restitution min); nothing
-    /// replaces the combined friction. Every command wakes the body, zero or
-    /// not (82ADF7B8).
+    /// Commanded block (82C53EF8) swaps in on the next step and out after; every command wakes (82ADF7B8).
     #[test]
     fn commanded_block_switches_with_the_command_and_zero_commands_wake() {
         let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 1.2]);
@@ -5074,10 +4925,7 @@ mod tests {
         assert_eq!(dynamics.body_material(0), RetailContactMaterial { static_friction: 0.4, dynamic_friction: 0.3, restitution: 0.2 });
     }
 
-    /// Per-type DMO data from the vault record (DMO+4380 -> +4 layout of
-    /// `livingworld_dynamicobject_characteristics`): +272 restitution, +312
-    /// flag, +316 / +324 upright pair, +320 / +328 default pair, inherited from
-    /// the parent record like retail's layout.
+    /// Per-type DMO data from the vault record (+272, +312, +316 / +324, +320 / +328), inherited from the parent.
     #[test]
     fn dmo_type_blocks_read_the_characteristics_record_with_parents() {
         let field = |t: &str, d: &str| serde_json::json!({"type": t, "data": d});
@@ -5141,10 +4989,7 @@ mod tests {
         assert!(skate_core::player::offboard::grab_scene::Registry::new(objects).is_ok());
     }
 
-    /// Retail type data drives the free block, the upright pair and
-    /// record+272; a mod entry keyed by the type's record name (or the MOBJ
-    /// template name) overrides single fields; clearing the mod rules
-    /// (mod disable) restores the retail values.
+    /// Retail type data drives the blocks; a mod entry overrides single fields; mod disable restores retail.
     #[test]
     fn retail_type_data_is_the_default_and_mods_override_it() {
         let (_, _, mut dynamics) = fixture([0., REST_Y, 1.2]);
@@ -5178,12 +5023,7 @@ mod tests {
         assert!(dynamics.held_body(7).unwrap().record_272);
     }
 
-    /// Type drag (DMO data +308 / +336 -> Inertia +32 / +36, 82C4E568) is the
-    /// body's drag; the integrator 82AE6590 applies it per second
-    /// (`v *= max(frequency - drag, 0) dt` each fixed step, so 60 Hz and 30 Hz
-    /// steps lose the same speed per second to first order). A mod entry
-    /// overrides one field; mod disable restores retail; without type data the
-    /// authored damping stays.
+    /// Type drag (+308 / +336, 82C4E568) applied per second by 82AE6590; mod override; mod disable restores retail.
     #[test]
     fn type_drag_is_the_body_drag_and_mods_override_it() {
         let (_, _, mut dynamics) = fixture([0., REST_Y, 1.2]);
@@ -5218,11 +5058,7 @@ mod tests {
         assert_eq!(dynamics.body_inertia(0).angular_drag, 0.35);
     }
 
-    /// Type body data (82C4E568): mass +304 -> inverse mass, caps +292 / +296,
-    /// box inertia from the AABB half extents x +16 + +32 (82C47FC8); the
-    /// integrator 82AE6590 shortens faster velocities to the caps. A mod entry
-    /// overrides one field (mass alone keeps the type's box); mod disable
-    /// restores retail; without type data the authored mass stays.
+    /// Type body data (82C4E568): mass, caps, box inertia (82C47FC8); mod override; mod disable restores retail.
     #[test]
     fn type_body_data_sets_mass_inertia_and_caps() {
         let (_, _, mut dynamics) = fixture([0., REST_Y, 1.2]);
@@ -5269,10 +5105,7 @@ mod tests {
         assert_eq!(dynamics.bodies[0].inertia, authored, "no type data: authored");
     }
 
-    /// Free pair choice (82C53EF8 / 82C54BF0 with 82C54B00): only a type with
-    /// the upright flag (data +312 bit 0) uses the upright pair, and only while
-    /// its up axis y > 0.65; tipped (or exactly 0.65) it uses the default pair.
-    /// The held block ignores the upright test.
+    /// Free pair choice (82C54B00): upright pair only with the flag and up y > 0.65; the held block ignores it.
     #[test]
     fn free_block_follows_the_upright_test() {
         let authored = RetailContactMaterial { static_friction: 0.5, dynamic_friction: 0.5, restitution: 0.1 };
@@ -5326,14 +5159,7 @@ mod tests {
         assert_eq!(r.torque_acceleration, Vector3::ZERO);
     }
 
-    /// Contact gap (2026-10-08 street trace): a box lying tilted on the tiled
-    /// floor, a few cm into it, must still produce floor manifolds; the
-    /// dragged bin lost every floor contact in this pose and fell through.
-    /// Cause: the SAT axis is the tilted box face (1-8 deg off the floor),
-    /// which triangle fixup sees as an edge region on a welded flat edge;
-    /// the GP pair query (is_object false) rejects it on every tile, the
-    /// object world query (the production path, `world_query_for`) accepts
-    /// it while the tilt stays within acos(1 - convexity_epsilon) = 8.1 deg. The pair query is still checked to keep the repro honest.
+    /// A tilted box a few cm into a tiled floor still gets floor manifolds from the object world query.
     #[test]
     fn lying_tilted_box_keeps_floor_contacts() {
         let world = street_world();

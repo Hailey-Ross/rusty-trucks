@@ -1,18 +1,5 @@
-//! The retail Challenge Map tree (FE screen 17) from the vault collections (skatercollections), as menu map nodes.
-//!
-//! [data] (research b244 / b255): `map_listing` rows form the tree by parent (the root is the mode key, `progression`
-//! for career and free skate, `online` online; its children are the tabs `progression_locations` / `_active` /
-//! `_completed` / `_all`). Each row names its folder's filter (`Hash_E0762EA3F90C9EEB`, a RefSpec of class + key, a
-//! `map_filter` or a `map_category`) and a sort order (`Hash_982BD1EAE2334504`, u16 in the high half). Retail fills a
-//! folder by running its filter's Lua over the item classes; the location filters (`downtown` ...) keep the
-//! `fe_locations` rows whose World (`Hash_7565CD2A80E93A5E`, inherited) is the filter's world
-//! (`LocationFilterHelpers.IsLocationInWorld(item, "dist_downtown")`; research b447: the disc Maloof filter names
-//! `dist_maloofmoneycup`, its rows' World, not their District `dist_maloof`; the DLC folders do the same). Those are
-//! ported as data ([`LocationRules`], retail defaults incl. the DLC packs' folders, mod-overridable). The skate.Park
-//! folder's filter (`skatepark`) lists `world` rows with `IsSkatePark` and `AllowInSkateParksTab` (b447), as`World`
-//! leaves labelled by the world's own text. Other filters (challenges) are not ported yet, so their folders have no
-//! leaves and stay greyed. Retail's unlock test (`Unlock.IsLocationUnlocked`, b450) is ported over
-//! [`LocationUnlocks`] (no unlock store yet).
+//! The retail Challenge Map tree (FE screen 17) from the vault collections, as menu map nodes.
+//! Data rules (b244, b255, b447, b450): docs/hails-additions/31-retail-menus.md#challenge-map-tree
 use crate::attrib_hash::{hash, numeric_name};
 use crate::collections::Collection;
 use skate_core::menus::{EntryKind, EntryRef, MapNode};
@@ -51,15 +38,7 @@ impl Default for LocationRules {
 const LOCATION_SHOWN: &str = "Hash_90E678B6961730E1";
 const LOCATION_NAME: &str = "Hash_942AB8AEE4B414ED";
 
-/// Which locations count as unlocked for the folders' unlock test (b450 / b458): retail lists a location row when its
-/// `Hash_90E678B6961730E1` flag is set, else when the unlock manager holds the row's name (or `all_locations_unlock`)
-/// in either list: the saved profile list (a fresh save holds no locations, `825046B0`) or the list rebuilt from the
-/// player's DLC `data\unlocks\*.unlock` lines (`82505220`; e.g. Time is Money's `LOCATIONS,dist_maloof_street`).
-/// `granted` = the names a DLC line (or a mod) unlocks. Until the profile unlock store exists, everything else counts
-/// as unlocked (user 2026-10-19 for the unlock hooks: "leave everything unlocked for now and later when the unlock
-/// store is created it can be wired in") except `locked`: the two start rows no grant path names (`gamestart`,
-/// `dist_skateschool`; b450 / b458), which matches the user's retail video. NOT RETAIL YET: retail's saved list
-/// (a fresh save holds no locations, `825046B0`; the Lua / challenge rewards that grant them are not traced).
+/// Which locations count as unlocked (b450 / b458; NOT RETAIL YET until the unlock store exists): docs/hails-additions/31-retail-menus.md#location-unlocks
 #[derive(Clone, Debug, PartialEq)]
 pub struct LocationUnlocks {
     /// Retail's `all_locations_unlock` (cheat id 2, which no TU3 code triggers) and the manager's unlock-all byte.
@@ -272,10 +251,7 @@ impl<'a> Inherited<'a> {
         None
     }
 }
-/// The tree under `root` (a mode key, `progression`), as map nodes: the root and its `map_listing` tabs / folders
-/// (kind map_listing, id the readable name when known, else the vault key; their own order field) and each folder's
-/// leaves in retail's sort order (b451).
-/// `label_text`: a label id's menu text (None: the id itself sorts).
+/// The tree under `root` as map nodes, folders in retail's sort order (b451).
 pub fn load(entries: &[Collection], root: &str, rules: &LocationRules, unlocks: &LocationUnlocks,
     label_text: &dyn Fn(&str) -> Option<String>) -> Vec<MapNode> {
     let categories: BTreeMap<u64, &Collection> =
@@ -337,16 +313,10 @@ pub fn load(entries: &[Collection], root: &str, rules: &LocationRules, unlocks: 
                     leaf(world, EntryKind::World, inherited.get(world, WORLD_LABEL).unwrap_or(&world.key));
                 }
             }
-            // Retail sorts each folder (`82647EA0`, comparator `82647B80`, b451): category order, then the label's text
-            // in the collation order. Retail's sort is not stable; ours keeps data order on ties. The comparator's
-            // middle key (b454: new challenges first, cProgressionManager's challenge status list) never applies to
-            // location or park keys.
+            // Retail folder sort (82647EA0, comparator 82647B80, b451): category order, then label text; ours stable.
             let display = |label: &str| label_text(label).unwrap_or_else(|| label.to_owned());
             leaves.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| collate(&display(&a.2), &display(&b.2), COLLATION)));
-            // Then a map_category header row before each category run (b454: a picker header the cursor skips,
-            // labelled by the category's `Hash_465698DD3CC73CA2`), unless the folder's inherited
-            // `Hash_EAFE7F250C154184` is set and it holds one category. NOT RETAIL YET: leaves without a category get no
-            // header (retail's label for key 0 is open).
+            // A map_category header row before each category run (b454); uncategorised leaves get none (NOT RETAIL YET).
             let mut kinds: Vec<&str> = leaves.iter().filter_map(|l| l.1.map(|c| c.key.as_str())).collect();
             kinds.dedup();
             let lone = inherited.get(row, FOLDER_LONE_HEADERLESS).is_some_and(|d| d.trim_start_matches('0') != "") && kinds.len() == 1;

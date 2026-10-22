@@ -405,11 +405,7 @@ impl BoardWorld {
         self_buffer.capacity = retention.capacity;
         self_buffer.distance_squared_threshold = retention.duplicate_distance_squared;
         self_buffer.deferred_reduction = u8::from(retention.deferred_reduction);
-        // No volumes, no pairs: the union bounds below would be None and
-        // candidate_ranges(None) means "every triangle", so a hidden board
-        // (all volumes disabled, state 3) walked the whole map each tick
-        // for an empty result (fix15). The result and buffer state are the
-        // same as the full walk's: nothing allocated, nothing flushed.
+        // No volumes: return early, as candidate_ranges(None) would walk every triangle (fix15); same result.
         if volumes.is_empty() {
             return &*self_contacts;
         }
@@ -552,10 +548,7 @@ impl BoardWorld {
         best
     }
 
-    /// Replace a contiguous run of triangles in place (same count, same order).
-    /// Used by prop instances rebaked at a new rigid pose: adjacency flags and
-    /// edge cosines are rigid-motion invariant, so callers reuse them. Per-triangle
-    /// and per-mesh bounds plus the broadphase index are refreshed.
+    /// Replace a contiguous run of triangles in place (rigid rebake); bounds and index refreshed.
     pub fn replace_triangles(
         &mut self,
         range: std::ops::Range<usize>,
@@ -564,11 +557,7 @@ impl BoardWorld {
         self.replace_triangles_batch(&[(range, triangles)])
     }
 
-    /// Several [`Self::replace_triangles`] edits applied in order (a later edit of the same range wins), with the
-    /// overlapped mesh bounds and the query index rebuilt once at the end. The index depends only on the final
-    /// mesh bounds, so the result is identical to one call per edit (test
-    /// `batched_replacements_match_one_call_per_edit`); a prop stream pass rebuilt the whole index once per prop.
-    /// Every edit is checked first: an error changes nothing.
+    /// Several [`Self::replace_triangles`] edits, index rebuilt once; identical to one call per edit; checked first.
     pub fn replace_triangles_batch(
         &mut self,
         edits: &[(std::ops::Range<usize>, &[WorldTriangle])],
@@ -606,12 +595,7 @@ impl BoardWorld {
         Ok(())
     }
 
-    /// Append triangles after the existing ones (a prop body created mid-game).
-    /// Existing triangle indices, order and query meshes are unchanged; the new
-    /// range gets its own query meshes (64-triangle chunks, the portable world's
-    /// grouping) so its bounds never widen an existing chunk. `packed_surfaces`
-    /// holds one authored surface code per triangle (required when the world has
-    /// query metadata). Returns the new range.
+    /// Append triangles (a runtime prop) in their own 64-triangle query meshes; returns the new range.
     pub fn append_triangles(
         &mut self,
         triangles: &[WorldTriangle],

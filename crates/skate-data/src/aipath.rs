@@ -1,47 +1,5 @@
-//! Recorded NPC skater lines: the retail AIPATHDATA object (RenderWare type
-//! 0x00EB0014) and the living-world skater path pack the setup export writes.
-//!
-//! Retail free roam streams these objects with the district `cSim_*.xsf` tiles;
-//! `Sk8::AIPath::ThePathManager` keeps every path by its 16-byte id, and the AI
-//! skater manager (`sub_8245C548`, spawn) picks lines whose start node lies in
-//! its spawn ring. A path that crosses several tiles is stored, byte-identical,
-//! in every tile it touches: the disc holds 3,891 path copies of 1,691 unique
-//! paths (DownTown, University, Industrial; the park districts have none).
-//!
-//! Layout (big-endian; every `m_p*` offset is relative to the start of the
-//! struct that contains it). Field names follow the Skate 2 symbols as
-//! documented by DumbadsSkate3ModdingTools (Ethanw05; credits there to SunJay,
-//! Dumbad, RenderWareGavin, Tuukkas); every field was re-checked against the
-//! user's disc ([data], `.claude/notes/npc-skaters-re.md` section 3):
-//!
-//! ```text
-//! AIPATHDATA  +0 u32 path count, +4 u32 offset of the path array (0x10), +8 8 pad
-//! tAIPath (96 B)
-//!   +0x00 vec4 bbox min, +0x10 vec4 bbox max (w = 1)
-//!   +0x20 16 B m_ID (byte 0 = 0 for ambient paths, bytes 1..5 district tag)
-//!   +0x30 m_pNodes, +0x34 node count, +0x38 m_pExtData (0 = none)
-//!   +0x3C m_pBranchGroup, +0x40 group count
-//!   +0x44 u32 m_BitFlags, +0x48 u64 m_AllowedSkaters, +0x50 i32 m_SkillLevel,
-//!   +0x54 3 x i32 extra (0)
-//! tAIPathNode (44 B)
-//!   +0x00 vec3 position, +0x0C vec3 direction (displacement since the previous
-//!   node), +0x18 board orientation, +0x1C skater orientation (4 x u8, biased
-//!   quaternion), +0x20 m_pExtData (node-relative, 0 = none), +0x24 u8 frames
-//!   since the previous node (60 Hz), +0x25 u8 width left, +0x26 u8 width right
-//!   (255 = unbounded), +0x27 u8 event type, +0x28 u8 flags, +0x29 3 B extra
-//! tAIPathNodeExtData (40 B)
-//!   +0x00 vec3 trajectory start position, +0x0C vec3 trajectory start
-//!   velocity, +0x18 vec3 trajectory offset, +0x24 i16 trick index (-1 none),
-//!   +0x26 i8 180-degree air spin count, +0x27 u8 flags
-//! tAIPathBranchGroup (12 B): +0 offset of its branches (group-relative),
-//!   +4 branch count, +8 node index on this path
-//! tAIPathBranch (24 B): +0 16 B target path id, +16 u32 target node index,
-//!   +20 f32 position along the target
-//! ```
-//!
-//! Bytes in, no file I/O: the setup export (tools/asset_pipeline/
-//! living_world_skaters.py) writes one pack per district, and a mod can author
-//! extra paths in the same retail layout.
+//! Recorded NPC skater lines: retail AIPATHDATA (RenderWare 0x00EB0014) and our skater path pack.
+//! Layout and credits: docs/hails-additions/26c-living-world-npc-skaters.md#aipathdata-layout
 
 use std::fmt;
 
@@ -277,10 +235,7 @@ impl AiPath {
     }
 }
 
-/// Decoded orientation of a node: 4 bytes, each `(b - 128) / 127`, in disc
-/// order, renormalised. [data] The raw norm is 0.997 median (p1 0.989, p99
-/// 1.011) over the disc's nodes; the component order (likely x, y, z, w) is not
-/// yet confirmed from code.
+/// Decoded node orientation: 4 bytes `(b - 128) / 127`, renormalised (component order not confirmed).
 pub fn decode_orientation(raw: [u8; 4]) -> [f32; 4] {
     let q = raw.map(|b| (f32::from(b) - 128.0) / 127.0);
     let norm = q.iter().map(|c| c * c).sum::<f32>().sqrt();
@@ -483,16 +438,7 @@ fn parse_ext(r: &Reader, at: usize) -> Result<AiPathNodeExt, AiPathError> {
 // Skater path pack (our container, written by living_world_skaters.py)
 // ---------------------------------------------------------------------------
 
-/// Pack magic. Layout (little-endian, our own format; the blobs inside stay the
-/// retail big-endian bytes, verbatim):
-/// ```text
-/// +0  8 B  "LWSKPTH\0"
-/// +8  u32  version (1)
-/// +12 u32  tile count
-/// +16 tile table, 48 B each: u64 asset id, u32 blob offset (from file start),
-///     u32 blob length, 32 B tile stream name (NUL padded, e.g. cSim_-150_-150_high)
-/// then the AIPATHDATA blobs, each 16-byte aligned
-/// ```
+/// Pack magic of our skater path pack: docs/hails-additions/26c-living-world-npc-skaters.md#skater-path-pack-layout
 pub const PACK_MAGIC: &[u8; 8] = b"LWSKPTH\0";
 pub const PACK_VERSION: u32 = 1;
 pub const PACK_TILE_STRIDE: usize = 48;
@@ -596,10 +542,7 @@ pub struct DistrictPath {
     pub tiles: Vec<usize>,
 }
 
-/// All unique paths of a pack, keyed like retail's path manager (by `m_ID`),
-/// in first-seen order. Returns the paths and the number of copies whose
-/// content differed from the first copy (0 on the stock disc; such a copy is
-/// ignored, as a second insert under the same key would be).
+/// All unique paths of a pack by `m_ID` in first-seen order, plus the count of differing copies.
 pub fn district_paths(tiles: &[PackTile]) -> Result<(Vec<DistrictPath>, usize), AiPathError> {
     let mut order: Vec<DistrictPath> = Vec::new();
     let mut by_id = std::collections::HashMap::new();

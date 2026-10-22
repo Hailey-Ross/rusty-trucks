@@ -1,8 +1,5 @@
-//! The Skate Profile screen's natives (doc 31 "Skate Profile", research b308): the Progression object (registrar
-//! 0x825AFBA8) and the Stats object (registrar 0x825AB630) the movie `profile/offline_skateProfile` reads its pages
-//! from. The tabs are `skate_core::offline_profile`; this host answers the movie's calls from the page data (empty
-//! until a career system or a mod fills it, `sdk.menus.profile`) and queues the screen states the C++ posts back
-//! (applied by `retail_menu_stage` after the call returns).
+//! The Skate Profile screen's natives (b308): Progression (0x825AFBA8) and Stats (0x825AB630) objects.
+//! Details: docs/hails-additions/31-retail-menus.md#skate-profile-natives
 use crate::apt_vm::{Value, Vm};
 use skate_core::offline_profile::{OfflineProfile, ProfileData, ProfileOverall, ProfileRules, StatRow, StatValue};
 

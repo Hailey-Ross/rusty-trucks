@@ -1,8 +1,5 @@
-//! FE backdrop: the world behind a front-end screen blurs and darkens while that screen is on top of the FE screen
-//! stack (doc 31, "Pause blur"). The ramp is `skate_core::fe_blur` (retail FE manager); which screens blur comes
-//! from the menu tables (retail screen stack info table, extracted at setup); mods override it per screen with
-//! `sdk.menus.backdrop`. The pass runs on the gameplay camera after the retail tone pass and before the UI, so the
-//! menus themselves stay sharp.
+//! FE backdrop blur pass (ramp `skate_core::fe_blur`), after the tone pass and before the UI; `sdk.menus.backdrop`.
+//! Details: docs/hails-additions/31-retail-menus.md#fe-backdrop-pass
 use bevy::{
     asset::embedded_asset,
     core_pipeline::{

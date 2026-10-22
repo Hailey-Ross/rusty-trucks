@@ -1,9 +1,5 @@
-//! Controller rumble, ported from the TU3 rumble controller (research `.local/research/rumble.md`, constants
-//! main-checked in the TU3 image): each pad keeps channels of {low, high, decay}; a start overwrites its channel
-//! (`sub_82694D38`); every tick (`sub_82695010`) sums the channels per motor, caps the sum at
-//! `max + (1 - max) * headroom`, then decays each channel and drops it below the threshold; the device curve
-//! (`sub_8296D480`) turns the level into a motor speed. Retail's values are [`RumbleTuning::RETAIL`]; a mod can
-//! replace them. Engine-independent and deterministic (plain f32, retail's order of operations).
+//! Controller rumble ported from the TU3 rumble controller (82694D38, 82695010, curve 8296D480); data-driven.
+//! Details: docs/hails-additions/23-input-controllers.md#rumble
 use std::collections::BTreeMap;
 
 /// Retail ticks the rumble controller with a 1/60 rate scale (the console cadence).
@@ -118,10 +114,7 @@ impl PadRumble {
     }
 }
 
-/// The device curve: a motor level (0..1) as a 16-bit motor speed. `wireless` = retail's test in `sub_8296D480`:
-/// capability type 1 and flags & 0x0002 (X_INPUT_CAPS_WIRELESS); every other pad takes the wired curve. Retail's
-/// order: curve, clamp to 0..1, exactly 0 stays 0, else trunc(v * 65535). So a wireless pad's motor 1 at level 0 is
-/// 0.05 * 65535 = 3276, as in retail.
+/// Device curve: motor level to 16-bit speed (8296D480; wireless vs wired curve, retail order): docs/hails-additions/23-input-controllers.md#rumble-device-curve
 pub fn motor_speed(motor: usize, level: f32, wireless: bool, tuning: &RumbleTuning) -> u16 {
     let v = match (wireless, motor) {
         (true, 0) => level.mul_add(tuning.pad_low[0], -tuning.pad_low[1]),

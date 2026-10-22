@@ -1,57 +1,5 @@
-//! Pedestrians, body tier (doc 26, peds milestone M2): turns the population's pedestrian spawn
-//! / despawn records into visible, animated peds with footstep audio.
-//!
-//! - **Look** ([`Pedestrian`]): the entity inside the census category and its model from the
-//!   spawn record's seed (`skate_core::living_world::peds::choice`, retail `sub_826B8B88` /
-//!   `sub_826BB058`), the model's tint pair (`sub_827B4170`), painted onto the body's mask
-//!   texels by [`present_ped_tints`] (retail's ped shader rule, `peds::colorize`). GLB `private/living_world/models/
-//!   <recipe>.glb` (both LODs, parts, textures), or a mod's GLB from [`PedLooks`].
-//! - **Animation** ([`PedBody`]): the ped animation player on the clips of
-//!   `PedestrianSkeletonPres.abin`, stepped once per population world tick (1/60 s, `clock::RETAIL_TICK_HZ`) so a ped's state is a
-//!   function of its spawn record and the population tick. Root motion moves the ped; it is
-//!   snapped to the ground below (a line query, like the audio's ground material probe).
-//!   The intent comes from navigation (M3, below); on a map without a navmesh a ped follows
-//!   [`TestPath`] (idle, walk a few metres, stop, turn round).
-//! - **Navigation** (milestone M3): the district's NavPower navmesh (`private/living_world/
-//!   navmesh.bin`, [`PedData::nav`]) and retail's `NoRoadWander` goal
-//!   (`skate_core::living_world::peds::wander`: probe fans 40 m / 10 m, A* + funnel corners,
-//!   re-target on arrival), ped-to-ped avoidance and separation, every step kept on walkable
-//!   polygons. Retail ambient peds never use crosswalks (the road branch of `Pedestrian.xml` is
-//!   unreachable in TU3); [`PedNavSettings::crosswalk`] = `WalkSignal` is a mod option that waits
-//!   for the walk light of the shared traffic signal clock.
-//! - **Dynamic obstacles** (fix 11, retail DynamicObject NavPower obstacles, see
-//!   `skate_core::living_world::peds::obstacles`): [`PedObstacles`] holds every prop (the
-//!   physics' prop bodies at their current pose, so a prop the player moved counts where it lies)
-//!   and every mod body. At rest they are cut out of the walkable area (re-cut after moving more
-//!   than a quarter of the smallest half extent, no cut while moving faster than 0.4 m/s or
-//!   carried); targets inside a cut do not fit, paths bend round cuts, and a body is never stepped
-//!   into ([`NavObstacles::resolve_step`]). Rules: [`LivingWorldSettings::ped_obstacles`]
-//!   (`sdk.world.set_tuning("living_world", {ped_obstacles = {...}})`).
-//! - **Skinning**: the GLB's 39 joints bind to the 50-bone rig by name (all match, data test);
-//!   bones the clips do not carry (fingers, face) follow their rig parent with the GLB's bind
-//!   offset. The skin matrix is `bone global x inverse(GLB bind)` with NO extra bone-local
-//!   basis: the ped GLBs keep the retail model's bind frames, which are the rig's reference
-//!   frames (data test `ped_glb_bind_frames_are_the_rig_reference_frames`), so the reference pose
-//!   skins to the bind mesh. The skater's `render_basis` (its GLBs bake a matching basis into the
-//!   bind) twisted every ped bone 90 degrees about its own axis (torso -90, legs +90 at the
-//!   hips): the pinched waist / warped peds of fix10. [`ped_bone_basis`] picks the basis per
-//!   model from its bind frames, so a mod GLB written the skater way still works.
-//! - **Draw fade** (retail `sub_827C1188`, `skate_core::living_world::peds::fade`): opaque up to
-//!   the model's first distance pair (45 m [data]) from the camera, gone at 55 m, plus a 1 s
-//!   spawn fade in; the opacity goes into [`NpcFade::alpha`](super::npc_skaters::NpcFade) and is
-//!   drawn by the shared NPC fade; at 0 the ped's scene is hidden. This is what keeps the census
-//!   cull (70 m, a pure distance test) out of sight, as in retail.
-//! - **LOD** (placeholder, the LOD pick is not decoded): `LOD0` within 45 m, `LOD1` beyond 55 m,
-//!   hysteresis between; with the fade above `LOD1` only shows while fading.
-//! - **Audio**: [`PedAudio`](crate::world_audio::PedAudio) with the model's voice, the clip's
-//!   `LEFTTOEDOWN` / `RIGHTTOEDOWN` windows as `feet_down` and `BODYFALLTYPE` as `body_fall`, so
-//!   #32's ped footsteps and body falls play.
-//! - **Events** for engine systems and the planned `sdk.living_world`: [`PedEvent`].
-//!
-//! Moddability: [`PedLooks`] (category entity lists, entity -> model / animation set, recipe ->
-//! GLB path) is the one place overrides go; restoring `PedLooks::default()` undoes a mod (new
-//! spawns use retail looks again). Multiplayer: nothing here decides a spawn; a client rebuilds
-//! the same ped from the same `SpawnRecord` and tick.
+//! Pedestrians, body tier: spawn records -> visible, animated, navigating peds with footstep audio.
+//! Details: docs/hails-additions/26f-living-world-peds.md#ped-body-tier
 
 use super::{LivingWorldDespawn, LivingWorldSettings, LivingWorldSpawn, PopulationState};
 use crate::world_audio::PedAudio;
@@ -414,24 +362,38 @@ const STILL_REPORTS_PER_TICK: u32 = 1;
 /// Diagnostics: a ped that has not moved for 5 s logs `PED_STILL` with everything about it (brain,
 /// mood, graph and plugin state, animation, navigation, conversation), then every 5 s while it
 /// stays; a report identical to the previous one logs a short line.
+/// A ped with a nav target that stays within this distance logs `PED_NAV_STALL` (walking in place: b511), m.
+const STALL_RADIUS: f32 = 0.5;
+
+/// Moves the watch's anchor when the ped left `radius`; else the tick it has been within it since, once a report is due.
+fn watch_due(watch: &mut StillWatch, at: [f32; 3], radius: f32, tick: u64) -> Option<u64> {
+    let moved = watch.anchor.is_none_or(|(p, _)| (p[0] - at[0]).hypot(p[2] - at[2]) > radius || (p[1] - at[1]).abs() > radius);
+    if moved {
+        watch.anchor = Some((at, tick));
+        watch.due = tick + STILL_REPORT_TICKS;
+        watch.last.clear();
+        return None;
+    }
+    (tick >= watch.due).then(|| watch.anchor.map_or(tick, |a| a.1))
+}
+
 fn log_still_ped(ped: &Pedestrian, body: &PedBody, mind: &mut PedMind, state: &str, conversations: &BTreeMap<u64, skate_core::living_world::peds::conversation::Conversation>, tick: u64, budget: &mut u32) {
     let at = body.position.to_array();
-    let still = &mut mind.still;
-    let moved = still.anchor.is_none_or(|(p, _)| (p[0] - at[0]).hypot(p[2] - at[2]) > STILL_RADIUS || (p[1] - at[1]).abs() > STILL_RADIUS);
-    if moved {
-        still.anchor = Some((at, tick));
-        still.due = tick + STILL_REPORT_TICKS;
-        still.last.clear();
-        return;
-    }
-    let since = still.anchor.map_or(tick, |a| a.1);
-    if tick < still.due || *budget == 0 {
+    let still_since = watch_due(&mut mind.still, at, STILL_RADIUS, tick);
+    let stall_since = if body.nav.target.is_some() {
+        watch_due(&mut mind.stall, at, STALL_RADIUS, tick)
+    } else {
+        mind.stall = StillWatch::default();
+        None
+    };
+    // A ped still for a full report period is PED_STILL's, not a stall.
+    let still_long = mind.still.anchor.is_some_and(|a| tick >= a.1 + STILL_REPORT_TICKS);
+    let stall_since = stall_since.filter(|_| !still_long);
+    if (still_since.is_none() && stall_since.is_none()) || *budget == 0 {
         return;
     }
     *budget -= 1;
-    still.due = tick + STILL_REPORT_TICKS;
     let me = ped.id.to_u64();
-    let seconds = (tick - since) as f32 / 60.0;
     let member = conversations.values().find(|c| c.members.iter().any(|m| m.ped == me));
     let near = conversations.values().filter(|c| (c.center[0] - at[0]).hypot(c.center[2] - at[2]) < 5.0).map(|c| (c.id, c.state, c.members.len())).collect::<Vec<_>>();
     let conversation = member.map(|c| format!("member of {} state={} speaker={} members={:?} row={:?}", c.id, c.state, c.speaker, c.members, c.row));
@@ -469,11 +431,16 @@ fn log_still_ped(ped: &Pedestrian, body: &PedBody, mind: &mut PedMind, state: &s
         mind.chase_goal,
         mind.mood,
     );
-    if report == still.last {
-        info!("PED_STILL ped=#{} at=[{:.2}, {:.2}, {:.2}] still={seconds:.0}s unchanged tick={tick}", ped.id.serial, at[0], at[1], at[2]);
-    } else {
-        info!("PED_STILL ped=#{} at=[{:.2}, {:.2}, {:.2}] still={seconds:.0}s {report} tick={tick}", ped.id.serial, at[0], at[1], at[2]);
-        still.last = report;
+    for (kind, since, watch) in [("PED_STILL", still_since, &mut mind.still), ("PED_NAV_STALL", stall_since, &mut mind.stall)] {
+        let Some(since) = since else { continue };
+        watch.due = tick + STILL_REPORT_TICKS;
+        let seconds = (tick - since) as f32 / 60.0;
+        if report == watch.last {
+            info!("{kind} ped=#{} at=[{:.2}, {:.2}, {:.2}] still={seconds:.0}s unchanged tick={tick}", ped.id.serial, at[0], at[1], at[2]);
+        } else {
+            info!("{kind} ped=#{} at=[{:.2}, {:.2}, {:.2}] still={seconds:.0}s {report} tick={tick}", ped.id.serial, at[0], at[1], at[2]);
+            watch.last = report.clone();
+        }
     }
 }
 
@@ -885,12 +852,7 @@ pub(crate) fn apply_ped_records(
                 at = Vec3::from_array(p.position);
                 nav.poly = Some(p.poly);
             }
-            // The census ring point carries the observer's height, not the floor's
-            // (census::ring_point). Where the navmesh has no floor within locate_height of it
-            // (the player on a ledge, ramp or roof), the ped kept that height and hung in the air
-            // or under the ground (2026-10-06 sessions: 32 of 34 and 44 of 44 PED_FLOATING peds had
-            // no navmesh polygon). Release the spawn like an unresolved look; the census tries
-            // another point next pass. Not retail yet: retail's spawn validation is not decoded.
+            // The census ring point carries the observer height; with no navmesh floor near it, release the spawn: docs/hails-additions/26f-living-world-peds.md#ped-spawn-without-floor
             None if data.nav.is_some() => {
                 events.write(PedEvent::Rejected { id: s.id, category: category.clone() });
                 rejected.0.push(s.id);
@@ -1087,11 +1049,7 @@ pub(crate) fn advance_peds(
                 let ignored = mind.and_then(|m| m.brain.ignore_collisions_with);
                 let rules = contact_rules(&set.collision, mind.is_some_and(|m| m.brain.heavy_collision_disabled));
                 let ignore_standing = mind.is_some_and(|m| m.brain.ignore_standing_collisions);
-                // The local skater meets a near ped's body in its own solve (`ped_body::push_ped_proxies`, group 11):
-                // the reaction comes from those contacts, as retail's comes from the Havok contact (b185). Before
-                // 2026-10-17 the distance test below knocked the ped down about 0.35 m before the bodies met and the
-                // body left the solve, so a fast hit never bailed the skater. Other skaters and peds without a body
-                // keep the distance test (NOT RETAIL).
+                // The local skater meets a near ped in its own solve (group 11, b185); others keep the distance test: docs/hails-additions/26f-living-world-peds.md#skater-vs-ped-contact
                 let local = PLAYER_TARGET_BASE;
                 let body_in_solve = skater_runtime.is_some() && settings.ped_body.enabled && !settings.ped_body.parts.is_empty()
                     && observers.observers.first().is_some_and(|o| Vec3::from_array(o.position).distance(body.position) <= settings.ped_body.range);
@@ -1103,10 +1061,7 @@ pub(crate) fn advance_peds(
                     // Retail reads the ped part's linear and angular speed after the solve (|v| / |w| > 3.0).
                     let runtime = skater_runtime.as_ref()?;
                     let mine = |h: &&(u64, [f32; 3], [f32; 2])| super::ped_body::proxy_serial(h.0) == Some(ped.id.serial);
-                    // On board and on foot the skeleton's solve reports each part it touched with the part's speed
-                    // after the solve (`skeleton_feedback::publish`). Any touch counts, but only the reaction part's
-                    // speed decides, whichever part was touched (retail: the torso; b283). Without it (no such part)
-                    // the fastest touched part decides (ours).
+                    // Any touched part counts; the reaction part's speed decides (retail: torso, b283), else the fastest part (ours).
                     let touched_max = runtime.ped_hits.iter().filter(mine).map(|h| {
                         info!("PED_BODY_CONTACT ped=#{} part={} part_speed={:.2} part_spin={:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2[0], h.2[1]);
                         h.2
@@ -1135,12 +1090,7 @@ pub(crate) fn advance_peds(
                 let touched = || pending.iter()
                     .filter(|c| c.touched == ped.id && ignored != Some(c.toucher.to_u64()))
                     .find_map(|c| ped_hit(body.position, body.heading, c.toucher_at, c.velocity, &rules, ignore_standing, settings.zombie).map(|h| (h, c.toucher.to_u64())));
-                // A takedown under way (AttemptTakeDownTargetable / WaitForTakedownDecision, both not interruptable and
-                // without a Colliding transition, `pedestrian_attempttakedowntargetable.xml`): retail's contact callback
-                // `82E38FB8` only stores the reaction, the touch of the target decides the takedown (`826A4BE8`) and
-                // success drops the stored reaction (`826A4E50`), so the attacker never falls from its own lunge (b317,
-                // laptop 2026-10-19). A contact by anyone else during the attempt is stored too and plays when the graph
-                // next reaches Colliding, after a failed takedown (`826A5068` leaves it stored; b326).
+                // A takedown under way stores contacts instead of reacting (82E38FB8, 826A4BE8, 826A4E50, b317 / b326): docs/hails-additions/26f-living-world-peds.md#takedown-contact-handling
                 let attempting = mind.is_some_and(|m| m.brain.takedown_active);
                 let attacking = |toucher: u64| attempting && mind.is_some_and(|m| m.brain.takedown_target == Some(toucher));
                 let contact = skater.or_else(touched).filter(|(_, t)| !attacking(*t));
@@ -1192,10 +1142,7 @@ pub(crate) fn advance_peds(
                     }
                 }
             }
-            // The behaviour graph stops the ped and faces a point (StopAndFaceWantTarget,
-            // watching, StandAndWatchSkater: speed suggestion 0.0 and the face point): stand and
-            // turn towards it at the nav's turn rate (ours until the motion graph's turn
-            // branches run), instead of the wander step.
+            // StopAndFaceWantTarget etc. (speed suggestion 0, face point): stand and turn at the nav turn rate (ours).
             let face = mind.filter(|m| m.brain.speed_suggestion == Some(0.0)).and_then(|m| m.brain.face);
             // LockToCurrentPosition: stand where the ped is (turning only for a face point).
             // DisableNavigation (ped `+5936` bit 0x80 clear): no navigation, the ped stands the same way.
@@ -1306,10 +1253,7 @@ pub(crate) fn advance_peds(
                     // layer such as a wall top (fix 17).
                     let from = body.position.to_array();
                     let moving = (to - body.position).length_squared() > 1e-10;
-                    // Already inside a prop's footprint (a prop that came to rest on or next to the ped, often its own
-                    // just-dropped hand prop; laptop 2026-10-19: peds walking in place for up to 29 s): every step into
-                    // the footprint was refused, so walk out toward its nearest free edge first and re-plan from there.
-                    // Ours; retail's cut mesh never has a ped inside a cut (b349).
+                    // Inside a prop footprint: walk out toward its nearest free edge, then re-plan (ours; b349).
                     let inside = moving && mind.is_none_or(|m| !m.brain.ignore_source_collision) && obstacles.blocked(from, mesh.agent[1]);
                     let mut to = to;
                     if inside {
@@ -1340,11 +1284,7 @@ pub(crate) fn advance_peds(
                         }
                         None => (next, false),
                     };
-                    // A step that slides along an edge is applied however short the slide is: retail's mover
-                    // (`82EA5C40`, up to 10 sub-steps of `82EA4C20`) projects the velocity onto a boundary edge it hits
-                    // and moves along it; head-on the projection is zero and the ped stands on the edge. It has no
-                    // progress ratio. Ours refused a slide under 25 % of the wanted step, which pinned peds walking
-                    // into a wall at an angle (b311, b331; a recomp run of 2026-10-19 never saw a retail ped pinned, b325).
+                    // A sliding step is applied however short, like retail's mover 82EA5C40 / 82EA4C20 (b311, b331, b325): docs/hails-additions/26f-living-world-peds.md#edge-slide-step
                     let blocker = separation_blocker(body.position.to_array(), next, me, &neighbours, mesh.agent[1]);
                     let ok = on_mesh && clear && blocker.is_none() && crosswalk_ok(mesh, nav_settings.crosswalk, signals, body.position.to_array(), next);
                     // Refused by another ped: the two bodies touch; both react to the other on their next step.
@@ -1405,19 +1345,9 @@ pub(crate) fn advance_peds(
                 events.write(PedEvent::State { id: ped.id, state: s });
             }
         }
-        // The render ground: a line query round the navmesh height. It never feeds back into the
-        // navigation position (fix 17). Until 2026-10-19 the upward reach was the NavPower step
-        // height (0.2 m) after peds were drawn on awnings in the 2026-10-06 session; retail's probe
-        // reaches 1.6 m both ways, and b358 found no overhead hit within 1.6 m on any map. Retail's
-        // own ped render placement (who writes the ped matrix y, `82E221B0`) is not decoded (b360).
+        // Render ground: a line query round the navmesh height, never fed back into navigation (fix 17): docs/hails-additions/26f-living-world-peds.md#ped-render-ground
         let mut shown = body.position;
-        // Retail's NavPower mover probe (`82EA5F48`) [code, b359]: cast 1 from point + L to point - L, with L the probe
-        // settings' length, 1.6 m on every ped call measured in the recomp [trace, 2026-10-19]; after a miss
-        // (`0x82257308` 4.0) cast 2 runs UP from the point to point + 4L and its end (a ceiling, if hit) is the top of
-        // cast 3, which runs down to point - 4L. Coarse navmesh triangles sit up to 1.7 m above the pavement
-        // (DownTown poly 7376) and up to 4.3 m under the road (b358); retail's peds always stand on the floor (user
-        // 2026-10-19: "Peds dont ... sink into the ground.. ever"). b358: an upward reach of 1.6 m takes no overhead
-        // geometry on any map.
+        // Retail NavPower mover probe 82EA5F48 (b359, b358): 1.6 m casts, then up / down 4L after a miss: docs/hails-additions/26f-living-world-peds.md#ped-ground-probe-82ea5f48
         let reach = GROUND_PROBE_LENGTH;
         if let Some(y) = ground(physics.as_deref(), body.position, reach, reach).or_else(|| {
             let wide = reach * GROUND_RETRY_FACTOR;
@@ -1427,10 +1357,7 @@ pub(crate) fn advance_peds(
             shown.y = y;
         }
         transform.translation = shown;
-        // Floating check, always on (2026-10-06: floating peds reported four times with nothing in
-        // the log). Every 2 s per ped, staggered: a deep probe finds the floor under the drawn ped;
-        // drawn more than 0.3 m above it, or over no floor, logs PED_FLOATING with the position,
-        // navmesh polygon and its area code (once per ped per 10 s).
+        // PED_FLOATING check every 2 s per ped (staggered): drawn over 0.3 m above the floor or over none; once per 10 s.
         if (body.ticks + ped.id.serial as u64) % 120 == 0 {
             let floor = ground(physics.as_deref(), shown, 0.2, 30.0);
             // No floor below but one just above: the ped is drawn sunk, not floating (b351); logged with a
@@ -1560,11 +1487,7 @@ pub(crate) struct PedTinted;
 #[derive(Resource, Default)]
 pub(crate) struct PedMaterials(BTreeMap<(AssetId<StandardMaterial>, [u32; 8]), AssetId<StandardMaterial>>);
 
-/// Whether a ped GLB material gets the tint: its retail material type from the export's
-/// material extras (`{"shader": "pedestrian_high_stamp"}`, `colorize::colorized_shader`); for
-/// a GLB exported before the type was written (no extras), the body slot `Rostral_*` (every
-/// shipped ped body is `pedestrian_high_stamp` / `pedestrian_low` [data]; only one ped hair uses
-/// the ped shader and is missed by this fallback until the next export).
+/// Whether a ped GLB material gets the tint (shader extras, else body slot `Rostral_*`): docs/hails-additions/26f-living-world-peds.md#ped-material-tint-rule
 pub(crate) fn ped_material_colorized(name: Option<&str>, extras: Option<&str>) -> bool {
     match extras {
         Some(json) => serde_json::from_str::<serde_json::Value>(json)
@@ -1642,10 +1565,7 @@ pub(crate) fn reference_globals(rig: &PedRig) -> Vec<Mat4> {
     PedEvaluator::globals(rig, &locals).into_iter().map(crate::animation::native_matrix).collect()
 }
 
-/// The bone-local basis between a ped GLB's joint frames and the rig's: the candidate (identity,
-/// the retail ped GLBs; or the skater GLB convention `render_basis`) whose
-/// `reference x basis` is closest in rotation to the GLB bind over the matched bones. Identity
-/// for every shipped ped model (data test); a pure function of the model, so deterministic.
+/// Bone-local basis between a ped GLB's joint frames and the rig (identity for shipped peds): docs/hails-additions/26f-living-world-peds.md#ped-bone-basis
 pub(crate) fn ped_bone_basis(reference: &[Mat4], glb_bind: &BTreeMap<usize, Mat4>) -> Mat4 {
     let angle = |a: Mat4, b: Mat4| {
         let (qa, qb) = (Quat::from_mat4(&a).normalize(), Quat::from_mat4(&b).normalize());
@@ -1687,10 +1607,7 @@ pub(crate) fn ped_globals(rig: &PedRig, body: &PedBody, clips: &dyn PedClips, ah
     Some(g)
 }
 
-/// Drawn ped opacity with the NPC draw distance (QoL, not retail): the fade pair (model pair or
-/// the configured default) x the multiplier, so the fade keeps ending before the scaled census
-/// cull. At retail (1x) the pair is used as is. The LOD distances stay retail (far peds keep the
-/// cheaper LOD).
+/// Drawn ped opacity with the NPC draw distance multiplier (QoL, not retail); LOD distances stay retail.
 pub(crate) fn ped_draw_alpha(settings: &LivingWorldSettings, pair: Option<[f32; 2]>, distance: f32, since_spawn: f32) -> f32 {
     let dd = settings.draw_distance();
     if dd.is_retail() {
@@ -1925,6 +1842,7 @@ pub(crate) struct PedMind {
     log_repeats: LogRepeats,
     /// Where the ped stopped and since when, for the still-ped report (`log_still_ped`).
     still: StillWatch,
+    stall: StillWatch,
 }
 
 /// A ped that has not moved: where, since which tick, the next tick a report is due, and the
@@ -2137,11 +2055,7 @@ pub(crate) fn think_peds(
     let Some(graph) = data.graph.as_deref() else { return };
     // The honking cars' pose for RunFromHonker (`826A1358` looks the car up every frame): position and forward.
     let car_pose: BTreeMap<u64, ([f32; 3], [f32; 3])> = cars.iter().map(|(c, m)| (c.id.to_u64(), (m.curr.translation.to_array(), (m.curr.rotation * Vec3::Z).to_array()))).collect();
-    // Collisions from the skater contact of the last steps (`PedEvent::Hit`): retail posts
-    // `collision` to every receiver (broadcast radius 0 = unlimited); a ped that was not the one
-    // hit fails its "ped itself" prerequisite and records `nearbycollision` instead
-    // (`sub_82E41060`). The instigator is the ped's last toucher (the contact record `+3184`), kept until its
-    // Colliding state begins.
+    // Skater contact collisions (`PedEvent::Hit`) broadcast; non-hit peds record `nearbycollision`: docs/hails-additions/26f-living-world-peds.md#ped-collision-broadcast
     let cursor = cursor.get_or_insert_with(|| events.get_cursor());
     // A reacting contact sets the hit ped's collision component (`sub_82E38FB8`: needs-to-begin); the mood broadcast
     // waits for its Colliding state to begin (`PedEvent::Colliding`), so a ped whose state does not allow Colliding
@@ -2209,11 +2123,7 @@ pub(crate) fn think_peds(
                 let mut seats_moved = false;
                 for (w, a) in prop.waypoints.iter_mut().zip(&original.waypoints) {
                     let (position, facing) = super::ped_plugins::follow_prop(a.position, a.facing, spawn, now);
-                    // A seat whose prop moves (grabbed, pushed, knocked): retail keeps the ped's plugin and seat
-                    // (research b102). The owned object reporting a move to its seated ped (`82E3DBE0`: |v|^2 > 2.5e-5,
-                    // `0x822F8BE0`) makes it jump off forward; the graph then walks it to the seat's new place and sits
-                    // it again (the locked waypoint is re-read every evaluation, `826AB9C0`). The seat's own speed stands
-                    // in for the object's vector: its move over one step of `SEAT_PUSH_STEP_SECONDS`.
+                    // A seat whose prop moves: the seated ped jumps off and re-sits (b102, 82E3DBE0, 826AB9C0): docs/hails-additions/26f-living-world-peds.md#moving-seat
                     let step = (0..3).map(|k| (position[k] - w.position[k]).powi(2)).sum::<f32>().sqrt();
                     seats_moved |= step > 1e-3;
                     let speed = step / dt.max(1e-4);
@@ -2229,10 +2139,7 @@ pub(crate) fn think_peds(
                     }
                     (w.position, w.facing) = (position, facing);
                 }
-                // The DMO's plugin check (`82C56DB0`, b136 / b137): moved more than its type's max distance, or turned
-                // past its per-axis tolerance -> off (seated peds evicted); else each seat must stand on pavement navmesh.
-                // NOT RETAIL YET: when retail runs it (DMO vtable +264's caller) is open, likely on a move / settle
-                // message; ours every think, only for a prop away from its authored pose.
+                // DMO plugin check 82C56DB0 (b136 / b137); when retail runs it is open (NOT RETAIL YET): docs/hails-additions/26f-living-world-peds.md#dmo-plugin-check
                 use skate_core::living_world::peds::plugins::{check_prop, seats_in_water, PropCheck, ROTATION_EPSILON};
                 let moved = (0..3).any(|k| (now.0[k] - spawn.0[k]).abs() > 1e-3)
                     || (0..3).any(|c| (0..3).any(|r| (now.1[c][r] - spawn.1[c][r]).abs() > ROTATION_EPSILON));
@@ -2384,10 +2291,7 @@ pub(crate) fn think_peds(
         g.chasers.retain(|c| entities.contains_key(c));
     }
     chase_groups.0.retain(|chasee, g| !g.chasers.is_empty() && entities.contains_key(chasee));
-    // Conversations: members that left the world leave (an unfinished conversation aborts); an area whose last
-    // member left is gone (`82E1D470` -> `82E1BD08`). An area nobody joined yet stays, as retail's does (b348): it
-    // can still gather passers-by and its 50 m exclusion stops the next spawn; removing it re-spawned an area every
-    // tick (DownTown frame-time run 2026-10-19: 0.4 to 1.4 s hitches).
+    // Conversations: members leave, an emptied area goes (82E1D470 -> 82E1BD08); an unjoined area stays (b348).
     for (id, p, members) in leave_despawned(&mut conversations.map, &|p| entities.contains_key(&p)) {
         info!("PED_CONVERSATION id={id} leave ped={p} result=despawned members={members} tick={tick}");
     }
@@ -2715,10 +2619,7 @@ pub(crate) fn think_peds(
                     mind.refusals.remember(skate_core::living_world::peds::plugins::conversation_key(id), &plugin_props.settings);
                 }
             }
-            // `82E3DBE0`: the seated owner (OwnPluginObject, `brain+3277` bit 0x01) of a moving object jumps off forward:
-            // intent Avoid / Jump / Forward -> motiongraph_avoid SitJump -> JumpForward `SitAvoidFwd` (blend 0.1), speech
-            // PedestrianAvoidJump (4). The gate `[ped+5712]+1416 == 0` is not decoded (taken as open).
-            // The body plays it (`advance_peds`) while the flag is up.
+            // 82E3DBE0: the seated owner of a moving object jumps off forward (SitAvoidFwd): docs/hails-additions/26f-living-world-peds.md#seated-owner-jump-off
             let anim = body.player.reaction_anim();
             let seated = mind.brain.own_plugin_object && anim == Some(SIT_CYCLE);
             if seat_pushed.contains(&me) && seated && !mind.sit_avoid {
@@ -2830,10 +2731,7 @@ pub(crate) fn think_peds(
                 Some((i, ..)) => plugin_props.props.get(i).and_then(|p| Some((p.class.clone(), data.plugin_graphs.get(&p.class)?))).map(|(k, g)| (k, &**g)),
                 None => data.conversation_graph.as_deref().map(|g| (CONVERSATION_GRAPH.to_owned(), g)),
             };
-            // Leaving the Plugin state, or moving to another plugin graph, first ends the old graph's active behaviours:
-            // the Plugin behaviour's End (`8269F310` -> `82E0CFA0`, controller vtable +0x10 = EndAllBehaviours
-            // `82C13498`). So the sit body's End removes its packet (Sit2Stand plays) and OwnPluginObject /
-            // IgnoreStandingCollisions / LockToCurrentPosition clear as in retail (b300).
+            // Leaving Plugin ends the old graph's behaviours (8269F310 -> 82E0CFA0 -> 82C13498, b300): docs/hails-additions/26f-living-world-peds.md#plugin-behaviour-end
             let next_key = plugin_graph.as_ref().filter(|_| mind.brain.in_plugin).map(|(k, _)| k.as_str());
             if let (Some(old_key), Some(pc)) = (mind.plugin_graph.clone(), mind.plugin_controller.as_mut()) {
                 let old = if old_key == CONVERSATION_GRAPH { data.conversation_graph.as_deref() } else { data.plugin_graphs.get(&old_key).map(|g| &**g) };
@@ -3020,13 +2918,17 @@ pub(crate) fn think_peds(
                         info!("PED_GREET ped=#{} target={target} tick={tick}", ped.id.serial);
                         continue;
                     }
-                    // SpawnConversationArea (`826A6CD8`): none within 50 m of another; 3 m ahead (no check there);
-                    // the starter and its target join. The waypoint generator (`82E1D620`, b134) drops the centre
-                    // with a +-3 m world ray (`82E166C0`; a miss = no waypoints) and keeps the waypoints only when
-                    // all land on low-cost navmesh (no roads): an area without waypoints dissolves.
+                    // SpawnConversationArea 826A6CD8 and its waypoint generator 82E1D620 (b134): docs/hails-additions/26f-living-world-peds.md#spawn-conversation-area
                     ChaseRequest::SpawnConversation { target: partner } => {
                         let near = conversations.map.values().any(|c| (c.center[0] - at[0]).powi(2) + (c.center[2] - at[2]).powi(2) < conv_params.exclusion * conv_params.exclusion);
-                        if !near && target(partner).is_some() {
+                        let has_target = target(partner).is_some();
+                        // Refused starts are logged (5 s per ped and reason): a ped retrying every 2 ticks was invisible (b511).
+                        if near || !has_target {
+                            if let Some(held) = mind.log_repeats.allow(0x434f_4e56 ^ u64::from(near), tick) {
+                                info!("PED_CONVERSATION start ped=#{} with={partner} refused: {} held={held} tick={tick}", ped.id.serial, if near { "another conversation within the exclusion radius" } else { "no target" });
+                            }
+                        }
+                        if !near && has_target {
                             let ahead = [at[0] + body.heading.sin() * conv_params.ahead, at[1], at[2] + body.heading.cos() * conv_params.ahead];
                             // Without a physics world (tests) the centre is used as it is.
                             let center = match physics.as_deref() {
@@ -3048,7 +2950,9 @@ pub(crate) fn think_peds(
                             // No waypoints (the ground ray missed, or a waypoint off cheap navmesh): retail destroys the area
                             // at once and offers nobody (`82E1D620`, area vfunc 6; b348).
                             if c.waypoints.is_empty() && data.nav.is_some() {
-                                debug!("PED_CONVERSATION id={id} start ped=#{} with={partner} no waypoints (grounded={}): not spawned tick={tick}", ped.id.serial, center.is_some());
+                                if let Some(held) = mind.log_repeats.allow(0x434f_4e57, tick) {
+                                    info!("PED_CONVERSATION id={id} start ped=#{} with={partner} no waypoints (grounded={}): not spawned held={held} tick={tick}", ped.id.serial, center.is_some());
+                                }
                                 continue;
                             }
                             // The founders go through the area's offer test (`826A6CD8` -> manager slot 13 `826BFE18`, its
@@ -3232,7 +3136,7 @@ pub(crate) fn think_peds(
                         }
                     }
                     _ => {
-                        body.nav.set_route(one_point(p));
+                        body.nav.set_approach_route(p);
                         mind.approach_route = true;
                     }
                 }
@@ -3255,12 +3159,7 @@ pub(crate) fn think_peds(
             }
             (Some(skate_core::living_world::peds::brain::motion::INTERCEPT), Some(chasee), Some(mesh)) => {
                 use skate_core::living_world::peds::chase;
-                // InterceptChasee Update (`826A3BF0`, b306, recomp-checked tail `loc_826A3F08`): every think the mover
-                // gets a destination. The chasee position, unless the ped and the chasee are reachable (`82C465A8`)
-                // and the solver finds an intercept: then the lead point, on the mesh where it projects (`82C460E0`),
-                // else as it is. A swimmer is handed over as it is (no snap onto the bank), so the reachability check
-                // below fails. The body's route only follows a destination on the mesh (a path request to an off-mesh
-                // point keeps the old path, `82E957F8`).
+                // InterceptChasee Update 826A3BF0 (b306): destination each think: docs/hails-additions/26f-living-world-peds.md#intercept-chasee
                 let here = mesh.locate(at);
                 if let Some(q) = target(chasee) {
                     let chasee_poly = mesh.locate(q).map(|p| p.poly);
@@ -3279,10 +3178,7 @@ pub(crate) fn think_peds(
                     }
                     mind.chase_goal = Some(destination);
                 }
-                // CannotReachChaseTarget (`82E31D58`, b108 / b302): every 10 mover updates the mover checks that its
-                // destination and the ped are on the navmesh and connected. An unreachable report rewrites the bit to
-                // "within 5 m flat of the chasee"; a reachable one leaves it, so a chasee climbing back onto the mesh
-                // does not end the wait.
+                // CannotReachChaseTarget 82E31D58 (b108 / b302): reachability check every 10 mover updates: docs/hails-additions/26f-living-world-peds.md#cannot-reach-chase-target
                 mind.reach_clock += dt;
                 if let Some(q) = target(chasee).filter(|_| mind.reach_clock >= settings.ped_brain.values.reach_check_seconds) {
                     mind.reach_clock = 0.0;
@@ -3408,3 +3304,22 @@ pub(super) fn sync_nav_settings(settings: Res<super::LivingWorldSettings>, mut n
     }
 }
 
+
+#[cfg(test)]
+mod stall_tests {
+    use super::*;
+
+    /// b511: a ped creeping 0.3 m over minutes never counted as still (0.1 m); the 0.5 m stall watch reports it after
+    /// the report period, and a real step resets it.
+    #[test]
+    fn a_ped_walking_in_place_is_due_for_a_stall_report() {
+        let (mut still, mut stall) = (StillWatch::default(), StillWatch::default());
+        let mut due = (None, None);
+        for tick in 0..=STILL_REPORT_TICKS {
+            let at = [101.0 + 0.3 * (tick as f32 / STILL_REPORT_TICKS as f32), 64.4, -295.7];
+            due = (watch_due(&mut still, at, STILL_RADIUS, tick), watch_due(&mut stall, at, STALL_RADIUS, tick));
+        }
+        assert_eq!(due, (None, Some(0)), "not still (0.3 m > 0.1 m), stalled since tick 0");
+        assert_eq!(watch_due(&mut stall, [102.0, 64.4, -295.7], STALL_RADIUS, STILL_REPORT_TICKS + 1), None, "a step resets it");
+    }
+}

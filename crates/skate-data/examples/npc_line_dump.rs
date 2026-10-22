@@ -1,6 +1,4 @@
-//! Prints the nodes of one ambient NPC skater line, for reading a stall or a bad jump in a session log
-//! (`NPC_SKATER_STUCK ... at node N`, the line id from `NPC_SKATER_BACKWARDS ... line <hex>`).
-//! Data-only: no Bevy, physics or window.
+//! Prints the nodes of one ambient NPC skater line (for NPC_SKATER_STUCK / _BACKWARDS log lines). Data only.
 //! usage: npc_line_dump <assets>/private/living_world/skater_paths/<District>.bin <line id hex> [first node] [last node]
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);

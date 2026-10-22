@@ -1,22 +1,5 @@
-//! Skater fade-in after every placement ("ghost"), TU3 sub_82594488.
-//!
-//! Retail keeps a fade-in timer in seconds per skater placement component (owner +1868). The
-//! place-skater handler sub_825926F8 sets it to 0 (and counts the placement, +1864); the
-//! component constructor sub_82590DC0 starts it at 0 too, so a fresh skater fades in. Each tick
-//! sub_82594488(owner, dt) publishes the opacity (record +190 = opacity * 255, read by the
-//! character shaders as `i_params.x`) and then adds dt:
-//! - timer < 1: opacity = clamp(timer, 0, 1), and the timer stays put while state byte 71 is
-//!   set and timer > 0.68 (0x82099764),
-//! - else a fade-out timer (+1872, constructor FLT_MAX = off) would apply; nothing in our port
-//!   starts it,
-//! - else 1.0.
-//!
-//! Generalised for mods: opacity = clamp(timer / fade_in_seconds, 0, 1) and the hold compares
-//! the opacity with `hold_alpha` (retail 1.0 s and 0.68, where both forms are the same).
-//! Time-based, so the curve is the same at any tick rate.
-//!
-//! NOT RETAIL YET: who sets state byte 71 (the 0.68 hold) is undecoded; hosts pass `hold =
-//! false`.
+//! Skater fade-in after every placement ("ghost"), TU3 82594488 (timer +1868, set by 825926F8).
+//! Retail rule and the mod generalisation: docs/hails-additions/26c-living-world-npc-skaters.md#ghost-fade-rule
 
 /// Longest fade a mod may ask for (s); also where the timer stops counting.
 pub const MAX_FADE_IN_SECONDS: f32 = 60.0;

@@ -257,10 +257,7 @@ fn step_check_lets_a_ped_out_of_a_prop_pushed_onto_it() {
     assert!(o.step_ok([1.0, 0.0, 0.0], [0.5, 0.0, 0.0], 0.35));
 }
 
-/// A prop held by Move Object stays an obstacle (retail: the hold only sets DMO+4464 bit 0x20, which
-/// the obstacle code never reads; the off gate is the separate word +144+4252): cut while held
-/// still, solid for a ped's step while dragged faster than 0.4 m/s, and the mod switch restores
-/// the earlier "held = ignored" rule.
+/// A held prop stays an obstacle (hold sets only DMO+4464 0x20): cut when still, solid when dragged; mod switch.
 #[test]
 fn held_prop_stays_an_obstacle() {
     let mut o = NavObstacles::new(ObstacleParams::default());

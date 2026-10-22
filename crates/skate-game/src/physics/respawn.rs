@@ -82,10 +82,7 @@ pub(crate) struct PlayerRespawn {
     pub air_frames: i32,
 }
 
-/// Respawn tuning a host setting or a mod (`sdk.world.set_tuning('respawn', ...)`) changes.
-/// `default()` = retail (mod disable). Pushed into the live selector before each physics tick,
-/// so a map load (new skater) keeps it. The wipeout auto-reset times stay vault data
-/// (`physics_wipeout` Teleport*).
+/// Respawn tuning (`set_tuning('respawn')`); `default()` = retail; wipeout auto-reset times stay vault data.
 #[derive(bevy::prelude::Resource, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RespawnSettings {
     /// Air ticks (1/60 s) before the checkpoint teleport request; retail 300 (5 s).

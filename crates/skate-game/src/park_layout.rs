@@ -1,19 +1,5 @@
-//! skate.Park layouts: the pieces a park world places on its stream (setup `tools/asset_pipeline/park_layout.py`,
-//! research b424 / b425 / b430 / b431, doc 38 "skate.Park layouts").
-//!
-//! A world row (`dist_megapark_full`) names a `.park` layout; setup writes each layout as a render-only MOBJ package
-//! `private/park-layouts/<layout>.skate`, its sidecar `<layout>.json` (instances, per-template collision and rails,
-//! the movable pieces) and `worlds.json` {world row: {layout, stream}}. Retail keeps every static piece as its own
-//! object: it collides through a per-piece static set of the physics world (b431 section 2) and grinds on its
-//! template's splines posed once by the piece matrix (82868860 -> 82C1F098, b431 section 1), and both are rebuilt when
-//! a layout is applied. Ours: the map load carries the chosen layout (an in-memory [`EXTENSION_TAG`] extension on the
-//! loaded map, never written to a file), physics appends the posed piece triangles to the static world as one query
-//! range per piece and the posed rails to the static rail provider as one asset per piece, and the renderer spawns the
-//! pieces as [`ParkPiece`] entities. A layout change is a map load (NOT RETAIL: retail re-applies a layout in place;
-//! the outcome, the new pieces colliding and grinding, is the same).
-//!
-//! Moddable: a mod ships its own `<layout>.skate` / `.json` and `worlds.json` row (the same shapes); the world row
-//! choice is part of the serialisable map request ([`crate::map_library::Entry::world`]).
+//! skate.Park layouts: the pieces a park world places on its stream.
+//! docs/hails-additions/39-skatepark-layouts.md#code-reference-park_layoutrs
 use bevy::prelude::*;
 use serde::Deserialize;
 use skate_data::skate_map::{Extension, SkateMap};
@@ -147,12 +133,12 @@ pub(crate) struct Pieces {
     pub ranges: Vec<std::ops::Range<usize>>,
     pub materials: Vec<skate_data::skate_map::Material>,
     pub rails: Vec<PieceRails>,
-    /// The distance (m) within which the fused pieces' vertices merge (b478: the fuse builder's 0.01 default at
-    /// `82872810`; which of its defaults is the vertex merge is inferred). Data: the layout sidecar's `fuse_weld`.
-    pub weld: f32,
+    pub fuse: FuseRules,
     /// Per range: the piece stays out of the fused set (retail piece flag 2 from the recipe's `IgnoreFuser` cap,
     /// 828662B8 record +0x10; research b482). Data: the sidecar instance's `caps.IgnoreFuser`.
     pub unfused: Vec<bool>,
+    /// Per collision triangle.
+    pub tags: Vec<crate::skate_world::FuseTag>,
 }
 
 /// A recipe cap counts as set as retail reads its byte (neither 0 nor 0xFF): `True` (or a number other than 0 / 255);
@@ -181,15 +167,109 @@ fn ignore_fuser_ids(sidecar: &Path) -> std::collections::HashSet<u32> {
 /// Retail's fuse builder default (b478), used when a layout sidecar names no `fuse_weld`.
 pub(crate) const FUSE_WELD: f32 = 0.01;
 
-/// The sidecar's `fuse_weld` (a positive distance in metres), else [`FUSE_WELD`].
-fn fuse_weld(sidecar: &Path) -> f32 {
-    std::fs::read(sidecar)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v["fuse_weld"].as_f64())
-        .map(|w| w as f32)
-        .filter(|w| w.is_finite() && *w > 0.0)
-        .unwrap_or(FUSE_WELD)
+/// docs/hails-additions/39-skatepark-layouts.md#fused-edge-bytes-and-vertex-bits
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FuseRules {
+    pub weld: f32,
+    pub concave_tolerance: f32,
+    pub coplanar: f32,
+    pub in_plane: f32,
+    pub below_plane: f32,
+    pub wedge_slack: f32,
+    pub quad_first_half_only: bool,
+    pub ground_planes: [Option<FusePlane>; 6],
+    pub plane_distance: f32,
+    pub plane_normal: f32,
+    pub plane_score_limit: f32,
+    pub mesh_floor_pass: bool,
+    pub mesh_floor_gap: f32,
+    pub mesh_floor_up: [f32; 3],
+}
+
+/// A ground plane of the fuser's plane pass; `min == max == 0` = unbounded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FusePlane {
+    pub normal: [f32; 3],
+    pub d: f32,
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+/// The fuser job's plane tolerances (job +4 / +8 / +12, read in the recomp at 82874248).
+pub(crate) const PLANE_DISTANCE: f32 = 0.05;
+pub(crate) const PLANE_NORMAL: f32 = 0.01;
+pub(crate) const PLANE_SCORE_LIMIT: f32 = 0.1;
+/// job +0x10 (82099920).
+pub(crate) const MESH_FLOOR_GAP: f32 = 0.005;
+
+/// 827765C0: the plane a park gets when it names none.
+pub(crate) const DEFAULT_GROUND_PLANE: FusePlane = FusePlane { normal: [0.0, 1.0, 0.0], d: 0.0, min: [0.0; 3], max: [0.0; 3] };
+
+impl Default for FuseRules {
+    fn default() -> Self {
+        Self {
+            weld: FUSE_WELD, concave_tolerance: -0.2, coplanar: 0.01, in_plane: 0.05, below_plane: 0.15, wedge_slack: 0.05,
+            quad_first_half_only: true,
+            ground_planes: [Some(DEFAULT_GROUND_PLANE), None, None, None, None, None],
+            plane_distance: PLANE_DISTANCE,
+            plane_normal: PLANE_NORMAL,
+            plane_score_limit: PLANE_SCORE_LIMIT,
+            mesh_floor_pass: true,
+            mesh_floor_gap: MESH_FLOOR_GAP,
+            mesh_floor_up: [0.0, 1.0, 0.0],
+        }
+    }
+}
+
+/// The sidecar's `fuse_weld` and `fuse_rules` object, else the defaults.
+fn fuse_rules(sidecar: &Path) -> FuseRules {
+    let mut rules = FuseRules::default();
+    let Some(value) = std::fs::read(sidecar).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
+        return rules;
+    };
+    let number = |v: &serde_json::Value| v.as_f64().map(|x| x as f32).filter(|x| x.is_finite());
+    if let Some(weld) = number(&value["fuse_weld"]).filter(|w| *w > 0.0) {
+        rules.weld = weld;
+    }
+    let r = &value["fuse_rules"];
+    for (key, field) in [
+        ("concave_tolerance", &mut rules.concave_tolerance),
+        ("coplanar", &mut rules.coplanar),
+        ("in_plane", &mut rules.in_plane),
+        ("below_plane", &mut rules.below_plane),
+        ("wedge_slack", &mut rules.wedge_slack),
+        ("plane_distance", &mut rules.plane_distance),
+        ("plane_normal", &mut rules.plane_normal),
+        ("plane_score_limit", &mut rules.plane_score_limit),
+        ("mesh_floor_gap", &mut rules.mesh_floor_gap),
+    ] {
+        if let Some(x) = number(&r[key]) {
+            *field = x;
+        }
+    }
+    if let Some(b) = r["quad_first_half_only"].as_bool() {
+        rules.quad_first_half_only = b;
+    }
+    if let Some(b) = r["mesh_floor_pass"].as_bool() {
+        rules.mesh_floor_pass = b;
+    }
+    if let Some(list) = r["ground_planes"].as_array() {
+        let vec3 = |v: &serde_json::Value, or: [f32; 3]| {
+            v.as_array().filter(|a| a.len() == 3).and_then(|a| {
+                Some([number(&a[0])?, number(&a[1])?, number(&a[2])?])
+            }).unwrap_or(or)
+        };
+        rules.ground_planes = [None; 6];
+        for (slot, p) in rules.ground_planes.iter_mut().zip(list) {
+            *slot = Some(FusePlane {
+                normal: vec3(&p["normal"], DEFAULT_GROUND_PLANE.normal),
+                d: number(&p["d"]).unwrap_or(0.0),
+                min: vec3(&p["min"], [0.0; 3]),
+                max: vec3(&p["max"], [0.0; 3]),
+            });
+        }
+    }
+    rules
 }
 
 /// One piece's rails, posed once by its matrix (82C1F098).
@@ -203,7 +283,7 @@ pub(crate) fn load_pieces(assets: &Path, map: &SkateMap) -> Option<Pieces> {
     let layout = layout_of(map)?;
     let sidecar = directory(assets).join(format!("{layout}.json"));
     let shapes = crate::skate_world::load_collision_shapes(&sidecar);
-    let (collision, instances) = crate::skate_world::posed_collision(&package, &objects, &shapes);
+    let (collision, instances, tags) = crate::skate_world::posed_collision(&package, &objects, &shapes);
     let rails = match crate::skate_world::load_grind_rails(&sidecar) {
         Ok(Some(rails)) => objects.iter().filter_map(|object| {
             let template = object.name.split('/').next().unwrap_or_default();
@@ -220,10 +300,10 @@ pub(crate) fn load_pieces(assets: &Path, map: &SkateMap) -> Option<Pieces> {
         "SKATE_PARK_LAYOUT: {layout} pieces={} shapes={} collision_pieces={} triangles={} railed_pieces={}",
         objects.len(), shapes.len(), instances.len(), collision.len(), rails.len()
     );
-    let weld = fuse_weld(&sidecar);
+    let fuse = fuse_rules(&sidecar);
     let ignore = ignore_fuser_ids(&sidecar);
     let unfused = instances.iter().map(|i| ignore.contains(&i.id)).collect();
-    Some(Pieces { collision, ranges: instances.into_iter().map(|i| i.range).collect(), materials: package.materials, rails, weld, unfused })
+    Some(Pieces { collision, ranges: instances.into_iter().map(|i| i.range).collect(), materials: package.materials, rails, fuse, unfused, tags })
 }
 
 /// A piece's template rails through its row-vector affine (v @ basis + translation): chord endpoints and the

@@ -1,10 +1,5 @@
-//! Sidecar persistence for placed prop layouts (Phase 4).
-//!
-//! One versioned JSON file per map at `settings/prop-layouts/<map>.json`
-//! beside the asset root, the same user-data convention as
-//! `settings/gameplay.json`. Only confirmed placements are recorded; the map
-//! package itself is never modified. A missing, corrupt or foreign-map file
-//! leaves the authored poses untouched rather than failing the load.
+//! Sidecar persistence for placed prop layouts: `settings/prop-layouts/<map>.json`, confirmed placements only.
+//! Details: docs/hails-additions/27-dynamic-props.md#prop-layout-sidecar
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

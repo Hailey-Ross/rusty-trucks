@@ -75,10 +75,7 @@ impl Default for SkaterSpeech {
     }
 }
 
-/// A non-local skater's collide line (`sub_824BDA90` → `sub_824A9A20` → `sub_824DAC00` on the
-/// skater's speech record): the message pair `130_collide` (8228) / main-cast 3, or in game modes
-/// 19 / 20 8250 or 8240 (`rand() & 1`) / 17. The body poster decides when
-/// ([`crate::player::contacts::Contacts::collides`]).
+/// A non-local skater's collide line (824BDA90 -> 824A9A20 -> 824DAC00): 130_collide or the mode 19 / 20 pair.
 pub fn collide(mode: i32, rng: &mut dyn Draw) -> Say {
     if mode == MODE_RACE_A || mode == MODE_RACE_B {
         Say::Message(if rng.draw() & 1 == 1 { 8240 } else { 8250 }, 17)

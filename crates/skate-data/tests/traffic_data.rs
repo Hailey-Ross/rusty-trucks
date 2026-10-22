@@ -1,11 +1,5 @@
-//! Data-gated checks of the traffic core (`skate_core::living_world::traffic`) on the user's own
-//! export. Skips (passes with a note) when no data is configured.
-//! - `SKATE3_ASSET_ROOT`: converted assets (one root, or several joined like PATH); reads
-//!   `private/living_world/roads.bin` and `tables.json`.
-//! - `SKATE3_TRAFFIC_TRACE`: recomp trace files (`.tsv`, joined like PATH) with TRAFLIGHT2 lines
-//!   (recomp-research hooks, category `traffic`); their signal timeline must be reproduced.
-//!
-//! Counts are the shipped Skate 3 road networks (milestone V0); they are asserted, not embedded.
+//! Data-gated (skips without `SKATE3_ASSET_ROOT` data): traffic core on `roads.bin` / `tables.json`; `SKATE3_TRAFFIC_TRACE` .tsv
+//! files with TRAFLIGHT2 lines must be reproduced. Counts are the shipped V0 road networks.
 
 use skate_core::living_world::rng::Rng;
 use skate_core::living_world::traffic::{choose_connector, ConnectorChoice, LaneCursor, Place, RoadNetwork, SignalClock, SignalTimings};

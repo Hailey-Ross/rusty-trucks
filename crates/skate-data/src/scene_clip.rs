@@ -1,11 +1,5 @@
-//! Scene clips: one-clip banks from `scene.big` (`data/scene/trickguide/<name>1.abin`
-//! for the Trick Guide demo). Each file holds the full character hierarchy (131
-//! bones: body, board, fingers, twist helpers, face), one RAW clip and one RAW pose.
-//! The clip channels are deltas on the file's pose (SK83_TPOSE): each frame's local is retail's AddSQT
-//! (`pose_add::add`, 0x828CCC08) of the stored delta (identity where nothing is stored) onto the pose. Evidence:
-//! limb channels sit near identity where the pose has large rotations (LEFTSHOULDER, LEFTUPLEG), and the HIPS
-//! channel is the inverse of the bind trajectory, so HIPS adds up to identity under the trajectory.
-//! NOT RETAIL YET: the add is inferred from the data; what selects it in the RAW job (field +62) is unread.
+//! Scene clips: one-clip banks from `scene.big` (Trick Guide), deltas added onto the file's pose (inferred).
+//! Details: docs/hails-additions/31-retail-menus.md#scene-clips
 use crate::{
     abin::{Bank, Codec, PartEntry, RecordData},
     animation_frames::SampleWords,

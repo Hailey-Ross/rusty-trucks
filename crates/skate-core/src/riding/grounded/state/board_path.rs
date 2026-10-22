@@ -1,24 +1,5 @@
-//! `PhysState_PhysicsGround` / `SlideGround` board path `82C05EC0` (doc 26, "NPC skater
-//! steering"): the external (AI) physics record at Processed `1616` pulls the deck toward the
-//! recorded pose every tick.
-//!
-//! Retail (TU3, evidence only; re-implemented): `UpdatePostPhysics 82D387A8` runs the ground
-//! wipeout check `82D8F9E0`, then, while record flag bit 31 ("steer to target", Processed `1776`)
-//! is set, `82C05EC0(controller, physics_ai)`:
-//! - bit 30: position `82C056B0`: `d = (target - deck) * gain`, the deck translation moves by
-//!   `min(|d|, max_step)` along `d` (only when `|d| > 1e-6`), set on part 6 alone (`82D9C8C8`
-//!   -> `82BD4318`);
-//! - bit 28: velocity `82C05868`: the deck body's linear velocity moves toward the target the
-//!   same way (`gain`, `max_change`);
-//! - bit 29: facing `82C05988`: the target forward in the ground frame (`controller+292` ->
-//!   `+752`) with y = 0 and normalised, its signed angle from +Z about +Y (`8296EC98`) wrapped to
-//!   [-pi, pi], times `gain`, clamped to `max_degrees` (deg -> rad by `0x8206D110`); the deck
-//!   rotation becomes `D * F^T * Ry(step) * F` about its own position and the whole board is set
-//!   (`82C0B2C8`).
-//!
-//! The gains are the `physics_ai` vault record (`*(*(0x830CFDA4)+272)+4`, class
-//! `527C93F55CFC663D`; `default` record values below). The player never has the record: its
-//! Processed `1776` stays clear, so this never runs for it.
+//! Ground board path 82C05EC0: the AI physics record (Processed 1616) pulls the deck toward the recorded pose.
+//! Retail bits 28 to 31 and the physics_ai gains: docs/hails-additions/26e-living-world-skater-ai.md#board-path-82c05ec0
 
 use crate::math::{Basis3, Vector3};
 use crate::physics::board_motion_output::inverse_length_squared;

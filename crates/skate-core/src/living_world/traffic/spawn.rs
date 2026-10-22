@@ -1,33 +1,5 @@
-//! Placing a census car on the road (milestone V2): what the retail vehicle factory does with the
-//! census spawn point before a car exists.
-//!
-//! Retail [code] (TU3, addresses are evidence only; behaviour re-implemented, not copied):
-//! - the census vehicle pass `sub_826B9B90` hands the factory a spawn record whose position is the
-//!   random ring point (no heading: the basis rows are the identity, `0x82139A10..`) and flag
-//!   byte `+84` = 0 ("place on the road"); the census vtable `0x8230C638` slot +8
-//!   (`sub_826B83C8`) refuses when the live vehicle count is not below the vehicle limit (census
-//!   `+148`, 15 from the constructor `sub_826B6D58`; the initial populate uses a literal 15);
-//! - the factory create `sub_82C36300` (vtable `0x8232260C` slot +20), road branch:
-//!   1. the road network (`0x830854C0`, vtable `0x8230C6A8` slot +60 = `sub_826B3B18`) finds the
-//!      road surface under the point: a grid query of 10 m (`0x821963E4`) for lane pieces, then a
-//!      point-in-triangle test on each piece's two road triangles (`sub_82E16410`); the first hit
-//!      wins, no hit = no car;
-//!   2. the distance along the segment is the start of that piece (lane run start + the piece's
-//!      cumulative length minus its length);
-//!   3. the point must be at least 15 m (`0x820BD16C`) from both ends of the segment;
-//!   4. every lane of the segment is tested with `sub_82E14928` (margin 15 m, extra 0 =
-//!      `0x82165A10`): the next car ahead on that lane must start (its distance minus half its
-//!      length, 0.5 = `0x8209975C`) at least `margin + extra` past the point, and the car behind
-//!      must end (distance + its length + its speed x 1 s) at least `margin / 2` before it;
-//!   5. none fits = no car; else the factory takes a car from its pool, then one fitting lane by
-//!      `trunc(u32 x 100 / 2^32) mod n` from the world RNG (`sub_82970628`, `0x822F94B0`), sets
-//!      the mover onto (segment, lane, distance) (mover slot +44), and
-//!   6. queries the world for objects within 20 m (`0x820996EC`) and gives the car back when its
-//!      extent overlaps one (the car's extents from vehicle `+36` slots +160 / +172).
-//! The car drives in its segment's direction (segments are directed, one per travel direction).
-//! Its length is the z of the model's size vector (vehicle `+36` slot +172 returns the z of
-//! `[+76]` slot +16) [code]; the engine takes it from the model record (`size_hint`, `vehicles.json`)
-//! [data, hypothesis that it is the same vector].
+//! Placing a census car on the road (milestone V2): what the retail vehicle factory does with a spawn point.
+//! Retail mechanism (826B9B90, 82C36300): docs/hails-additions/26h-living-world-traffic.md#car-placement
 
 use super::graph::RoadNetwork;
 use crate::living_world::Vec3;
@@ -83,10 +55,7 @@ fn in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
     !(neg && pos)
 }
 
-/// The road surface under `point` (`sub_826B3B18` + `sub_82E16410`): the first piece, in network
-/// order, whose two road triangles (left start, right start, right end / left start, right end,
-/// left end) contain the point horizontally. Returns the segment index and the distance at the
-/// start of that piece. `None` off the road.
+/// Road surface under `point` (826B3B18 + 82E16410): first piece whose triangles hold it; `None` off the road.
 pub fn road_under(net: &RoadNetwork, point: Vec3) -> Option<(usize, f32)> {
     let p = [point[0], point[2]];
     for (si, s) in net.segments.iter().enumerate() {

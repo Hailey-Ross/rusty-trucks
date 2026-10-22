@@ -1,11 +1,5 @@
-//! PhysicsSkitching 104 (TU3 vtable `0x82327398`; doc 26h "Skitching step 4e"). Enter `82D47278` + reset
-//! `82D47318`, Exit `82B61BB8` (empty), Update `82D477C0`, publication `82D4C078`. The maths lives in
-//! `skate_core::riding::skitching` (frame, sub-mode, hold, shimmy, target, spring); this module composes it in
-//! retail order (`.local/research/npc/b50-skitch-prestep-update.md` section 1, b51 sections 1-3).
-//! Always on in the game since 2026-10-15 (`ground_runtime::skitch::latch_enabled`, set by `LivingWorldPlugin`).
-//! The grab point and the hands' grip points are the record's spline at an along position (`82D2D550`, research
-//! b148), the chord only while no geometry is published. NOT RETAIL YET: the sub-mode's hard event comes from the
-//! shimmy state.
+//! PhysicsSkitching 104 (vtable 0x82327398; Update 82D477C0): composes `skate_core::riding::skitching` in retail order.
+//! Details: docs/hails-additions/26h-living-world-traffic.md#skitching-state-104
 use super::{GamePhysics, SkaterRuntime};
 use skate_core::physics::force_queue::QueuedPointForce;
 use skate_core::math::Vector3;
@@ -175,11 +169,7 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     if ready {
         // Pre-step 82D47FC0.
         s.off_ground = condition_is_off_ground_skitching(body, settings.off_ground);
-        // Frame step 82D48148 (record copied from Processed+1888 by 82762AB0).
-        // `82D48148` re-orients the held record copy itself (state+1024): with the board side (Processed+128 row 0)
-        // against the direction it swaps +64 / +80, negates +112 and toggles the reverse bit (+200 bit 0x20), so
-        // every later spline lookup (the grab point, the hands' grip points) runs from the skater's side. Re-orienting
-        // only inside the frame step left the hands on the mirrored points (arms crossed, session 2026-10-16).
+        // Frame step 82D48148 re-orients the held record copy (state+1024) so spline lookups run from the skater's side.
         let mut endpoints = [v(&words, 64), v(&words, 80)];
         let mut direction = v(&words, 112);
         let reoriented = board_side[0] * direction[0] + board_side[1] * direction[1] + board_side[2] * direction[2] < 0.0;
@@ -280,10 +270,7 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         let fr = s.frame.frames[1];
         s.grab_height = fr[3][1] + fr[0][1] * s.hold.posed - position[1];
         s.absorb = -f.axis_distance_rate;
-        // 82D47BD8 (b67): unless latched, 996 moves toward 8 m/s by 200 x state+1264 (= the held record's +240,
-        // its inverse mass: 82D477C0 copies the record to state+1024), cap 3.5; the PushContact animation attribute
-        // (Processed2488 bit 29) latches it until the attribute drops. The reel-in / let-out forces of the same
-        // function go to the held object, which retail drops for cars (kind 1, b50): not applied.
+        // 82D47BD8 (b67): 996 moves toward 8 m/s unless PushContact latches it; reel forces not applied for cars (b50).
         let push_contact = p.flags_2488 & 0x2000_0000 != 0;
         if !s.push_latched {
             let inverse_mass = f32::from_bits(words[60]);
@@ -408,10 +395,7 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     for force in forces {
         q.append(force);
     }
-    // Step 14 (b50 table row 14, gated): `82585DD8` keeps the held record (Player+188 / +192) and the grab interface
-    // re-queries the held object's spline (`[Player+12816]` vt+44, slot 11), so the owner publishes it again next tick
-    // and Processed 2480 bit 22 stays set while the car is held. Without it the record was published once (from the
-    // latch's request) and the skater dropped back to the ground after two ticks (headless test, 2026-10-16).
+    // Step 14 (b50): 82585DD8 keeps the held record and re-queries the spline, so the car stays held.
     if ready {
         if let Some(car) = skater.skitch_state.car {
             skater.offboard_grab.request_primary(car);
@@ -440,11 +424,7 @@ impl skate_core::physics::manual::controller::ManualAngleMeasurement for Angle {
     }
 }
 
-/// `82D4AC38` (b51 section 2, arguments b56): capture, spring (tag 6), slide friction (tag 1, heading time = the
-/// sub-mode time 948), tilt (no push / damped-turn history; 0 while the board is off the ground), speed wobble
-/// (skipped off the ground), anti-flip, truck targets, heading (when balance and spin are both set), manual
-/// (powersliding off), the manual and anti-flip displacements, the yaw correction (`82C07328`) while towing fast.
-/// Sub-mode 4: tilt, wobble and truck targets only.
+/// 82D4AC38 (b51 section 2, b56): the board composition while skitching: docs/hails-additions/26h-living-world-traffic.md#skitch-board-compose
 fn compose_board(physics: &mut GamePhysics, skater: &mut SkaterRuntime, step: BoardStep) -> Result<(), String> {
     use skate_core::physics::manual::controller;
     use skate_core::riding::{anti_flip, heading, slide_friction, speed_wobble, steering};

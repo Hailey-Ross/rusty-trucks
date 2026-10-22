@@ -1,18 +1,5 @@
-//! Button prompt glyphs for the connected pad (doc 31, "Button prompts"): the retail menus draw a native
-//! "CustomButton" component for the Xbox 360 button named by `_test`; we draw the same button as the connected pad
-//! prints it. Every retail button name has an equivalent on every family (retail's name list, TU3 0x82204614:
-//! Back, Start, R_Trigger, L_Trigger, L_Bumper, R_Bumper, L3_Click, R3_Click, Stick_Right(_Up/_Down/_L/_R),
-//! DPad(_Up/_Down/_Left/_Right), Stick_Left(...), plus A / B / X / Y):
-//! - face buttons: SDL's label for the pad type (`ControllerKind::face_labels`): A / B / X / Y, Cross / Circle /
-//!   Square / Triangle, Nintendo letters;
-//! - shoulders, triggers, Start, Back, stick clicks: the family's printed name (LB / L1 / L, LT / L2 / ZL, START /
-//!   MENU / OPTIONS / +, BACK / VIEW / SELECT / SHARE / CREATE / -, LS / L3);
-//! - sticks and the d-pad: a stick or a cross with the direction marked (the same on every family).
-//! The glyphs are generated in retail's prompt style (a coloured ball or a dark pill, a light symbol, a dark
-//! outline), not console art; mods replace them through the menu bitmap path later.
-//! Size: retail's glyph spans about 0.83 of the CustomButton placeholder box (10 of 480 px in a recomp shot of the
-//! Trick Guide help row, `.local/research/menus-m6/retail/`; the box is 32 of 1280), centred in it; placement is
-//! the movie's own (button_item2 lays the box out).
+//! Button prompt glyphs for the connected pad (retail CustomButton names, TU3 0x82204614).
+//! Mapping, style and size: docs/hails-additions/31-retail-menus.md#prompt-glyphs
 use crate::input::controller_kind::{ControllerKind, Family, PromptLabel, PromptStyle};
 
 /// Glyph size in pixels (square RGBA8).

@@ -181,10 +181,7 @@ pub(crate) struct GamePhysics {
     owns_props: bool,
 }
 
-/// The parts of [`GamePhysics`] each simulated skater owns (doc 26, "Simulated NPC skaters"):
-/// its board, riding outputs, clock and exchange. A simulated NPC skater keeps one and swaps it in
-/// around its own tick ([`GamePhysics::swap_skater_context`]); the world, props, grind world,
-/// settings and network proxies stay shared.
+/// The parts of [`GamePhysics`] each simulated skater owns, swapped in around its tick.
 pub(crate) struct SkaterPhysicsContext {
     clock: clock::SimulationClock,
     board: BoardRuntime,
@@ -206,10 +203,7 @@ fn shared_mut<T>(shared: &mut std::sync::Arc<T>) -> &mut T {
     std::sync::Arc::get_mut(shared).expect("physics state shared with an NPC worker is changed only outside the NPC phase")
 }
 
-/// Collision settings that live in the shared `PhysicsSettings` but belong to one skater: the slide / grind / wipeout
-/// states and the board manager write them for the skater they step, and `colliders::world_volumes` reads them at the
-/// next solve. Swapped with each simulated NPC's context; before 2026-10-15 an NPC's slide or bail materials leaked into
-/// the next NPC and the player's board.
+/// Per-skater collision settings in the shared `PhysicsSettings`, swapped with each simulated NPC's context.
 #[derive(Clone, Debug)]
 pub(crate) struct SkaterSettings {
     wheel_material: skate_core::physics::contact::RetailContactMaterial,
@@ -375,6 +369,11 @@ impl GamePhysics {
     pub(crate) fn set_external_queries(&mut self, queries: Option<std::sync::Arc<dyn skate_core::physics::board_world::ExternalQueries>>) {
         self.world.set_external_queries(queries);
     }
+    /// The last board query's static-world contacts.
+    pub(crate) fn world_contacts(&self) -> &[skate_core::physics::board_step::BoardCollision] {
+        self.world.contacts()
+    }
+
     pub(crate) fn world(&self) -> &BoardWorld {
         &self.world
     }
@@ -435,13 +434,7 @@ impl GamePhysics {
         });
     }
 
-    /// Reset ONE object (retail cMsgResetDMO, doc 27 "Object Dropper and reset"): the phone's
-    /// per-object Reset posts it, PlayerUI's handler 8289A048 calls the DMO manager's reset
-    /// (vtable 0x82323254 slot +36, 82C4B5F0), whose worker 82C4B780 looks up the object's spawn
-    /// record and puts the object back on the record's transform in one step (no fade or
-    /// tween in that path). Ours: the authored pose, at rest and asleep, collision rebaked, the
-    /// saved layout entry dropped. Refused (false) for an unknown id and for the held object
-    /// (NOT RETAIL YET: retail's held case is undecoded). The single authority for resets.
+    /// Reset ONE object (cMsgResetDMO: 8289A048 -> 82C4B5F0 -> 82C4B780); the single authority for resets: docs/hails-additions/27-dynamic-props.md#reset-one-prop
     pub(crate) fn reset_prop(&mut self, id: u32) -> bool {
         if self.prop_carry.held() == Some(id) {
             return false;
@@ -496,12 +489,7 @@ impl GamePhysics {
         done
     }
 
-    /// Create a prop body mid-game (a released hand prop, a mod's prop): collision triangles in
-    /// the prop layer plus an awake body at the spec's pose and velocities, stepped, pushed and
-    /// rebaked like a map prop. Works on maps without placed props (the layer starts empty).
-    /// The single authority for runtime props; `None` when this context does not own the props
-    /// or the spec gives no body. Returns the body id; a render entity with
-    /// `PropInstance { id }` follows it (`sync_prop_transforms`).
+    /// Create a prop body mid-game (released hand prop, mod prop); the single authority; returns the body id.
     pub(crate) fn spawn_runtime_prop(&mut self, spec: &prop_dynamics::RuntimeProp, surface: u32) -> Option<u32> {
         if !self.owns_props {
             return None;
@@ -567,12 +555,7 @@ impl GamePhysics {
         true
     }
 
-    /// Upright ONE object (retail cMsgUprightDMO, doc 27 "Upright"): the phone's per-object
-    /// Upright posts it and the DMO manager slot +40 (82C4B8C0) opens the DMO's 2 s
-    /// self-righting window; the prop step then turns the body back toward world up through the
-    /// retail solver path ([`PropUprightSettings`](crate::physics::prop_dynamics::PropUprightSettings)).
-    /// Refused (false) for an unknown id or a body without dynamics. The single authority for
-    /// uprights.
+    /// Upright ONE object (cMsgUprightDMO -> 82C4B8C0, 2 s window); false for unknown or non-dynamic bodies.
     pub(crate) fn upright_prop(&mut self, id: u32) -> bool {
         let Some(dynamics) = self.prop_dynamics.as_mut().map(shared_mut) else { return false };
         let started = dynamics.upright(id);
@@ -582,10 +565,7 @@ impl GamePhysics {
         started
     }
 
-    /// Mod convenience: [`Self::reset_prop`] for every prop away from its authored pose or with a
-    /// saved placement, in id order. NOT RETAIL YET: no retail "reset all moved objects" code was
-    /// found (the phone getter GetPhoneListCanResetAllObjectsOption exists, its handler is not
-    /// located). Returns the reset ids.
+    /// Mod convenience: reset every moved or placed prop in id order (NOT RETAIL YET: no retail reset-all found).
     pub(crate) fn reset_moved_props(&mut self) -> Vec<u32> {
         let mut ids: Vec<u32> = self.prop_dynamics.as_ref().map(|d| d.moved_ids()).unwrap_or_default();
         ids.extend(self.prop_carry.layout().keys().copied());
@@ -725,6 +705,9 @@ impl GamePhysics {
             Some((layer, dynamics)) => (Some(layer), Some(dynamics)),
             None => (None, None),
         };
+        if let (Some(pieces), Some(dynamics)) = (pieces.as_ref(), prop_dynamics.as_mut()) {
+            dynamics.set_props_only_world(crate::skate_world::props_only_world(pieces, settings.floor_material)?);
+        }
         // Phase 4: apply the saved layout sidecar over the authored poses.
         let mut prop_carry = prop_carry::PropCarry::default();
         if let (Some(map), Some(layer), Some(dynamics)) = (map, prop_layer.as_mut(), prop_dynamics.as_mut()) {
@@ -805,10 +788,7 @@ impl GamePhysics {
         })
     }
 
-    /// A worker for one simulated NPC skater's steps on another thread: its own `GamePhysics` whose shared parts
-    /// (collision and prop worlds, dynamic props, grab scene, data) point at this one's, with copies of the small
-    /// per-tick state ([`Self::sync_npc_worker`]). The NPC's own context is swapped into it for each step, as into
-    /// the shared physics before. It never steps the props.
+    /// A worker `GamePhysics` for one simulated NPC on another thread, sharing worlds; never steps props.
     pub(crate) fn npc_worker(&self) -> Result<GamePhysics, String> {
         let spawn = RetailAffineTransform::IDENTITY;
         let parts = self.new_skater_context(spawn)?;
@@ -1001,10 +981,7 @@ impl GamePhysics {
         }
     }
 
-    /// An AI spawn push: [`Self::set_context_velocity`], and the acceleration sampler's previous velocities take the
-    /// pushed value, so the push itself reads as no acceleration. Outcome-matched: retail's spawn-placed skaters ride
-    /// off and do their recorded tricks; with the one-step velocity jump read as acceleration, every placed NPC played
-    /// the non-interruptable `RidingIdle.Bumped` clip for ~0.6 s and a recorded trick inside it never played (b194).
+    /// AI spawn push without a read acceleration (outcome-matched, b194): docs/hails-additions/27-dynamic-props.md#spawn-push-acceleration
     pub(crate) fn push_context_velocity(context: &mut SkaterPhysicsContext, velocity: [f32; 3]) {
         Self::set_context_velocity(context, velocity);
         let v = Vector3::new(velocity[0], velocity[1], velocity[2]);

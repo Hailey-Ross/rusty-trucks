@@ -1,13 +1,5 @@
-//! Free Play pause row Skate Profile (doc 31 "Skate Profile"): retail FE screen 61 (vtable 0x82305448, template 106
-//! OfflineProfile, `profile/offline_skateProfile`). The career view in three tabs (progression, stats, personal
-//! bests); the movie reads its pages from the Progression and Stats host objects. The C++ side keeps one value, the
-//! tab index (screen +0x3C, research b308):
-//! - init 0x8264C530: tab 0, then the refresh 0x8264C830 (tab -> the tab's SetState);
-//! - input 0x8264C608: Back plays core_b_button and pops the screen; the tab keys play core_tab, step the tab
-//!   (clamped: at either end it stays), then SetState(30) (the movie syncs its tab highlight) and the refresh, also
-//!   at either end; Up / Down play profile_career_scroll and stay unconsumed, so the movie scrolls its list.
-//!
-//! Values are data (`ProfileRules`), retail's the defaults, so a mod can add, drop or reorder tabs.
+//! Skate Profile: retail FE 61 (template 106 OfflineProfile, b308), three tabs; values are data.
+//! Retail handlers: docs/hails-additions/31-retail-menus.md#skate-profile-screen
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileTab {

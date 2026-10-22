@@ -1,16 +1,5 @@
-//! What a traffic car sees ahead (V4, doc 26h "Traffic: obstacles ahead"). Retail (TU3, evidence only;
-//! re-implemented; `.local/research/npc/b36-traffic-v4-driver.md`, `b41-v4-obstacles-corridor.md`, main checked the
-//! characteristics / driver values and the 0.68 s constant):
-//! - the traffic manager refills two obstacle lists every frame (`sub_826B2EE0`): skaters (radius 0, "soft") and
-//!   world actors (peds radius 0.5 x their size, soft; cars radius 0.5 x their smallest extent, hard);
-//! - each car builds a look-ahead quad (`sub_82C400A8`): from the car centre (half width x (1 + `E88C`, 0.0)) to the
-//!   front bumper, widened on the turning side by half width x (1 + `02A6` (2.0) x speed ratio), then both front
-//!   corners pushed `speed + standoff` further along their side edges;
-//! - a record is in the way when its circle touches the quad's side / front edges or its centre is inside
-//!   (`sub_82C41BD0`, `sub_82C41A90`); its free distance is `|pos - car| - radius - 0.68 x speed` (`0x82099764`);
-//!   below 20 km/h soft records count only for drivers that opt in (`+4401` bit 0x08, every stock driver does);
-//! - the nearest one becomes the planner's obstacle (`sub_82C412D8`): braking `-v^2 / (2 (d - standoff) + 0.001)`
-//!   when `standoff < d <= v + standoff`, `-v` inside the standoff (`sub_82C3FA08`).
+//! What a traffic car sees ahead (V4): obstacle lists 826B2EE0, look-ahead quad 82C400A8, planner 82C412D8.
+//! Retail rules (b36, b41): docs/hails-additions/26h-living-world-traffic.md#traffic-obstacles-ahead
 
 use super::super::Vec3;
 

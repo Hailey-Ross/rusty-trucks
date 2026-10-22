@@ -1,16 +1,5 @@
-//! Census kinds (pedestrians, vehicles): the retail living-world census.
-//!
-//! Per pass (`sub_826B7530` peds / `sub_826B7760` vehicles) [code]:
-//! 1. the census circle: two `livingworld_census_ranges` sets lerped by the observer's speed in
-//!    km/h (`sub_826B7D60`): spawn ring inner / outer, cull radius, forward offset of the
-//!    centre along the velocity;
-//! 2. cull: entities whose 3-D distance to the centre exceeds the cull radius go
-//!    (`sub_826BA8B0` / `sub_826BAAB8`, squared-distance test);
-//! 3. spawn (only offline, world ready, not zombie for vehicles): 2 attempts, at most 1 spawn
-//!    (initial populate: 6000 / 600 in an 8-80 m ring): a random point in the ring
-//!    (`sub_82E17508`), a random heading, the census record painted at that point and its cap
-//!    times the density (`sub_826B8A28`), the budget and category roll (`sub_826B8B88`), then the
-//!    factory (pool).
+//! Census kinds (peds, vehicles): the retail census pass (826B7530 / 826B7760): circle, cull, spawn.
+//! Steps: docs/hails-additions/26b-living-world-population.md#census-pass
 
 use super::config::{retail, CensusKindConfig};
 use super::rng::Rng;

@@ -66,3 +66,11 @@ Two smaller findings along the way:
 - Frame blending for simulated NPCs (their pose is drawn between the previous and current tick, like the player's
   presentation) is in the same change set; not yet seen by the user.
 - Remaining per-frame costs outside physics (audio ~1 ms, mod JSON) and `tracing` span filtering in hot code.
+
+## Code reference: physics/world_handle.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/physics/world_handle.rs`; each comment there links its section here.
+
+### World handle
+
+The static collision world as the physics step sees it: the geometry shared behind an `Arc`, plus this step's own query scratch. The player's `GamePhysics` and every simulated NPC skater's worker hold a handle to the same world, so their steps can run on separate threads (a query only reads the world). Reads go through `Deref`; the few writes (map load, prop streaming, tests) need the world not to be shared at that moment.

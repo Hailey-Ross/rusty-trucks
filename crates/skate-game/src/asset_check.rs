@@ -1,10 +1,5 @@
-//! Launch-time asset staleness check. It reads the converted files themselves on every start, not a stamp:
-//! every output setup recorded must still be there at its recorded size, and each group's files must hold what
-//! this build reads (format versions and content). A failing group is logged (`ASSET_CHECK <group>: <reason>`) and
-//! marked stale (`setup::mark_stale`), so the PC overlay offers Extras > Refresh Game Files, which makes setup
-//! rebuild exactly those groups. Runs on a background thread once the startup loading screen is gone, so its
-//! thousands of file reads do not compete with the start's own loading on an HDD (the first start of the audio
-//! runtime waited ~20 s on them, 2026-10-15).
+//! Launch-time asset staleness check (`ASSET_CHECK` lines, `setup::mark_stale`), on a background thread.
+//! Details: docs/hails-additions/08-setup-performance.md#asset-staleness-check
 use bevy::prelude::*;
 use std::path::{Path, PathBuf};
 
@@ -193,11 +188,7 @@ pub(crate) fn splash_warning(findings: &[Finding]) -> Option<String> {
     Some(format!("Game files need a refresh: {} stay off until then. Refresh Game Files (the launcher's Tools, or Esc > Extras in the game) turns {them} on.", what.join(", ")))
 }
 
-/// Maps group: the ped hand props carry the grip points this build reads (`attach`, setup since b758f0cc). A file
-/// whose props have none was exported before them. With the living world tables installed, a missing or unreadable
-/// file, or one where no prop has a model (`file`), means every hand prop is drawn as nothing (laptop 2026-10-18:
-/// "PED_HAND_PROPS 23 records, 0 with models" after a refresh, no finding); without the tables there is no living
-/// world data and nothing to check.
+/// Maps group: ped hand props carry the grip points this build reads; no model on any prop = stale.
 fn hand_props(assets: &Path) -> Vec<Finding> {
     let living = assets.join("private/living_world");
     if !living.join("tables.json").is_file() {
@@ -257,10 +248,7 @@ fn dlc_listing(folder: &Path) -> Vec<String> {
     out
 }
 
-/// A DLC pack added to or removed from the DLC folder since setup (the launcher's Import DLC, a `dlc` folder next to the
-/// game): the hud group is reported, and setup's refresh then rebuilds every group whose DLC identity changed (the
-/// menus, and the maps, skies and audio for map packs). An installation from before the listing was recorded counts
-/// as current when setup already read a DLC folder.
+/// A DLC pack added or removed since setup reports the hud group, so refresh rebuilds changed groups.
 fn dlc(env: Option<PathBuf>, marker: &serde_json::Value, game_dir: Option<&Path>) -> Vec<Finding> {
     let now = dlc_folder(env, marker, game_dir).map_or_else(Vec::new, |d| dlc_listing(&d));
     let changed = match marker["dlc_files"].as_array() {

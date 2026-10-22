@@ -1,22 +1,5 @@
-//! Dynamic objects (DMOs: benches, bins, cones, ...) streamed by the living-world census, as retail does
-//! (research b97; doc 27 "DMO streaming").
-//!
-//! Per census pass (`sub_826B7980`) [code]:
-//! 1. the circle from the `dynamicobjects` range record (same lerp as peds; retail data has no speed keys and no
-//!    forward offset for DMOs);
-//! 2. cull (`sub_826BAD98`): a live, cullable DMO whose HORIZONTAL distance to the centre exceeds the cull radius goes,
-//!    with its whole linked group (`sub_82C52600`); then, once per pass, when the pool holds `cap` (49) or more live
-//!    objects, the front of the eviction queue goes;
-//! 3. spawn (`sub_826B9D58`): placements within the outer radius, expanded by touching neighbours within 20 m so
-//!    clusters come together, up to `budget` (49, 100 in fill mode) per pass; with the pool full a placement spawns
-//!    only when its score beats the eviction front's, which is evicted for it.
-//!
-//! The score (`sub_82C4A130` placements / `sub_82C55160` live) weighs priority, a count and the distance, with the
-//! five `livingworld.dynamicobjects` values (2.5 in front of the camera, 2.0 for the keep flag, 250, 300, 450).
-//!
-//! NOT RETAIL YET: the score's count `n` (`sub_82C503F0`, meaning open) is 1; the overlap blocker (a live DMO in the
-//! placement's volume) is not modelled; touching (`factor 0.5`) is bounding spheres; the eviction queue is ordered by
-//! the live score (its insert point is not read); multiple observers are ours (retail runs this for one player).
+//! DMOs streamed by the living-world census (b97; pass 826B7980, cull 826BAD98, spawn 826B9D58).
+//! Steps, score and gaps: docs/hails-additions/27-dynamic-props.md#dmo-streaming-core
 
 use super::census::CensusRange;
 use super::{Observer, Vec3};
@@ -174,10 +157,7 @@ impl DmoStream {
         self.step_kept(observers, settings, fill, exempt, &|_| false)
     }
 
-    /// [`Self::step`] with the live objects' keep state: a live object for which `kept` is true is scored as kept
-    /// (retail's live score `sub_82C55160` sets the keep flag from the object's own state, research b184), so it is
-    /// never the eviction queue's front while unkept objects are live. Retail still evicts the front every pass; only
-    /// untouched props go, and they come back where they already were.
+    /// [`Self::step`] with the keep state: kept objects score as kept (82C55160, b184): docs/hails-additions/27-dynamic-props.md#dmo-keep-state
     pub fn step_kept(&mut self, observers: &[(Observer, DmoView)], settings: &DmoStreamSettings, fill: bool, exempt: &dyn Fn(u32) -> bool, kept: &dyn Fn(u32) -> bool) -> Vec<DmoDecision> {
         let mut out = Vec::new();
         let circles: Vec<_> = observers.iter().map(|(o, v)| (settings.range.around(o), *v)).filter(|((c, centre), _)| c.cull.is_finite() && centre.iter().all(|x| x.is_finite())).collect();

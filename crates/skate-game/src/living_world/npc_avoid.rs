@@ -1,21 +1,5 @@
-//! NPC skaters avoid peds, cars, props and other skaters with retail's obstacle avoider
-//! (`skate_core::living_world::avoid`, doc 26 "NPC skater obstacle avoider").
-//!
-//! Each world tick, before the cursors advance, the host gathers the obstacles (peds and their
-//! velocity from the last tick, traffic cars with their box, props with their box, the other
-//! NPC skaters and the players) and runs the avoider for every riding NPC skater. Its answer goes
-//! where retail's goes:
-//! - the speed (retail: the AI record speed, `sub_82470830`): the replay tier holds the cursor
-//!   back by the missing recorded frames (`NpcAvoid::lag`), so a cap of 0 stops the skater and a
-//!   floor only catches up held-back frames (a recording is never played faster than recorded);
-//! - the steering (retail: the target moved across the path, `sub_82464E30`, and the board pulled
-//!   towards it at 2 cm a tick, `82C05EC0`): a lateral offset of the drawn skater that moves 2 cm
-//!   a tick towards the chosen gap and back to the line once the path is clear.
-//! The simulated tier reads the same output for its AI record (`npc_sim`).
-//!
-//! Air, off-board and trick spans are never held back or moved (the recorded jump would break).
-//! Multiplayer: only the host evaluates; `lag` and `offset` are plain per-NPC state a client
-//! would take from the host (no replication yet). Logs `NPC_AVOID` on every mode change.
+//! NPC skaters avoid peds, cars, props and skaters with retail's obstacle avoider; host only.
+//! Where the answer goes (speed lag, lateral offset): docs/hails-additions/26e-living-world-skater-ai.md#npc-avoid-host
 
 use super::npc_skaters::{NpcReplay, NpcSkater, NpcSkaterEvent};
 use super::peds::{PedBody, Pedestrian};
@@ -218,10 +202,7 @@ pub(crate) fn avoid(
         let forward = if speed > 1e-3 { sample.velocity.map(|c| c / speed) } else { [0.0, 0.0, 1.0] };
         let here = project_on_line(line, replay.cursor.node, sample.position, 1.0);
         let width = here.map_or(1.0, |p| if a.offset < 0.0 { p.width_left } else { p.width_right });
-        // The skater's actual velocity (retail reads the skater object's velocity, vtable +16; b112): how far its
-        // sample moved this tick. The recorded velocity stays non-zero while a speed cap holds the cursor, so the
-        // closing rate never fell to 0 and a cap of 0 behind a standing ped held for good. A jump (respawn,
-        // teleport, line switch) falls back to the recorded velocity for that tick.
+        // The skater's actual velocity (retail vtable +16, b112): sample motion this tick; jumps use the recorded one.
         let dt = time.delta_secs();
         let actual = match a.moved_from {
             Some(p) if dt > 0.0 && length(sub(sample.position, p)) < MAX_TICK_MOVE => sub(sample.position, p).map(|c| c / dt),

@@ -1,14 +1,5 @@
-//! The central message HUD: retail's `hud2/hudcentral` movie (centre-screen lines such as the chase's "ZAP!" /
-//! "BAM!"), run on the same APT VM as the scoring HUD.
-//!
-//! Retail posts a message through `82663F38` (from the chase manager `826B4FC0` and other callers): it stores the
-//! formatted, localised text, a style (`+0x34`, 0 here) and an audio hook (`+0x280`, 0 = the movie's
-//! `kAUDIOHOOK_DEFAULT`), then sends the screen event 4. The movie's `SetState(4)` calls `ShowMessage` with
-//! `HUDComponents.Central_GetMessageData()` = `[text, style]` (style 0 off-white, 1 red, other = the celebratory
-//! banner) and `Central_GetAudioHook()`, which plays `FE_SOUND_CENTRAL_MESSAGE_DEFAULT` and the clip's intro.
-//! The getters' bodies are not decoded; their values are what `82663F38` stores [inferred from the stores].
-//!
-//! Engine-facing: [`CentralMessage`]. Mod-facing: `sdk.ui.central_message(text)` (the same message).
+//! The central message HUD (`hud2/hudcentral`) on the scoring HUD's APT VM; mods: `sdk.ui.central_message`.
+//! Retail post path 82663F38: docs/hails-additions/31-retail-menus.md#central-message-hud
 use crate::{
     apt_movie::Movie,
     apt_vm::{Host, ObjectKind, Value, Vm},

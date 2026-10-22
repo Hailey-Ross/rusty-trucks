@@ -1,8 +1,5 @@
-//! The stock mood tables from setup data (`private/living_world/tables.json`, classes
-//! `livingworld_moodeventcategories`, `livingworld_entities_moodreactions`,
-//! `livingworld_entities_moodresults`, `livingworld_entities`) into
-//! `skate_core::living_world::peds::mood::MoodTables`, parents resolved (doc 26 "Ped behaviour
-//! runtime"). Field bindings: `.local/research/peds/b6-ped-mood-fields.md`.
+//! The stock mood tables from setup data into `MoodTables`, parents resolved (fields: b6 research note).
+//! Details: docs/hails-additions/26g-living-world-ped-interactions.md#mood-table-loading
 
 use serde_json::Value;
 use skate_core::living_world::peds::chase::ChaseRecord;
@@ -229,10 +226,7 @@ pub(crate) fn takedown_tables_in(root: &Value) -> (BTreeMap<String, TakedownTabl
 /// Which perceptions record an entity type uses (`livingworld_entities` field).
 pub(crate) const PERCEPTION_FIELD: &str = "Hash_A27862C1107F64EC";
 
-/// Each entity type's vision test ranges (`82E27240`): the mood event category
-/// `chasedpersondetectibilitytest` near (`D16B`) / far (`A7EB`) times the perceptions record's
-/// scales (`D036` / `D238`), its fov (`7435`), and the scales themselves (near, far, fov) for the
-/// mood post's test with each category's ranges. Types without a record get none.
+/// Each entity type's vision test ranges (82E27240) and scales; types without a record get none.
 #[cfg(test)]
 pub(crate) fn sight(bytes: &[u8]) -> (BTreeMap<String, Sight>, BTreeMap<String, [f32; 3]>) {
     let Ok(root) = serde_json::from_slice::<Value>(bytes) else { return Default::default() };

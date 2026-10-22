@@ -442,10 +442,7 @@ impl NpcSkater {
         self.wheels.update(&s, &Flat, &WheelsTuning::default(), streams);
     }
 
-    /// The skater lost its instance: release every Splice sound it holds (contacts, hands on deck,
-    /// grind on / off, clothing foley). Retail's release stops every layer; a dropped skater is
-    /// never updated again, so a held sound would otherwise keep its mixer voices for good (the
-    /// 2026-10-07 silent landings: the leak filled the mixer's voice cap).
+    /// The skater lost its instance: release every Splice sound it holds, or they keep their mixer voices.
     pub fn release(&mut self, splice: &mut dyn SpliceHost) {
         self.board.release_all(splice);
         self.grind.release_sounds(splice);

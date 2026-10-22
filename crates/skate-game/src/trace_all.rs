@@ -1,20 +1,5 @@
-//! `SKATE_TRACE_ALL=1`: one play session records every session trace and diagnostic the engine
-//! has, whatever the launcher remembered to set.
-//!
-//! [`apply`] runs first thing in the game process (before any thread, before the log subscriber)
-//! and switches on every diagnostic below by setting its own environment switch, so every existing
-//! reader (including the ones cached in `OnceLock`s deep in audio and physics) sees it unchanged.
-//! Output files the launcher did not name go next to the ones it did (or `<exe dir>/logs/trace-all-
-//! <unix seconds>`). Diagnostics only: nothing here changes the game (see
-//! `frame_timing::tests::game_is_identical_with_trace_all_on_or_off`).
-//!
-//! What trace-all does differently from the single switches, so a whole session stays cheap:
-//! the performance report rolls for the whole session instead of exiting after 25 s
-//! (`performance.rs`), GPU timestamp queries are used only when the adapter has them (`app.rs`)
-//! and only on one frame in `SKATE_PERF_GPU_EVERY` (30 by default, `performance.rs`),
-//! the render phase split is sampled in windows (`performance.rs`), every log line goes through a
-//! bounded writer thread instead of a blocking stderr write (`profiling.rs`), and a few
-//! per-session lines log more often (`HELD_PROP`).
+//! `SKATE_TRACE_ALL=1`: one session records every session trace and diagnostic; diagnostics only.
+//! What it switches and how it stays cheap: docs/hails-additions/25-perf-diagnostics.md#trace-all
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -39,11 +24,7 @@ pub(crate) struct Switch {
     pub output: &'static str,
 }
 
-/// Every session diagnostic (test-only and tool-mode switches such as `SKATE_BUDGET_MAP`,
-/// `SKATE_VERIFY_*` or the `SKATE_RETAIL_*_VECTORS` data roots are not session traces, and
-/// gameplay switches such as `SKATE_AUDIO_MORE_AUDIBLE` or `SKATE_FIXED_EXPOSURE` change the game,
-/// so neither belongs here). `SKATE_AEMS`, which the launcher still sets, has no reader any more
-/// (the native audio is always on).
+/// Every session diagnostic switch (test, tool and gameplay switches excluded).
 pub(crate) const SWITCHES: &[Switch] = &[
     Switch { name: "SKATE_FRAME_LOG", wants: Wants::Path("frames.tsv"), output: "file (one row per frame, writer thread)" },
     Switch { name: "SKATE_AUDIO_STATE_LOG", wants: Wants::Path("audio_state.tsv"), output: "file (one row per audio frame, writer thread)" },

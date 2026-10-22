@@ -1,27 +1,5 @@
-//! The pedestrian navmesh (doc 26, peds milestone M3): retail's NavPower nav graphs as polygons
-//! with neighbours, point location, reachability and polygon paths.
-//!
-//! Retail [code, TU3; addresses are evidence only]: every ped owns a NavPower bot (`ped+5940`)
-//! that its mover (`ped+2224`, vtable `0x8232C708`) drives: the mover hands the bot a destination
-//! (`sub_82C47378`) and reads its steering direction back (`sub_82C47198`). The wander goal
-//! probes destinations with a nearest-polygon search (`sub_82C46348`, radius 0.5 `0x8209975C`)
-//! and a reachability test (`sub_82C464F0` -> `sub_82926BA8`, a per-graph connectivity bitset),
-//! not with a straight ray. The polygons come from the `0x00EB0027` objects
-//! (`tools/asset_pipeline/living_world_navmesh.py` documents the layout) [data].
-//!
-//! What is ours (stated simplifications): NavPower's path search and path following are not
-//! decoded, so a path is an A* over polygon neighbours (portal midpoints, equal cost per metre
-//! unless [`NavRules::area_cost`] says otherwise) smoothed by the funnel algorithm; reachability
-//! is a connected-component label; polygons of [`NavRules::blocked_areas`] (default the 0xF1
-//! area, where no recomp ped position ever lies [trace]) are not walkable.
-//!
-//! Tile seams (fix 17): NavPower tiles stop about 0.12 m short of their shared border [data] and
-//! setup links the two sides, sometimes on one side only; [`NavMesh::move_along`] steps across the
-//! gap over linked polygons only (never onto an unconnected wall-top layer), and the links are
-//! used in both directions.
-//!
-//! Pure and deterministic: no hash-map iteration, ties broken by polygon index, so every machine
-//! that loads the same mesh plans the same paths.
+//! Pedestrian navmesh: NavPower nav graphs as polygons with neighbours, location, reachability and paths.
+//! Retail mechanism and our stand-ins: docs/hails-additions/26f-living-world-peds.md#ped-navmesh
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
@@ -104,10 +82,7 @@ pub struct NavMesh {
     /// Walkable links per polygon in both directions (sorted; a tile-stitched link may be
     /// recorded on one side only).
     links: Vec<Vec<u32>>,
-    /// Per polygon: (edge, neighbour) for every walkable link across its edges, its own
-    /// neighbours plus the links recorded only on the other side (setup's tile stitch links the
-    /// polygons along one tile border to the long edge across it, which records at most one of
-    /// them), mapped to this polygon's closest edge (fix 17). Sorted.
+    /// Per polygon (edge, neighbour) links incl. one-sided tile stitch links, mapped to the closest edge (fix 17). Sorted.
     edge_links: Vec<Vec<(u8, u32)>>,
 }
 
@@ -319,12 +294,7 @@ impl NavMesh {
         self.grid.get(&((x / self.cell).floor() as i32, (z / self.cell).floor() as i32)).map_or(&[], |v| v.as_slice())
     }
 
-    /// The walkable polygon under `p` (closest in height within [`NavRules::locate_height`]), or
-    /// the closest walkable polygon edge point within [`NavRules::locate_radius`]. A polygon
-    /// under `p` more than the agent's step height (the agent block's third value, 0.2 [data])
-    /// above or below it competes with the edge points by vertical plus horizontal distance, so
-    /// a point in the gap of a tile seam lands on its own layer's edge, not on a wall-top layer
-    /// overhead (fix 17).
+    /// Walkable polygon under `p`, or the closest edge point; tile-seam rule (fix 17): docs/hails-additions/26f-living-world-peds.md#navmesh-locate
     pub fn locate(&self, p: Vec3) -> Option<NavPoint> {
         self.locate_where(p, &|area| self.rules.walkable(area))
     }
@@ -415,11 +385,7 @@ impl NavMesh {
         best.map(|(_, q)| NavPoint { poly, position: q })
     }
 
-    /// The point nearest to `p` (3D) on the polygons reachable from `from`, within `max_dist`: retail's path goal
-    /// search (`82933E18` -> `82933A48`, best distance starts at `0x822F9310` ~9.2e18 and the query range is
-    /// `0x8206D108` FLT_MAX, so unbounded; only the start's region set, no area test; the closest point of each
-    /// polygon by `8292F9F0`; b277). Inside a polygon's outline the point is its surface under `p` [ours: vertical,
-    /// retail projects onto the plane]. Ties go to the lower polygon index (deterministic).
+    /// Nearest point to `p` on polygons reachable from `from` (path goal search 82933E18, b277): docs/hails-additions/26f-living-world-peds.md#navmesh-locate-nearest
     pub fn locate_nearest(&self, p: Vec3, from: u32, max_dist: f32) -> Option<NavPoint> {
         if from as usize >= self.polys.len() {
             return None;
@@ -452,11 +418,7 @@ impl NavMesh {
         best.map(|(_, at)| at)
     }
 
-    /// The nearest walkable polygon point to `p` (3D), any component, within `max_dist`: retail's path start search
-    /// (`82933848` -> `829338B0`: range FLT_MAX, best distance from ~9.2e18, the closest point of each candidate by
-    /// `8292F9F0`; b324), for a start [`Self::locate`] refuses (more than 0.5 m off the mesh). Inside a polygon's outline
-    /// the point is its surface under `p`, else its nearest edge point. Searched ring by ring over the grid from `p`'s
-    /// cell, stopping once no further ring can hold a nearer point; ties go to the lower polygon index.
+    /// Nearest walkable point to `p` in any component (path start search 82933848, b324): docs/hails-additions/26f-living-world-peds.md#navmesh-start-search
     pub fn locate_start_nearest(&self, p: Vec3, max_dist: f32) -> Option<NavPoint> {
         let (ci, cj) = ((p[0] / self.cell).floor() as i32, (p[2] / self.cell).floor() as i32);
         // Rings beyond every grid cell hold nothing.
@@ -512,14 +474,7 @@ impl NavMesh {
         self.polys.len()
     }
 
-    /// Move from `from` toward `to` over the surface: only polygons linked to `from.poly`
-    /// (directly or through linked neighbours near the move) can take the step, so a step never
-    /// jumps onto an unconnected layer (a wall top or planter island above the ped), and a step
-    /// into the gap between two tile-stitched polygons is kept (the tiles stop short of their
-    /// shared border, about 0.12 to 0.14 m each side [data]) instead of being snapped back to the
-    /// edge it left. Against a boundary edge the step slides onto the edge (as [`Self::locate`]'s
-    /// snap). Retail: the NavPower bot moves over linked polygons only (path follow not decoded;
-    /// fix 17).
+    /// Move over the surface via linked polygons only; slides along boundary edges (fix 17): docs/hails-additions/26f-living-world-peds.md#navmesh-move-along
     pub fn move_along(&self, from: NavPoint, to: Vec3) -> NavPoint {
         let reach = dist_xz(from.position, to) + self.rules.locate_radius;
         let near = |k: u32| {

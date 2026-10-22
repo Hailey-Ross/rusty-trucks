@@ -516,3 +516,33 @@ and tests.
   clip toggles the mirror bit, so it does not happen with stock clips).
 - The switch bit is tracked but changes nothing on the puppet (retail uses it for tree selection and physics, which the
   replay tier does not run).
+
+## Code reference: living_world/stance.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/stance.rs`; each comment there links its section here.
+
+### Natural stance
+
+NPC skater natural stance (regular / goofy), set once at spawn from the character record.
+
+Retail [code] (doc 26, "NPC skater natural stance"): every NPC skater spawn refills its CAS slot from the skater's character record (`GetCACSettings` `82590B50`, 168-byte entries at `[0x83067060 + 8]`); the actor ctor (`82590DC0`) reads `goofy = (byte +120 == 0)` and passes it to `Initialize82B97E38`, which stores it at character +228 (read back by virtual +128 `82B97168` and the Lua bindings `GetIfSkaterIsRegularStance` `8284B910` / `IsRegular`). For a regular skater the same initialiser selects the orientation and mirror bits (`0xC000_0000` of the animation flags), so every bind pose adds `BOARD_BACKWARDS` and mirrors (mode 2); a goofy skater draws the stock rig as authored. The player's `SkaterAnimation::set_customisation` does the same.
+
+[data]: the record class (91BCA6693EFC9AA7) is not in our setup export, so the values come from our own measurement table [`RETAIL_TABLE`] (`npc_natural_stance.tsv`: record name, record id, stance, measured / inferred / unseen). A record the table does not know keeps the engine default, goofy (the stock rig, what every NPC drew before this port).
+
+Mods: [`resolve`] takes overrides keyed by record id (16 hex digits) or record name; a mod's value wins over the table. Deterministic: the stance is a pure function of the spawn record's character and the overrides, so a client derives the host's value from the spawn record.
+
+### Stance flags
+
+The stance bits a skater's trick clips toggle (retail SkaterAnim flags `+15180` bit 31 "orientation" / board backwards, bit 30 mirror, and the relative stance `+15196`, 1 = switch).
+
+Retail [code]: every actor's animation step (`82593230`, NPC skaters and the player alike, the actor's SkaterAnim at actor `+1804 - 14960`) runs the tree, then `82B98980`, which queries the current tree's attributes for `animboardbackward`, `mirrored` and `switch` (virtual +96, names at `0x830BFAB4` / `0x830C0694` / `0x830C02A4`) and toggles bit 31, bit 30 and the relative stance once per frame each is present. The natural stance sets the start value (`Initialize82B97E38`: regular = bits 31 and 30 set). The bits bake into every tree built afterwards (the bind pose tail, `MotionAnimation::add_bind_pose`): a tree keeps the bits it was built with.
+
+Plain data (three bools; [`Self::to_bits`] / [`Self::from_bits`] for a snapshot): a pure function of the natural stance and the trick clips played, so a client derives the host's value.
+
+### Board flipped byte
+
+The board-flipped byte the actor publishes to physics: [code] `GetPhysUpdateData` `82B985E8` writes packet `+10368` = bit 31 xor bit 30 (the player's `physics_packet::publish_evaluated`). False for both natural stances; a shove-it (bit 31 alone) sets it. Retail physics reads it as Processed `+2468` bit 20 (the deck's effective frame `82C01BF8`, push foot frame, deck angles), never in the riding-fakie rule.
+
+### Fakie board axis
+
+The board axis retail's riding-fakie rule (`UpdateRidingFakie82BB2330`) reads, from the actor's root Z `axis`: [code] `Fill82BE1AE8` stores row 2 of `GetEffectiveRoot82BE3650` to PhysOutSkeleton `+0`, which copies Skeleton `+11920` and negates rows 0 and 2 iff Processed `+2476` bit 2 (= packet `+10370`, the mirror bit 30). Bit 31 is not read: a shove-it does not change the fakie rule's input.

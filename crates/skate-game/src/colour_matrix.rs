@@ -6,10 +6,7 @@ use bevy::prelude::*;
 use skate_core::colour_matrix::{ColourBand, ColourMatrixRecord};
 use skate_data::collections::Collections;
 
-/// What the retail tone pass applies (`postfx_visualfxPS`, research b101): near rows (c7..c9), far rows (c10..c12),
-/// the depth weights `(mult.x, mult.y, add.x, add.y)` (c13 / c14: `wA = sat(z * mult.x + add.x)`, `wB = sat(z *
-/// mult.y + add.y)`, linear in view depth between the record's distances, `827F3D20`), `(camera near, 0, 0, 0)` and the
-/// replay's tint overlay RGBA (alpha 0 = none).
+/// What the retail tone pass applies (`postfx_visualfxPS`, b101): band rows, depth weights, replay tint: docs/hails-additions/35-world-shading-parity.md#tone-pass-inputs
 #[derive(Resource, Clone, Copy, Debug, PartialEq, bevy::render::extract_resource::ExtractResource)]
 pub(crate) struct ColourGrade {
     pub rows: [Vec4; 9],

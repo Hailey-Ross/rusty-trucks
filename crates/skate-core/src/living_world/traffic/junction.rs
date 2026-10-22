@@ -1,27 +1,5 @@
-//! Junction entry: may a car on its approach lane enter its chosen connector now?
-//!
-//! A port of retail's car junction query `sub_82E11E90` (callers: FollowingLane `sub_82C376E8`
-//! and `sub_82C3B500`) with its two conflict scans `sub_82E11C78` (merging into the same exit
-//! lane) and `sub_82E11980` (crossing flows), plus the lane leader lookup `sub_82E14EE0` [code].
-//! The occupancy lists are retail's: each lane of a segment (`+104`, 16-byte list heads per lane)
-//! and each connector (`+8` of its 248-byte record) holds its cars newest first.
-//!
-//! Results ([`Entry`], retail return 0-4, stored by FollowingLane as the junction state `+4392`
-//! together with the stop distance):
-//! - 0 [`Entry::Go`];
-//! - 1 [`Entry::Signal`]: the approach's light is red or amber, or green without time to clear
-//!   the line; a right turn (`to_end == from_end - 1`) ignores the light (turn on red);
-//! - 2 [`Entry::Approach`]: faster than the connector's entry speed and still beyond the car's
-//!   look-ahead; at an unsignalled junction (with the light check on) the entry speed is 0.1 m/s
-//!   (`0x820641A8`), so cars come to a stop first (a stop sign);
-//! - 3 [`Entry::Yield`]: another connector from the same lane is in use, or a conflicting flow
-//!   holds the junction (merge into the same exit lane, crossing, oncoming for left turns);
-//!   at an unsignalled junction cars still on their approach yield by distance to the line
-//!   (closer first, equal distance: the lower id);
-//! - 4 [`Entry::Blocked`]: no room on the exit lane, the car ahead on the connector is closer
-//!   than the minimum gap, or the approach / exit segment is missing.
-//! Validation [trace, proof1 + proof2 VEHJUNC, 89 changes]: straight on red / amber always 1,
-//! right turns never 1, unsignalled right turns 2, the light skipped when the flag is off.
+//! Junction entry: may a car enter its chosen connector now (port of retail 82E11E90 and its scans).
+//! Results, rules and validation: docs/hails-additions/26h-living-world-traffic.md#junction-entry
 
 use std::collections::BTreeMap;
 
@@ -302,10 +280,7 @@ fn merge_conflict(q: &EntryQuery, a: u8, e: u8, lane: u8, flagged: &mut bool) ->
     conflict
 }
 
-/// `sub_82E11980`: a car of the flow from approach `a` to exit `e` that has the junction. Cars
-/// inside always do; cars still approaching only when `by_distance` (unsignalled junctions, and
-/// the oncoming flow for left turns and straight on): closer to their line than we are, or as
-/// close with a lower id.
+/// 82E11980: a car of the flow `a` -> `e` that has the junction (inside, or closer when `by_distance`).
 fn cross_conflict(q: &EntryQuery, a: u8, e: u8, by_distance: bool, my_remaining: f32, flagged: &mut bool) -> bool {
     let c = &q.net.connectors[q.connector];
     let j = &q.net.junctions[c.junction];

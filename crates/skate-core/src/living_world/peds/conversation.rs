@@ -1,33 +1,5 @@
-//! Ped conversations (doc 26 "Ped conversations"): the conversation object a ped spawns with
-//! SpawnConversationArea. Retail (TU3, evidence only; re-implemented;
-//! `.local/research/peds/b23-ped-plugins-conversations.md`, `b24-conversation-object.md`, main
-//! checked the vtable, the completion state and the spawn constants):
-//! - a conversation is a waypoint plugin entity (ctor `82E1CEC0`, interface vtable `0x8232B868`)
-//!   with up to 3 member slots (participant, in-position bit) and a state (`D+1172`);
-//! - gathering (vf4) while it has room and the state is 0 or 1; a ped may join (vf8) when its
-//!   entity type fills a free slot of the chosen row, or of any candidate row before one is chosen;
-//! - passers-by join through the ordinary offer scan (`826C0058` -> `826BFE18`, b212): the area is an offer
-//!   whose transfer expression is `ConversationIsGatheringMembers` (vf4) and `EntityAllowedToJoinConversation`
-//!   (vf8) and not `IsChasing`; the founders go through the same test (`826A6CD8` ignores its result);
-//! - add (`82E1D380` via `82E1DB50` / `82E1DC70`) turns a ped away unless it is gathering and the ped fits; each
-//!   join narrows the candidate rows to the ones every member fits;
-//! - 3 waypoints (`82E1D620`) on a 1.5 m circle 120 deg apart from a random start in [0, pi);
-//!   a ped locks the nearest free one (vfunc 144 `82E1CBC0`);
-//! - when every member signalled "in position" (vf44) it starts (`82E1EBC0`): fewer than 2
-//!   members ends it, else a candidate row is picked at random, the per-row value list gives one
-//!   value, state 2, the first member speaks;
-//! - each turn lasts the speaker's 3.0 s ConversationSpeak timer, then vf48 advances (`82E1ECB0`):
-//!   state + 1, the next occupied member speaks; state 7 is complete (vf36): 5 turns.
-//! Speech and lifetime (`b43-conversation-speech-slots.md`, main spot-checked `82E3DAD8`):
-//! - start and every advance store the turn's line id (`82E1EA98`: 2 -> 0 or 1, 3 -> 3, 4 -> 5,
-//!   5 -> 6, 6 -> 7; `D+1168`) and re-roll the variant (`D+1156`, uniform [0, 2)) once per turn;
-//! - ConversationSpeak Begin (`826A66B8` -> `82E3DAD8`) gives the speaker the speech value
-//!   line id + 33 (`ped+2468`) with the variant and the row's value (`ped+2472` / `+2476`), and
-//!   every listener the value 41;
-//! - the first join starts gathering (state 1) with a 30 s timer (`82E1D380`); when it runs out
-//!   the conversation starts with whoever is there (`82E1EB10`);
-//! - a member leaving (`82E1D470`) aborts a conversation that is not complete (vf52 `82E1E998`);
-//!   the last one leaving resets it, and a spawned area is then removed (`82E1BD08`).
+//! Ped conversations: the conversation object a ped spawns with SpawnConversationArea (ctor 82E1CEC0).
+//! Retail mechanism, speech and lifetime: docs/hails-additions/26g-living-world-ped-interactions.md#ped-conversation-object
 
 use super::super::Vec3;
 
@@ -148,11 +120,7 @@ pub fn area_cost(area: u8) -> f32 {
 }
 
 impl Conversation {
-    /// `82E1D620`: the area at `center` (already dropped onto the world by the host; `None` = the drop missed: no
-    /// waypoints) with its waypoints. Each waypoint (on the circle, jittered) must land on the navmesh within the
-    /// tolerance in x and z, on an area of cost at most `max_area_cost` (so never a road), and within
-    /// `max_distance` of the centre; one failure clears them all (`82E1DAC0`, no retry). Its height is the navmesh's.
-    /// `probe` = `None`: a map without a navmesh keeps the plain circle (NOT RETAIL: retail always has one).
+    /// 82E1D620: the area at `center` with its navmesh-checked waypoints (one failure clears all): docs/hails-additions/26g-living-world-ped-interactions.md#conversation-waypoints
     pub fn new(id: u64, center: Option<Vec3>, candidates: Vec<usize>, params: &ConversationParams, probe: Option<Probe>, rand: Rand) -> Self {
         let start = rand() * std::f32::consts::PI;
         let step = std::f32::consts::TAU / params.waypoints.max(1) as f32;

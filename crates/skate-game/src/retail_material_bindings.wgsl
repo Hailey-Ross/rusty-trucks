@@ -197,12 +197,7 @@ fn sample_lightmap(slot: u32, uv: vec2<f32>, level: f32) -> vec4<f32> {
     return sample_page_level(slots[slot].lightmap, uv, level);
 }
 
-/// Cloth sway of the retail `animated.flag` (family 21), vertexanimate_defaultVS
-/// slots 7..17: per axis `w * amplitude * sin((t - w) * frequency + phase)`, with
-/// the weights from TEXCOORD1 zw (exported as the decal UVs, `color.xy`, V
-/// flipped: zw = (color.x, 1 - color.y)) and `m_params` c8..c10 in `water[0..2]`
-/// (amplitudes c8.w / c9.w / c10.w, frequencies c9.xyz, phases c10.xyz). Zero for
-/// every other family.
+/// Cloth sway of retail `animated.flag` (family 21, vertexanimate_defaultVS slots 7..17): docs/hails-additions/35-world-shading-parity.md#flag-sway
 fn flag_sway(slot: u32, color: vec4<f32>) -> vec3<f32> {
     let p = params[slot];
     if u32(p.mode.x) != 21u { return vec3<f32>(0.0); }

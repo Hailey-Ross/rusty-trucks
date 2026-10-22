@@ -1,11 +1,5 @@
-//! Water look layer on top of the retail `water_defaultPS` port (family 33:
-//! DownTown fountains, the Aletown canal). Project choices, not retail; see
-//! docs/hails-additions/09-water.md "Water look layer". With `enabled = false`
-//! the shader output is the plain retail program.
-//!
-//! Engine-facing: [`WaterLookSettings::active`] feeds `retail_render`'s frame
-//! state. Player-facing: `settings/water-look.json`. Mod-facing:
-//! `sdk.graphics.water_look(patch)` (one mod at a time, released on disable).
+//! Water look layer on top of the retail `water_defaultPS` port (project choices, not retail; off = retail).
+//! Details: docs/hails-additions/09-water.md#water-look-code
 use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
@@ -17,10 +11,7 @@ const FOUNTAIN_COLOUR: [f32; 3] = [0.018, 0.024, 0.032];
 const FOUNTAIN_REFLECTION: f32 = 0.15;
 const FOUNTAIN_RIPPLE: f32 = 7.;
 
-/// Every value of the look layer. The default is off (retail water); the
-/// other defaults are the look approved in play (doc 09), used when the
-/// player turns on "Better Water" (pause menu, EXTRAS). Retail values are in
-/// [`WaterLook::RETAIL`].
+/// Every value of the look layer; default off (retail water), others the approved look (doc 09); see `RETAIL`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct WaterLook {
@@ -42,11 +33,7 @@ pub(crate) struct WaterLook {
     /// Scroll speed of the water texture layers relative to retail
     /// (`g_fAnimationTime`, 1.0 per second, measured in the recomp).
     pub scroll_rate: f32,
-    /// Scroll clock over a period where every authored scroll speed completes
-    /// whole texture repeats, instead of the ported routine's restart after 5
-    /// (a visible jump every 10 s). On in both looks: retail's water shaders
-    /// scroll with `g_fAnimationTime`, which sub_82791628 accumulates without
-    /// a reset; the 5-unit loop never reaches a shader (doc 09).
+    /// Seamless scroll clock (retail 82791628 accumulates without a reset; the 5-unit loop never reaches a shader).
     pub seamless_clock: bool,
     /// The look on flowing water too (family 30 `water.flowing`, `flowingwater_defaultPS`: University's
     /// fountains; user 2026-10-19: "the fountains near the pcu library spawn"): its ripple scale, the reflection
@@ -65,10 +52,7 @@ pub(crate) struct WaterLook {
     pub ocean_swell_length: f32,
     /// Speed of the longest swell (m/s); the others move at the deep-water speed for their length.
     pub ocean_swell_speed: f32,
-    /// Fountains (family 30) look like the large water, scaled down (user 2026-10-19: "in better water mode, water
-    /// fountains ... should use the same water physics/shader and material as the larger bodies of water, just
-    /// scaled down so it looks good as a fountain"): flat basins take the map's largest family 33 body's waves
-    /// and textures (`retail_render::bind_fountain_donor`) in world space; steep cascades keep their own flow.
+    /// Fountains (family 30) take the largest family 33 body's waves and textures in Better Water mode: docs/hails-additions/09-water.md#fountain-water
     pub fountain_water: bool,
     /// Metres per basin wave tile (the fine wave layer).
     pub fountain_tile: f32,

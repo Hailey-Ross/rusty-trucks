@@ -75,10 +75,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     var g_diffuse=g;
     // The scroll offset is constant across the primitive, so gradients are unchanged.
     if fam==14u { diffuse_uv+=fract(frame_state.clock.x*p.water[1].xy*vec2<f32>(1.0,-1.0)); }
-    // trafficlight_one/two vertex programs: the lamp slot floor(4 * uvA.z)
-    // (exported as decal.x, here color.x) picks a component of
-    // g_TrafficLightsStatus_1/_2; above 1 the vertex uses its second UV set
-    // (exported as the lightmap UVs, here uv_b), the lamp's "on" texels.
+    // trafficlight_one/two VS: lamp slot floor(4 * uvA.z) picks a status component; above 1 use the "on" UV set.
     if fam==19u || fam==20u {
         let lamp=min(u32(floor(4.0*i.color.x)),3u);
         if frame_state.traffic_lights[fam-19u][lamp]>1.0 { diffuse_uv=i.uv_b; g_diffuse=g_b; }
@@ -258,12 +255,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             // and refraction vectors. There is no third wave or area blend.
             water_n=first*inverseSqrt(max(dot(first,first),1e-12));
             if look.z>0.5 || look.w>0.5 {
-                // Water look: one fine layer at a larger ripple scale tiles
-                // visibly over large stretches (DownTown fountain), so add the
-                // same PCA wave from a rotated sample at 0.613x and broad swells
-                // from the large layer, matched by eye to RPCS3 footage. Smaller
-                // bodies move less: `decal.y` is the body's area (water_bodies.rs),
-                // 100 m² and below calmest, 4000 m² and up (Aletown canal) full.
+                // Water look (not retail): extra rotated PCA sample and swells, calmer on small bodies: docs/hails-additions/35-world-shading-parity.md#water-look-extra-layers
                 var third=first;
                 if look.z>0.5 {
                     let k=0.613;
@@ -289,10 +281,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             d*=d;
             vn=water_n;
         }
-        // Water look fountains: flat family 30 pixels (basins) take the map's large-water program, with the
-        // donor's PCA textures (macro = normal, detail = normal2; its diffuse in decal is not read) and rows (p.fountain, bound
-        // by retail_render::bind_fountain_donor) in world space at fountain.x metres per tile; steep pixels
-        // (cascades) keep their own flow and gain foam. Blended by slope so stepped fountains do not seam.
+        // Water look fountains: flat basins take the donor's large-water program; cascades keep their flow: docs/hails-additions/35-world-shading-parity.md#fountain-shading
         var mult=p.water[0].y;
         var mask_share=1.0;
         var spec_floor=p.water[3].y;
@@ -329,10 +318,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
                 let calm_n=normalize(2.0*up+2.0*(first-up)*(0.6+0.4*size)+(second-up)*2.0*size*size);
                 // The look's tilt gain (fountain_ripple.x): a flat basin colour shows the waves only through the lighting.
                 let basin_n=normalize(vec3<f32>(calm_n.x*frame_state.fountain_ripple.x,calm_n.y,calm_n.z*frame_state.fountain_ripple.x));
-                // The basin does not take the donor's diffuse (University's pool floor with its leaves read as a
-                // pale painted sheet); its colour and reflection share come from the look (fountain_body), matched to
-                // the Aletown canal: its own black diffuse under the white mask read "just too blue" (laptop
-                // sessions 2026-10-21). The donor gives the waves only.
+                // The basin takes the look's colour (fountain_body), not the donor's diffuse; the donor gives the waves only.
                 d=mix(frame_state.fountain_body.rgb,d,steep);
                 mask_share=mix(frame_state.fountain_body.w,1.0,steep);
                 water_n=normalize(mix(basin_n,water_n,steep));
@@ -420,13 +406,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
                 }
             }
         }
-        // 29..30, 54..56, 66..67, 77..78: min(lerp(dynamic colour, 1, blurred visibility), lerp(exponential colour,
-        // 1, saturate(10 N.L) * exponential visibility), projected lightmap). Retail has two shadow terms; our one
-        // shadow map feeds both (ours).
-        // The park's projected lightmap (skateparkProjectedLightmap, one tap, used linearly; b439 / b440 / b444):
-        // g_skateparkProjectedTransform from the world's bounds, the ground projection along the sun (L = the sun
-        // direction, toward the sun): u = (z - z0) / dz + y lz / (ly |dz|), v = (x - x0) / dx - y lx / (ly |dx|).
-        // Texture rows are flipped at export (map_writer), so v is flipped back. No bounds: neutral 1.
+        // Park shadows and projected lightmap (b439 / b440 / b444): docs/hails-additions/35-world-shading-parity.md#park-projected-lightmap
         var plm = vec3<f32>(1.0);
         let lb = park.lightmap_bounds;
         if lb.y != lb.x && lb.w != lb.z && (flags & 32u) != 0u {
@@ -491,10 +471,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
                 }
             }
         }
-        // 49..52, 65, 67..82: retail also reads the static world shadow map
-        // (shadowWorld) and floors it at g_CSMSelfBias.w; 84..85 take
-        // min(step(nl)*csm, max(world, floor)). This engine has no world
-        // shadow pass yet, so the world term is fully lit.
+        // Retail also reads the static world shadow map (floored at g_CSMSelfBias.w); no world shadow pass yet: lit.
         let world_visibility = 1.0;
         let shade = min(select(0.0,1.0,nl>=0.0)*csm,world_visibility);
         // 57, 64, 68, 88: counter light (sun mirrored about the vertical),

@@ -1,7 +1,5 @@
-//! Mod-created dynamic props (doc 27 "Props created mid-game"): `sdk.world.spawn_prop` copies a map
-//! prop (model, collision, physics block, type data) through the engine's runtime prop path
-//! (`GamePhysics::spawn_runtime_prop`, the same path a released hand prop takes) and
-//! `sdk.world.remove_prop` / mod disable remove it again.
+//! Mod-created props: `sdk.world.spawn_prop` / `remove_prop` through the runtime prop path.
+//! Details: docs/hails-additions/27-dynamic-props.md#mod-world-props
 use bevy::{camera::primitives::Aabb, prelude::*};
 use skate_core::math::{Basis3, Vector3};
 use std::collections::BTreeMap;

@@ -1,12 +1,5 @@
-//! FELanguage formatting natives the menu movies call (doc 31, Milestone 6). Retail registrar 825AA5E8 (TU3);
-//! research `.local/research/felanguage.md`.
-//!
-//! Placeholders in the language strings are `{N:type[.P]}` (N one digit, P one digit of precision, default 3);
-//! `{{` stays literal. Number separators are data (`NumberFormat`), retail's table 0x82FDE250 holds `. , 3`.
-//!
-//! NOT RETAIL YET: APT values are int or float at runtime, ours are all f64; an integral number is treated as an
-//! int (grouped), anything else as a float. Per-language separators and the typed formats other than `d` / `f`
-//! (points, distance, time, ...) are not decoded; those placeholders take the argument text as is.
+//! FELanguage formatting natives (registrar 825AA5E8): `{N:type[.P]}` placeholders, data separators.
+//! Details and gaps: docs/hails-additions/31-retail-menus.md#felanguage-formatting
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq)]

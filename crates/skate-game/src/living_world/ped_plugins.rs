@@ -1,8 +1,5 @@
-//! Ped plugin data (doc 26g "Ped plugins on world props"): the prop classes (`livingworld_props`: descriptor, hand
-//! props, numeric fields kept by hash until decoded), their descriptors (`PluginDescriptor/<name>.stategraph`: graph,
-//! max participants, transfer expression), each ped type's `plugin_odds` (`livingworld_entities`, parents merged) and
-//! the district's placed plugin props (`waypoints.json`, from the RW waypoint groups). The prop side and the rolls are
-//! `skate_core::living_world::peds::plugins`. DMO hotpoint seats (benches) need the hotpoint export (open).
+//! Ped plugin data: prop classes, descriptors, `plugin_odds` and placed plugin props; rolls in core `plugins`.
+//! Details: docs/hails-additions/26g-living-world-ped-interactions.md#ped-plugin-data
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -101,13 +98,7 @@ fn placed(waypoints: &Value) -> BTreeMap<String, Vec<PluginProp>> {
     out
 }
 
-/// The map's DMO hotpoint plugin props (`native-props/<map>.json` `plugin_props`, setup `hotpoint_data`): one
-/// one-waypoint prop per hotpoint of each placed bench, bin or newspaper box (`82C4E128`), at the initial placement.
-/// The id is the DMO instance id with the hotpoint index in its top byte (stable for a host). The hotpoints belong to
-/// the object, so a moved prop carries its seats (`follow_prop`, applied every think from the body's pose).
-/// A hotpoint authored at `position` / `facing` on a prop authored at `spawn` (origin, basis columns), carried to the
-/// prop's pose `now`: the point keeps its place on the object (a bench pushed aside takes its seats along; peds used
-/// to sit in the air where it had been, play test 2026-10-12).
+/// A hotpoint carried with its prop's pose (seats follow a moved prop; hotpoints 82C4E128): docs/hails-additions/26g-living-world-ped-interactions.md#hotpoint-follow-prop
 pub(crate) fn follow_prop(position: [f32; 3], facing: [f32; 3], spawn: ([f32; 3], [[f32; 3]; 3]), now: ([f32; 3], [[f32; 3]; 3])) -> ([f32; 3], [f32; 3]) {
     // Local = spawn basis transposed (orthonormal) times the offset; world = basis times local.
     let to_local = |v: [f32; 3]| std::array::from_fn::<f32, 3, _>(|i| (0..3).map(|k| spawn.1[i][k] * v[k]).sum());

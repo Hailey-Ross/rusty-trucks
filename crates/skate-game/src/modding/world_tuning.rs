@@ -1,21 +1,5 @@
-//! World tuning writes (capability `world_tuning` = 1, schema `skate_mods::world_tuning`): the
-//! same entry for mods (`sdk.world.set_tuning(domain, patch)`) and engine systems ([`set`]).
-//!
-//! Patches are held per owner in [`WorldTuning`] (serialisable JSON, in arrival order). After every
-//! change the domain is rebuilt from the shipped values plus the merged patches (first writer wins
-//! per field) and written into the one authority resource of that domain:
-//! - `living_world` -> `LivingWorldSettings` (rebuilt with `reset_mod_overrides`, so the player's
-//!   menu draw distance comes back when no mod sets one),
-//! - `props` -> `PropTuningSettings`,
-//! - `carry` -> `CarrySettings`,
-//! - `shadows` -> `retail_render::WorldShadowSettings` (dynamic shadow floor on the baked world),
-//! - `backdrop` -> `retail_backdrop::BackdropSettings` (the district's global presentation model),
-//! - `respawn` -> `physics::respawn::RespawnSettings` (air timeout before the checkpoint respawn),
-//! - `exposure` -> `retail_exposure::ExposureMeter` (auto-exposure meter weights and scale).
-//! - `ghost` -> `skater_ghost::GhostTuning` (skater fade-in after placements).
-//! - `decals` -> `retail_render::DecalSettings` (strength of every world decal, live).
-//! A mod that stops, fails or reloads loses its patches ([`clear_owner`]); [`clear_all`] when every
-//! mod goes.
+//! World tuning writes: one entry for mods (`sdk.world.set_tuning`) and engine systems ([`set`]), per-owner patches.
+//! Domains and their authority resources: docs/hails-additions/26a-living-world-overview.md#world-tuning-engine-side
 
 use bevy::prelude::*;
 use serde_json::{json, Value};
@@ -484,6 +468,7 @@ pub(crate) fn props_table(p: &PropsPatch) -> PropTuningTable {
             bail_heavy_mass: v.bail_heavy_mass.unwrap_or(d.bail_heavy_mass),
             bail_blend: v.bail_blend.unwrap_or(d.bail_blend),
             walkable_mass: v.walkable_mass.unwrap_or(d.walkable_mass),
+            skater_push_box: v.skater_push_box.unwrap_or(d.skater_push_box),
         };
     }
     if let Some(v) = &p.upright {
@@ -656,7 +641,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "row_solver": v.row_solver, "iterations": v.iterations, "sleep_energy": v.sleep_energy,
                 "sleep_frames": v.sleep_frames, "max_sleeps_per_step": v.max_sleeps_per_step, "rest_snap": v.rest_snap,
                 "bail_clamp": v.bail_clamp, "bail_linear_factor": v.bail_linear_factor, "bail_angular_factor": v.bail_angular_factor,
-                "bail_heavy_mass": v.bail_heavy_mass, "bail_blend": v.bail_blend, "walkable_mass": v.walkable_mass,
+                "bail_heavy_mass": v.bail_heavy_mass, "bail_blend": v.bail_blend, "walkable_mass": v.walkable_mass, "skater_push_box": v.skater_push_box,
             }, "upright": {
                 "window_seconds": u.window_seconds, "tick_seconds": u.tick_seconds, "stop_angle_deg": u.stop_angle_deg,
                 "max_angle_deg": u.max_angle_deg, "dead_band_deg": u.dead_band_deg, "gain_min": u.gain_min, "gain_max": u.gain_max,

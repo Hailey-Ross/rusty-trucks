@@ -1,10 +1,5 @@
-//! The PC overlay's look and motion, ported from the recomp's settings overlay (skate3recomp's rexglue-sdk,
-//! `src/ui/overlay/simple_settings_overlay.cpp`, `SimpleSettingsDialog::OnDraw` and `GatherInput`): a frosted teal
-//! category rail with a pinned Close Game, white setting rows under a sliding black focus fill with a lime ring,
-//! magenta steppers and sliders, lime section bars, a description panel and a pad / keyboard legend, over the
-//! blurred and tinted world. Metrics, colours, easing rates and repeat timing are the recomp's (authored for 1080p,
-//! scaled by the window height); the scene blur is `fe_backdrop`'s pass at the recomp's strength. The rows are ours
-//! (`Menu::page`, `Menu::describe`).
+//! The PC overlay's look and motion, ported from the recomp's settings overlay (rexglue-sdk); rows are ours.
+//! Details: docs/hails-additions/31-retail-menus.md#pc-overlay-look
 use super::{Kind, Menu, RowCtx, RowView};
 use bevy::{
     asset::RenderAssetUsages,

@@ -119,10 +119,7 @@ fn dot(a: [f32; 4], b: [f32; 4]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-/// Shipped inputlistener curves read by the object-move producer 8259C4B0,
-/// all evaluated at |stick angle| / pi (angle = atan2(x, -y) of the raw left
-/// stick, constant 0x3EA2F983 at 822F8610). Defaults come from setup data; a
-/// mod may override them.
+/// Shipped inputlistener curves of the object-move producer 8259C4B0 at |stick angle| / pi; mod-overridable.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ObjectMoveCurves {
     /// Key 1A1A7AC37A72DF87 (PointNegGraphData8): OB_ObjectMvX gain.
@@ -147,18 +144,7 @@ impl ObjectMoveCurves {
     }
 }
 
-/// Object-move inputs while carrying a prop (retail Move Object mode),
-/// 8259C4B0 called from Fill825999F0 with the current RawControllerInput
-/// (derived words 7..13). The stock OffBoard AG forwards all three to the MG,
-/// where MovingObjectNew attaches them to the same-named skeleton-input
-/// channels:
-/// - OB_ObjectMvX = raw left X * x_gain(|a|/pi);
-/// - OB_ObjectMvZ = raw left Y * z_gain(|a|/pi);
-/// - OB_ObjectMvRot = clamp(raw right X + sign(a) * rotation(|a|/pi) * s, -1, 1).
-///
-/// `a` is atan2(x, -y) wrapped to (-pi, pi]. The scale `s` (caller f21) is
-/// not resolved; it only multiplies the rotation curve, which is all zero in
-/// the shipped data, so the left-stick term is left out.
+/// Object-move inputs while carrying (8259C4B0 from Fill825999F0): OB_ObjectMvX / Z / Rot: docs/hails-additions/27-dynamic-props.md#object-move-inputs
 pub fn produce_object_move(
     controller: &DerivedControllerInput,
     curves: &ObjectMoveCurves,

@@ -1,18 +1,5 @@
-//! Retail teleporters (doc 38 "Teleporters"; research b420 / b421 / b423; USER-ASKS 167 to 172): the disc's and the
-//! DLC maps' teleport challenges, from setup's `private/teleporters.json` (tools/asset_pipeline/teleporters.py).
-//!
-//! Retail (stategraph `challenge_stategraph/teleport`, b421): every teleporter of the loaded district is armed; the
-//! local skater entering its volume shows the on-screen prompt (the action overlay's Teleport state with the
-//! challenge's title, D-pad Up: user fact), leaving hides it; D-pad Up asks `Popup.ShowYesNoPopup(Title,
-//! "ID_PAUSEMENU_CONFIRM")` (options No / Yes, `828556D8`) for one exit, or a list of the exits for several; Yes takes
-//! exit 0 (a list option takes its exit), No goes back to waiting. Returning to waiting resets the volume, so a
-//! skater still inside is asked again: no cooldown (user fact). The move: an exit on the loaded map is placed at once
-//! (`82864038` -> skater `825926F8`, the actor-reset chain `request_manual` ports, b423); another map goes through the
-//! map transition first (`828646E0`: far when the target world differs), as Challenge Map teleports do.
-//!
-//! The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, state 2 with the title; research
-//! b426) on the menu stage; our own text line stands in when the stage or the movie is missing (sets exported before
-//! the movie), and then the confirm is skipped too. Mods add or replace teleporters with `sdk.triggers.teleporter` (modding/triggers.rs).
+//! Retail teleporters (b420 / b421 / b423): disc and DLC teleport challenges from `private/teleporters.json`.
+//! Retail flow, prompt and mod reach: docs/hails-additions/38-dlc-support.md#teleporters-code
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use skate_data::trigger_volumes::TriggerVolumeRecord;
@@ -336,10 +323,7 @@ fn apply(
     for event in used.read() {
         let Some(t) = teleporters.get(current.path.as_deref(), &event.teleporter) else { continue };
         let Some(exit) = t.exits.get(event.exit) else { continue };
-        // Retail arrives on the board, at rest (research b455: the teleporter path `82D55280` passes IsOnBoard = 1
-        // through `828646E0` -> `82864038` -> skater vt+0x70, state 100 on arrival; `82C0D680` zeroes every body's
-        // velocity, so `travel_ex` gets no velocity). A skater on foot gets on the board; the Challenge Map menu
-        // passes IsOnBoard 0 instead. Was ours (b421 misread): the skater's own board state.
+        // Retail arrives on the board, at rest (b455: 82D55280 passes IsOnBoard = 1; 82C0D680 zeroes velocities).
         let on_board = true;
         let request = crate::challenge_map::TeleportRequest { destination: t.id.clone(), map: exit.map.clone(),
             transform: exit.matrix, on_board, session_marker: false };

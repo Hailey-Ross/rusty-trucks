@@ -1,15 +1,5 @@
-//! `MANUAL_LANDING` diagnostic line, one per landing (logs must diagnose: landings that "should
-//! have" gone into a manual and did not). Engine logging only, no gameplay effect.
-//!
-//! - **Asked for:** the Manual intent (the stick's forward / back value) on the landing tick, how
-//!   long it was held before touching down, and the motion graph's `ManualEngageTime` intent at
-//!   touchdown (retail's motion graph only takes the Manual transition with `HasIntent
-//!   ManualEngageTime > 0.2`, from InAirStatic / BoardAdjusts).
-//! - **Where the graph was:** the motion graph state (id and authored name) and the playing clip
-//!   at touchdown, so a landing from a trick or grab state (no Manual transition) is visible.
-//! - **Granted:** the manual (balance) state flag (`+340`) comes on within [`WINDOW`] after the
-//!   landing. "Why not" names what the log can see: no stick, the stick let go before the wheels
-//!   came down, or the graph declined it with the stick held.
+//! `MANUAL_LANDING` diagnostic line, one per landing (asked for, graph state, granted); no gameplay effect.
+//! Fields: docs/hails-additions/25-perf-diagnostics.md#manual-landing-log
 use super::{controls::PlayerControls, skater::SkaterRuntime, GamePhysics};
 use crate::graph_runtime::StockGraphs;
 use bevy::prelude::*;

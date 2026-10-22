@@ -1,14 +1,5 @@
-//! The front-end screen stack (doc 31, "Screen stack"): which FE screens are open, in which order, and what
-//! opening or closing one does to the game. A port of retail's stack (TU3 recomp addresses; research
-//! `.local/research/fe-stack-port.md`, push / queue code main-checked).
-//!
-//! Two stacks: the main one (A, stack+16, queue +32) and the overlay one (B, +80, queue +96; the tips loader and
-//! such, no blur, no input). Requests queue up and run in a batch on the next update (sub_82D0A560): the main
-//! queue first, the overlay queue only when the main one ran nothing. A queue waits while its stack has more than
-//! one screen and the top one is still loading or closing. The host owns the movies: this returns `Effect`s
-//! (open / close / show a screen, gameplay suspend, chyron, HUD mode, focus) and is told when a screen's movie is
-//! ready. Screens are indices into the per-build screen table (ids differ between builds); records come from
-//! the setup-extracted table and mods override them by screen id.
+//! The front-end screen stack: port of retail's two stacks and queues (82D0A560); returns `Effect`s.
+//! Details: docs/hails-additions/31-retail-menus.md#fe-screen-stack
 
 use std::collections::VecDeque;
 

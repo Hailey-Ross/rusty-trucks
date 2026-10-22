@@ -722,3 +722,316 @@ riding mode. `824660A0` writes `pc+922` every call (not a one-way latch).
 - **Verification:** test `contact_peers_have_readable_names`. Not play-tested.
 - **Open:** only simulated NPCs (NPC Skater Physics opt-in) have a skeleton solve; replayed NPC skaters' contacts are
   not logged. The player's own side of the contact is not logged separately.
+
+## Code reference: living_world/npc_skaters.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/living_world/npc_skaters.rs`; each comment there links its section here.
+
+### NPC skater replay tier
+
+NPC skaters, replay tier (doc 26, milestone 3): turns the population's skater spawn / despawn records into visible skaters that ride their recorded lines.
+
+- **Entity** per spawn record: [`NpcSkater`] (stable `LivingWorldId`, character key, slot, seed, voice) + [`NpcReplay`] (the `skate_core::living_world::replay` cursor) + `Transform`. The id map [`NpcSkaterIndex`] finds it again for the despawn.
+- **Motion** (`FixedUpdate`, after the population step): each cursor is kept at `population tick - spawn tick` recording frames (the 60 Hz lines at the retail 60 Hz world tick, `skate_core::living_world::clock`), so the state is a function of the spawn record and the tick; branch decisions use the retail score with the players and the other NPCs and are kept as records a client would mirror. The NPC's position goes back into the population (culls, the 5 m rule). At the end of a line it continues on an unused line starting within 4 m, picked by the same retail score (`replay::choose_next_line`, `sub_8246C7F8`; fix 9), so it keeps riding until the population's 120 m cull removes it. A new NPC fades in over its first second; only at a dead end (no line starts near the end) does it fade out and leave once its opacity is below 0.2 (`skate_core::living_world::leave_fade`; [`NpcFade`]).
+- **Collision**: a kinematic proxy (capsule for the body, box for the board, infinite mass, the cursor's velocity) joins `physics::network::Proxies` like a mod's solid, so the player bumps into it. NPCs never react (replay tier).
+- **Look**: the character's native roster GLB (`CustomModels::online_native_path`, the same files the customiser and online players use), or a mod's GLB from [`NpcSkaterLooks`], else the stock skater. Bound to the stock skeleton like a remote player (`AnimationStatus`).
+- **Puppet animation** (`Update`): one stock clip per [`ReplayPhase`] ([`puppet_clip`]), evaluated with the player's evaluator; root = the recorded position and skater orientation. The stock graphs are not run (simplification until the simulated tier). The clip time is the time since the phase began; a looping clip (`_CYC` in its name) wraps by its length like the player's `ClipClock`, others hold their last frame. Each NPC carries [`NpcPuppetClip`] (the clip and time in effect). A mod may override the clip per phase id or `<phase>.<style>` (`LivingWorldSettings::skater_clips`, `sdk.world.set_tuning('living_world', {skater_clips})`); an override that does not evaluate falls back to the shipped pick. A phase change (also one a branch or line chain brings) crossfades from the previous phase's clip, which keeps playing, with the player's graph transition curve (`playback_transition::transition_weight`, Blend82B96058: smoothstep over the transition time) over [`RETAIL_BLEND_SECONDS`] (the stock graph's default transition time); mods set it per phase (`skater_blend_seconds`). The weight is a function of the cursor's phase frames, so a client derives the same pose. Render (fix 14): drawn from the cursor one tick back ([`NpcReplay::previous`]) towards the current one by the fixed-step fraction, like the player, with the recorded branches (`LineCursor::render_sample`); clip and blend times include the sub-frame; after a branch or chain the root blends onto the new line (`replay::LineSwitch`, `skater_line_chain.blend_seconds`). Fix 21: the crossfade nests like a retail transition (Blend82B96058 keeps the running transition as the outgoing tree): the cursor remembers the last `replay::PHASE_HISTORY` phases and the pose is built from every phase whose blend still runs ([`puppet_layers`]), so a phase change during a blend (half of all changes on the shipped lines) no longer restarts from one clip. A recorded trick slot (`EScorableID`) plays its stock trick animation on body and board (the board is the rig's `Skateboard_Root`): `<anim>_G` on the ground, `<anim>_A` once airborne, like `T_Trick.xml` ([`retail_trick_anim`]; mods: `skater_clips["trick.<id name>"]`).
+- **Fade** (`Update`, [`present_fade`]): while [`NpcFade::alpha`] is below 1 every mesh under the NPC (body and board) draws with a per-NPC blended copy of its material; at 1 the shared materials come back and the copies are freed, so a solid NPC costs what it did before.
+- **Audio**: [`NpcSkaterAudio`](crate::world_audio::NpcSkaterAudio) with a lite state from the cursor (position, velocity, air, ground trick as a grind) and the character's voice; #32's host picks the one audible NPC by retail's rule.
+- **Events** for engine systems and the planned `sdk.living_world`: [`NpcSkaterEvent`].
+
+Multiplayer: nothing here decides a spawn; the entity is rebuilt from a `SpawnRecord`, the tick and [`BranchRecord`]s alone (`Decider::Mirror` on a client).
+
+### Retail blend seconds
+
+Transition time (s) into a phase's clip: a `PlayAnimation` without a `time` attribute transitions over the literal at `0x82099280` = 0.2 s ([code], read in `graph_host::motion_nodes::transition`), and the stock motion graph's looping idle states the puppet clips stand for enter with 0.2 s ([data] `air.xml` `B_AIR_CYC` time 0.2, `offboard.xml` stand `BLENDSEC` 0.2, `T_handplantair.xml` `IA_IDLE_N_N_0_CYC` time 0.2).
+
+### Retail trick anim
+
+The stock trick animation base a recorded trick slot plays (`<base>_G` on the ground, `<base>_A` in the air), from the trick's `EScorableID` ([code] node ext +0x24, see `ReplayLine::node_trick`; names `skate_core::scoring::catalog`, table 0x820862A8). Pairs are [data] `MotionGraphIncludes/Tricks/Tricks.xml` (`TRICK_NAME` -> `ANIM_NAME`): the flips and shuvits by name, kickflip / heelflip and their nollie forms use `B_<NAME>_IN`; numbered, late and underflip variants use their base flip; a grab or any other air trick leaves the ground with the ollie (`B_OLLIE`, retail grabs are performed out of an ollie). Ground-only tricks (manuals, powerslides, reverts, grinds, slides; catalog classes 0 and 1) and handplants (class 6) have none and keep the phase clip.
+
+### Puppet layer clip
+
+The clip a remembered phase shows and its transition time (`older` = the phase before it): a trick span with a trick animation plays `<base>_G` then `<base>_A` from the ground (0.05 s in), or `<base>_A` alone when it starts in the air (0.1 s in); the air after an air trick keeps the clip (one layer); everything else the phase's puppet clip with its blend time. A clip that does not evaluate (`evaluates` false) falls back to the shipped phase pick; trick names go through `stock` (authored tree name -> playable clip, [`stock_tree_leaf`]).
+
+### Trick air sequence
+
+The air part of a trick animation base: `<base>_A`, and for the kickflip family (`T_Kickflip.xml`: `LeftGround` plays `$ANIM_NAME$_A`, then as sequences `$ANIM_CYC_NAME$1..3` per extra flip and `$ANIM_OUT_NAME$<n>`) `B_<FLIP>_IN_A`, `B_<FLIP>_CYC1..n`, `B_<FLIP>_OUT<n>` with n the trick's flip count (`kickflip2` = 2; 1 without a digit). Parts are joined with `+`: the puppet plays them back to back (`transType="sequence"`, no blend).
+
+### NPC stance flags
+
+An NPC skater's stance bits (retail SkaterAnim flags bits 31 / 30 and the relative stance, [`StanceFlags`]): the natural stance's start bits, toggled by the stance events of the clip its newest layer plays, like retail's `82593230` -> `82B98980` for every actor. Each layer keeps the bits current when it began (retail bakes them into the tree's bind pose at construction). Simulation state, updated on the fixed step from the cursor and the clip data only ([`track_stance`]), so a client derives the host's bits; plain data for a snapshot.
+
+### NPC fade
+
+Spawn fade in (retail `sub_825926F8`: 0 to 1 over the first second), then the leave fade (retail `sub_8246EA90` / `sub_8245A9B8`, removal below opacity 0.2): only once the cursor has ended at a dead end (no line starts within the chain radius), holding the last pose while fading. The clock is the spawn-relative frame (`target`), which keeps running after the cursor stops, so clients derive the same alpha from the same spawn record and tick.
+
+### NPC skaters vs props
+
+NPC skaters against dynamic props (DMOs), doc 26 fix 19. Retail NPC skaters are full skaters (`AIController` on the player's skater physics, [code] notes `npc-skaters-re.md` section 0), so their board and body hit a DMO like the player's: the prop step pushes it by the prop's own tuning (`props` domain: push mass, transfer, board / body caps). Our NPC is a replay puppet, so it does not slow down or bail; the prop is pushed out of its line. A mod may switch it off (`sdk.world.set_tuning("living_world", {npc_skater_props = {enabled = false}})`).
+
+### NPC prop volumes
+
+The prop-step push volumes of one NPC: the proxy's body capsule and its board (as a capsule along the deck), at the recorded velocity, in the same places as [`proxy`]. Both count as a board hit (the prop's `board_push_speed` cap): the lower body-bump cap is for the player's walking body, which the prop's triangles stop; a puppet is not stopped, and in retail the whole skater rides into the prop at riding speed. Actor id = the proxy's solid id (stable, the prop's authority owner).
+
+### Simulated NPC draw root
+
+A simulated NPC skater is drawn from its own physics pose. That pose is relative to the skater's animation root (joints within ~2 m of 0, NPC_SKATER_DRAWN), so the puppet root sits at the animation root in the world; with the root at the origin every simulated skater was drawn at the map origin. A pose already in world space (root joint at the skater) keeps the identity root.
+
+### Flags root turn
+
+The puppet root's extra turn for the stance bits of the newest layer. The regular bind pose ([`bind_pose_tail`]) draws the board turned round (`BOARD_BACKWARDS`, nose along root -Z) and the body mirrored; retail's physical board follows the animated board (`publish_deck_angles` with `board_flipped = bit31 ^ mirror`, false for both natural stances), so a regular character's frame is half a turn from its board's. The replay root is the frame the goofy puppet rides nose first with (the facing rule and the fakie rule work on that board axis), so a mirrored puppet turns its root half a turn: the board keeps its world heading and the left foot leads. The turn follows the mirror bit alone: a trick clip that toggles only `animboardbackward` (the board turned under the body) ends with the board turned in the clip, and the next layer's `BOARD_BACKWARDS` keeps it turned without moving the body.
+
+### Puppet pose in flags
+
+The puppet pose with each layer in the stance bits it was built with (`flags[i]` for `layers[i]`; retail bakes the bits into a tree's bind pose at construction, so a transition blends two trees each closed with its own tail). While every layer shares the bits, the layers blend first and one tail closes the result (with no bits set: the commands every NPC drew before the stance port; with the regular bits: the natural stance port); once a newer layer's bits differ, every layer is closed with its own tail before it blends in. The channel tree (fakie) is closed with the newest layer's bits, like the player's channel tree built with the current flags.
+
+### NPC backwards line
+
+The `NPC_SKATER_BACKWARDS` line for one NPC sample, `None` when it is not riding backwards (`skate_core::living_world::replay::facing_check`: drawn heading more than 135 deg from the velocity yaw at 1 m/s or more; a diagnostic threshold). `recorded_fakie` says the line's own retail path frame opposes travel there (the recorder rode fakie: retail's target frame does too); `flip` is retail's latched switch / fakie flip (controller `+927`); `facing_flipped` is the fix 16 mod option's turn.
+
+## Code reference: skate-core living_world/replay.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/replay.rs`; each comment there links its section here.
+
+### Line cursor model
+
+NPC skaters, replay tier: the line cursor (doc 26, milestone 3).
+
+Retail runs every NPC skater as a full skater steered along a recorded human line (`AIController` + `PathController`, ctor `sub_824685F0`, vtable `0x822FBA1C`). The replay tier is the engine's cheap stand-in until the simulated tier exists: the NPC follows its line kinematically, node by node, at the recording rate (60 Hz, [data]: node distance / frames = per-tick displacement over 389k nodes). What is ported 1:1 from the code is the **branch choice** at a node that carries a branch group ([code] `sub_8246BEE0`, chooser `sub_8246C1C8`, candidate score `sub_8246C230`):
+
+- candidates: index 0 = stay on the current line at the current node, then every branch target line that exists, is not in use by another skater (`sub_82458860`) and is valid (`sub_82456970`);
+- each candidate is rejected (score -1, never chosen) when the line has no node after the candidate node (`sub_8246C3C0`), when the direction from the skater to that next node is 50 deg or more off the skater's forward (0.872665 rad, `0x822F91B0`), or when a node within one of the candidate node is airborne (flag 0x04) or carries an event (`sub_8246C4F8`; skipped at node 0); otherwise
+- score = |angle| x 572.958 (`0x822F9354`, tenths of a degree) + 400 x speed (`0x822F95F0` = -400, the same for every candidate) + offline: 1024 x the other AI skaters on the same line within 5 nodes (`sub_82456A38`) + min(30 x the nearest distance from the player to every second node from the candidate node on, 1500) (`sub_8246C5D8`, `0x820D4924` = 30) + 1000 when the line's flags have bits 0, 1 and 2 all set + the skill term (|path skill - preferred| x 250 + 100 when both are set and differ);
+- the lowest score wins, the first on ties; when every candidate is rejected or the stay wins, nothing changes. No random draw is involved. The branch record's f32 is not read there.
+- a taken branch starts at the target node nearest to the skater among `target - 3 ..= target` (`sub_82455BB0`).
+
+Replay-tier simplifications (documented in doc 26; the simulated tier replaces them): positions, orientation and timing come straight from the recording instead of the steering (`AIPhysicsInput`); the branch is evaluated once when the cursor reaches the group's node (retail evaluates while the controller sits on it); the obstacle-list rejection of `sub_8246C4F8` is not modelled (no obstacles yet).
+
+**Line end** ([code] `sub_8246D3C0` -> `sub_8246C7F8` -> `sub_82458968`, fix 9): no line on the disc has a branch group on its last node; instead, when the controller reaches the last node, retail looks for unused lines whose start node is within 4 m of the end ([data] `ai_skater` tunable) and picks one with the branch chooser ([`choose_next_line`]), so an ambient skater keeps riding from line to line until the population's distance cull (120 m from the player, `sub_8245D520`) removes it. [data] 742 of the 760 DownTown lines have another line's start within 4 m of their end. Only when none is near (retail would steer the full skater to the nearest start at any distance) does the replay tier report [`CursorEvent::Finished`].
+
+**Presentation** (fix 14): a branch or chain moves the line under the skater (a chain up to the 4 m radius). Retail's full skater steers onto the new line and never jumps; the replay tier keeps where the skater was drawn at the switch ([`LineSwitch`]) and decays that offset (position and orientation) with the graph transition curve over [`ChainConfig::blend_seconds`]. Samples carry the render sub-frame ([`ReplaySample::sub_frame`]) so clip and blend times move between ticks, and [`LineCursor::render_sample`] interpolates from the cursor one tick back with the recorded branch decisions (the player's previous-to-current scheme), never guessing a branch.
+
+**Facing** (fix 23 corrected): retail's AI target frame is the recorded skater frame slerped between nodes, turned 180 deg while the latched flip ([`LineCursor::flip`], controller `+927`) is set; the flip is latched only on entering riding and held across switches ([`FacingRule::RidingEntry`]). Retail's full skater steers its body toward that target ([`steer_input`], 2 / 10 deg) and shows fakie / switch with its own clips and stance mirror. The cursor always latches the flip; the puppet draws the retail target only under the default `riding_entry` rule; the cursor runs retail's riding-fakie rule on the drawn body ([`LineCursor::fakie`]) and the puppet overlays the stock fakie channel like retail, so a body against its travel is drawn riding fakie. The fix 23 per-node fold ([`FacingRule::PerNode`], not retail) stays a mod option.
+
+Multiplayer: between branches the cursor is a pure function of (line, start node, frames); a branch decision is a record ([`BranchRecord`]) a client mirrors ([`LineCursor::step`] with a mirroring decider), so a client reproduces the host's NPC from its spawn record, the frame count and the branch records alone.
+
+### Facing rule riding entry
+
+Retail (default): the target frame is the recorded SKATER frame slerped between the two nodes ([code] controller `+208`, `sub_8246D560` -> `sub_8245A088` -> `sub_82454CD0` -> `sub_82454B28`), turned 180 deg about its up axis while the cursor's latched [`LineCursor::flip`] is set ([code] `sub_8246B358`: rows 0 and 2 of `+208` negated while controller `+927`). The flip is latched only at takeoff ([code] `sub_8246A700`, rising edge of `+928`, the airborne byte) and held across landings, branches and chains. The default (`riding_entry`): a body drawn against its travel on the ground is drawn riding fakie ([`LineCursor::fakie`], the stock fakie channel), as retail draws it.
+
+### Switch blend seconds
+
+Seconds over which the drawn root (position and orientation) moves from where it was on the old line onto the new one after a branch or a chain (`LineSwitch`). Retail has no such value: its full skater never jumps, it steers onto the new line (`sub_8246D3C0` / `sub_8246C7F8` only store the new line and node, `AIPhysicsInput` steers). The replay tier stands in with `SWITCH_BLEND_SECONDS`. 0 = cut.
+
+NOT RETAIL YET (switch spins): retail has no turn rate to port here. The AI steer of `sub_82471188` (on board) and `sub_82471070` (off board) is written to three named input channels of the normal character, `Turn`, `BodySpin` and `KickTurn` ([code] slots `0x830BFD74` / `0x830BE600` / `0x830BE1E0`, names from static inits `sub_82F84BE0` / `sub_82F84A30` / `sub_82F84BC8`), so the body yaw comes out of the player chain: steering tilt `sub_82D92440` -> truck targets `sub_82C040F0` / `sub_82C0B9C0` -> the rigid-body wheel solve. It is emergent, not a tunable; the faithful fix is the simulated NPC tier. With `FacingRule::RidingEntry` the puppet turns a switch's facing change within this blend (128 spins after a switch on the exported lines, 29 under `FacingRule::PerNode`).
+
+### Keep facing option
+
+Mod option, not retail (default `false`): carry the drawn facing across a branch or chain by riding the new line turned 180 deg (`LineCursor::facing_flipped`, the fix 16 rule). Retail's facing state is the latched flip (`FacingRule::RidingEntry`, controller `+927`), which a switch leaves alone (a switch stores only line and node, [code] `sub_8246C7F8` `+592/+600/+816`, `sub_8246BEE0`); it never compares the old and new line at a switch. Kept on, this turn carries on across later lines and the skater can ride a forward-recorded line backwards.
+
+### Node airborne
+
+Whether a node counts as airborne for the flip latch. Retail latches on the rising edge of controller `+928` = the skater state object's `+438`, which [code] `sub_82DB6EC0` (store at 0x82DB7654) sets while the player state id is in `200..300` and the wheel count is 0: in the air on the board (b119, b354; ground, grinds, wipeout and off board give 0). The replay tier has no player state, so this maps it to the recorded node flags. [data, b355] AIRBORNE marks free flight on the disc lines (median -12.5 m/s^2 over 12,049 runs; every grind start is on the ground; a grind or manual ending in the air ends inside the run); OFF_BOARD must win (756 nodes carry both, retail's `+438` is 0 off the board). TU3 has no live recorder, so what the dev recorder tested is unknown.
+
+### Per-node facing rule
+
+NOT RETAIL (fix 23 rule, kept as the `FacingRule::PerNode` mod option; the default is `FacingRule::RidingEntry`). Whether the replay draws node `i`'s recorded skater frame turned 180 deg about its up axis: its forward lies more than 90 deg (yaw) from the forward of the retail path frame (`path_frame`, the riding direction retail's controller steers by). [data] On the exported lines (3 districts, 142,042 moving nodes) the recorded skater frame and the path frame agree within 30 deg on 111,240 nodes and are about 180 deg apart on 24,251 (switch stance: the body turned round while the board rolls nose first); the skater frame faces against the travel on 28,102 nodes, the path frame on 11,598 (fakie). Airborne nodes keep the turn of the last grounded node before them: a shove-it spins the board about its up axis in the air, and only its landing node carries the final `m_IsBoardFlipped` state.
+
+Retail does not do this: the review in doc 26 "Fix 23 corrected" found that retail's AI target is the recorded skater frame slerped between nodes, turned as a whole by one latched flip (controller `+927`, `FacingRule::RidingEntry`), not folded per node against the path frame. The node holds no switch or stance flag (flags bits 0..3 = board flipped, crouched, airborne, off board [data]); `sub_8246B1F8` folds the body-board yaw into +-90 deg for a separate input (`+856/+860`). Retail plays switch with its own clips and stance mirroring; the replay puppet has one stance, so this rule draws a switch rider as riding forward in the character's stance.
+
+### Choose next line
+
+The next line at the end of `current` (retail [code] `sub_8246D3C0`: once the controller's node is the last one it calls `sub_8246C7F8` with the end position):
+- candidates (`sub_82458968` mode 1): every loaded line that is not in use (`sub_82458860`; the skater's own line counts as in use) whose **start node** (node 0) lies within `ctx.chain.radius` of the end position, at most `ctx.chain.max_candidates`, in id order (retail walks its path hash map; the order only matters for ties and the cap);
+- one candidate is taken as it is; several go through the branch chooser `sub_8246C1C8` (score `sub_8246C230` at node 0, see [`branch_score`]): lowest score wins, the first on ties, and the first candidate when every one is rejected (the chooser starts at index 0);
+- the new line starts at node 0.
+
+`None` = no start node within the radius. Retail then falls back to the nearest start node at any distance and the full skater steers to it (`sub_82458968`, the 6 m valid/invalid rule); the replay tier cannot ride that gap, so the caller ends the line (and the NPC fades out). Line validity per character (`sub_82456970`) is not modelled here, like in [`choose_branch`].
+
+### Latched flip
+
+Retail's latched switch / fakie flip (controller `+927`, [`FacingRule::RidingEntry`]): the drawn skater is the recorded skater frame turned 180 deg about up while set. Latched by [`flip_test`] only at takeoff ([`node_airborne`] rising, [code] `sub_8246A700`; also a spawn in the air, and a spawn riding as a stand-in: retail holds 0 there until the first takeoff), held across landings, branches and chains. A pure function of the lines, the spawn and the branch records (deterministic; a snapshot carries it as a plain bool).
+
+### Riding fakie bit
+
+Retail's riding-fakie bit of the drawn body (SkaterAnim flags `0x20000000`, set by the motion graph's `UpdateRidingFakie82BB2330` [code], [`crate::animation::riding_fakie`]): on the ground, outside a trick, the travel runs against the board's forward (`dot(velocity, board axis) < -0.5`) above the high speed, or above the low speed for longer than the slow time; cleared in the air and off the board, held during a trick, never set in the first `after_teleport_seconds` after spawn. The board axis is the drawn root's +Z: retail reads the effective root (`GetEffectiveRoot82BE3650`, root Z negated iff the mirror bit, [`crate::living_world::stance::StanceFlags::fakie_board_axis`]), which for the puppet root (drawn frame turned half a turn iff mirrored) is the drawn frame for any stance bits; the board bit 31 (a shove-it) is not an input. Updated every step after the facing rule, so it describes the body as drawn; a pure function of the lines, the spawn and the branch records.
+
+### Cursor spawn
+
+Spawn on a line at a node (retail spawns at node 0, `sub_8245DA78`).
+
+Retail places the character with the node world frame ([code] `sub_8245C548` -> `sub_82453C58` -> `sub_8245DA78`, [`node_world_frame`]); when the spawn node is airborne, the first controller update sees `+928` rise and latches the flip against that frame ([`flip_test`]): set when the recorded skater frame faces away from the path frame. A riding spawn latches the same test as a stand-in (retail: 0 until the first takeoff).
+
+### Current trick and phases
+
+The phases this cursor entered, newest first, with the 60 Hz frames since each began (the puppet's nested crossfade and trick clips; fix 21). A pure function of the cursor. The trick of the open trick span (`-1` outside a span or without one): the recorded trick, or the one the trick choice started ([`super::npc_tricks`]).
+
+### Begin switch
+
+At a branch or chain from the current node of `old` to `to_node` of `next`: keep where the skater is drawn now (including a switch blend still running) so the root moves onto the new line instead of jumping. Deterministic: from the lines and the record alone.
+
+Facing, retail: nothing else. The switch stores line and node only (`sub_8246C7F8`, `sub_8246BEE0`), so the latched [`LineCursor::flip`] (`+927`) is held and the new line's recorded skater frame is drawn turned by it; the root blend above stands in for the full skater steering onto it. With [`LineCursor::keep_facing`] (mod option, not retail; fix 16) the skater keeps the way it faces. When the new line's recorded skater faces more than 90 deg away from the drawn one about +Y (its recorder rode the other way round there: fakie against forward), the cursor flips [`LineCursor::facing_flipped`] so the line is ridden turned 180 deg about the skater's up axis, the same turn retail applies to a node's board frame when it is flagged `m_IsBoardFlipped` ([code] `sub_82453A58`, `sub_824734A8`: negate the frame's X and Z rows).
+
+### Flip only in the air
+
+[code] `sub_8246ACF0` calls the flip-applying target steer (`sub_8246B358`) only while the state object's `+438` (airborne, b354) is set; otherwise it sends `sub_82471070` with controller `+824` and the flip is not applied. Off-board nodes therefore show the recorded frame as recorded (walking forward). On the ground the puppet keeps the flip as a stand-in (retail's ground target is the path frame, b353; no ground physics in the replay tier).
+
+## Code reference: skate-data aipath.rs
+
+Detail moved out of the code comments of `crates/skate-data/src/aipath.rs`; each comment there links its section here.
+
+### AIPATHDATA layout
+
+Recorded NPC skater lines: the retail AIPATHDATA object (RenderWare type
+0x00EB0014) and the living-world skater path pack the setup export writes.
+
+Retail free roam streams these objects with the district `cSim_*.xsf` tiles;
+`Sk8::AIPath::ThePathManager` keeps every path by its 16-byte id, and the AI
+skater manager (`sub_8245C548`, spawn) picks lines whose start node lies in
+its spawn ring. A path that crosses several tiles is stored, byte-identical,
+in every tile it touches: the disc holds 3,891 path copies of 1,691 unique
+paths (DownTown, University, Industrial; the park districts have none).
+
+Layout (big-endian; every `m_p*` offset is relative to the start of the
+struct that contains it). Field names follow the Skate 2 symbols as
+documented by DumbadsSkate3ModdingTools (Ethanw05; credits there to SunJay,
+Dumbad, RenderWareGavin, Tuukkas); every field was re-checked against the
+user's disc ([data], `.claude/notes/npc-skaters-re.md` section 3):
+
+```text
+AIPATHDATA  +0 u32 path count, +4 u32 offset of the path array (0x10), +8 8 pad
+tAIPath (96 B)
+  +0x00 vec4 bbox min, +0x10 vec4 bbox max (w = 1)
+  +0x20 16 B m_ID (byte 0 = 0 for ambient paths, bytes 1..5 district tag)
+  +0x30 m_pNodes, +0x34 node count, +0x38 m_pExtData (0 = none)
+  +0x3C m_pBranchGroup, +0x40 group count
+  +0x44 u32 m_BitFlags, +0x48 u64 m_AllowedSkaters, +0x50 i32 m_SkillLevel,
+  +0x54 3 x i32 extra (0)
+tAIPathNode (44 B)
+  +0x00 vec3 position, +0x0C vec3 direction (displacement since the previous
+  node), +0x18 board orientation, +0x1C skater orientation (4 x u8, biased
+  quaternion), +0x20 m_pExtData (node-relative, 0 = none), +0x24 u8 frames
+  since the previous node (60 Hz), +0x25 u8 width left, +0x26 u8 width right
+  (255 = unbounded), +0x27 u8 event type, +0x28 u8 flags, +0x29 3 B extra
+tAIPathNodeExtData (40 B)
+  +0x00 vec3 trajectory start position, +0x0C vec3 trajectory start
+  velocity, +0x18 vec3 trajectory offset, +0x24 i16 trick index (-1 none),
+  +0x26 i8 180-degree air spin count, +0x27 u8 flags
+tAIPathBranchGroup (12 B): +0 offset of its branches (group-relative),
+  +4 branch count, +8 node index on this path
+tAIPathBranch (24 B): +0 16 B target path id, +16 u32 target node index,
+  +20 f32 position along the target
+```
+
+Bytes in, no file I/O: the setup export (tools/asset_pipeline/
+living_world_skaters.py) writes one pack per district, and a mod can author
+extra paths in the same retail layout.
+
+### Skater path pack layout
+
+Pack magic. Layout (little-endian, our own format; the blobs inside stay the
+retail big-endian bytes, verbatim):
+```text
++0  8 B  "LWSKPTH\0"
++8  u32  version (1)
++12 u32  tile count
++16 tile table, 48 B each: u64 asset id, u32 blob offset (from file start),
+    u32 blob length, 32 B tile stream name (NUL padded, e.g. cSim_-150_-150_high)
+then the AIPATHDATA blobs, each 16-byte aligned
+```
+
+## Code reference: living_world/leave_fade.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/leave_fade.rs`; each comment there links its section here.
+
+### Leave fade
+
+How an ambient NPC skater appears and leaves: it fades in over its first second, and at the end it fades out and the skater manager removes it once the fade is far enough along, instead of popping in or vanishing on the spot.
+
+Retail [code, TU3]:
+- The skater's render object (`skater+1804`, a sub-object at `+14960` of the 15328-byte object built by `sub_82B973C8`, vtable `0x8231E170`) keeps an opacity at `+244`: vfunc 68 sets it, vfunc 76 (`sub_82B97190`) returns it. Default 1.0.
+- `sub_82594488(skater, dt)` drives it from two timers: `skater+1868` (fade in, opacity = clamp(t, 0, 1)) and `skater+1872` (fade out, opacity = 1 - clamp(t, 0, 1)); both grow by dt every tick, so a fade takes 1 s. `+1872` = FLT_MAX means "not fading out" (`sub_8246EF78`).
+- `sub_8246EA90` (ambient skater controller) starts the fade out (`+1872 = 0`, controller byte `+29 = 1`) once the time in its timed state is more than `duration - 1 s`: the fade ends exactly when the state does.
+- The manager's per-skater check `sub_8245A9B8` removes a skater whose controller is fading (`+29`) once the opacity (vfunc 76) is below 0.2 (constant at `0x82099280`), 0.8 s into the fade.
+- `sub_825926F8` (skater spawn setup) sets `+1868 = 0`, so every spawned skater fades in from opacity 0 to 1 over 1 s. `sub_82594488` checks the fade in first: while `+1868 < 1` the opacity is the fade-in value even if a fade out was started (held at 0.5 while a component byte `+71` is set; not ported, the replay tier has no such component).
+
+That timed state is entered on a skater component flag (`sub_8246EF78`, byte `+59`), not at a line end: at a line end retail chains to the next line (`replay::choose_next_line`, fix 9), so an ambient skater keeps riding until the 120 m population cull. The replay tier fades only at a dead end (no line starts within the chain radius): the fade starts there with the last pose held, the NPC is removed below `despawn_alpha`. Pure and deterministic (a function of the cursor frame), so a client derives the same value.
+
+### Leave fade start
+
+Start the fade when the cursor has ended: its line is over and no other line starts within the chain radius (`replay::choose_next_line`). Returns true on the frame it starts.
+
+Retail (fix 9): the 1 s fade and the removal at opacity 0.2 belong to a timed state the controller enters on a skater component flag (`sub_8246EF78`, byte `+59`; leaving it cancels the fade), not to the line end: at a line end retail chains to the next line (`sub_8246C7F8`). The replay tier has no such state; its only stand-in is a dead end the replay cannot ride past, where the fade starts with the last pose held.
+
+### Leave fade despawn
+
+The manager removes a fading skater below the threshold (`sub_8245A9B8`). Checked once the fade in is over: retail's timed state lasts at least 1.5 s (`sub_8246EE30`), so its fade out never starts while the fade in is still below 0.5, and a skater is never removed mid fade in; our lines can be shorter, so the rule is stated explicitly.
+
+## Code reference: skater_ghost.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/skater_ghost.rs`; each comment there links its section here.
+
+### Skater ghost fade
+
+Skater fade-in after every placement ("ghost"), retail sub_82594488 / sub_825926F8 (`skate_core::player::ghost`).
+
+- **Placement** (`FixedUpdate`, after the physics tick): every completed teleport of the simulated skater (checkpoint respawn, menu / map / mod teleports, session marker return; all finish in the one reset at `physics/frame.rs`, counter `respawn::Runtime::placements`) and a newly loaded skater (spawn, map change) become a [`SkaterPlaced`] message keyed by the stable player id. Serialisable, so a networked host could send the same events; no networking here.
+- **Fade** (`FixedUpdate`): [`SkaterGhosts`] holds one [`GhostFade`] per player id; a placement restarts it, then each fixed tick publishes the opacity and advances the timer by the fixed dt (time-based, any tick rate gives the same curve).
+- **Draw** (`Update`): while the local player's opacity is below 1 every mesh under [`PlayerRoot`] (body, hair, clothes, board parts) draws a blended copy of its material with the alpha scaled; at 1.0 the original material handle goes back, so solid frames draw exactly the materials they drew before this feature.
+- **Mods**: world tuning domain `ghost` {enabled, fade_in_seconds, hold_alpha} writes [`GhostTuning`] (retail defaults, reset on mod stop).
+
+NOT RETAIL YET: the 0.68 hold condition (state byte 71) is undecoded and never set here; the render-side smoother sub_8278C4D8 (15/s up, 5/s down toward the published opacity) is not ported (the 1 s ramp is slower than it, so the drawn opacity follows the published one). NPC skaters do not use this path: their own spawn fade-in is `living_world::npc_skaters::NpcFade`.
+
+## Code reference: player/ghost.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/player/ghost.rs`; each comment there links its section here.
+
+### Ghost fade rule
+
+Skater fade-in after every placement ("ghost"), TU3 sub_82594488.
+
+Retail keeps a fade-in timer in seconds per skater placement component (owner +1868). The place-skater handler sub_825926F8 sets it to 0 (and counts the placement, +1864); the component constructor sub_82590DC0 starts it at 0 too, so a fresh skater fades in. Each tick sub_82594488(owner, dt) publishes the opacity (record +190 = opacity * 255, read by the character shaders as `i_params.x`) and then adds dt:
+- timer < 1: opacity = clamp(timer, 0, 1), and the timer stays put while state byte 71 is set and timer > 0.68 (0x82099764),
+- else a fade-out timer (+1872, constructor FLT_MAX = off) would apply; nothing in our port starts it,
+- else 1.0.
+
+Generalised for mods: opacity = clamp(timer / fade_in_seconds, 0, 1) and the hold compares the opacity with `hold_alpha` (retail 1.0 s and 0.68, where both forms are the same). Time-based, so the curve is the same at any tick rate.
+
+NOT RETAIL YET: who sets state byte 71 (the 0.68 hold) is undecoded; hosts pass `hold = false`.
+
+## Code reference: skate-game/src/living_world/npc_tests.rs
+
+Test descriptions moved out of the code comments of `crates/skate-game/src/living_world/npc_tests.rs`; each test there links its section here.
+
+### Test fix 23 facing rules
+
+Fix 23 (NPC skaters riding backwards), headless: every line chains onto the line starting at its end (line i -> i + 6), and lines 6..11, 18..23, ... were recorded fakie for their first 50 nodes (skater and board frame facing -x while travelling +x), so every chain joins a line the other way round from the one it left; the other lines hold a switch-stance stretch (nodes 150..250: skater frame turned round, board forward). Retail rule (fix 23 corrected, `FacingRule::RidingEntry`, mod option until the stance mirror lands): the recorded skater frame, turned only while the flip latched at a riding entry is set (clear here: every spawn node's skater frame agrees with its path frame), held across switches. With it no NPC is drawn against its travel outside a recorded fakie or switch-stance stretch once the switch blend is over; the switch-stance stretch is drawn as recorded, body against travel (the puppet has no stance mirror: NOT RETAIL YET), and `NPC_SKATER_BACKWARDS` reports the recorded fakie stretches as such. The fix 23 rule (`per_node`, the default, NOT RETAIL YET) draws the switch stance forward; the fix 16 mod option (`keep_facing`) reproduces the reported bug: forward-recorded lines ridden backwards.
+
+### Test nested blends
+
+Data-gated (fix 21): the recorded jump pattern of the shipped lines (rolling, a trick span opening on the ground, airborne, the span closing in the air, landing; phases shorter than the 0.2 s blend, as half of all changes on the lines are) is drawn without a pose jump: at every phase change the drawn pose continues the one showing (the new clip enters at weight 0 over the running blend), where restarting the blend from one previous clip (fix 12) jumped.
+
+### Test trick choice
+
+Trick choice (M5, `skate_core::living_world::npc_tricks`): every line gets an ollie slot with 80 frames of air. The host re-picks it from the character's profile table (retail mode), sends a `Trick` event per slot and keeps the record; a client cursor mirroring the branch and trick records shows the same trick. A mod's `recorded` mode keeps the line's ollie; the reset restores the profile pick.
+
+## Code reference: skate-core/src/living_world/replay_tests.rs
+
+Test descriptions moved out of the code comments of `crates/skate-core/src/living_world/replay_tests.rs`; each test there links its section here.
+
+### Test keep facing option
+
+Fix 16 rule, now a mod option (`keep_facing = true`, not retail): the skater keeps the way it faces across a chain or branch. Line 2 was recorded riding the other way round (its skater frame faces -Z while it travels +Z, fakie), and then turns forward again with a recorded revert. With the option the NPC keeps facing +Z there and the recorded revert turns it into fakie (the source of the backwards riding, see the next test). Retail default (`keep_facing = false`): the recorded facing, the path frame of the node. Deterministic: a client mirroring the record derives the same flip.
+
+### Test retail facing over switches
+
+Fix 23 (NPC skaters riding backwards), now under the retail rule (fix 23 corrected): a switch stores line `+592/+600` and node `+816` only ([code] `sub_8246C7F8`) and leaves the latched flip alone; spawned forward, the flip is clear on every line here. Ride: line 1 forward, chain onto line 2 (recorded fakie for 15 nodes, then a recorded revert to forward), chain onto line 3 (forward). With the retail rule the drawn skater never faces against its travel outside a recorded fakie stretch, on any frame once the switch blend is over, and it rides line 3 forward. The fix 16 option reproduces the bug: it carries the turn on and rides the forward-recorded part of line 2 and all of line 3 backwards. Host and a mirroring client agree frame by frame.
+
+### Test per-node facing
+
+Fix 23 rule, now the NOT RETAIL [`FacingRule::PerNode`] mod option: the drawn skater faces the path frame's riding direction per node. A recorder riding switch (skater frame turned round, board rolling nose first, flag clear) is drawn forward; a board-flipped node (board turned round, flag set, skater forward) stays forward; a recorded fakie node (path frame against travel) is drawn fakie. Airborne nodes keep the last grounded turn, so a shove-it spinning the board in the air does not turn the skater. A cursor ride over a switch stretch is never drawn against its travel.
+
+### Test spawn latch
+
+Retail facing rule (fix 23 corrected, [`FacingRule::RidingEntry`], a mod option until the stance mirror lands): spawn latch. The character spawns with the node world frame ([code] `sub_8245C548` -> `sub_82453C58`, the path frame on a riding node) and the flip latches on that first riding entry ([code] `sub_8246A700`: `dot(recorded skater row 2, character row 2) < 0`). A recorder riding switch at the spawn node (skater frame turned round, board forward) sets the flip; the drawn skater is the recorded frame turned 180 deg about up (rows 0 and 2 negated, [code] `sub_8246B358`). Spawned in the air, retail's first update sees the takeoff edge (b354); off board, nothing is latched; on the ground the same test is a stand-in.

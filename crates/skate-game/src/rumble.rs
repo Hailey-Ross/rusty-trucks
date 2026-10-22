@@ -1,9 +1,5 @@
-//! Controller rumble on the pads: the TU3 rumble controller (`skate_core::rumble`) ticked at retail's 60 Hz
-//! whatever the frame rate, gated by Game Settings > Control > Vibration (settings +163), sent through the pad
-//! backend (`input::platform::set_rumble`). Who starts a rumble: switching Vibration on plays retail's test
-//! rumble (0.5 / 0.5, rate 5.0, `sub_8260DF40`) on the active pad; mods start and stop channels
-//! (`sdk.input.rumble` / `sdk.input.stop_rumble`, capability `input_rumble`). NOT PORTED YET: retail's gameplay rumble (the posters `sub_82BB8CF0` 0.5 / 0.5 / 1.2 and the
-//! per-item channels of `sub_8259E3D0`, events not identified; research `.local/research/rumble.md`).
+//! Controller rumble on the pads at retail's 60 Hz, gated by Vibration; mods: `sdk.input.rumble`.
+//! Sources and gaps: docs/hails-additions/23-input-controllers.md#rumble-on-pads
 use bevy::prelude::*;
 use skate_core::rumble::{motor_speed, PadRumble, Rumble, RumbleTuning, TICK_HZ};
 

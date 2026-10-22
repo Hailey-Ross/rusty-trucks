@@ -57,3 +57,6 @@ Playing this branch's rolling build on a second PC (couch testing): [second-pc-t
   document lists the old and new values.
 - Project choices that are not dictated by retail data are called out as
   such, so maintainers can overrule them.
+- Code comments stay short: one line with what the item is, its retail address and a link to the section that
+  holds the detail. Long research notes from the code live in the "Code reference: <file>" sections at the end of
+  the matching document (26a to 26h, 27, 31, 35, 37 and others).

@@ -654,6 +654,12 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             except CONTENT_ERRORS as error:
                 shutil.rmtree(stage/'assets/private/park-layouts',ignore_errors=True)
                 note(private/'map-status'/'park-layouts-availability.json','skate.Park layouts',error,report=report)
+        # DLC maps kept without their folder keep their teleporters, layouts, rows, unlocks and audio (USER-ASKS 259).
+        if previous and not dlc_identity:
+            from .retained import carry,kept_dlc_maps
+            disc=[a.stem.removeprefix('worldDIST_') for a in (game_root/'data/content').glob('worldDIST_*.big')]
+            kept=kept_dlc_maps(json.loads((previous[0]/'maps.json').read_text()),disc,stage/'maps')
+            carry(previous[0]/'assets/private',private,kept,report)
         report('Validating installed runtime inputs')
         validate('TEST_WORLD')
         if validator is not None:validator.close()

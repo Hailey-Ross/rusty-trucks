@@ -269,14 +269,7 @@ impl Movie {
             self.queue_events(id, events, clip_event::INITIALIZE, true);
             self.queue_events(id, events, clip_event::CONSTRUCT, true);
         }
-        // registerClass: the clip takes the class prototype now. Retail sub_82E5A9E0 (after
-        // sub_82E7AF18, from both the timeline place 82E7B090 and attachMovie 82E565A0; research
-        // b452) sets the prototype, runs the first tick 82E5B640 (which places the children, so
-        // their construct handlers run first), then the constructor (82E6A208). So the
-        // constructor is queued after the children are placed; it still runs before the clip's
-        // own frame actions, which wait on `pending`. A child's construct value (button_item2's
-        // mButtonRender `_test = "Unknown"`) no longer overwrites what the parent's constructor
-        // set (`SetButtonType(mButtonImage)`, the teleport prompt's DPad_Up).
+        // registerClass: prototype now, constructor after the first tick places the children (82E5A9E0, b452): docs/hails-additions/31-retail-menus.md#registerclass-order
         let class = self.classes.get(&character).copied();
         if let Some(class) = class {
             if let Value::Object(proto) = vm.get(class, "prototype") {
@@ -332,10 +325,7 @@ impl Movie {
         Ok(())
     }
 
-    /// A character's bounds in its own space: its own (shapes, text) or, for a sprite, the union of its frame-0
-    /// children through their matrices, leaving out clip-depth children like retail's bounds walk sub_82E59C28.
-    /// New clips get `_width` / `_height` from it. NOT RETAIL YET: static frame-0 bounds, not re-measured when the
-    /// clip's content changes.
+    /// A character's bounds (own, or frame-0 children without clip-depth, like 82E59C28); static (NOT RETAIL YET).
     pub fn character_bounds(&self, character: i32, depth: usize) -> Option<[f32; 4]> {
         if depth > 16 {
             return None;
@@ -735,10 +725,7 @@ impl Movie {
                 }
                 self.remove(vm, id);
             }
-            // MovieClip.createTextField(name, depth, x, y, width, height): a new, empty text field at a script depth
-            // (sk8popup's body). Standard AS2 semantics, NOT RETAIL YET (the retail handler is not decoded): its own
-            // text descriptor (font from setTextFormat / setNewTextFormat, else the FontManager fallback at 12 units,
-            // left aligned, white), placed at (x, y), width x height bounds.
+            // MovieClip.createTextField: standard AS2 semantics (NOT RETAIL YET): docs/hails-additions/31-retail-menus.md#createtextfield
             "createTextField" => {
                 let text = |i: usize| args.get(i).map(Value::text).unwrap_or_default();
                 let number = |i: usize| args.get(i).map_or(0.0, Value::number) as f32;
@@ -869,10 +856,7 @@ impl Movie {
             )?;
             linked += 1;
         }
-        // Every library a copy came from keeps its exported symbols reachable by linkage name, placed or not:
-        // gesture_item's SetGestureType attaches "g_" + the trick's gesture (g_ollie_kickflip...), symbols its own
-        // timeline never places. The movie's own names and earlier copies win. NOT RETAIL YET: retail's
-        // attachMovie lookup is not decoded; this gives the Flash rule (a clip attaches from its defining movie).
+        // Every source library keeps its exported symbols reachable by linkage name (NOT RETAIL YET: Flash rule).
         let touched: std::collections::BTreeSet<String> = memo.keys().map(|(lib, _)| lib.clone()).collect();
         for lib_key in touched {
             let Some(library) = libraries.get(&lib_key) else {

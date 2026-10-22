@@ -1,66 +1,5 @@
-//! Carrying and placing dynamic props while offboard (Phases 3-4 glue).
-//!
-//! Buttons (raw controller flag bits, see `CarryButtons`): holding the retail
-//! GrabWorld button (RB) grabs the nearest prop in reach and keeps it while
-//! held; releasing drops it. **B** toggles placement mode while carrying, and
-//! releasing the grab button in placement mode confirms the ghost pose.
-//!
-//! The grab used to be a rising edge of **A**, but A is the retail sprint
-//! button: the derived controller's held timer for action 80 (slot 20) is what
-//! publishes `OB_Sprint` (8259AA8C, `offboard_intentions.rs`), so every sprint
-//! press near a prop grabbed it and dragged it along ("props magnetize to the
-//! player as they run by"). Retail gates the offboard grab-object decision
-//! (82D324B0, `biped_ground/grab.rs`) on Processed2476 bit 22, GrabWorld,
-//! which the input listener emits while raw flag bit 28 (action 73, RB) is
-//! held (8259AF68): a held button, not a toggle.
-//!
-//! Carry is retail Move Object (state 502, research note
-//! move-object-retail.md): the held prop stays a normal dynamic body (gravity,
-//! contacts, tipping) and every fixed tick receives one bounded command, a
-//! horizontal linear term plus a yaw term from two velocity-tracking
-//! controllers (82D45318, `skate_core::player::offboard::move_object`), through
-//! `PropDynamics::apply_move_command`. The prop leads and the skater follows
-//! its grab edge (82D45D30): [`PropCarry::skater_target`] is read by
-//! `biped_ground`. The held prop neither receives skater pushes nor pushes the
-//! skater back: `PropDynamics::set_held` exempts it from volume pushes and
-//! its collision-layer triangles stay parked at `HELD_PARK` until the drop
-//! rebakes them.
-//!
-//! Placement mode (Phase 4): the prop keeps following a target pose relative
-//! to the carrier, frozen mid-air by the per-tick velocity overwrite, while
-//! the right stick adjusts distance (Y) and yaw (X) and DPad up/down adjusts
-//! height. Releasing the grab button confirms: the prop is dropped at the
-//! ghost pose and the layout sidecar is rewritten. B cancels back to plain
-//! carry. Yaw applies a direct
-//! orientation snap; position still moves by velocity so contacts and the
-//! rebaked triangle layer keep working.
-//!
-//! Layout persistence (`prop_layout.rs`): confirming a placement records
-//! `id → (origin, basis)` and saves `settings/prop-layouts/<map>.json` next
-//! to the asset root (same convention as `settings/gameplay.json`). Loading
-//! a map teleports saved bodies to their stored poses before the first sync.
-//!
-//! Restrictions: grabbing requires `BipedGround`; a single prop at a time;
-//! the grab is kept while the held grab record qualifies (retail 82D44A10 ->
-//! CanGrabSpline 82E08EE8 at the grip, see `still_holds`), and dropped when it
-//! stops qualifying or when leaving the on-foot states
-//! (`BipedGround`/`OffBoardPushing`; never saves). While held, the retail
-//! grab-object byte (`OffBoard304`, published in `player_state/publication.rs`)
-//! keeps the selector in `OffBoardPushing` and the MotionGraph in
-//! MovingObjectNew, so carrying must not treat state 502 as leaving the ground. Drop keeps the current velocity, so releasing while moving throws
-//! gently; re-sleep is the natural cool-down.
-//!
-//! Locomotion while holding: retail's producer 8259C4B0 turns the raw left
-//! stick into OB_ObjectMvX/Z and the right stick X into OB_ObjectMvRot. The
-//! command reads them in the prop's latched grab-edge frame: Z pushes / pulls
-//! along the edge normal, X slides along the edge, an off-centre push turns
-//! the prop through the lever-arm curves, the right stick turns it.
-//!
-//! Multiplayer: a `PropCarry` is one player slot's state; its Move Object
-//! controller is plain data (`controller_snapshot`), the command is a pure
-//! function per fixed tick. Prop bodies and layouts are host-local; a host
-//! would replicate held id, body poses / velocities and layout writes. No
-//! transport is implemented.
+//! Carrying and placing dynamic props offboard: retail Move Object (state 502), placement mode, layouts.
+//! Details: docs/hails-additions/27-dynamic-props.md#prop-carry-model
 use skate_core::{
     math::Vector3,
     player::offboard::move_object::{MoveObjectCommand, MoveObjectController, MoveObjectInput, MoveObjectTuning, SkaterFollow},
@@ -224,13 +163,7 @@ impl LocomotionOverrides {
     }
 }
 
-/// The interim grab record of a held prop: which vertical box face is held
-/// (local axis index and side) and the grip position along its edge, both in
-/// the prop's own frame so the grip turns with the prop. NOT RETAIL YET:
-/// the stand-in for props without authored grab splines (and for every prop
-/// while `SKATE_PROP_GRAB` is off); props with splines carry by their
-/// authored record ([`PropCarry::frame_for`]). The face toward the skater at
-/// grab time is the grab edge.
+/// Interim grab record (held box face + grip, prop frame) for props without grab splines (NOT RETAIL YET): docs/hails-additions/27-dynamic-props.md#interim-grab-record
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GrabEdge {
     /// Local box axis of the face normal (0 or 2) and its sign.
@@ -321,10 +254,7 @@ fn choose_edge(body: &HeldBody, point: Vector3, hand_half_spread: f32) -> GrabEd
     GrabEdge { axis: best.0, side: best.1, grip: dot(to, edge_dir).clamp(-limit, limit) }
 }
 
-// Which raw controller flag bits drive carrying. The bits index the packed
-/// button word of `DerivedControllerInput` (word 6 previous, word 13 current;
-/// bit = 101 - action for actions 74..81, bits 28..31 for actions 73..66).
-/// Defaults are the retail buttons; a host setting or mod may rebind them.
+/// Raw controller flag bits that drive carrying (retail buttons by default; host or mod may rebind): docs/hails-additions/27-dynamic-props.md#carry-buttons
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CarryButtons {
     /// Held to grab and carry: bit 28, action 73, RB (retail GrabWorld).
@@ -395,11 +325,7 @@ pub(crate) struct Carrier {
     /// Retail skater observations for Move Object; `None` (host tests, the
     /// HUD) skips the record qualification and uses `position` as body.
     pub skeleton: Option<CarrierSkeleton>,
-    /// The Ground grab decision this tick (82D324B0, `biped_ground::grab`): `Some(Some(descriptor))` when a validated
-    /// record qualified (state +144, descriptor +152 / +156), `Some(None)` when none did or in another state. The game
-    /// always passes one: a carry then starts only from the Move Object enter's bind of the published record
-    /// (`bind_published`, b233). `None` (host tests, the HUD) has no decision and keeps the interim pick (nearest prop
-    /// within `grab_range`, its nearest record).
+    /// Ground grab decision this tick (82D324B0); `None` (host tests, HUD) keeps the interim pick: docs/hails-additions/27-dynamic-props.md#ground-grab-decision
     pub ground_grab: Option<Option<(u32, u32)>>,
 }
 
@@ -452,20 +378,14 @@ pub(crate) struct HeldBody {
 }
 
 impl HeldBody {
-    /// Heading of the box's local +Z about world +Y, in the sense of the
-    /// body's angular velocity (a positive yaw rate turns +Z toward +X and
-    /// increases it; test `positive_yaw_rate_turns_local_z_toward_plus_x`),
-    /// so the yaw-rate feedback of the yaw controller is negative as in 82D45318.
+    /// Heading of local +Z about world +Y in the angular-velocity sense (yaw feedback negative as in 82D45318).
     fn heading(&self) -> f32 {
         let z = self.basis.columns[2];
         f32::atan2(z[0], z[2])
     }
 }
 
-/// One player slot's carry state (this whole struct is per slot; the local
-/// player is slot 0). Authority: the prop simulation applies this slot's
-/// command in one place ([`PropDynamics::apply_move_command`]) once per fixed
-/// physics tick; nothing here reads a wall clock.
+/// One player slot's carry state; the command is applied once per fixed tick, no wall clock.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PropCarry {
     held: Option<u32>,
@@ -518,10 +438,7 @@ pub(crate) struct PropCarry {
     last_input: [f32; 3],
 }
 
-/// Carry settings a host setting or a mod (`sdk.world.set_tuning('carry', ...)`) changes:
-/// the buttons, the pickup reach and Move Object overrides. `default()` = shipped values (mod
-/// disable). Pushed into the live [`PropCarry`] before each physics tick, so a map load (new
-/// `PropCarry`) keeps them.
+/// Carry settings a host or mod changes (`set_tuning('carry')`); `default()` = shipped values, kept across map loads.
 #[derive(bevy::prelude::Resource, Clone, Debug, PartialEq)]
 pub(crate) struct CarrySettings {
     pub buttons: CarryButtons,
@@ -702,14 +619,7 @@ impl PropCarry {
         self.holds(&record, &frame, carrier).then_some(id)
     }
 
-    /// The grab frame and record of prop `id` this tick. Props with authored
-    /// grab splines (with `SKATE_PROP_GRAB=1`): the records are rebuilt from
-    /// the body's current pose (82D44A10 path A); without a binding (`bound`
-    /// `None`) the best record from the skater position (82D4D150 mode 0) is
-    /// bound with a new grip (82D444A0 full), with one the record of the same
-    /// descriptor keeps its grip (82D444A0 continue); the frame is the record
-    /// at the grip (82D45D30). Other props: the interim box edge `edge` (the
-    /// face toward the skater when `None`). Bindings are updated in place.
+    /// Grab frame and record of prop `id` this tick (82D44A10 path A, 82D4D150, 82D444A0, 82D45D30): docs/hails-additions/27-dynamic-props.md#grab-frame-per-tick
     fn frame_for(
         &self,
         dynamics: &PropDynamics,
@@ -765,12 +675,7 @@ impl PropCarry {
         self.authored.unwrap_or_else(super::prop_dynamics::prop_grab_enabled)
     }
 
-    /// Path B of 82D44A10: the prop's best other record from the skater
-    /// reference (82D4D150 mode 1 without the held descriptor) that passes
-    /// 82E08DB8, bound with a new grip (82D444A0 full). NOT RETAIL YET: the
-    /// candidates are the held prop's own records (retail asks the owner's
-    /// validated records), owner flag 0x40 and the held record's +196 / +216
-    /// are taken as set.
+    /// Path B of 82D44A10: re-grab to the best other record (NOT RETAIL YET candidates): docs/hails-additions/27-dynamic-props.md#regrab-path-b
     fn regrab_candidate(&self, dynamics: &PropDynamics, id: u32, skeleton: CarrierSkeleton, held: skate_core::player::offboard::move_object::HeldGrip) -> Option<(GrabFrame, Record, skate_core::player::offboard::move_object::HeldGrip)> {
         use skate_core::player::offboard::{grab_scene::best_spline_excluding, move_object};
         let records = authored_records(dynamics, id, self.authored_enabled())?;
@@ -937,11 +842,7 @@ impl PropCarry {
         }
     }
 
-    /// Move Object hold (retail state 502 update 82D44A10): the grab record is
-    /// refreshed from the prop's current pose, the retail command (82D45318)
-    /// goes to the prop through `apply_move_command`, and the grab frame the
-    /// skater follows (82D45D30) is published for `biped_ground`. The prop
-    /// leads; the skater follows it.
+    /// Move Object hold (state 502 update 82D44A10): refresh record, send 82D45318 command, publish frame (82D45D30).
     fn hold(&mut self, dynamics: &mut PropDynamics, id: u32, tick: Tick, carrier: Carrier) {
         let Some(body) = dynamics.held_body(id) else {
             self.let_go();
@@ -1013,10 +914,7 @@ impl PropCarry {
         let follow = self
             .follow
             .get_or_insert_with(|| SkaterFollow::begin(&tuning, v3(body_position), v3(frame.grip), back_of(&MoveObjectController::default())));
-        // Path B (82D444A0 full after a re-grab): anchor velocity +624 = 0 and
-        // the anchor seeded from the new record's nearest point (82D43B20).
-        // The frame blend 82D46218 only runs for jumps of 60 m or more: a
-        // snap here, as for the grab.
+        // Path B: anchor velocity +624 = 0, anchor from the new record (82D43B20); 82D46218 blends only jumps of 60 m+.
         if regrabbed {
             if let (Some(s), Some(_)) = (carrier.skeleton, self.bound) {
                 use skate_core::player::offboard::grab_scene::{at_distance, nearest_distance};
@@ -1056,10 +954,7 @@ impl PropCarry {
                 input.move_z, input.move_x, input.move_rotation, f[0], f[2], -f[2], f[0], v[0], v[2], command.yaw_target
             );
         }
-        // CARRY_WEIGHT once per grab (b284: a held prop's weight is only these two curve outputs, set at the grab;
-        // a light dumpster means a light mass or yaw inertia here). CARRY_ORBIT while turning: retail turns the prop
-        // about its centre and the skater walks round it, so the skater's angle round the centre should follow the
-        // prop's heading.
+        // CARRY_WEIGHT once per grab (b284), CARRY_ORBIT while turning: docs/hails-additions/27-dynamic-props.md#carry-weight-and-orbit-logs
         let steps = self.held_steps.map_or(0, |s| s + 1);
         if self.held_steps.is_none() {
             bevy::log::info!(
@@ -1075,12 +970,7 @@ impl PropCarry {
                 input.move_rotation, input.heading, d[0].atan2(d[1]), d[0].hypot(d[1]), command.yaw_target
             );
         }
-        // Follow step after the command (this tick's latch): +416 steps
-        // toward the edge and that step is the displacement handed to the
-        // character move (82D44A10 -> 82BDF268). NOT RETAIL YET: 82BDF268
-        // itself (sweep, step-up, weight +1124); here the skater root is
-        // moved by the same step (the walking job's velocity override in
-        // biped_ground), so the live body offset never feeds back.
+        // Follow step after the command (+416 toward the edge, 82D44A10 -> 82BDF268; 82BDF268 NOT RETAIL YET): docs/hails-additions/27-dynamic-props.md#follow-step
         let back = back_of(&self.controller);
         let root_y = carrier.skeleton.map_or(carrier.position.y, |s| s.frame[3][1]);
         let step = self

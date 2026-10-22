@@ -1,8 +1,5 @@
-//! The CoreMenu script object the pause menu movie (core_menu.apt) reads (doc 31, Milestone 6).
-//!
-//! Retail registers 21 native members on CoreMenu (registrar sub_825B68E0, TU3); all are read-only views over the
-//! crossbar screen (navigation state, skate_core::crossbar) and the current mode's menu (our menu registry), except
-//! SetOnlineTeamSubOptionDone. Research: `.local/research/coremenu-host.md`.
+//! The CoreMenu script object core_menu.apt reads (registrar 825B68E0, 21 members).
+//! Details: docs/hails-additions/31-retail-menus.md#coremenu-host
 use crate::apt_vm::{to_integer, Value, Vm};
 use skate_core::{
     crossbar::{CrossbarState, CrossbarView, RegistryView, OPTION_LEVEL},

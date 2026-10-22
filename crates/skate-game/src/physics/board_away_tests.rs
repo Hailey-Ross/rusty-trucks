@@ -1,8 +1,5 @@
-//! Tick cost with a dropped board far from the skater (fix15, docs 26). Real
-//! map and stock graphs, driven by pad input like the climbing tests: ride,
-//! step off (Y), drop the board (LT), then park the board at growing
-//! distances. Past `MaxDistance` the controller hides the board (state 3,
-//! all its volumes disabled); that tick used to scan every world triangle.
+//! Tick cost with a dropped board far from the skater (fix15): past `MaxDistance` the board is hidden (state 3)
+//! and the tick must not scan every world triangle. Real map, stock graphs, pad input.
 use super::*;
 use std::time::Instant;
 

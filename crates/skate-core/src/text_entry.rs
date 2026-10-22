@@ -1,17 +1,5 @@
-//! Text entry (doc 31 "Extras and cheat codes"): retail FE screen 46 (vtable 0x82304CD8, research b305) and the
-//! on-screen keyboard that stands in for the Xbox system keyboard it opens.
-//!
-//! Retail FE 46 has no movie: init sets "show keyboard", the update calls `XamShowKeyboardUI` with the title, the
-//! default text and max_len + 1, and the result goes through the OK path 0x82639890:
-//! - empty text and `allow_empty` off: the keyboard opens again;
-//! - in modes 0 and 1 every character must be in FELanguage `ALL_VALID_ALPHANUMERIC_CHARACTERS`, else the warning
-//!   popup (FE popup record 0x107: ID_COMMON_WARNING_TITLE / ID_VIRTUALKEYBOARD_ALPHA_NUMERIC_STRING_ERROR /
-//!   ID_COMMON_OK) and the keyboard opens again after OK;
-//! - valid: the caller's callback gets the text as typed (no case change), and FE 46 pops;
-//! - cancel pops FE 46 (the cheat row passes no cancel callback).
-//!
-//! The keyboard itself ([`Keyboard`]: a letter grid for the pad, typing for a PC keyboard) is ours: the user chose an
-//! on-screen keyboard (2026-10-19); the layout and keys are data (`KeyboardLayout`).
+//! Text entry: retail FE 46 (b305) and our on-screen keyboard standing in for the Xbox system keyboard.
+//! Retail OK path 0x82639890 and our keyboard: docs/hails-additions/31-retail-menus.md#text-entry
 
 /// One entry request (`sub_826397D8`'s arguments; the cheat row's values in [`TextEntryRequest::cheat_code`]).
 #[derive(Clone, Debug, PartialEq, Eq)]

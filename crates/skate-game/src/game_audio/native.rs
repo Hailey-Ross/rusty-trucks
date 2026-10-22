@@ -962,12 +962,7 @@ impl Launching {
     }
 }
 
-/// The first start without audio overlays, off the frame: reading and decoding the projects and the
-/// player's banks took ~40 s on an HDD inside one frame, so nothing (not even the startup loading
-/// screen) could draw. The thread loads its own `Library::load` of the install (the startup
-/// [`Library`] is the same call on the same root, so both hold the same content) and builds the
-/// runtime from it exactly as [`launch`] does; [`finish_launch`] then spawns the stream on the
-/// main thread. None when the start cannot begin (no settings, library or thread): [`launch`] then.
+/// First audio start off the frame on its own thread (same `Library::load`); [`finish_launch`] spawns the stream.
 pub(super) fn begin_launch(world: &mut World) -> Option<Launching> {
     let settings = world.get_resource::<super::AudioSettings>()?;
     let instances = if settings.more_audible_world() { WorldInstances::MORE_AUDIBLE } else { WorldInstances::RETAIL };

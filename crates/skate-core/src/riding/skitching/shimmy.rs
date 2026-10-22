@@ -1,13 +1,5 @@
-//! The along-the-bumper offset chain (`sub_82D48C98`): where on the grab edge the skater holds and how the hand
-//! shimmies. Retail (TU3, evidence only; re-implemented; `.local/research/npc/b30-skitch-pull-release.md` section 4,
-//! `b31-skitch-submode-hold.md` section 2):
-//! - the car's along acceleration is low-passed (`868 = 0.9 * 868 + 0.1 a`), a hard event (`1000`) is its sign past
-//!   40, and the excess over a dead-band curve (`880`) pushes the hand;
-//! - the stick pushes the hand at 10 (`876`); with neither a velocity servo damps it to rest (`884`);
-//! - the velocity `892` integrates the total (`888`), capped at 1 (or the stick gain while an event opposes the
-//!   stick) and unbounded in the event's direction; the hand target `864` moves by it, clamped to the edge range
-//!   (+-932), and snaps onto the latched edge point 900 when it crosses it.
-//! The acceleration `a` is the caller's (its derivation from the frame history is open after b47's frame layout).
+//! The along-the-bumper offset chain (82D48C98): where the skater holds and how the hand shimmies (b30, b31).
+//! Details: docs/hails-additions/26h-living-world-traffic.md#skitch-shimmy
 
 use crate::point_graph::PointGraph;
 
@@ -81,10 +73,7 @@ impl ShimmyState {
         let k = s.low_pass;
         let stick = if i.stick.abs() > 0.01 { i.stick } else { 0.0 };
         let active = i.stick.abs() > 0.01 || self.event != 0.0;
-        // `82D48FA8..82D49034` (r28 = active, r22 = 1, r25 = 0): a stick past 0.01 or a car event clears the edge latch
-        // and the snap (1344 bits 0x02 / 0x01); only an idle hand keeps them (r27 = the kept latch, read below). The
-        // inverse (clearing only while idle) pinned the hand on the edge for good: the stick could not bring the
-        // skater back to the middle (session 2026-10-16).
+        // 82D48FA8..82D49034: a stick past 0.01 or a car event clears the edge latch and snap; an idle hand keeps them.
         if active {
             self.latched = false;
             self.snapped = false;

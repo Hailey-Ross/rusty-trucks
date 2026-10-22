@@ -29,12 +29,7 @@ pub fn nearest_distance(r:&Record,world:Vector)->f32 {
     }
     distance
 }
-/// 82D2D550: the spline point at a signed position `t` along the record, from the middle of its ends (the skitch frame
-/// step 82D48148 and hand targets 82D4A378; research b148). At or past +-half (`+180`) the ends (+64 / +80); otherwise
-/// u = t + half (reverse bit `+200` 0x20: half - t), and the points are walked first to last, each segment counting its
-/// length projected onto the first -> last direction (floored at 1e-4, 0x8209BE90); the first segment that takes the
-/// total past u holds the point, stepped back inside it, to world by the record frame. Unlike 82D2D2B0 (`at_distance`)
-/// the order never reverses and lengths are projected.
+/// 82D2D550: spline point at signed position `t` from the middle (b148); projected lengths, never reversed: docs/hails-additions/27-dynamic-props.md#spline-point-at-along
 pub fn at_along(r:&Record,t:f32)->Vector {
     let half=r.scalar(180);
     let [first_end,last_end]=r.endpoints();

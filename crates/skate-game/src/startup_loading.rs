@@ -1,11 +1,5 @@
-//! The start's loading phase behind the splash (`splash.rs`): the game window is created hidden and stays hidden
-//! until every hold is released, gameplay waits meanwhile (virtual time paused, as the menu pauses it, so the game
-//! starts in the same order as before), then the window is shown and brought forward and the splash closes.
-//!
-//! The slowest hold is the native audio runtime's first start (~40 s on an HDD with a cold file cache;
-//! `game_audio::native::begin_launch` builds it on its own thread). Engine systems and mods hold the phase with
-//! [`StartupLoading::hold`] / [`StartupLoading::release`] (a label each, shown as the splash's step) and report the
-//! item being read with [`detail`].
+//! The start's loading phase behind the splash: hidden window, holds via [`StartupLoading::hold`] / `release`.
+//! Details: docs/hails-additions/08-setup-performance.md#startup-loading-phase
 use std::time::Instant;
 
 use bevy::prelude::*;

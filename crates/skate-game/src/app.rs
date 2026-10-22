@@ -22,10 +22,7 @@ use skate_data::GameAssets;
 /// queries are not free. Without them a pass's cost can only be inferred from
 /// invocation counts, which says nothing about how long the pass took. Set
 /// `SKATE_GPU_TIMING=1` to get `render/**/elapsed_gpu`.
-///
-/// Trace-all (`SKATE_TRACE_ALL=1`) never requires them: Bevy's default `Functionality` priority
-/// already requests every feature the adapter has, so the timestamp queries are on when the GPU
-/// supports them and device creation can not fail when it does not ([`log_gpu_timing`] says which).
+/// Trace-all: docs/hails-additions/25-perf-diagnostics.md#code-reference-apprs-performancers-frame_timingstatsrs
 fn wgpu_features() -> WgpuFeatures {
     let default = WgpuSettings::default().features;
     if crate::trace_all::on() {

@@ -1,8 +1,5 @@
-//! Board path `82C05EC0` in the ground states' post-physics (`82D387A8`): the external (AI)
-//! physics record pulls the deck toward its target (`skate_core::riding::grounded::state::
-//! board_path`). Runs only while the record asks to steer (Processed `1776` bit 31); the player's
-//! record is never set, so the player's physics is unchanged. NPC skaters with a physics body
-//! (living world, simulated tier) set it.
+//! Board path 82C05EC0 in the ground post-physics (82D387A8), only while the AI record steers (Processed 1776 bit 31).
+//! Details: docs/hails-additions/26e-living-world-skater-ai.md#board-path-game-side
 
 use skate_core::math::{Basis3, Vector3};
 use skate_core::physics::board::BodyId;

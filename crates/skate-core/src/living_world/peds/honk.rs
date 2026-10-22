@@ -1,14 +1,5 @@
-//! Running from a honking car (doc 26g "Peds run from honking cars"). Retail (TU3, evidence only;
-//! re-implemented; `.local/research/npc/b44-horn-honker.md`, `.local/research/peds/b45-runfromhonker-flee-timeout.md`;
-//! main re-read the honk receiver `sub_82E3C3D0` and the shape of `826A1358`):
-//! - a traffic car's horn kind 2 writes its id into the ped brain's honker (`+3232`); `IsBeingHonkedAt` leads
-//!   Wander / WanderFollow into RunFromHonker; only Wander's Begin clears the honker;
-//! - RunFromHonker Begin (`826A1330`) posts motion intent 5; Update (`826A1358`) looks the car up every frame and,
-//!   while it exists, sends the ped to a goal `side_distance` sideways of the car's line, on the ped's side (strict
-//!   `dot > 0` test, a tie goes to the minus side), at `run_speed` when the goal is more than `near_radius` away,
-//!   else `near_speed`. A car that is gone leaves the last goal and speed; the op's `timeout` (30) is never read.
-//! The car vector Update reads (`[car+164]+144`) is not settled: velocity or an axis (open, b45); ours uses the
-//! car's forward axis, so a standing car still gives a side.
+//! Running from a honking car (b44, b45; 82E3C3D0, RunFromHonker 826A1330 / 826A1358).
+//! Retail rules: docs/hails-additions/26g-living-world-ped-interactions.md#run-from-honker
 
 use super::super::Vec3;
 

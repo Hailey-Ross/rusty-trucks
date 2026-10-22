@@ -1,16 +1,5 @@
-//! World-step clock: the retail living-world update runs on the game's fixed world step, 60 steps
-//! per game second [code]:
-//! - the frame driver `sub_8285C928` calls the world tick `sub_82859E70` once per due step with
-//!   flag bit 0 (`ori r28,r28,1` after the step provider `[this+12]` vfunc +16 says a step is due);
-//! - in that bit-0 branch `sub_82859E70` runs the ambient skater manager (`sub_8245A7E8`, which
-//!   bumps the manager tick `+584` and calls `sub_8245BA28` once) and the living-world update
-//!   `sub_826BDB50`, which runs the census tick `sub_826B71F0` once and steps its timers with a
-//!   fixed `1/60` s (`0x820849C8` = 0.0166667, also read by `sub_826BE020` / `sub_826BE140`);
-//! - the signal controllers in the same update advance 1/60 s per call: a phase of 8.0 s took 480
-//!   ticks and 0.5 s took 30 [trace `proof1.tsv` / `proof2.tsv`, TRAFLIGHT2 tick counts].
-//! So census, skater cycle and lights share one 60 Hz tick (earlier milestones assumed 30 Hz).
-//! The engine's fixed step differs, so elapsed game time is converted into whole world ticks; any
-//! engine rate gives the same tick sequence for the same elapsed time.
+//! World-step clock: the retail living-world update runs on a fixed 60 Hz world step (8285C928 -> 82859E70).
+//! Evidence and conversion: docs/hails-additions/26b-living-world-population.md#world-step-clock
 
 /// Retail world steps per game second (`sub_826BDB50` steps with `1/60`, `0x820849C8`) [code].
 pub const RETAIL_TICK_HZ: f64 = 60.0;

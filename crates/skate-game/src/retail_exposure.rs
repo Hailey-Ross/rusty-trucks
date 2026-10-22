@@ -7,12 +7,7 @@
 //! clips every bright surface to white, which reads as chrome rather than as
 //! an exposure fault.
 //!
-//! The meter reads what retail's CPU meter (`sub_827F0B78`) reads: the alpha
-//! of the bloom downsample, `dp3_sat(sat(tm/2), (0.3, 0.4, 0.3))` (see
-//! [`meter_luminance`]), 8-bit, centre-weighted, scaled by 2.515 and fed to the
-//! native multiplicative evaluator (`sub_827F0D00`). It samples a 16x16 bilinear
-//! grid of the HDR target instead of the console's downsample chain.
-//! The weights and the scale are a mod tuning domain (`exposure`, [`ExposureMeter`]).
+//! The meter (827F0B78 / 827F0D00): docs/hails-additions/35-world-shading-parity.md#code-reference-retail_exposurers--retail_exposurewgsl
 use bevy::{
     asset::embedded_asset,
     core_pipeline::{
@@ -73,10 +68,7 @@ impl ExposureMeter {
     }
 }
 
-/// One meter sample as retail computes it, mirrored by `retail_exposure.wgsl`:
-/// the scene value `rgb` (linear, baseline exposure 2.5 included) at exposure `e`
-/// goes through the retail tone curve, tm/2 is saturated per channel, dotted with
-/// the weights, saturated, and stored as an 8-bit value (byte / 255).
+/// One retail meter sample (mirrored by `retail_exposure.wgsl`): tone curve, tm/2 saturated, weighted, 8-bit.
 pub(crate) fn meter_luminance(rgb: Vec3, e: f32, weights: Vec3) -> f32 {
     let xe = (rgb * e / 2.5).max(Vec3::ZERO);
     let t = (Vec3::ONE - xe).clamp(Vec3::ZERO, Vec3::ONE);

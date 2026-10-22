@@ -1,8 +1,5 @@
-//! The replay editor's session: its mode and the key bindings that move between modes, as data with retail's
-//! defaults. Retail keeps the mode in the editor state (`[DAT_83067084]+0x30`); FE screen 12's input handler
-//! `826127B8` switches on it with FE key indices, and its per-frame update `82610F18` runs the held actions
-//! (research b386, b387, b389). Only transitions the research proved are in [`retail_bindings`]; the rest (camera key
-//! edit entry, modes 0xC / 0xD, the Finished popup's items) come with the screen host.
+//! The replay editor's session: mode and key bindings as data (826127B8, 82610F18; b386, b387, b389).
+//! Details: docs/hails-additions/37-instant-replay.md#replay-editor-session
 
 /// Retail's editor modes (the values of `+0x30`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

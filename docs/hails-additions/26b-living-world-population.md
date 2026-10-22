@@ -440,3 +440,150 @@ User: "anything opt in should be added as a setting to the guide overlay that ca
   passed, skate-game 101 passed (5 ignored, data gated). The pool reload on a real map change is not covered by a
   headless test (it needs the skater assets); check the log line in a session with a map change.
 - **Retail:** not researched. Skate 3 streams districts inside one world; this is our map switch.
+
+## Code reference: living_world/mod.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/living_world/mod.rs`; each comment there links its section here.
+
+### Living world engine side
+
+Living world, engine side (milestone 2: the population core). Runs `skate_core::living_world` around the local player at the console cadence and publishes spawn / despawn decisions as messages. Consumers: the replay-tier NPC skaters (`npc_skaters`, milestone 3); peds and cars come with their milestones.
+
+Data: the setup group `livingworld` export (`private/living_world/`): `tables.json` (census caps, ranges), `<District>.census.bin`, `skater_profiles.json`, `skater_paths/<District>.bin`. Without it the world stays empty.
+
+Multiplayer seams (no networking here): `NetRole` decides who runs the population. Standalone and Host run the rules; a Client never does and only mirrors records it is given (`PopulationState::apply_records`). Records serialise (`WireRecord`). Retail default: nothing ambient spawns in an online session (culling still runs).
+
+Mod surface (doc 26 "Modding"): `LivingWorldSettings` is the one place settings and mods change the living world; mods patch it through `sdk.world.set_tuning('living_world', ...)` (`modding::world_tuning`), and a mod that stops is undone with `LivingWorldSettings::reset_mod_overrides`.
+
+### NPC draw distance setting
+
+NPC draw distance (QoL, not retail; `skate_core::living_world::draw_distance`): every population range (census circles, ped draw fade, NPC skater ranges, cars) x this, caps x its square. 1.0 = retail. The value in effect: the settings menu writes the player's choice here and into [`Self::user_npc_draw_distance`]; a mod may set it, and [`Self::reset_mod_overrides`] puts the player's choice back. Owned by the population authority (it decides what exists); a client never feeds its own value into the rules.
+
+### Census focus
+
+The census focus of one player: the player's character, not the board (retail `sub_826BDB50` -> `sub_826BE7D0` / `sub_826BE870` read the focused skater's `+52` component position and its velocity [code], `.local/research/npc/fix3-pedcull.md`). `position` / `velocity` are the skater's physical centre of mass and its velocity, valid on board, walking, in the air and in a bail; the deck stays wherever the board was left. Non-finite values pass through: the census skips such a focus (`population.rs` guard).
+
+## Code reference: living_world/draw_distance.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/draw_distance.rs`; each comment there links its section here.
+
+### NPC draw distance
+
+NPC draw distance (QoL, not retail): one multiplier on every distance of the population chain, with the population caps scaled by the covered area so the density stays retail.
+
+Retail has no such option: the census ranges (`livingworld_census_ranges` [data]), the ped draw fade (model pair 45 / 55 m [data]) and the ambient skater ranges (60 / 90 / 120 m [code]) are fixed. This module never changes those values; it builds a scaled copy of the config on top of them, and only when the multiplier is not 1 (`DrawDistance::RETAIL`), so the retail setting runs the unchanged config and gives the same decisions bit for bit.
+
+What scales (`m` = multiplier):
+- distances x m: census circles (spawn ring inner / outer, cull radius, forward offset; the speed keys stay), the initial populate ring, skater spawn ring and cull distance. The ped draw fade pair is scaled by the engine with [`DrawDistance::distance`].
+- counts x m^2 (the covered area): census caps (through the density, so the cap at a point is `max_population x density x m^2`), the entity pools (peds 31, vehicles 15), the attempts and spawns per pass and of the initial populate, and the ambient skater desired count, AI cap, skater slots, character pool and candidate line count.
+
+What does not scale: speed keys, the 5 m / 10 m skater spacing, the skater height cull, fades in time (seconds), the rotation and the cycle phases.
+
+Multiplayer: the population authority (standalone or host) owns the multiplier; it decides what exists for everyone. A per-client draw distance would only be a render-side choice (a client hides or fades what it was sent beyond its own range) and never feeds the authority's simulation.
+
+### Population core
+
+Living world population core (doc `docs/hails-additions/26b-living-world-population.md`, milestone 2).
+
+One census engine for every ambient kind: NPC skaters, pedestrians and vehicles (props and dynamic objects later). Pure and engine-independent: no ECS, no I/O, no rendering. The game feeds observer positions, the census map and the session state once per console tick and gets spawn / despawn decisions back.
+
+Retail reference (TU3, addresses are evidence only; values are re-implemented, not copied):
+- census tick `sub_826B71F0`: one living-world type per tick in rotation (peds, vehicles, DMOs, props), each a cull pass then a spawn pass (`sub_826B7530` peds, `sub_826B7760` vehicles);
+- ambient skater manager `sub_8245BA28`: a 60-tick phase cycle (cull, pool, spawn, checks).
+
+Multiplayer seams (no networking here): a decision is a pure function of (config, seed, tick, observers, slot budget). It runs in one place (standalone or a future host); everything downstream consumes [`Decision`] records, never the RNG, so a client can replay the host's records. Every entity has a stable [`LivingWorldId`]; records carry what is needed to recreate the entity on another machine, including the seed of its own sub-RNG. Decisions never depend on hash-map iteration order or frame time.
+
+## Code reference: living_world/skaters.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/skaters.rs`; each comment there links its section here.
+
+### Ambient skater manager
+
+Ambient NPC skaters: the rules of the retail manager `sub_8245BA28` [code].
+
+- Kill switch `sub_8245C4A8`: zombie cheat, a scripted (kind 3) AI skater, or the manager disabled → every ambient NPC despawns and the tick ends.
+- Desired count: 3 offline, 0 online (mgr+608); a challenge can override it.
+- Phases of `tick mod 60`: 0 cull (`sub_8245D520`), 15 character pool (`sub_8245B400`), 30 spawn (`sub_8245C548`), 3-12 / 18-27 / 33-57 per-skater checks (`sub_8245A9B8`).
+- Cull: 3-D distance to the reference > 120 m, or height difference > 1000 m, or while the ambient count exceeds the desired count.
+- Spawn: at most one per call; AI cap 5; ambient count below desired; candidate characters = ready, unused pool entries; candidate lines = unused valid lines whose start node lies 60 to 90 m (3-D) from the reference, first 32; score per (character, line) (`sub_8245C018`, lowest wins); first free skater slot 1..6.
+- Free Play "A.I. Skaters" off (mode 3, `+340`): no spawns, and the per-skater checks despawn every ambient NPC.
+
+## Code reference: living_world/config.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/config.rs`; each comment there links its section here.
+
+### Population config
+
+Population configuration. Code constants of the retail build are the defaults here (labelled [code] with their address); data values (census caps, category weights, ranges) are not duplicated: they come from the user's exported tables (`skate-data::living_world`) and a world without that export stays empty. Every field is public so settings and mods can override it; restoring `PopulationConfig::retail()` (plus the data) undoes a mod.
+
+## Code reference: living_world/clock.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/clock.rs`; each comment there links its section here.
+
+### World step clock
+
+World-step clock: the retail living-world update runs on the game's fixed world step, 60 steps per game second [code]:
+- the frame driver `sub_8285C928` calls the world tick `sub_82859E70` once per due step with flag bit 0 (`ori r28,r28,1` after the step provider `[this+12]` vfunc +16 says a step is due);
+- in that bit-0 branch `sub_82859E70` runs the ambient skater manager (`sub_8245A7E8`, which bumps the manager tick `+584` and calls `sub_8245BA28` once) and the living-world update `sub_826BDB50`, which runs the census tick `sub_826B71F0` once and steps its timers with a fixed `1/60` s (`0x820849C8` = 0.0166667, also read by `sub_826BE020` / `sub_826BE140`);
+- the signal controllers in the same update advance 1/60 s per call: a phase of 8.0 s took 480 ticks and 0.5 s took 30 [trace `proof1.tsv` / `proof2.tsv`, TRAFLIGHT2 tick counts]. So census, skater cycle and lights share one 60 Hz tick (earlier milestones assumed 30 Hz). The engine's fixed step differs, so elapsed game time is converted into whole world ticks; any engine rate gives the same tick sequence for the same elapsed time.
+
+## Code reference: living_world/census.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/census.rs`; each comment there links its section here.
+
+### Census pass
+
+Census kinds (pedestrians, vehicles): the retail living-world census.
+
+Per pass (`sub_826B7530` peds / `sub_826B7760` vehicles) [code]: 1. the census circle: two `livingworld_census_ranges` sets lerped by the observer's speed in km/h (`sub_826B7D60`): spawn ring inner / outer, cull radius, forward offset of the centre along the velocity; 2. cull: entities whose 3-D distance to the centre exceeds the cull radius go (`sub_826BA8B0` / `sub_826BAAB8`, squared-distance test); 3. spawn (only offline, world ready, not zombie for vehicles): 2 attempts, at most 1 spawn (initial populate: 6000 / 600 in an 8-80 m ring): a random point in the ring (`sub_82E17508`), a random heading, the census record painted at that point and its cap times the density (`sub_826B8A28`), the budget and category roll (`sub_826B8B88`), then the factory (pool).
+
+## Code reference: living_world.rs
+
+Detail moved out of the code comments of `crates/skate-data/src/living_world.rs`; each comment there links its section here.
+
+### Living world readers
+
+Readers for the living-world export the population core needs (setup group `livingworld`, formats in `docs/hails-additions/living-world/{peds-data,skaters-data}.md`). Bytes in, core types out; no file I/O.
+
+- `<District>.census.bin` → [`CensusGrid`] (`tools/asset_pipeline/living_world.py`, `write_census_grid`);
+- `tables.json` → [`LivingWorldTables`]: `livingworld_census` records resolved through their category group, and the `livingworld_census_ranges` circles;
+- `skater_profiles.json` → [`SkaterCharacter`]s of the free-roam pool and the AI profiles' trick tables ([`skater_trick_profiles`]);
+- decoded AIPATH lines (`aipath`) → [`SkaterLine`]s (population) and [`ReplayLine`]s (the replay-tier cursor, milestone 3).
+
+## Code reference: living_world/population.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/population.rs`; each comment there links its section here.
+
+### Population engine
+
+The generic population engine: per kind a roster of live entities with stable ids, a seeded decision RNG, the cull test, the spawn pass budget; the console-tick driver that runs the census rotation (peds, vehicles) and the ambient skater cycle; and the scorer trait the kind rules use to rank candidates.
+
+### Vehicle spawn pass
+
+The vehicle spawn pass (`sub_826B9B90` -> `sub_826B8B88` -> census slot +8 `sub_826B83C8` -> factory `sub_82C36300`) [code]: per attempt a ring point (no heading draw), the cap at the point and the category and entity rolls, the vehicle limit (15), then the road placement (`traffic::spawn`): road under the point, 15 m from the segment ends, fitting lanes, a lane roll, the overlap check. Needs the roads and the vehicle catalog; without them no car spawns.
+
+## Code reference: living_world/preload.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/living_world/preload.rs`; each comment there links its section here.
+
+### Living world preload
+
+The living world's models, loaded behind the startup loading screen and kept for the map (research b226 item 3, plan b229): every ped recipe a census spawn can get, every car GLB of the vehicle catalog, every NPC skater look and every hand prop, from the same functions the spawners call (`peds::glb_path`, `vehicles::car_glb`, `npc_skaters::look_path`, the hand prop record). A spawner's own `server.load` of the same `#Scene0` path then gets the loaded asset at once instead of loading it in the first seconds of play; anything not in the set still loads lazily as before. The set follows mod looks and overrides (rebuilt when they change) and the map.
+
+## Code reference: skate-data/tests/living_world_data.rs
+
+Test descriptions moved out of the code comments of `crates/skate-data/tests/living_world_data.rs`; each test there links its section here.
+
+### Population data tests
+
+Data-gated checks of the living-world population data on the user's own export. Skips (passes with a note) when no data is configured. `SKATE3_ASSET_ROOT`: converted assets (one root, or several joined like PATH); reads `private/living_world/{tables.json, census.json, <District>.census.bin, skater_profiles.json, skater_paths/*.bin}`.
+
+The expected values are the shipped Skate 3 data the research measured (labels in `.claude/notes/npc-livingworld-re.md` §1 and doc 26); they are asserted, not embedded in the engine.
+
+### Test exported line jitter
+
+Fix 14 (NPC skater jitter): exported lines ridden with the retail branch and chain choice and drawn at 144 Hz like `npc_skaters::present_pose` (the cursor one tick back, interpolated by the fixed-step fraction with the recorded decisions). A render step never moves the root more than the line's own fastest motion plus one smoothstep step of a 4 m chain gap, while the same ride cut over (blend 0) jumps; the clip time never steps back. Seeded (the line order) and deterministic.
+
+### Test exported facing rules
+
+Facing rules on the exported lines (fix 16, fix 23, fix 23 corrected). Every eighth line of the three districts is ridden for 40 s (branches and chains decided by the retail chooser) under three rules: the retail rule (`riding_entry`, mod option: recorded skater frame, turned while the flip latched on entering riding is set, held across switches), the fix 23 rule (`per_node`, the default, NOT RETAIL YET) and the fix 16 option (`keep_facing` on top of `per_node`, not retail). Counted per rule: settled frames drawn more than 135 deg against travel where the line's path frame does not oppose travel (`facing_check`, the `NPC_SKATER_BACKWARDS` diagnostic). The counts are reported, not tuned: the retail rule draws a recorder's switch stance as recorded, and the puppet has no stance mirror (NOT RETAIL YET), so its count measures that gap. Asserted: determinism, the fix 23 rule's own property (it folds every node onto the path frame), and that the fix 16 option rides more forward-recorded frames backwards than the fix 23 rule.

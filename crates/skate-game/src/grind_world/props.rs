@@ -1,8 +1,5 @@
-//! Grind rails carried by dynamic props (DMOs), retail provider 82C4C4E0.
-//! Each DMO part keeps its rails in its own model space (setup 82C535C0 fills
-//! the rail map at DMO+1796 from the part's EB001B list); every query
-//! re-places them with the prop's current matrix, so a moved or knocked prop
-//! takes its rails along and no grind state is attached to the prop.
+//! Grind rails carried by DMOs (provider 82C4C4E0), re-placed with the prop's current matrix per query.
+//! Details: docs/hails-additions/27-dynamic-props.md#prop-grind-rails
 use serde_json::Value;
 
 /// One cubic segment in template space: the contact chord D -> (A+B)+(C+D)

@@ -1,7 +1,5 @@
-//! The popup movies' C++ side (doc 31 "Popups"; research `.local/research/menus-m6/fe-popup.md`): the AS `Popup`
-//! natives (registrar `sub_825A9F40`) answer from the shown request, and while a popup is up it is the focus screen
-//! for `Game.OnMenuSelect` / `OnMenuGetItemEnabled` / `OnMenuHilight` (`sub_82D09F28`), so a choice reaches the popup
-//! list and not the screen below (the list itself is `skate_core::fe_popup`, run by retail_menu_stage).
+//! The popup movies' C++ side: `Popup` natives (825A9F40) and popup focus for menu callbacks (82D09F28).
+//! Details: docs/hails-additions/31-retail-menus.md#popup-host
 
 use crate::apt_vm::Value;
 use skate_core::fe_popup::PopupRequest;

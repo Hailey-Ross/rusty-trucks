@@ -46,11 +46,7 @@ pub(crate) fn update_possession(physics: &mut GamePhysics, skater: &mut SkaterRu
     skater.board_possession_live.publish_volumes(physics);
 }
 
-/// Board part of the Move Object enter 82D442D0 (state 502), after the shared
-/// off-board enter: a carried board is let go (82D75440, +448 = 2), a board
-/// being retrieved is hidden (82D755E0, +448 = 3), see
-/// `skate_core::player::offboard::move_object::board_on_grab`. `drop_board`
-/// false (mod knob `carry.drop_board`) keeps the board as it is.
+/// Board part of the Move Object enter 82D442D0 (82D75440 / 82D755E0); `drop_board` false keeps the board.
 pub(crate) fn enter_move_object(physics: &mut GamePhysics, skater: &mut SkaterRuntime, drop_board: bool) {
     use skate_core::player::offboard::move_object::{BoardOnGrab, board_on_grab};
     let action = if drop_board {

@@ -1,13 +1,6 @@
-//! Diagnostic (data-gated): the cost of each physics tick through ollies and flip tricks, on a
-//! normal and on a large air, the first time and repeated. Looks for the user's report "lag spike
-//! on every flip on a large jump": a tick that costs much more than the others, which phase it is
-//! in (`frame_timing::hitch` phases) and whether it recurs or only happens on first use.
-//!
+//! Diagnostic (data-gated): per-tick physics cost through ollies and flips on a normal and a large air; no asserts.
 //!   SKATE3_ASSET_ROOT=<repo>/assets/private
 //!   cargo test -p skate-game --release --bin skate3rust --locked -- --ignored flip_hitch_timing --nocapture
-//!
-//! A large air is made by adding upward speed to every body on the first airborne tick (the
-//! gesture and takeoff are the game's own). Measuring only: no assertion on the times.
 use super::*;
 
 

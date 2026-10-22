@@ -1,10 +1,5 @@
-//! Challenge Map teleports (the `teleport:<fe_locations key>` engine handler, retail_menus.rs): the request event,
-//! its planning (same map, another map, refused) and the system that applies it once the right map is loaded.
-//!
-//! Retail (b244d): an fe_locations select posts a Flow::Teleport request; its event carries Transform (the location's
-//! locator matrix, unchanged), IsOnBoard = 0 and IsSessionMarkerTeleport = 0. A target on another map loads that map
-//! first. Ours: the locator matrices come from setup's `private/teleports.json`; another map goes through the same
-//! map transition as the PC overlay's MAPS teleports; multiplayer refuses a map switch (as the overlay does).
+//! Challenge Map teleports (`teleport:<fe_locations key>` handler): request, planning and apply (b244d).
+//! Retail and ours: docs/hails-additions/31-retail-menus.md#challenge-map-teleports
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

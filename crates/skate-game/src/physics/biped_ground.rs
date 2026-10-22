@@ -182,11 +182,7 @@ pub(crate) fn exit(skater: &mut SkaterRuntime) {
     skater.biped_ground.geometry.reset();
 }
 
-/// Diagnostics for walking onto props (bench walk-over bumps, laptop 2026-10-18): which prop the walker's contact
-/// target or edge is on, the step height above the feet, and whether the step was taken or why not. Written when the
-/// prop or the outcome changes. Outcomes: `step` (target contact on the prop, rise over 5 cm: the contact
-/// classifier's step threshold 82D837C8), `flat` (target on the prop, no rise), `no-candidate` (packet flag 1024: no
-/// candidate before the forward limit), `obstacle` (contact correction pushes the walker back), `no-target`.
+/// Diagnostics for walking onto props (which prop, step height, outcome; step threshold 82D837C8): docs/hails-additions/27-dynamic-props.md#prop-walk-over-log
 fn log_step(owner: &mut Owner, physics: &GamePhysics, prefix: contact_toolkit::ContactPrefix, frame: [[f32; 4]; 4]) {
     let Some(props) = physics.prop_dynamics() else { return };
     let prop_at = |p: [f32; 4]| props.nearest_body(skate_core::math::Vector3::new(p[0], p[1], p[2]), 0.1).map(|(id, _)| id);
@@ -278,24 +274,7 @@ pub(crate) fn update(
         );
     }
     let frame = skater.biped_ground.ground.frame_80;
-    // Move Object (502): the stock graph swaps OBGround's locomotion
-    // AttachIntents for MovingObjectNew's OB_ObjectMv set, and retail moves
-    // the OBJECT from them (82D45318, prop_carry) while the skater follows the
-    // object's grab edge: 82D45D30 builds the skater's target frame from the
-    // grab record, 82D46218 / 82D463D8 blend toward it, 82BDF268 moves the
-    // character there. The frame blend is a snap at retail data (it only
-    // blends when the frame jumps >= 60 m per tick: physics_state_offboard
-    // +448 = 1.0 x 60, 82D46218). The root yaw is NOT that frame: 82D46610
-    // writes +1124 = wrapped angle to the edge frame x curve 023D73966B8669A5
-    // at the time held, and 82BE1058 (from 82BDF268) turns the character by
-    // it, so the facing eases in over the first 0.5 s of a grab (0.18 of the
-    // angle at the grab) and turns the whole angle from then on (b243 / b245).
-    // The skater target is the root moved by the step of the
-    // retail follow point +416 published by prop_carry (the step is bounded
-    // there, 82BD41B0), one tick behind the prop. NOT RETAIL YET: 82BDF268's
-    // translation (the +288 hands step, then a pull toward +416 of at most
-    // 0.3 m); the walking job's velocity override moves the
-    // root onto the target each tick. The walking stick stays idle.
+    // Move Object (502): the skater follows the object's grab edge (82D45D30, 82D46218, 82D46610, 82BDF268): docs/hails-additions/27-dynamic-props.md#move-object-skater-follow
     let moving_object = (p.state_2508 == 502 && physics.prop_carry.held().is_some())
         .then(|| physics.prop_carry.skater_target())
         .flatten()
@@ -365,36 +344,14 @@ pub(crate) fn update(
             motion.frame_0[0] = super::prop_carry::yaw_row(motion.frame_0[0], angle);
             motion.frame_0[2] = super::prop_carry::yaw_row(motion.frame_0[2], angle);
         }
-        // Drive the planar velocity through the controller's velocity
-        // override (gate >= 0, zero blend time: the target is taken as is),
-        // so contacts and obstacle rejection still apply. Every held tick,
-        // also a zero step: retail moves the character to the follow point
-        // each tick (82D44A10 -> 82BDF268), so a skater already at the point
-        // stays there. Gating a zero step out handed the root back to the
-        // walking approach, which walked the skater into a resting prop
-        // until the hold rule failed (2026-10-08, exposed by the retail row
-        // solver: a prop at rest no longer jitters the follow point).
+        // Planar velocity through the velocity override every held tick, also a zero step (82D44A10 -> 82BDF268).
         {
-            // The override gate is the job's requested phase (296), which the
-            // cadence 82D80720 also takes as a phase request over the
-            // requested duration (288). Request the phase the cadence is at
-            // over a positive duration: the walk cycle holds still while
-            // carrying. Phase 0 over the carry state's zero duration divided
-            // by zero (2026-10-05 crash: NaN CadenceStartPercent picked no
-            // walk-into-stand clip when the prop was let go).
+            // Request the cadence's current phase over a positive duration, so the walk cycle holds while carrying.
             job.job.requested_phase = owner.controller.state.cadence.phase.phase;
             job.job.requested_duration = 1.0;
             job.job.override_duration = 0.0;
             job.job.animation_velocity = velocity;
-            // NOT RETAIL YET (part of the follow move above): the walking
-            // controller's approach (82D7F458..FDD0) steps toward the
-            // contact target projected onto the FACING line, so following a
-            // prop that slides along its edge would come out as a forward
-            // step. Retail 502 never runs that job (82D4E2F8 is only
-            // submitted from BipedGround 82D30D30); it moves the character
-            // with 82BDF268, not decoded. Until it is, the follow move drops
-            // the target-contact bit (2) for this job only (support contact
-            // bit 1 still keeps the feet on the ground; no 0.3 m step-up).
+            // NOT RETAIL YET: 82BDF268 not decoded; the follow move drops the target-contact bit (2) for this job: docs/hails-additions/27-dynamic-props.md#follow-move-contact-bit
             job.job.flags &= !2;
         }
     }

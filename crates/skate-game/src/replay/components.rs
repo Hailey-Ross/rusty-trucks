@@ -1,8 +1,5 @@
-//! Per-actor component tracks: the world actors' audio state (traffic engines, ped feet and speech state, NPC
-//! skaters' audio records, velocities) recorded with the actors and written back during playback, so the world's
-//! sound follows the recording as retail's audio runs on the recorded actor state (b375, b378 channels A1..A3).
-//! Values hold until they change (stepwise, no blending). Any `Component + Clone + PartialEq` registered with
-//! [`track`] works the same, a mod-facing hook for later providers.
+//! Per-actor component tracks (world audio state) recorded and written back in playback (b375, b378 A1..A3).
+//! Details: docs/hails-additions/37-instant-replay.md#replay-component-tracks
 use super::{
     Replay,
     world::{ReplayActor, ReplayGhost},

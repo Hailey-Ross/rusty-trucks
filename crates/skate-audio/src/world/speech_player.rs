@@ -345,11 +345,7 @@ pub enum Prepare {
 
 /// What plays the takes (the host's mixer and decoded speech).
 pub trait SpeechVoices {
-    /// Whether `line`'s take can open now. Retail's start (`sub_82C5DC80`) holds the stream from the
-    /// request (active, speaking, interrupt rules, queue) and leaves the data to its stream player, with
-    /// no ready check in the game code (research `speech-stream-start`), so a host that reads the take
-    /// off its game thread answers [`Prepare::Loading`] until it is in; the stream waits with no voice
-    /// while the cut and the speaker checks run as for a playing line.
+    /// Whether `line`'s take can open now (retail start 82C5DC80 has no ready check; host answers Loading).
     fn prepare(&mut self, _line: Line) -> Prepare {
         Prepare::Ready
     }

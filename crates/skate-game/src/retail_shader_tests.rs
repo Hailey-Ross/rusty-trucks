@@ -145,13 +145,7 @@ fn lit_environment_branch() -> &'static str {
     &src[start..end]
 }
 
-/// Families 7 / 8 are `environmentsimple.alphatest` / `environmentsimple.diffuse`
-/// (`tools/asset_pipeline/retail_material.py`), whose VLT effects are
-/// `alphatestdefaultenvironment` / `environmentdiffuse`. Both retail programs
-/// (`shaders_final.big`, instructions 27-34 / 26-34) compute
-/// `min(avg4(lightmap)^2, vis + floor) * diffuse^2 * m_params[0].y` with no kd
-/// term, so kd is exactly 1 for them. The other families without a normal map
-/// keep the flat-normal kd `0.39 * 2.3956` of the normal-mapped programs.
+/// Families 7 / 8 (environmentsimple alphatest / diffuse) have no kd term, so kd is exactly 1: docs/hails-additions/35-world-shading-parity.md#kd-of-families-7-and-8
 #[test]
 fn simple_diffuse_and_alphatest_families_have_no_kd_term() {
     let branch = lit_environment_branch();
@@ -167,17 +161,7 @@ fn simple_diffuse_and_alphatest_families_have_no_kd_term() {
     assert!((0.39_f32 * 2.39562 - 0.93429).abs() < 1e-5);
 }
 
-/// Which programs normalise the tangent normal before the kd dot product.
-/// `environment.default` (family 1, VLT effect `baseenvironment`) does
-/// (`baseenvironment_defaultPS` 29-33: rsq of the combined normal, kd from the
-/// normalised xy at 66). `environmentsimple.default` (family 2, effect
-/// `defaultenvironment`) and `environment.reflective_simple` (family 6, effect
-/// `baseenvironmentreflective_simple`) do not: `defaultenvironment_defaultPS`
-/// takes kd from the raw `2n - 1` (38, 61, 63, 67) and
-/// `baseenvironmentreflective_simple_defaultPS` from the raw `2n - 1`
-/// (14-22, 45, 63, 74-76); their rsq instructions normalise only the view
-/// vector, the world normal used for specular / reflection and the
-/// tangent-frame sun whose signs pick the kd weights.
+/// Which programs normalise the tangent normal before the kd dot product (family 1 does, 2 and 6 do not): docs/hails-additions/35-world-shading-parity.md#kd-normal-normalisation
 #[test]
 fn tangent_normal_is_normalised_for_kd_only_where_retail_does() {
     let branch = lit_environment_branch();

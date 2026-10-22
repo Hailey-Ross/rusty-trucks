@@ -1,25 +1,5 @@
-//! Move Object (off-board grab and push, physics state 502): the per-tick
-//! command retail 82D45318 sends to the held dynamic object, as a pure
-//! function over plain data (no ECS, no I/O).
-//!
-//! Retail mechanism [code, TU3 recomp]: every 60 Hz tick the held object gets
-//! a bounded command, a horizontal linear term plus a yaw term only, from two
-//! velocity-tracking controllers (PhysicsControllerData, update 82D4E118). It
-//! is never position- or velocity-forced, and there is no pitch, roll or
-//! vertical term (lift gain FDE807D9B85A6AC2 = 0), so gravity, contacts and
-//! tipping stay with the normal rigid-body simulation. The skater follows the
-//! object's grab edge (82D45D30), not the other way round.
-//!
-//! Every tuning value is data: attribute collection class
-//! `3EDA5B140604613D`, key `default` (loaded by skate-game); the
-//! [`MoveObjectTuning::default`] values are the stock values for tests and a
-//! missing collection. Image constants (slew 4.0 per tick 0x82257308, filter
-//! 0.9 / 0.1, blocked decay 0.95 and gain 0.5, lever coupling -0.25
-//! 0x8208ED00) are fields too, so a mod can reach every number.
-//!
-//! Multiplayer: [`MoveObjectController`] is the whole per-carrier state, plain
-//! `Copy` data with a flat `to_array` / `from_array` form; the command is a
-//! deterministic function of (tuning, state, input), run once per fixed tick.
+//! Move Object (state 502): the per-tick command retail 82D45318 sends to the held object, as pure data.
+//! Details: docs/hails-additions/27-dynamic-props.md#move-object-mechanism
 use crate::point_graph::PointGraph;
 
 mod held_record;
@@ -27,12 +7,7 @@ pub use held_record::{HeldGrip, RecordFrame, begin_grip, continue_grip, record_f
 mod held_update;
 pub use held_update::{FrameBlend, HandIk, Rebind, RebindInput, RebindState, RebindTuning, hand_points, seed_anchor};
 
-/// `Sk8::Physics::PhysicsControllerData`: four floats. 82D4E118 [code]:
-/// `filtered = (1 - filter) * filtered + filter * error`;
-/// `output += proportional * error + filtered_gain * filtered + derivative * (error - previous)`.
-/// The output accumulates; the clamp is not inside the controller, but the
-/// caller writes the bounded command back into the output (anti-windup, see
-/// [`command`] steps 8 and 10).
+/// `PhysicsControllerData` (82D4E118): filtered PID whose output accumulates: docs/hails-additions/27-dynamic-props.md#physicscontrollerdata
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControllerGains {
     pub proportional: f32,
@@ -116,21 +91,11 @@ pub struct MoveObjectTuning {
     pub lever_coupling: f32,
     /// |yaw target| below this keeps the heading latch (0.1).
     pub turning_threshold: f32,
-    /// Yaw-rate feedback: the per-tick change of the object's facing (+384 ->
-    /// now, 8296EC98) times this is the measured yaw rate the yaw controller
-    /// subtracts from its target. Retail 60 = 1/dt, image 0x822F860C loaded at
-    /// 0x82D45C08 [code]. 0 (mods only) turns the feedback off.
+    /// Yaw-rate feedback (facing change per tick x this; retail 60 at 0x822F860C); 0 = off (mods only).
     pub yaw_rate_feedback: f32,
-    /// Target velocity scale while the held record's +272 is non-zero
-    /// (82D45318, `cmpwi` on state+992, 2.0 at image 0x82060C50) [code].
-    /// Record+272 comes from the DMO's type data (82C4B960: data+312 set ->
-    /// 1 or 2), see [`MoveObjectInput::record_272`].
+    /// Target velocity scale while record +272 is non-zero (82D45318, 2.0 at 0x82060C50; 82C4B960).
     pub record_272_speed_scale: f32,
-    /// Hold qualification while grabbing (82D44A10 -> 82E08EE8 at the grip
-    /// distance +1128), from physics_state_offboard `default` [data]: grab
-    /// box half extents GrabBoxSizeGrabbing (+0), its offset GrabBoxOffset
-    /// (+32), GrabSplineAngleLimitGrabbing (+452, degrees, approach angle) and
-    /// GrabSplineMaxAngleToHorizontalGrabbing (+436, degrees, edge slope).
+    /// Hold qualification while grabbing (82D44A10 -> 82E08EE8): grab box and angle limits: docs/hails-additions/27-dynamic-props.md#hold-qualification
     pub hold_box_extents: [f32; 3],
     pub hold_box_offset: [f32; 3],
     pub hold_angle_limit: f32,
@@ -139,30 +104,17 @@ pub struct MoveObjectTuning {
     /// record is clamped to [h, length - h], h = min(this, length / 2);
     /// physics_state_offboard `default` GrabSplineEndExclusion (+444, 0.25).
     pub grab_end_exclusion: f32,
-    /// Skater follow (82D44A10 before 82BDF268) [code]: the follow point
-    /// (+416) steps toward the target frame's edge point (+192) moved
-    /// `follow_reach` (0.65, image 0x820BB0EC) along the latched frame toward
-    /// the skater, at the skater root height plus `follow_height` (0.72,
-    /// 0x8220E144). The step is the anchor velocity (+624) x `tick` plus the
-    /// rest clamped to `follow_step` m (0.1, 0x820641A8; 82BD41B0).
+    /// Skater follow (82D44A10 before 82BDF268): reach, height and step: docs/hails-additions/27-dynamic-props.md#skater-follow
     pub follow_reach: f32,
     pub follow_height: f32,
     pub follow_step: f32,
-    /// Anchor velocity (+624, 82D46610) [code + data]: the anchor is the grip
-    /// point moved `anchor_reach` toward the skater (96ECC98838ECCC11 = 0.7,
-    /// this collection), y dropped; v = keep x v + new x (anchor change / tick)
-    /// with keep 0.85 (0x822250F8) and new 0.15 (0x820994B4).
+    /// Anchor velocity (+624, 82D46610): anchor reach 0.7, keep 0.85 / new 0.15: docs/hails-additions/27-dynamic-props.md#anchor-velocity
     pub anchor_reach: f32,
     pub anchor_velocity_keep: f32,
     pub anchor_velocity_new: f32,
     /// Retail tick (1/60, image 0x820849C8) used by the follow step.
     pub tick: f32,
-    /// Hand IK of the held update (82D46610 sets +1200 bit 0x40, 82D45008 steps the weight +1132) [code + data]:
-    /// on once `hand_ik_enter` (+1180, 5E35DB02BE697A58 = 0.7216) > 0, the state time is at most `hand_ik_window`
-    /// (the larger x end of curves 1348E9A1F213B42D / 702F25BA3A5AAA56, 1.0) and 1 - `hand_ik_curve`
-    /// (702F25BA3A5AAA56) at the state time exceeds `hand_ik_threshold` (0.1, 0x820641A8). The weight moves
-    /// `hand_ik_rate` (0.2, 0x82099280) per tick; the targets are clamped to `hand_ik_reach` (0.65, 0x820BB0EC)
-    /// around the animated hands (82BD9728 / 82BD97D0).
+    /// Hand IK of the held update (82D46610, 82D45008): docs/hails-additions/27-dynamic-props.md#hand-ik-while-holding
     pub hand_ik_enter: f32,
     pub hand_ik_window: f32,
     pub hand_ik_curve: PointGraph<8>,
@@ -326,10 +278,7 @@ pub struct MoveObjectController {
     pub latched_side: [f32; 3],
     pub latched_yaw: f32,
     pub latched: bool,
-    /// +384: the object's facing on the previous tick (overwritten every
-    /// tick, 0x82D45C0C), as a heading about +Y. `facing_valid` false = the
-    /// zero vector retail starts from, which measures a zero rate (8296EC98
-    /// returns 0 for vectors shorter than 1e-2).
+    /// +384: the object's facing last tick as a heading about +Y; `facing_valid` false = zero rate (8296EC98).
     pub facing_yaw: f32,
     pub facing_valid: bool,
 }
@@ -452,26 +401,12 @@ pub fn side_of(forward: [f32; 3]) -> [f32; 3] {
     [forward[2], 0.0, -forward[0]]
 }
 
-/// Port of 82D45318 steps 1 to 10, signs as in the code: lever = dot(-edge,
-/// centre - grip), rot = min(1, sign(lever) curve(|lever|) MvZ + MvRot),
-/// w = -(curve(|lever|) rot gain), fwd += 0.25 lever w, yaw command sent as
-/// (0, out, 0) about +Y (slot 9 angular sink, right-handed like our world).
-/// The yaw error is the target minus the measured yaw rate (the facing change
-/// since the previous tick x 60, same rotation sense: +Y turns +Z toward +X),
-/// so the feedback is negative. Edge direction: retail builds
-/// +320 from the hand points (82D45D30, sense not traced); taking it as
-/// `side_of(forward)` is the only choice for which an off-centre push turns
-/// the object the way the push torque does (r x F about +Y). With it a
-/// positive OB_ObjectMvRot gives a negative yaw rate (clockwise seen from
-/// above, a right turn for the skater). NOT RETAIL YET: the edge sense.
+/// Port of 82D45318 steps 1 to 10 (edge sense NOT RETAIL YET): docs/hails-additions/27-dynamic-props.md#command-82d45318
 pub fn command(tuning: &MoveObjectTuning, state: &mut MoveObjectController, input: &MoveObjectInput) -> MoveObjectCommand {
     let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
     let (mz, mx, mr) = (finite(input.move_z), finite(input.move_x), finite(input.move_rotation));
     let side = side_of(input.forward);
-    // 1. Lever arm [code]: lever = dot(-edge_dir (+320, sign flipped by the
-    // vxor), centre (+880) - grip (+256)). Edge direction = `side` (the only
-    // choice that makes retail's off-centre turn match the push torque, see
-    // the axis note above).
+    // 1. Lever arm: lever = dot(-edge_dir (+320), centre (+880) - grip (+256)); edge direction = `side`.
     let offset = [input.center[0] - input.grip[0], 0.0, input.center[2] - input.grip[2]];
     let lever = -dot(side, offset);
     let sign = if lever >= 0.0 { 1.0 } else { -1.0 };
@@ -485,13 +420,7 @@ pub fn command(tuning: &MoveObjectTuning, state: &mut MoveObjectController, inpu
     let across = mx * tuning.side_speed * scale;
     // [code] fnmsubs: fwd = fwd - (lever x w) x c, c = -0.25 (0x8208ED00).
     along -= lever * yaw_target * tuning.lever_coupling;
-    // 5. Heading latch [code, 0x82D455E0..0x82D4573C]: turning (|w| >= 0.1,
-    // 0x820641A8) stores the latch every tick (0x82D45714). Otherwise the
-    // wrapped angle between the facing and +368 (8296EBB0) is the drift; above
-    // the re-latch threshold (557FA142008FD7CE) the latch is stored, below it
-    // the store is skipped (0x82D4570C). The drift does not enter the yaw error.
-    // The latched side row is +400 = -(+144) [code, b240 / b241]: +144 = Y x forward = `side`, so the stick's x moves
-    // the pair to the skater's right, (-f.z, 0, f.x) (laptop 2026-10-18: left / right were reversed while carrying).
+    // 5. Heading latch (0x82D455E0..0x82D4573C) and the latched side row +400 (b240 / b241): docs/hails-additions/27-dynamic-props.md#heading-latch
     let right = [-side[0], 0.0, -side[2]];
     let mut drift = 0.0;
     if !state.latched || yaw_target.abs() >= tuning.turning_threshold {
@@ -541,15 +470,7 @@ pub fn command(tuning: &MoveObjectTuning, state: &mut MoveObjectController, inpu
         state.linear[i].output = state.sent[i];
     }
     state.filtered = std::array::from_fn(|i| (1.0 - tuning.command_filter) * state.filtered[i] + tuning.command_filter * state.sent[i]);
-    // 9. Vertical: lift gain x height error; stock 0 and not applied.
-    // 10. Yaw controller [code, 0x82D45BC8..0x82D45CD0]: 8296EC98(+384, now,
-    // axis (0, 1, 0) at 0x82139A20) = acos(dot) of the normalised facings,
-    // 2 pi - acos when cross(+384, now) . axis < 0 (2 pi at 0x821647F0), 0 for
-    // a vector shorter than 1e-2 (|v|^2 vs 1e-4 at 0x8209BE90); wrapped to
-    // [-pi, pi) with 1 / 2 pi (0x82139A60) and 2 pi (0x82139A50); then +384 =
-    // now (every tick, both latch branches). Rate = wrapped x 60
-    // (0x822F860C); error = w - rate. For an upright object the signed angle
-    // about +Y is the heading change, which is what the port measures.
+    // 9. Vertical: lift gain 0, not applied. 10. Yaw controller (0x82D45BC8..0x82D45CD0): docs/hails-additions/27-dynamic-props.md#yaw-controller
     let yaw_rate = if state.facing_valid { wrap(input.heading - state.facing_yaw) * tuning.yaw_rate_feedback } else { 0.0 };
     state.facing_yaw = input.heading;
     state.facing_valid = true;
@@ -584,12 +505,7 @@ pub enum BoardOnGrab {
     Keep,
 }
 
-/// Board part of the Move Object enter 82D442D0 (0x82D44304..0x82D44364)
-/// [code, TU3 recomp]: a switch on SkateboardController+448 (`cmplwi 5`,
-/// above 5 skips). 0 (stopped), 1 (held) and 5 (on the ground at the feet)
-/// let go and become 2; 4 (being retrieved) hides and becomes 3; 2 (free) and
-/// 3 (hidden) are kept. +444 is zeroed before either call, the new state is
-/// written after it. So grabbing an object drops a carried board where it is.
+/// Board part of the Move Object enter 82D442D0: grabbing drops a carried board: docs/hails-additions/27-dynamic-props.md#board-on-grab
 pub fn board_on_grab(state_448: u32) -> BoardOnGrab {
     match state_448 {
         0 | 1 | 5 => BoardOnGrab::LetGo,
@@ -598,11 +514,7 @@ pub fn board_on_grab(state_448: u32) -> BoardOnGrab {
     }
 }
 
-/// A two-point grab record for a straight edge from `a` to `b` (world
-/// space) with the approach vector (record+96) `approach`, built by the
-/// retail record layout (82585F58 through `Record::from_geometry`, identity
-/// object frame). Used for props until their authored grab splines are
-/// loaded (DMO physics definition +136, see the Move Object research note).
+/// Two-point grab record for a straight edge (82585F58 layout); stand-in until authored grab splines load.
 pub fn edge_record(id: u32, a: [f32; 3], b: [f32; 3], approach: [f32; 3]) -> Option<super::grab_scene::Record> {
     use super::grab_scene::{Descriptor, Geometry, Record, RecordInput};
     let geometry = Geometry {
@@ -622,13 +534,7 @@ pub fn edge_record(id: u32, a: [f32; 3], b: [f32; 3], approach: [f32; 3]) -> Opt
     .ok()
 }
 
-/// Held re-qualification of 82D44A10 [code]: CanGrabSpline 82E08EE8 on the
-/// held record (state+720) at the grip distance (+1128) along it, from the
-/// skater reference point (+272, bone 23), with the grab box placed on the
-/// skater frame (Player+192) by 82D2E250 from GrabBoxSizeGrabbing /
-/// GrabBoxOffset and the *Grabbing angle limits in degrees (x 0x3C8EFA35).
-/// False = retail stops holding (flag 0x20 clears, no command is sent).
-/// `skater_frame` rows: right, up, forward, position.
+/// Held re-qualification of 82D44A10 (CanGrabSpline 82E08EE8); false = retail stops holding: docs/hails-additions/27-dynamic-props.md#still-holds
 pub fn still_holds(
     tuning: &MoveObjectTuning,
     record: &super::grab_scene::Record,
@@ -651,10 +557,7 @@ pub fn still_holds(
     super::grab_scene::qualify_at(record, v4(reference, 1.0), grip_distance, bounds, limits)
 }
 
-/// Path B of 82D44A10 (b64): the mode-1 candidate must pass CanGrabSpline
-/// 82E08DB8 from the skater reference, its grip clamped by
-/// GrabSplineEndExclusion, with the same grabbing box and angles as
-/// [`still_holds`].
+/// Path B of 82D44A10 (b64): candidate must pass CanGrabSpline 82E08DB8 with the grabbing box and angles.
 pub fn can_regrab(
     tuning: &MoveObjectTuning,
     record: &super::grab_scene::Record,
@@ -699,10 +602,7 @@ impl SkaterFollow {
         [grip[0] + back[0] * tuning.anchor_reach, 0.0, grip[2] + back[2] * tuning.anchor_reach]
     }
 
-    /// Grab: +416 = body position (82D442D0, Skeleton+15872), +624 = 0
-    /// (82D43D70 reset), +608 = anchor of the new grip (82D444A0 begin).
-    /// `back` is the latched frame row +368: horizontal, from the edge
-    /// toward the skater.
+    /// Grab: +416 = body position (82D442D0), +624 = 0 (82D43D70), +608 = anchor (82D444A0); `back` = row +368.
     pub fn begin(tuning: &MoveObjectTuning, body: [f32; 3], grip: [f32; 3], back: [f32; 3]) -> Self {
         Self {
             point: body,
@@ -713,11 +613,7 @@ impl SkaterFollow {
         }
     }
 
-    /// 82D46610 (before the object command, so `back` is the previous
-    /// tick's latch): v = keep v + new (anchor - previous anchor) / tick.
-    /// Also the root yaw share for this tick from the time held, then the
-    /// time held advances one tick (+1140; whether retail reads it before or
-    /// after the advance within the tick is not traced).
+    /// 82D46610: anchor velocity update, root yaw share, then time held +1 tick (+1140).
     pub fn update_anchor(&mut self, tuning: &MoveObjectTuning, grip: [f32; 3], back: [f32; 3]) {
         self.root_yaw_gain = tuning.root_yaw_gain.evaluate(self.time_held);
         self.time_held += tuning.tick;
@@ -729,11 +625,7 @@ impl SkaterFollow {
         self.anchor = anchor;
     }
 
-    /// The follow step after the object command (82D44A10 0x82D45110..):
-    /// target = edge point (+192) + `follow_reach` x back (+368, this tick's
-    /// latch), y = skater root height + `follow_height`; step = v tick +
-    /// clamp_length(target - point - v tick, `follow_step`) (82BD41B0);
-    /// point += step. Returns the new point.
+    /// Follow step after the object command (82D44A10 0x82D45110, clamp 82BD41B0); returns the new point.
     pub fn step(&mut self, tuning: &MoveObjectTuning, edge_point: [f32; 3], back: [f32; 3], root_y: f32) -> [f32; 3] {
         let target = [
             edge_point[0] + back[0] * tuning.follow_reach,
@@ -1028,11 +920,7 @@ mod tests {
         assert!((c.yaw_rate - (std::f32::consts::TAU - 6.26) * 60.0).abs() < 1e-2, "{c:?}");
     }
 
-    /// The retail loop on a free yaw body (command applied as an angular
-    /// acceleration for one 60 Hz step, slot 9 / 82D9CCF0) settles at the
-    /// target rate: the controller output accumulates (integral action), so
-    /// the steady error is zero, and the 6 rad/s^2 clamp only limits the
-    /// spin-up (0.1 rad/s per tick).
+    /// The retail loop on a free yaw body settles at the target rate (integral action; 6 rad/s^2 clamp).
     #[test]
     fn yaw_rate_feedback_settles_at_the_target_rate() {
         let t = MoveObjectTuning::default();

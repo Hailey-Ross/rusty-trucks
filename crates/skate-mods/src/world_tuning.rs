@@ -1,106 +1,5 @@
-//! World tuning writes (capability `world_tuning` = 1): typed patches a mod applies to the living
-//! world, dynamic props and prop carrying while it runs (`sdk.world.set_tuning(domain, patch)`).
-//!
-//! Every field is optional; an absent field keeps the game's value (retail by default). Patches are
-//! held per mod; when several mods patch the same field the first writer wins, and a mod that stops
-//! (or sends `nil`) gives its fields back. The schema lives here so the command is validated at the
-//! serde boundary; the engine (`skate-game` `world_tuning`) applies it.
-//!
-//! Domains:
-//! - `living_world`: `npc_draw_distance`, `skater_fade {fade_in_seconds, fade_seconds,
-//!   despawn_alpha}`, `skater_line_chain {radius, max_candidates, blend_seconds, keep_facing, facing_rule,
-//!   steer_dead_zone_deg, steer_full_deg, fakie_high_speed, fakie_low_speed, fakie_slow_seconds,
-//!   fakie_spawn_seconds}` (NPC skater line end: retail
-//!   4 m / 16; root blend onto the new line after a branch or chain, engine default 0.2 s, 0 = cut), `ped_fade {distance = {near, far}, fade_in_seconds, enabled}`,
-//!   `skater_clips {[<phase> or <phase>.<style>] = <stock clip name>}` (NPC skater puppet clip per
-//!   replay phase; phases in [`NPC_SKATER_PHASES`]; a clip whose name holds `_CYC` loops),
-//!   `skater_blend_seconds {[<phase> or default] = seconds}` (NPC skater crossfade into a phase's
-//!   clip; stock graph default 0.2 s, 0 = cut; also `trick_takeoff` 0.05 s / `trick_air` 0.1 s),
-//!   `skater_clips["trick.<scorable name>"]` = a trick animation base (`<base>_G` / `<base>_A`),
-//!   `skater_clips["fakie_channel"]` = the stock tree overlaid while riding fakie (`B_FAKIE_CHANNEL`),
-//!   `skater_stance {[<record id hex> or <record name>] = "regular" | "goofy"}` (NPC skater natural
-//!   stance, read once at spawn; retail values from the measured table, unknown records goofy),
-//!   `skater_stance_events {board_backward, mirrored, switch = <clip attribute name>}` (the
-//!   trick clip attributes that toggle an NPC skater's stance bits; retail `animboardbackward` /
-//!   `mirrored` / `switch`, empty = that toggle off),
-//!   `ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin,
-//!   target_snap, step_height, held_is_obstacle, moving_solid}` (props and mod bodies as ped navigation
-//!   obstacles; retail on / 0.2 / 0.4 / 0.25 / target_snap 0.5 / held props stay obstacles; `moving_solid` is our
-//!   stand-in for NavPower's moving avoider, default on),
-//!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on),
-//!   `ped_nav {steer_rate, turn_edges, stall_seconds, stuck_distance, stuck_seconds, give_up_seconds, yield_patience, crosswalk}` (ped navigation, see
-//!   `PedNavPatch`), `ped_body {enabled, parts, look_ahead, range}` (peds as solid bodies in the skater's contact solve, collision
-//!   group 11; retail on, three capsule parts posed from bones: `parts` = [{from, to, centre, radius, half_length,
-//!   mass}], `look_ahead` seconds of ped velocity, `range` m from an observer, `reaction_part` the part whose speed
-//!   after the solve decides the ped's reaction, retail 0 = the torso),
-//!   `ped_vehicle_contact {enabled, push}` (traffic cars touching peds; retail on / on: the ped is
-//!   pushed out of the car, no knock-down),
-//!   `npc_tricks {mode, gate_window, min_air_frames}` (the trick an NPC skater does at a recorded
-//!   ollie / flip slot: `"profile"` = retail, re-picked from the character's profile table when
-//!   the recorded air is long enough; `"recorded"` = the line's own trick; `"none"` = no ollies /
-//!   flips; retail windows 300 / 50 recorded 60 Hz frames),
-//!   `skater_trick_profiles {[<character key> or <ai_skater_profiles name>] = {regular, nollie}}`
-//!   (each a list of `{trick = <EScorableID 0..332>, weight}`; replaces that table, an absent table
-//!   keeps the disc's; a character key wins over a profile name),
-//!   `skaters` / `pedestrians` / `vehicles {enabled, density}` (per kind; density 1 = retail, 0..=4,
-//!   scales the census caps), `ambient_skaters` (NPC skaters offline, retail 3, 0..=8),
-//!   `free_play {traffic, pedestrians, ai_skaters}` (retail Free Play mode: traffic and peds 0..1 scale
-//!   the caps, 0 removes them at once, `ai_skaters` on / off; absent = career free roam),
-//!   `npc_simulated {enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, respawn_hold_seconds}` (NPC
-//!   skaters near the player as full physics skaters driven by their AI record; default off
-//!   until play-tested, 40 m, 3; bail respawn after 5 s clamped to 1.5..7.9 s; mode 7 walk back
-//!   `walk_back` (retail on), `walk_arrive_distance` (2.4 m, 0..=20), `walk_stuck_ticks` (600, 0..=36000);
-//!   takeoff board yaw `board_yaw` (retail on), `board_yaw_dead_zone` (0.31416 rad, 0..=pi/2),
-//!   `board_yaw_mag_scale` (6.0606, 0..=100); `manual_value` (the side an NPC holds a manual with: + nose, - tail;
-//!   retail 0.5, 0..=1); `bump` (player and simulated NPCs collide as full skaters, retail on); `reactions` (NPC skaters
-//!   react to wipeouts within `reaction_radius` m: slam / slam_b / crash lines, retail on, 15, 0..=100)),
-//!   `npc_walk_back {...}` / `npc_line_controller {...}` (the NPC skaters' walk-back controller and line controller:
-//!   every field of `ControllerBSettings` / `ControllerSettings` by its Rust name, retail defaults, floats >= 0, counts
-//!   <= 36000; see `NpcWalkBackPatch` / `NpcLineControllerPatch`);
-//!   `npc_avoid {enabled, max_entries, skitch_cooldown_ticks, radius_skater, radius_pedestrian,
-//!   radius_vehicle, radius_prop, cone, wide_cone, wide_cone_distance, skater_radius,
-//!   speed_margin, stop_gap, stop_gap_far, stop_cone, stop_gap_prop, side_on_angle,
-//!   floor_headroom, skitch_cos, low_prop_height, low_prop_time, step_off_cap, step_off_time}`
-//!   (the NPC skaters' retail obstacle avoider, `skate_core::living_world::avoid`; metres,
-//!   radians, m/s, seconds).
-//! - `props`: `default` and `by_template[<MOBJ template name>]`, each a [`PropTuningPatch`].
-//! - `carry`: `grab_bit`, `placement_bit`, `grab_range`, and the Move Object tuning while
-//!   holding a prop (retail defaults from attribute class 3EDA5B140604613D): `push_speed`,
-//!   `pull_speed`, `side_speed` (target m/s at full left stick, retail 3.0 / 2.0 / 2.5),
-//!   `turn_rate` (constant yaw gain replacing the retail inertia curve), `grip_reach` (m between
-//!   the grab edge and the skater), `linear_clamp` / `yaw_clamp` (command clamps, 20 / 6),
-//!   `relatch` (rad, 0.1), `slew_per_tick` (4), `yaw_rate_feedback` (60: the per-tick facing
-//!   change times this is the measured yaw rate the yaw controller tracks; 0 = off),
-//!   `linear_controller` / `yaw_controller`
-//!   (`[p, filtered, d, filter]`, 20 / 0 / 40 / 0.1), the curves `lever_rotation`, `lever_yaw`,
-//!   `mass_speed`, `inertia_yaw_gain` (`[[8 x], [8 y]]`), `let_go_distance` (m, 0 = off = retail), `drop_board`
-//!   (grabbing a prop drops a carried board, retail true), `follow_step` (0.1 m), `hold_angle_limit` /
-//!   `hold_max_angle_to_horizontal` (80 / 50 deg), `hold_box_extents` ([0.9, 0.8, 1.01]),
-//!   `record_272_speed_scale` (2.0), `grab_end_exclusion` (0.25 m), the hand IK `hand_ik_enter` (0.7216, 0 = never), `hand_ik_curve` (`[[8 x], [8 y]]`), `root_yaw_gain` (root yaw ease over the time held, `[[8 x], [8 y]]`), `hand_ik_rate`
-//!   (0.2 per tick), `hand_ik_reach` (0.65 m) and per template `record_272`. `grip_reach` sets the retail follow
-//!   reach (0.65 m). Contact material blocks: `commanded_material` ([0.03, 0.02] static / dynamic
-//!   friction), `upright_cos` (0.65) and per template `material_held`, `material_free`,
-//!   `material_free_upright`, `upright_pair`, `restitution`, `linear_drag`, `angular_drag` (per
-//!   second, retail DMO data +308 / +336 of the type), `mass` (kg, +304), `maximum_linear_velocity` /
-//!   `maximum_angular_velocity` (+292 / +296) and `inertia_scale` / `inertia_offset` (+16 / +32).
-//! - `shadows`: `world_floor = {r, g, b}`, the lightest a dynamic object's shadow can make the baked
-//!   world (each 0..=1, in the shader's squared lightmap space). Retail {0.05, 0.09, 0.13}: the
-//!   constant every retail world receiver shader adds to its shadow-map visibility before taking
-//!   the minimum with the baked lightmap.
-//! - `backdrop`: `visible` (bool), the district's global presentation model (Industrial's sea, the
-//!   far sea planes, distant tree walls). Retail draws it (true). `proxy_terrain` (bool), the
-//!   far-proxy hills retail leaves drawn where no full-detail cell pairs with them (Industrial's
-//!   south hills under the tree wall). Retail true.
-//! - `respawn`: `air_timeout_ticks` (integer, 1..=[`MAX_AIR_TIMEOUT_TICKS`]), the fixed 1/60 s
-//!   ticks a skater may spend in the air before the checkpoint respawn (retail 300 = 5 s,
-//!   `CalcSuggestedState` `count > 300`), e.g. after falling off the map.
-//! - `exposure`: the auto-exposure meter. `meter_weights = {r, g, b}` (each 0..=1; retail
-//!   {0.3, 0.4, 0.3}, the channel weights retail's bloom downsample dots its tone-mapped value with)
-//!   and `meter_scale` (0..=[`MAX_METER_SCALE`]; retail 2.515, the evaluator's average scale).
-//! - `ghost`: the skater fade-in after every placement (respawn, teleport, marker return, spawn).
-//!   `enabled` (bool, retail true), `fade_in_seconds` (0..=[`MAX_GHOST_FADE_IN_SECONDS`], retail
-//!   1.0; 0 = no fade) and `hold_alpha` (0..=1, retail 0.68, the opacity the fade waits at while
-//!   retail's hold condition is set; that condition is not decoded yet, so it has no effect now).
+//! World tuning writes (capability `world_tuning` = 1): typed `sdk.world.set_tuning(domain, patch)` patches.
+//! Domains, fields and retail defaults: docs/hails-additions/26a-living-world-overview.md#world-tuning-domains
 
 use std::collections::BTreeMap;
 
@@ -283,11 +182,7 @@ pub struct NpcSimulatedPatch {
     /// (retail 15, 0..=100).
     pub reactions: Option<bool>,
     pub reaction_radius: Option<f32>,
-    /// AI skaters push while slower than their line (retail on): below `push_factor` x the line's speed (0..=1,
-    /// retail 0.97), each reducing condition multiplies by `push_reduce` (0..=1, retail 0.3), faster than
-    /// `push_fast_speed` m/s reduces (0..=100, retail 11), a slope under `push_downhill_slope` reduces (-10..=10,
-    /// retail -0.22), no push from `push_max_heading_deg` off the line (0..=180, retail 40); `push_right_foot` picks
-    /// RightPush (default) or LeftPush.
+    /// AI skaters push while slower than their line (retail on); push fields and retail values: docs/hails-additions/26a-living-world-overview.md#ai-skater-push-fields
     pub push: Option<bool>,
     pub push_factor: Option<f32>,
     pub push_reduce: Option<f32>,
@@ -349,10 +244,7 @@ impl NpcAvoidPatch {
     }
 }
 
-/// The ped behaviour runtime: `enabled`, `mood` (the mood system raises wants), `wander_speed` (m/s), `warn_seconds`,
-/// `know_about_seconds`, `mood_want_memory_seconds`, `conversation_turn_seconds`, `conversation_gather_seconds` (s);
-/// 0..=100 each (retail 2.0, 3.5, 30.0, 30.0, 3.0, 30.0); `run_from_honker_distance` (m sideways of a honking car's line) and
-/// `run_from_honker_speed` (m/s), 0..=100 (retail 10.0, 6.0); `warn_speech`, the warn's speech value 0..=127 (retail 53).
+/// Ped behaviour runtime fields (0..=100 each) and retail values: docs/hails-additions/26a-living-world-overview.md#ped-behaviour-fields
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PedBrainPatch {
@@ -404,10 +296,7 @@ pub struct PedBrainPatch {
 pub const TRIP_KINDS: [&str; 2] = ["Knockdown", "Standing"];
 pub const TRIP_DIRECTIONS: [&str; 4] = ["FromFront", "FromBack", "FromLeft", "FromRight"];
 
-/// One traffic driver's horn: `blocked_time`, `obstacle_time` (s, retail 4 / taxi 1, 2), `approach_speed_kmh`
-/// (retail 5, taxi 10), `approach_seconds` (time to the obstacle for the approach horn, retail 2), each 0..=100;
-/// `enabled_chance` / `blocked_long_chance` (0..=1, the per-car rolls of driver bits 0x01 / 0x02; retail 1.0 / 0.5,
-/// normal 0.3 and reckless 0.8 long). Read when a car spawns.
+/// One traffic driver's horn (read when a car spawns); fields and retail values: docs/hails-additions/26a-living-world-overview.md#traffic-horn-fields
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrafficHornPatch {
@@ -478,10 +367,7 @@ pub struct NpcSkaterPropsPatch {
     pub enabled: Option<bool>,
 }
 
-/// Ped navigation (`skate_core::living_world::peds::wander`): `steer_rate` deg/s (measured 255, 0..=1000),
-/// `turn_edges` deg (retail 25 / 70 / 115 / 160, ascending, 0..=180), `stall_seconds` (0.5), the still re-path
-/// `stuck_distance` m (0.13) / `stuck_seconds` (0.5) (ours on walking peds, the still timer's values), `give_up_seconds` (ours, 2.0, 0 = off),
-/// `yield_patience` (ours, 2.0) (0..=60 each), `crosswalk` "off" (retail) or "walk_signal".
+/// Ped navigation fields (`peds::wander`) and retail / our values: docs/hails-additions/26a-living-world-overview.md#ped-navigation-fields
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PedNavPatch {
@@ -529,11 +415,7 @@ pub struct PedBodyPartPatch {
     pub friction: Option<f32>,
 }
 
-/// Ped obstacle rules (`skate_core::living_world::peds::ObstacleParams`; retail: on, 0.2 m minimum
-/// half extent, no cut above 0.4 m/s, re-cut after 0.25 x the smallest half extent; ours: 0.1 m
-/// detour margin, 0 m step height). `held_is_obstacle`: a prop held by Move Object (or an attached
-/// mod body) stays an obstacle (retail true). `moving_solid`: a moving object blocks a ped's step
-/// (NOT RETAIL YET stand-in for NavPower's moving avoider; default true).
+/// Ped obstacle rules (`peds::ObstacleParams`) and retail / our values: docs/hails-additions/26a-living-world-overview.md#ped-obstacle-fields
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PedObstaclesPatch {
@@ -551,22 +433,7 @@ pub struct PedObstaclesPatch {
     pub skater_half_extents: Option<[f32; 3]>,
 }
 
-/// NPC skater line end (`skate_core::living_world::replay::ChainConfig`): continue on an unused
-/// line whose start node is within `radius` m (retail 4.0; 0 = fade out at every line end), among
-/// at most `max_candidates` (retail 16); `blend_seconds`: the drawn root moves onto the new line
-/// over this time after a branch or chain (engine default 0.2 s, 0 = cut, at most 10 s);
-/// `keep_facing`: mod option, not retail (default false): the skater keeps the way it faces
-/// (forward or fakie) across a branch or chain by riding the new line turned round (fix 16).
-/// `facing_rule`: one of [`NPC_SKATER_FACING_RULES`]: `riding_entry` (default, retail: the recorded
-/// skater frame, turned while a flip latched on entering riding is set, held across switches; a
-/// body against its travel on the ground is drawn riding fakie with the stock fakie channel) or
-/// `per_node` (not retail, the fix 23 rule: each node folded onto the board's riding direction). `steer_dead_zone_deg` / `steer_full_deg`: retail AI
-/// steer ramp (`ai_skater` 2 / 10 deg), data for the simulated tier (the replay tier does not steer).
-/// `fakie_high_speed` / `fakie_low_speed` (m/s), `fakie_slow_seconds`, `fakie_spawn_seconds` (s):
-/// retail's riding-fakie rule (stock motion graph `UpdateRidingFakie`: 1.0 / 0.5 / 0.2 / 1.0): the
-/// NPC is drawn riding fakie (the stock fakie channel over its riding clip) when it rolls against
-/// its board's forward above the high speed, or above the low speed for longer than the slow time,
-/// never in the first spawn seconds. A very high speed turns the fakie drawing off.
+/// NPC skater line end, facing rule and riding-fakie fields (`replay::ChainConfig`): docs/hails-additions/26a-living-world-overview.md#skater-line-chain-fields
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkaterLineChainPatch {
@@ -619,10 +486,7 @@ pub struct PropsPatch {
     pub upright: Option<PropUprightPatch>,
 }
 
-/// Upright self-righting (doc 27, Upright); retail defaults: `window_seconds` 2.0,
-/// `tick_seconds` 1/60, `stop_angle_deg` 10, `max_angle_deg` 70, `dead_band_deg` 5, `gain_min` 3,
-/// `gain_max` 5, `gain_blend_start` 1.1, `off_axis_spin` 0.1, `command_rate` 60,
-/// `fallback_angle_deg` 120, `block_yaw` true. Numbers finite and >= 0; the window and tick > 0.
+/// Upright self-righting fields and retail defaults: docs/hails-additions/26a-living-world-overview.md#upright-fields
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PropUprightPatch {
@@ -640,15 +504,7 @@ pub struct PropUprightPatch {
     pub block_yaw: Option<bool>,
 }
 
-/// Prop contact solver and sleep rule (retail DMO simulation, 8275DCC8 ->
-/// 82DC2840): `row_solver` true = retail row solver (false = the engine's older
-/// impulse pass); `iterations` (retail 25, 1..=256); `sleep_energy` (retail 1e-5);
-/// `sleep_frames` (retail 2, 1..=10000); `max_sleeps_per_step` (retail 100);
-/// `rest_snap` (engine snap, not retail, default false). The bail clamp (retail 82C530F0: a bailing actor's contact
-/// caps the prop's velocity): `bail_clamp` (on), `bail_linear_factor` (retail 5.0, cap = factor / mass m/s),
-/// `bail_angular_factor` (retail 15.0), `bail_heavy_mass` (retail 200 kg: from this mass on the prop is stopped),
-/// `bail_blend` (retail 0.5). `walkable_mass` (retail 5.5 kg): lighter props are collision type 14, which the on-foot
-/// walker does not step on.
+/// Prop contact solver, sleep and bail clamp fields (8275DCC8 -> 82DC2840, 82C530F0): docs/hails-additions/26a-living-world-overview.md#prop-solver-fields
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PropSolverPatch {
@@ -664,6 +520,7 @@ pub struct PropSolverPatch {
     pub bail_heavy_mass: Option<f32>,
     pub bail_blend: Option<f32>,
     pub walkable_mass: Option<f32>,
+    pub skater_push_box: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -748,10 +605,7 @@ pub struct CarryPatch {
     pub ignore_vertical: Option<bool>,
     /// Every command wakes the prop (retail true; false = only a non-zero command).
     pub wake_on_command: Option<bool>,
-    /// Per prop type held / free parameter blocks, keyed by the MOBJ template name or by the
-    /// type's vault record name (`livingworld_dynamicobject_characteristics`, e.g.
-    /// `dt_garbagebin`, logged as `type=` in HELD_PROP); the template name entry wins. Each
-    /// field overrides the type's retail value; unset fields keep it.
+    /// Per prop type held / free blocks by MOBJ template or vault record name (template wins); unset keeps retail.
     #[serde(default)]
     pub by_template: BTreeMap<String, CarryMaterialPatch>,
 }
@@ -1000,7 +854,7 @@ impl Merge for PropTuningPatch {
 impl Merge for PropSolverPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; row_solver, iterations, sleep_energy, sleep_frames, max_sleeps_per_step, rest_snap, bail_clamp,
-            bail_linear_factor, bail_angular_factor, bail_heavy_mass, bail_blend, walkable_mass);
+            bail_linear_factor, bail_angular_factor, bail_heavy_mass, bail_blend, walkable_mass, skater_push_box);
     }
 }
 impl Merge for PropUprightPatch {

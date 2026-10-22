@@ -384,10 +384,7 @@ pub struct Contacts {
     /// Diagnostics (the e2e harness): when `Some`, every body-poster message with its region and
     /// the impact the poster read.
     pub body_log: Option<Vec<(usize, f32, Message)>>,
-    /// This process's body hits, one per region that posted (its pair message), cleared at the
-    /// start of every [`Self::process`] and bounded ([`MAX_BODY_HITS`]): the host's diagnostic
-    /// line and the mods' `body_impact` event read them after the process (local player and NPC
-    /// skaters alike).
+    /// This process's body hits, one per posting region, cleared each process, bounded; read by host and mods.
     pub body_hits: Vec<BodyHit>,
     /// `+422`: armed while the skater is not bailing; the body poster's first message of a bail
     /// calls the bail grunt helper `sub_824BF5F8` and disarms it. The helper speaks only for a
@@ -396,11 +393,7 @@ pub struct Contacts {
     grunt_armed: bool,
     /// The bail grunt is due (set by the body poster; the NPC host takes it).
     pub bail_grunt: bool,
-    /// Collide lines due (`sub_824BDA90`, set by the body poster; the NPC host takes them): the
-    /// poster calls it for every region it reaches (an impact, no cooldown, before the bands), and
-    /// for a non-local skater any of the three contact speeds over its floor asks for the skater's
-    /// collide line ([`crate::world::skater_speech::collide`]). The local player's own branch
-    /// (main-cast lines on a skater contact) is not modelled. One record per call, in order.
+    /// Collide lines due (824BDA90): one record per poster call, in order; local main-cast branch not modelled.
     pub collides: Vec<CollideCall>,
     /// The team line's cooldown (`entry+492`, s): counted down by dt at the start of every call,
     /// set to [`ContactsTuning::coll_team_cooldown`] when the team line is asked for.
@@ -555,10 +548,7 @@ fn start_block(dt: f32) -> [f32; 6] {
 }
 
 impl Contacts {
-    /// The owner's release (retail's release stops every layer): stop every held Splice sound
-    /// (pop, roll, ollie, landing, touchdowns, second voice, manual landing, taps, scuffs, plant /
-    /// lift and the hand-on-deck sounds). A dropped owner is never updated again, so a sound it
-    /// still held would keep its slot and mixer voices for good.
+    /// The owner's release: stop every held Splice sound, as retail's release stops every layer.
     pub fn release_all(&mut self, host: &mut dyn SpliceHost) {
         let mut held: Vec<SoundId> = Vec::new();
         held.extend(self.pop.take().map(|p| p.0));
@@ -742,11 +732,7 @@ impl Contacts {
                     self.body_cooldown[i] = c.body_cooldown;
                     let la = if a < none { ct.contact_level(a, b, ta, la_lo, la_hi, impact) } else { 0 };
                     let lb = if b < none { ct.contact_level(b, a, tb, lb_lo, lb_hi, impact) } else { 0 };
-                    // Retail posts the body hits at audio state `+48` (`sub_824BC188`: `lvx128` with
-                    // r18 = 48 into the post `0x82486EF0`), which the instance bridge `sub_824B0DA8`
-                    // fills from the skater record's `+0`: the skater point, our `com_position`. The
-                    // board (`+144`, record `+48`) is the deck and landing posters' point; a bail can
-                    // leave the board far from the body (the cliff fall: 44 m, silent).
+                    // Retail posts body hits at audio state +48 (824BC188), the skater point (`com_position`), not the board.
                     let msg = Message { material: [a, b], tier: [ta, tb], position: s.com_position, level: [la, lb], local: s.local };
                     self.outbox.push(msg);
                     if self.body_hits.len() < MAX_BODY_HITS {
@@ -1887,11 +1873,7 @@ mod tests {
         ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
     }
 
-    /// Retail's posting points per poster (the instance bridge `sub_824B0DA8` fills audio state
-    /// `+48` from the skater record's `+0` = our `com_position`, `+144` from `+48` = our
-    /// `board_position`): the body poster `sub_824BC188` (`lvx128` r18 = 48) and the grind start
-    /// `sub_824BB0E0` (`li r5, 48`) post at the skater; the deck impact `sub_824BD000`
-    /// (`li r24, 144`) and the landing pair `sub_824BA630` (`li r5, 144`) at the board.
+    /// Retail posting points per poster (824B0DA8 bridge): body / grind start at the skater, deck / landing at the board: docs/hails-additions/11-audio.md#audio-posting-points
     #[test]
     fn the_body_poster_posts_at_the_skater_not_the_board() {
         assert!(distance(FALL_COM, FALL_BOARD) > 40.0);
@@ -1933,11 +1915,7 @@ mod tests {
         assert!(k.body_hits.is_empty(), "the deck poster is no body hit");
     }
 
-    /// The user's silent cliff fall replayed (session 2026-10-07 15:12, ms 359000..364450): ragdoll
-    /// air for five seconds with every region clear (COM y 133.8 down to 88.3, |COM v| 5 to 22.8 m/s,
-    /// the board left 44 m up the slope), then the ground hit: head 0.321, legs 0.606 / 0.501 on
-    /// concrete (tag 3) at |COM v| 22.8 (the speed graph's x5). The hits post at the body, where
-    /// the camera is, not at the far board.
+    /// A long ragdoll cliff fall replayed: the ground hits post at the body, where the camera is, not at the far board.
     #[test]
     fn a_cliff_fall_lands_its_body_hits_at_the_body() {
         use crate::player::collision::Material;

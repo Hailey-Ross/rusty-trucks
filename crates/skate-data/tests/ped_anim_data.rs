@@ -1,8 +1,5 @@
-//! Data-gated checks of the ped body data (doc 26, peds M2) on the user's own files. Skips (passes
-//! with a note) without data. `SKATE3_ASSET_ROOT`: one or more asset roots joined like PATH; the
-//! test reads `private/stock/data/anim/PedestrianSkeletonPres.abin` and
-//! `private/living_world/{tables.json, models/*.glb}` from the first root that has each.
-//! Expected values are shipped data the research measured; they are asserted, not embedded.
+//! Data-gated (skips without `SKATE3_ASSET_ROOT` data): ped body data (bank `PedestrianSkeletonPres.abin`, tables, model GLBs);
+//! expected values are measured shipped data, asserted not embedded.
 
 use skate_core::living_world::peds::anim::{PedAnimPlayer, names, root_motion};
 use skate_core::living_world::peds::{PedOverrides, match_bones};
@@ -241,10 +238,7 @@ fn ped_glb_bind_frames_are_the_rig_reference_frames() {
     let mut locals = rig.reference.clone();
     locals[0] = skate_core::living_world::peds::anim::IDENTITY;
     let globals = skate_core::living_world::peds::PedEvaluator::globals(rig, &locals);
-    // Angle between the reference global (row-vector native matrix, rows = bone axes) and the
-    // Rotation angle between the two frames, axes normalised (the reference carries small bone
-    // scales, e.g. hands about 0.996). GLB bind = inverse of the inverse bind = its transpose for
-    // the orthonormal bind rotations (column-major array).
+    // Rotation angle between the reference global (rows = bone axes, normalised) and the GLB bind (transposed IBM).
     let angle = |native: &[[f32; 4]; 4], ibm: &[f32; 16], basis: [[f32; 3]; 3]| {
         // bind(r, c) = ibm[r * 4 + c]; reference(r, c) = sum_k native[k][r] * basis[k][c] (G x basis).
         let reference = |r: usize, c: usize| (0..3).map(|k| native[k][r] * basis[k][c]).sum::<f32>();

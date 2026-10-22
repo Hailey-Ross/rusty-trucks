@@ -11,11 +11,14 @@ pub struct GroundFit {
     pub length: f32,
     /// Arrival height above the hit, m.
     pub rest: f32,
+    /// The ray also hits dynamic props and traffic cars (retail query mask 7 bits 2 and 4, research b493).
+    pub props: bool,
+    pub vehicles: bool,
 }
 
 impl Default for GroundFit {
     fn default() -> Self {
-        Self { enabled: true, up: 0.75, length: 500.0, rest: 0.15 }
+        Self { enabled: true, up: 0.75, length: 500.0, rest: 0.15, props: true, vehicles: true }
     }
 }
 

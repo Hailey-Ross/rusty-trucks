@@ -1,17 +1,5 @@
-//! The Trick Guide's 3D demo behind FE 14 (TU3: screen init 0x82618A40 loads DIST_TrickGuide, update
-//! sub_82619A20 posts "play <clip> with camera track <n>" to the trickbook object, which runs the ViewScene
-//! scene: one character "current_player" playing `scene/trickguide/<name>1.abin`).
-//! The player's own rig plays the clip (ViewScene's character is the current player), the set is spawned as a
-//! child of the player root (clip and set share the scene space), and the gameplay camera draws only the demo
-//! layer while the screen is open. Research: `.local/research/menus-m6/trick-guide-*.md`, doc 31 "Trick Guide demo".
-//! The camera plays the entry's ICE ViewScene track (scene.big `ice_000.bin`, skate_core::camera_track), fitted to
-//! the clip's length (retail writes the clip length into the track), and each point is placed by its segment's
-//! SPACE / AVATAR (`place`): tracks 0, 1, 18, 20 follow the skater's root at height 0, track 3 keeps its eye fixed
-//! in the set and aims at the root, track 19 is fixed. DUTCH is in turns; FOV = 2*atan(15.96/lens).
-//! Measured in the recomp: `.local/research/menus-m6/trick-guide-hooks.md` sections 7 and 8.
-//! The set takes render location `trick_guide`'s fog and sun (fog_trickguide; retail_sky::SkyPackage::load_scene).
-//! NOT RETAIL YET: csm_trickguide shadows; the rest of the location (exposure, post_fx) stays the map's; the lens
-//! angle taken as the vertical field of view; the followed root taken as the clip's bone 0.
+//! The Trick Guide's 3D demo behind FE 14 (0x82618A40, 82619A20): the player rig plays the clip in the set.
+//! Camera track, render location and gaps: docs/hails-additions/31-retail-menus.md#trick-guide-demo-code
 use crate::{animation::AnimationStatus, map_render::{MapEntity, SceneCommands, StagedAssets}, world::PlayerRoot};
 use bevy::{camera::visibility::RenderLayers, ecs::system::SystemState, mesh::skinning::SkinnedMesh, prelude::*};
 use skate_core::animation::{output, pose_sample::{sample_key, select_frames}};
@@ -163,11 +151,7 @@ fn drive(world: &mut World, mut scene: Local<Scene>) {
     }
 }
 
-/// A track point in scene space (sub_828F36B0). Track space is Z-up and maps to the scene as (y, z, x)
-/// (sub_82673560 returns game positions as (z, x, y)). SPACE 2 adds the followed object's position without
-/// rotation: AVATAR 5 = the scene character's root at height 0, AVATAR 7 = the same root at full height
-/// (sub_828278A8: the clip entry's transform; the demo has one character, the skater). Other SPACE values have no
-/// case and leave the point fixed in the set.
+/// A track point in scene space (828F36B0): SPACE / AVATAR placement: docs/hails-additions/31-retail-menus.md#trick-guide-track-point
 fn place([x, y, z]: [f32; 3], space: CameraSpace, skater: Vec3) -> Vec3 {
     let point = Vec3::new(y, z, x);
     match (space.mode, space.avatar) {

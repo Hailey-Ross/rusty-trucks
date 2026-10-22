@@ -1,15 +1,5 @@
-//! The living-world road graph, `roads.bin` v2 (setup group `livingworld`, written by
-//! `tools/asset_pipeline/living_world_roads.py` `write_graph`; format notes in
-//! `docs/hails-additions/living-world/vehicles-data.md`). Bytes in, graph out; no file I/O.
-//!
-//! The graph is the retail road network (RW object `0x00EB0013`) of every district merged across its
-//! tiles: directed segments (retail 64-bit ids; `to_node` is the destination, `from_node` the origin),
-//! their lane geometry as ~4 m pieces (cubic Hermite centre line, road edges, arc-length tables),
-//! junctions (one per road node: inner / outer quads, 8 end records = the approaches and exits of
-//! node ends 0-3 with the connectors each lane may take) and the turn connectors (cubic Hermite
-//! curves from an approach lane to an exit lane). Unknown retail fields keep raw names (`flag_04`,
-//! `f32_50`, `word_56`). Every element keeps its retail id or index so a mod or a network peer can
-//! name it; [`RoadGraph::to_bytes`] writes the same format (synthetic tests, per-map roads of mods).
+//! The living-world road graph, `roads.bin` v2 (format: docs/hails-additions/living-world/vehicles-data.md).
+//! Contents: docs/hails-additions/26h-living-world-traffic.md#road-graph
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -382,12 +372,7 @@ impl RoadGraph {
         self.traffic_input_where(&|_| true)
     }
 
-    /// The traffic input of one district only (its segments and junctions; a junction end whose
-    /// segment belongs to another district becomes a map edge). The districts are separate
-    /// worlds that overlap in x / z [data: University roads lie 16-18 m above the DownTown walk
-    /// mesh, Industrial roads 47-59 m below it], so a world must only see its own roads; with the
-    /// whole graph a car placed or routed onto another district's road floats in the air or
-    /// drives under the ground. `None` when the graph has no district of that name.
+    /// Traffic input of one district only (districts overlap in x / z): docs/hails-additions/26h-living-world-traffic.md#district-traffic-input
     pub fn district_traffic_input(&self, name: &str) -> Option<skate_core::living_world::traffic::RoadInput> {
         let d = self.districts.iter().position(|d| d.name == name)? as u32;
         Some(self.traffic_input_where(&|district| district == d))
@@ -520,10 +505,7 @@ impl RoadGraph {
     }
 }
 
-/// Signal durations from the exported `tables.json` (`classes.livingworld.trafficlights`:
-/// `signal_green`, `signal_amber`, `signal_all_red`, `Hash_5E41C959D17527CC` = the walk split,
-/// read by `sub_826B1540` into controller `+300`). A content overlay that patches those fields
-/// changes the city's lights. `None` when a field is missing.
+/// Signal durations from `tables.json` trafficlights (826B1540 -> +300); `None` when a field is missing.
 pub fn signal_timings(tables: &serde_json::Value) -> Option<skate_core::living_world::traffic::SignalTimings> {
     let f = tables.pointer("/classes/livingworld/trafficlights/fields")?;
     let num = |k: &str| f.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
@@ -625,10 +607,7 @@ mod tests {
         assert_eq!(net.connectors[next[0]].entry_speed, 13.888889);
     }
 
-    /// Doc 26 "Cars flying off": the districts are separate worlds overlapping in x / z. A world
-    /// gets only its own district's roads; another district's segment (here 17 m up, like the
-    /// University roads over DownTown) and the junction ends leading to it are left out, so the
-    /// census can neither place a car on it nor route one onto it.
+    /// A world gets only its own district's roads (doc 26 "Cars flying off").
     #[test]
     fn district_traffic_input_keeps_only_that_districts_roads() {
         use skate_core::living_world::traffic::{RoadNetwork, SegmentId};

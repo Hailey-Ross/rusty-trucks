@@ -1,17 +1,5 @@
-//! NPC skater reactions to other skaters' wipeouts (the reaction manager, research b166 / b168) [code]:
-//! - each simulation tick (`sub_8245A7E8`, tick mask bit 0) every skater's reaction bits are cleared first
-//!   (R+0x24 `clrlwi 7`, main-checked), then set from this tick's events, so a pulse lasts one tick;
-//! - a skater's wipeout start (`sub_82772748`: H+0xD1 = !prev && cur of the wipeout byte, Processed `+2468` bit 18) is
-//!   passed to every other skater within a strict 15.0 (`0x822F8F68` = 225.0 compared with the squared distance,
-//!   `sub_8245E950`, main-checked) as the slam bit with "by" = the sender's model (`sub_8245E6C8`, `sub_8245E740`;
-//!   0x61 = 97 when the sender has none); its wipeout end (H+0xD2) is passed the same way as slam_b (`sub_8245E848`);
-//! - the skaters are visited in index order, so the last sender in range names "by";
-//! - a skater's own crash bit is its wipeout byte itself, a level (`sub_827A1B78`, entry +148 bit 5).
-//! Trick seen (score > 50, `Hash_4BEEDCA4AD799796`) waits for the score's writer (b168 open).
-//!
-//! Ours: the skater order is the host's stable key order (players first, then NPC skaters by id), and players
-//! listen to nothing (only NPC skaters speak these lines). Multiplayer: a pure function of the skater list and the
-//! previous tick's wipeout states; the host runs it and sends the raised reactions.
+//! NPC skater reactions to other skaters' wipeouts (reaction manager 8245A7E8; b166 / b168).
+//! Retail rules and our order: docs/hails-additions/26e-living-world-skater-ai.md#npc-wipeout-reactions
 
 use std::collections::BTreeMap;
 

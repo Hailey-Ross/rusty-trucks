@@ -1,25 +1,5 @@
-//! Skater fade-in after every placement ("ghost"), retail sub_82594488 / sub_825926F8
-//! (`skate_core::player::ghost`).
-//!
-//! - **Placement** (`FixedUpdate`, after the physics tick): every completed teleport of the
-//!   simulated skater (checkpoint respawn, menu / map / mod teleports, session marker return; all
-//!   finish in the one reset at `physics/frame.rs`, counter `respawn::Runtime::placements`) and a
-//!   newly loaded skater (spawn, map change) become a [`SkaterPlaced`] message keyed by the stable
-//!   player id. Serialisable, so a networked host could send the same events; no networking here.
-//! - **Fade** (`FixedUpdate`): [`SkaterGhosts`] holds one [`GhostFade`] per player id; a
-//!   placement restarts it, then each fixed tick publishes the opacity and advances the timer by
-//!   the fixed dt (time-based, any tick rate gives the same curve).
-//! - **Draw** (`Update`): while the local player's opacity is below 1 every mesh under
-//!   [`PlayerRoot`] (body, hair, clothes, board parts) draws a blended copy of its material with
-//!   the alpha scaled; at 1.0 the original material handle goes back, so solid frames draw
-//!   exactly the materials they drew before this feature.
-//! - **Mods**: world tuning domain `ghost` {enabled, fade_in_seconds, hold_alpha} writes
-//!   [`GhostTuning`] (retail defaults, reset on mod stop).
-//!
-//! NOT RETAIL YET: the 0.68 hold condition (state byte 71) is undecoded and never set here; the
-//! render-side smoother sub_8278C4D8 (15/s up, 5/s down toward the published opacity) is not
-//! ported (the 1 s ramp is slower than it, so the drawn opacity follows the published one). NPC
-//! skaters do not use this path: their own spawn fade-in is `living_world::npc_skaters::NpcFade`.
+//! Skater fade-in after every placement ("ghost"), retail 82594488 / 825926F8 (`skate_core::player::ghost`).
+//! Placement, fade, draw, mods and gaps: docs/hails-additions/26c-living-world-npc-skaters.md#skater-ghost-fade
 use bevy::prelude::*;
 use skate_core::player::ghost::{GhostFade, GhostSettings};
 use std::collections::BTreeMap;

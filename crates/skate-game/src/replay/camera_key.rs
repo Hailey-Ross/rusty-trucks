@@ -1,11 +1,5 @@
-//! The replay editor's basic cameras (Pro Edit Menu rows 0..3; research b401 / b402): Follow orbits the skater in
-//! its frame (space 0 on the skater), Tripod keeps its eye in the world and looks at the skater, Free is a world pose,
-//! Game is the recorded gameplay camera with only the lens to change. Controls run per console frame (30 Hz) with
-//! retail's caps (`82C826D0`, `82509558`). Every limit and rate is data ([`CameraRules`]).
-//!
-//! A basic camera is one pose for the whole clip: its setup clears the channel's keys and the sampler holds the live
-//! value without keys (b404, `82C89A50`); keyed poses are the Advanced cameras'. The look object 4 is the skater root (b406, traced). NOT RETAIL YET: the skater root as the eye object 2 (b406: likely the game camera's frame), the
-//! pad mapping (retail's axis table `[pad+0xC]+4` is unread), and the lens to field of view (a 24 mm high film gate).
+//! The replay editor's basic cameras (Follow, Tripod, Free, Game; b401 / b402, b404, b406); limits are data.
+//! Details and gaps: docs/hails-additions/37-instant-replay.md#replay-basic-cameras
 use bevy::prelude::*;
 
 /// Which basic camera a clip uses (retail's camera type: 0 Follow, 1 Tripod, 2 Free, 3 Game; `82508CE8`).

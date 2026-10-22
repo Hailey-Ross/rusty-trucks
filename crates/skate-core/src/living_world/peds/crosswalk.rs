@@ -1,12 +1,5 @@
-//! Walk lights for the mod crosswalk rule ([`super::wander::CrosswalkRule::WalkSignal`]): which
-//! signalled junction arm a ped is about to cross and the walk light the shared
-//! [`SignalClock`] shows for it.
-//!
-//! Retail never consults this for ambient peds (the road branch of the ped graph is
-//! unreachable, `wander.rs`). The mapping is ours: a crossing over the arm at node end `e` runs
-//! parallel to the traffic of the neighbouring ends, so it uses the walk light of end
-//! `(e + 1) % 4` (the walk list of a controller is green inside its car green, `signals.rs`).
-//! A mod can supply its own [`WalkSignals`] instead.
+//! Walk lights for the mod crosswalk rule (`WalkSignal`); retail never consults this for ambient peds.
+//! Mapping (ours): docs/hails-additions/26f-living-world-peds.md#crosswalk-walk-lights
 
 use crate::living_world::Vec3;
 use crate::living_world::traffic::graph::{ENDS, RoadNetwork};

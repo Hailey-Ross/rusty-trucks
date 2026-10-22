@@ -1,59 +1,5 @@
-//! NPC skaters, replay tier (doc 26, milestone 3): turns the population's skater spawn / despawn
-//! records into visible skaters that ride their recorded lines.
-//!
-//! - **Entity** per spawn record: [`NpcSkater`] (stable `LivingWorldId`, character key, slot,
-//!   seed, voice) + [`NpcReplay`] (the `skate_core::living_world::replay` cursor) + `Transform`.
-//!   The id map [`NpcSkaterIndex`] finds it again for the despawn.
-//! - **Motion** (`FixedUpdate`, after the population step): each cursor is kept at
-//!   `population tick - spawn tick` recording frames (the 60 Hz lines at the retail 60 Hz world
-//!   tick, `skate_core::living_world::clock`), so the state is a function of the spawn record and the tick; branch decisions use the
-//!   retail score with the players and the other NPCs and are kept as records a client would
-//!   mirror. The NPC's position goes back into the population (culls, the 5 m rule). At the end
-//!   of a line it continues on an unused line starting within 4 m, picked by the same retail
-//!   score (`replay::choose_next_line`, `sub_8246C7F8`; fix 9), so it keeps riding until the
-//!   population's 120 m cull removes it. A new NPC fades in over its first second; only at a dead
-//!   end (no line starts near the end) does it fade out and leave once its opacity is below 0.2
-//!   (`skate_core::living_world::leave_fade`; [`NpcFade`]).
-//! - **Collision**: a kinematic proxy (capsule for the body, box for the board, infinite mass, the
-//!   cursor's velocity) joins `physics::network::Proxies` like a mod's solid, so the player bumps
-//!   into it. NPCs never react (replay tier).
-//! - **Look**: the character's native roster GLB (`CustomModels::online_native_path`, the same
-//!   files the customiser and online players use), or a mod's GLB from [`NpcSkaterLooks`], else
-//!   the stock skater. Bound to the stock skeleton like a remote player (`AnimationStatus`).
-//! - **Puppet animation** (`Update`): one stock clip per [`ReplayPhase`] ([`puppet_clip`]),
-//!   evaluated with the player's evaluator; root = the recorded position and skater orientation.
-//!   The stock graphs are not run (simplification until the simulated tier). The clip time is the
-//!   time since the phase began; a looping clip (`_CYC` in its name) wraps by its length like the
-//!   player's `ClipClock`, others hold their last frame. Each NPC carries [`NpcPuppetClip`] (the
-//!   clip and time in effect). A mod may override the clip per phase id or `<phase>.<style>`
-//!   (`LivingWorldSettings::skater_clips`, `sdk.world.set_tuning('living_world', {skater_clips})`);
-//!   an override that does not evaluate falls back to the shipped pick. A phase change (also one a
-//!   branch or line chain brings) crossfades from the previous phase's clip, which keeps playing,
-//!   with the player's graph transition curve (`playback_transition::transition_weight`,
-//!   Blend82B96058: smoothstep over the transition time) over [`RETAIL_BLEND_SECONDS`] (the stock
-//!   graph's default transition time); mods set it per phase (`skater_blend_seconds`). The
-//!   weight is a function of the cursor's phase frames, so a client derives the same pose.
-//!   Render (fix 14): drawn from the cursor one tick back ([`NpcReplay::previous`]) towards the
-//!   current one by the fixed-step fraction, like the player, with the recorded branches
-//!   (`LineCursor::render_sample`); clip and blend times include the sub-frame; after a branch or
-//!   chain the root blends onto the new line (`replay::LineSwitch`, `skater_line_chain.blend_seconds`).
-//!   Fix 21: the crossfade nests like a retail transition (Blend82B96058 keeps the running
-//!   transition as the outgoing tree): the cursor remembers the last `replay::PHASE_HISTORY` phases and
-//!   the pose is built from every phase whose blend still runs ([`puppet_layers`]), so a phase
-//!   change during a blend (half of all changes on the shipped lines) no longer restarts from one
-//!   clip. A recorded trick slot (`EScorableID`) plays its stock trick animation on body and board
-//!   (the board is the rig's `Skateboard_Root`): `<anim>_G` on the ground, `<anim>_A` once
-//!   airborne, like `T_Trick.xml` ([`retail_trick_anim`]; mods: `skater_clips["trick.<id name>"]`).
-//! - **Fade** (`Update`, [`present_fade`]): while [`NpcFade::alpha`] is below 1 every mesh under
-//!   the NPC (body and board) draws with a per-NPC blended copy of its material; at 1 the shared
-//!   materials come back and the copies are freed, so a solid NPC costs what it did before.
-//! - **Audio**: [`NpcSkaterAudio`](crate::world_audio::NpcSkaterAudio) with a lite state from the
-//!   cursor (position, velocity, air, ground trick as a grind) and the character's voice; #32's
-//!   host picks the one audible NPC by retail's rule.
-//! - **Events** for engine systems and the planned `sdk.living_world`: [`NpcSkaterEvent`].
-//!
-//! Multiplayer: nothing here decides a spawn; the entity is rebuilt from a `SpawnRecord`, the tick
-//! and [`BranchRecord`]s alone (`Decider::Mirror` on a client).
+//! NPC skaters, replay tier: spawn records -> visible skaters riding their recorded lines.
+//! Details: docs/hails-additions/26c-living-world-npc-skaters.md#npc-skater-replay-tier
 
 use super::{LivingWorldDespawn, LivingWorldObservers, LivingWorldSettings, LivingWorldSpawn, NetRole, PopulationState};
 use crate::world_audio::{AudioState, AudioVelocity, LiteSkater, NpcSkaterAudio};
@@ -128,10 +74,7 @@ pub(crate) fn stance_table() -> &'static [skate_core::living_world::stance::Stan
     TABLE.get_or_init(skate_core::living_world::stance::retail_table)
 }
 
-/// An NPC's natural stance at spawn (retail: once, from its character record, `82590DC0` ->
-/// `Initialize82B97E38`): the record of the character key, a mod override, the table, else the
-/// engine default. A function of the spawn record's character and the overrides, so a client
-/// derives the host's value.
+/// An NPC's natural stance at spawn (82590DC0 -> Initialize82B97E38): record, mod override, table, default.
 pub(crate) fn npc_stance(records: &BTreeMap<String, String>, overrides: &BTreeMap<String, skate_core::living_world::stance::NaturalStance>, character: &str) -> skate_core::living_world::stance::NaturalStance {
     let record = records.get(character).map_or(character, String::as_str);
     skate_core::living_world::stance::resolve(stance_table(), overrides, record)
@@ -258,11 +201,7 @@ pub(crate) fn puppet_clip_time(clip: &str, time: f32, length: f32) -> f32 {
     if clip_loops(clip) && length > 0.0 { time.rem_euclid(length) } else { time.max(0.0) }
 }
 
-/// Transition time (s) into a phase's clip: a `PlayAnimation` without a `time` attribute
-/// transitions over the literal at `0x82099280` = 0.2 s ([code], read in
-/// `graph_host::motion_nodes::transition`), and the stock motion graph's looping idle states the
-/// puppet clips stand for enter with 0.2 s ([data] `air.xml` `B_AIR_CYC` time 0.2,
-/// `offboard.xml` stand `BLENDSEC` 0.2, `T_handplantair.xml` `IA_IDLE_N_N_0_CYC` time 0.2).
+/// Transition time into a phase clip: the 0.2 s literal at 0x82099280 and the stock idle states: docs/hails-additions/26c-living-world-npc-skaters.md#retail-blend-seconds
 pub(crate) const RETAIL_BLEND_SECONDS: f32 = 0.2;
 
 /// Crossfade time into `to`'s clip: a mod's value for the phase id, then for `default`, else
@@ -279,15 +218,7 @@ pub(crate) const RETAIL_TRICK_TAKEOFF_SECONDS: f32 = 0.05;
 /// clip follows as a sequence (`LeftGround/Default` `transType="sequence"`: no blend, 0 s).
 pub(crate) const RETAIL_TRICK_AIR_SECONDS: f32 = 0.1;
 
-/// The stock trick animation base a recorded trick slot plays (`<base>_G` on the ground,
-/// `<base>_A` in the air), from the trick's `EScorableID` ([code] node ext +0x24, see
-/// `ReplayLine::node_trick`; names `skate_core::scoring::catalog`, table 0x820862A8). Pairs are
-/// [data] `MotionGraphIncludes/Tricks/Tricks.xml` (`TRICK_NAME` -> `ANIM_NAME`): the flips and
-/// shuvits by name, kickflip / heelflip and their nollie forms use `B_<NAME>_IN`; numbered,
-/// late and underflip variants use their base flip; a grab or any other air trick leaves the
-/// ground with the ollie (`B_OLLIE`, retail grabs are performed out of an ollie). Ground-only
-/// tricks (manuals, powerslides, reverts, grinds, slides; catalog classes 0 and 1) and
-/// handplants (class 6) have none and keep the phase clip.
+/// Stock trick animation base for a recorded `EScorableID` (Tricks.xml pairs): docs/hails-additions/26c-living-world-npc-skaters.md#retail-trick-anim
 pub(crate) fn retail_trick_anim(trick: i16) -> Option<String> {
     let (name, class, _) = *skate_core::scoring::catalog::IDENTIFIERS.get(usize::try_from(trick).ok()?)?;
     /// `TRICK_NAME`s of `Tricks.xml` with a `T_Trick` / `T_TrickWithUnderflip` /
@@ -323,12 +254,7 @@ pub(crate) fn resolve_trick_anim(overrides: &BTreeMap<String, String>, trick: i1
     overrides.get(&format!("trick.{name}")).cloned().or_else(|| retail_trick_anim(trick))
 }
 
-/// The clip a remembered phase shows and its transition time (`older` = the phase before it):
-/// a trick span with a trick animation plays `<base>_G` then `<base>_A` from the ground (0.05 s
-/// in), or `<base>_A` alone when it starts in the air (0.1 s in); the air after an air trick keeps
-/// the clip (one layer); everything else the phase's puppet clip with its blend time. A clip
-/// that does not evaluate (`evaluates` false) falls back to the shipped phase pick; trick names
-/// go through `stock` (authored tree name -> playable clip, [`stock_tree_leaf`]).
+/// Clip and transition time a remembered phase shows (trick `_G` / `_A`, else the phase clip): docs/hails-additions/26c-living-world-npc-skaters.md#puppet-layer-clip
 pub(crate) fn puppet_layer_clip(
     clips: &BTreeMap<String, String>,
     blends: &BTreeMap<String, f32>,
@@ -366,11 +292,7 @@ pub(crate) fn puppet_layer_clip(
     }
 }
 
-/// The air part of a trick animation base: `<base>_A`, and for the kickflip family (`T_Kickflip.xml`:
-/// `LeftGround` plays `$ANIM_NAME$_A`, then as sequences `$ANIM_CYC_NAME$1..3` per extra flip and
-/// `$ANIM_OUT_NAME$<n>`) `B_<FLIP>_IN_A`, `B_<FLIP>_CYC1..n`, `B_<FLIP>_OUT<n>` with n the
-/// trick's flip count (`kickflip2` = 2; 1 without a digit). Parts are joined with `+`: the
-/// puppet plays them back to back (`transType="sequence"`, no blend).
+/// Air part of a trick animation base (`_A`, kickflip family IN / CYC / OUT sequence): docs/hails-additions/26c-living-world-npc-skaters.md#trick-air-sequence
 pub(crate) fn trick_air_sequence(base: &str, trick: i16) -> String {
     let Some(flip) = base.strip_suffix("_IN") else { return format!("{base}_A") };
     let name = usize::try_from(trick).ok().and_then(|t| skate_core::scoring::catalog::IDENTIFIERS.get(t)).map_or("", |e| e.0);
@@ -412,11 +334,7 @@ pub(crate) struct PuppetLayer {
     pub since: u64,
 }
 
-/// The puppet's layers, oldest first, from the cursor's phases (`history`: newest first, seconds
-/// since each began). `resolve(entry, older)` gives a phase's clip and its transition time.
-/// Consecutive phases showing the same clip are one layer (the clip keeps playing from the older
-/// start: a trick's air clip runs on after its span closes). Layers stop at the first one fully
-/// blended in: older ones no longer show. Pure: same history, same layers.
+/// The puppet's layers, oldest first, from the phase history (same clip = one layer). Pure.
 pub(crate) fn puppet_layers(history: &[(PhaseEntry, f32)], resolve: impl Fn(PhaseEntry, Option<PhaseEntry>) -> (String, f32)) -> Vec<PuppetLayer> {
     let resolved: Vec<(String, f32, f32, u64)> = history
         .iter()
@@ -491,10 +409,7 @@ pub(crate) struct NpcPuppetClip {
     pub fakie: Option<PuppetLayer>,
 }
 
-/// The stock tree retail overlays while the skater rides fakie: [code] `FakieHeadChannel82BAC778`
-/// starts channel `"fakie"` with `B_FAKIE_CHANNEL` (blend in / out 0.3 s, transition 0.1 s) on
-/// the rising edge of the riding-fakie bit and ends it when the bit clears; the riding clip below
-/// it is unchanged. A mod may replace it (`skater_clips["fakie_channel"]`).
+/// Fakie channel tree (FakieHeadChannel82BAC778, blend 0.3 s, transition 0.1 s); mod-replaceable.
 pub(crate) const FAKIE_CHANNEL: &str = "B_FAKIE_CHANNEL";
 
 /// The fakie channel tree in effect: a mod's `skater_clips["fakie_channel"]`, else [`FAKIE_CHANNEL`].
@@ -502,16 +417,10 @@ pub(crate) fn resolve_fakie_channel(overrides: &BTreeMap<String, String>) -> &st
     overrides.get("fakie_channel").map_or(FAKIE_CHANNEL, String::as_str)
 }
 
-/// The `torso` value the fakie channel holds while riding: [code] `FakieHeadChannel82BAC778`
-/// targets 1.0 while manualing, 0.0 while power sliding, else 0.5 (and starts at its target).
-/// The replay has no manual / powerslide state, so the puppet always uses the riding value (NOT
-/// RETAIL YET for recorded manuals and powerslides).
+/// Fakie channel `torso` while riding (82BAC778: manual 1.0, powerslide 0.0, else 0.5; replay: always 0.5).
 pub(crate) const FAKIE_TORSO_RIDING: f32 = 0.5;
 
-/// The fakie channel layer of a cursor `alpha` of the next frame: `clip` = the channel tree
-/// (`B_FAKIE_CHANNEL`, a stock phase blend on `torso`), its time since the bit set (the channel
-/// keeps that clock while it fades out) and its weight ([`LineCursor::fakie_channel_weight`]);
-/// `None` while the weight is 0.
+/// Fakie channel layer of a cursor (`None` while its weight is 0).
 pub(crate) fn fakie_channel_layer(cursor: &LineCursor, alpha: f32, tree: &str) -> Option<PuppetLayer> {
     let weight = cursor.fakie_channel_weight(alpha);
     if weight <= 0.0 {
@@ -533,10 +442,7 @@ pub(crate) fn fakie_channel_attributes() -> [skate_core::animation::playback_par
     }]
 }
 
-/// The puppet's layers for a cursor (`sub_frame` = the render fraction, 0 on a fixed step): the
-/// phase history resolved to clips ([`puppet_layer_clip`] with the mods' clips and blend times,
-/// the shipped pick where a clip does not evaluate) and folded into layers ([`puppet_layers`]).
-/// Empty before the first phase. Without the skater runtime every clip counts as playable.
+/// The puppet's layers for a cursor (mod clips and blend times, shipped pick as fallback).
 pub(crate) fn npc_puppet_layers(settings: &LivingWorldSettings, style: &str, skater: Option<&crate::physics::SkaterRuntime>, cursor: &LineCursor, sub_frame: f32) -> Vec<PuppetLayer> {
     let evaluates = |clip: &str| skater.is_none_or(|k| k.animation.evaluator.clip_length(clip).is_ok());
     let meta = skater.map(|k| k.animation.motion.animation.metadata());
@@ -552,12 +458,7 @@ pub(crate) fn npc_puppet_layers(settings: &LivingWorldSettings, style: &str, ska
 /// Layer starts an NPC remembers (its puppet shows at most a few layers at once).
 const STANCE_STARTS: usize = 8;
 
-/// An NPC skater's stance bits (retail SkaterAnim flags bits 31 / 30 and the relative stance,
-/// [`StanceFlags`]): the natural stance's start bits, toggled by the stance events of the clip its
-/// newest layer plays, like retail's `82593230` -> `82B98980` for every actor. Each layer keeps
-/// the bits current when it began (retail bakes them into the tree's bind pose at construction).
-/// Simulation state, updated on the fixed step from the cursor and the clip data only
-/// ([`track_stance`]), so a client derives the host's bits; plain data for a snapshot.
+/// NPC stance bits (SkaterAnim bits 31 / 30, 82593230 -> 82B98980), per layer: docs/hails-additions/26c-living-world-npc-skaters.md#npc-stance-flags
 #[derive(Component, Clone, Debug, PartialEq)]
 pub(crate) struct NpcStanceTrack {
     /// Current bits (what a tree built now would get).
@@ -582,10 +483,7 @@ impl NpcStanceTrack {
         self.starts.iter().rev().find(|(s, _)| *s <= since).map_or(self.natural, |(_, f)| *f)
     }
 
-    /// One fixed step with the newest layer `top`: a new layer (clip or start changed) records the
-    /// current bits as its own and plays from its clip start; then every stance event in the
-    /// clip's attributes collected over the advanced window (`attributes(clip, previous_time,
-    /// time)`, names) toggles its bit ([`StanceFlags::apply`]). Returns whether a bit changed.
+    /// One fixed step: a new layer records the current bits; stance events in the window toggle them.
     pub fn step(&mut self, top: &PuppetLayer, events: &StanceEvents, attributes: impl Fn(&str, f32, f32) -> Vec<String>) -> bool {
         let fresh = !matches!(&self.top, Some((clip, since, _)) if *clip == top.clip && *since == top.since);
         let previous_time = match &self.top {
@@ -611,10 +509,7 @@ impl NpcStanceTrack {
     }
 }
 
-/// The attribute names of a (`+`-joined) clip collected over `previous_time..time` s of its
-/// playback ([`skate_core::living_world::stance::attribute_in_window`] per part: parts play back
-/// to back, a part entered in the window plays from its start, the last part holds at its end).
-/// `clip_data(part)` = the part's length (s) and its attributes (name, begin, end; normalised).
+/// Attribute names of a `+`-joined clip over `previous_time..time` (parts back to back).
 pub(crate) fn sequence_attributes(clip: &str, previous_time: f32, time: f32, clip_data: impl Fn(&str) -> Option<(f32, Vec<(String, f32, f32)>)>) -> Vec<String> {
     let mut out = Vec::new();
     let mut offset = 0.0f32;
@@ -858,12 +753,7 @@ pub(crate) fn advance(
                 }
             }
         }
-        // Spawn fade in (retail `sub_825926F8`: 0 to 1 over the first second), then the leave fade
-        // (retail `sub_8246EA90` / `sub_8245A9B8`, removal below opacity 0.2): only once the
-        // cursor has ended at a dead end (no line starts within the chain radius), holding the
-        // last pose while fading. The clock is the spawn-relative frame (`target`), which keeps
-        // running after the cursor stops, so clients derive the same alpha from the same spawn
-        // record and tick.
+        // Spawn fade in (825926F8), leave fade at a dead end (8246EA90 / 8245A9B8): docs/hails-additions/26c-living-world-npc-skaters.md#npc-fade
         fade.fade.update(&replay.cursor, &*lines, &fade_cfg);
         let alpha = fade.fade.alpha(elapsed, &fade_cfg);
         if fade.alpha != alpha {
@@ -972,10 +862,7 @@ pub(crate) fn peer_name(peer: u64) -> String {
     }
 }
 
-/// Retail collision groups: skater skeleton parts 5 (the skeleton contact pass scales a group-5
-/// force by `SkaterSkeletonScalar` and raises the player's thresholds by
-/// `SkaterSkaterThresholdScalar`, `sub_82BD4A30` at `0x82BD53D0`), board 4 (ignored by that
-/// pass). The multiplayer peers' proxies use the same split (`physics/network.rs`).
+/// Retail collision groups: skeleton parts 5 (82BD4A30 at 0x82BD53D0), board 4.
 pub(crate) const PROXY_BODY_GROUP: u32 = 5;
 pub(crate) const PROXY_BOARD_GROUP: u32 = 4;
 
@@ -1014,12 +901,7 @@ pub(crate) fn proxy(id: LivingWorldId, s: &ReplaySample) -> [skate_dynamics::Sol
     ]
 }
 
-/// NPC skaters against dynamic props (DMOs), doc 26 fix 19. Retail NPC skaters are full skaters
-/// (`AIController` on the player's skater physics, [code] notes `npc-skaters-re.md` section 0),
-/// so their board and body hit a DMO like the player's: the prop step pushes it by the prop's own
-/// tuning (`props` domain: push mass, transfer, board / body caps). Our NPC is a replay puppet, so
-/// it does not slow down or bail; the prop is pushed out of its line. A mod may switch it off
-/// (`sdk.world.set_tuning("living_world", {npc_skater_props = {enabled = false}})`).
+/// NPC skaters against DMO props (fix 19; mod switch `npc_skater_props`): docs/hails-additions/26c-living-world-npc-skaters.md#npc-skaters-vs-props
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct NpcSkaterPropContact {
     /// Retail on.
@@ -1032,12 +914,7 @@ impl Default for NpcSkaterPropContact {
     }
 }
 
-/// The prop-step push volumes of one NPC: the proxy's body capsule and its board (as a capsule
-/// along the deck), at the recorded velocity, in the same places as [`proxy`]. Both count as a
-/// board hit (the prop's `board_push_speed` cap): the lower body-bump cap is for the player's
-/// walking body, which the prop's triangles stop; a puppet is not stopped, and in retail the
-/// whole skater rides into the prop at riding speed. Actor id = the proxy's solid id (stable, the
-/// prop's authority owner).
+/// Prop-step push volumes of one NPC (body capsule and board), both board hits: docs/hails-additions/26c-living-world-npc-skaters.md#npc-prop-volumes
 pub(crate) fn prop_volumes(id: LivingWorldId, s: &ReplaySample) -> [(u64, skate_core::physics::board_world::BoardWorldVolume); 2] {
     use skate_core::math::Vector3;
     use skate_core::physics::board_step::CollisionBody;
@@ -1189,19 +1066,12 @@ pub(crate) fn present_pose(
     mut joints: Query<&mut Transform, Without<NpcReplay>>,
 ) {
     let lines = npc_lines(&state);
-    // Render interpolation: fraction of the next world tick (FRAMES_PER_TICK recording frames)
-    // already elapsed. Like the player (`physics.rs` / `animation.rs`: previous -> current by the
-    // fixed-step alpha) the NPC is drawn from the cursor one tick back towards the current one, with
-    // the branch records already made, so the drawn pose is a function of the cursor, the records
-    // and this fraction (fix 14; before it extrapolated past the current tick with `Decider::Stay`).
+    // Render interpolation: the fraction of the next world tick, drawn from one tick back (fix 14).
     let hz = state.world.clock().hz;
     let ahead = (state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * hz).clamp(0.0, 1.0) as f32
         * FRAMES_PER_TICK as f32;
     for (e, npc, replay, puppet, current, mut root, stance, sim) in &mut npcs {
-        // A simulated NPC skater is drawn from its own physics pose. That pose is relative to the skater's animation
-        // root (joints within ~2 m of 0, NPC_SKATER_DRAWN 2026-10-15), so the puppet root sits at the animation root in
-        // the world; with the root at the origin every simulated skater was drawn at the map origin and vanished from
-        // where it rode. A pose already in world space (root joint at the skater) keeps the identity root.
+        // A simulated NPC is drawn from its physics pose, relative to its animation root: docs/hails-additions/26c-living-world-npc-skaters.md#simulated-npc-draw-root
         if let Some(sim) = sim {
             let root_of = |world: skate_core::animation::output::NativeMatrix, pose: &[skate_core::animation::output::NativeMatrix]| {
                 let pose_root = pose.first().map(|m| [m[3][0], m[3][1], m[3][2]]).unwrap_or([0.0; 3]);
@@ -1313,11 +1183,7 @@ pub(crate) struct NpcFadeMaterials {
     pub alpha: f32,
 }
 
-/// Draw [`NpcFade::alpha`]: below 1, swap every mesh under the NPC (body, board, anything a mod
-/// parents to it) to a blended copy of its material at the source alpha times the fade; at 1,
-/// restore the shared materials and drop the copies. Meshes that load mid fade are picked up on
-/// the next frame. Generic: works on any entity carrying [`NpcFade`] (NPC skaters; peds may use it
-/// for their camera-distance fade). Render only: the alpha itself is simulation state.
+/// Draw [`NpcFade::alpha`] with per-NPC blended material copies below 1 (render only).
 pub(crate) fn present_fade(
     mut commands: Commands,
     mut npcs: Query<(Entity, &NpcFade, Option<&mut NpcFadeMaterials>)>,
@@ -1400,10 +1266,7 @@ pub(crate) fn puppet_blend_pose(evaluator: &crate::animation_pose::PoseEvaluator
     puppet_layers_pose(evaluator, &layers)
 }
 
-/// [`puppet_blend_pose`] for nested layers (oldest first): the base clip, then each newer clip
-/// blended over the result by its weight (`PoseCommand::Blend`, the player's SQT blend), like a
-/// graph transition whose outgoing tree is the running transition. A layer whose clip does not
-/// evaluate is skipped (an outgoing one) or fails the pose (the newest one).
+/// [`puppet_blend_pose`] for nested layers, oldest first (SQT blend like a graph transition).
 pub(crate) fn puppet_layers_pose(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer]) -> Option<Vec<Mat4>> {
     puppet_pose_with_channel(evaluator, layers, None)
 }
@@ -1420,16 +1283,7 @@ pub(crate) fn stance_root_turn(stance: skate_core::living_world::stance::Natural
     flags_root_turn(StanceFlags::natural(stance))
 }
 
-/// The puppet root's extra turn for the stance bits of the newest layer. The regular bind pose
-/// ([`bind_pose_tail`]) draws the board turned round (`BOARD_BACKWARDS`, nose along root -Z) and
-/// the body mirrored; retail's physical board follows the animated board (`publish_deck_angles`
-/// with `board_flipped = bit31 ^ mirror`, false for both natural stances), so a regular
-/// character's frame is half a turn from its board's. The replay root is the frame the goofy
-/// puppet rides nose first with (the facing rule and the fakie rule work on that board axis), so
-/// a mirrored puppet turns its root half a turn: the board keeps its world heading and the left
-/// foot leads. The turn follows the mirror bit alone: a trick clip that toggles only
-/// `animboardbackward` (the board turned under the body) ends with the board turned in the clip,
-/// and the next layer's `BOARD_BACKWARDS` keeps it turned without moving the body.
+/// Puppet root extra turn for the newest layer's stance bits (mirror bit alone): docs/hails-additions/26c-living-world-npc-skaters.md#flags-root-turn
 pub(crate) fn flags_root_turn(flags: StanceFlags) -> Quat {
     if flags.mirrored { Quat::from_rotation_y(std::f32::consts::PI) } else { Quat::IDENTITY }
 }
@@ -1439,10 +1293,7 @@ pub(crate) fn bind_pose_tail(mirrored: bool) -> Vec<skate_core::animation::playb
     stance_tail(StanceFlags { board_backward: mirrored, mirrored, switch: false })
 }
 
-/// The commands retail's bind pose appends to every tree it plays (`MotionAnimation::add_bind_pose`,
-/// the player's path, from the SkaterAnim flags at the tree's construction): the reference pose
-/// added, `BOARD_BACKWARDS` / `BOARD_BACKWARDS_IK` for bit 31, a mode 2 mirror for bit 30. The
-/// switch bit adds nothing.
+/// Bind pose commands retail appends to every tree (bit 31 BOARD_BACKWARDS, bit 30 mirror mode 2).
 pub(crate) fn stance_tail(flags: StanceFlags) -> Vec<skate_core::animation::playback_tree::PoseCommand> {
     use skate_core::animation::playback_tree::PoseCommand;
     let mut out = vec![PoseCommand::Pose { name: "RIG_TPOSE".into() }, PoseCommand::Add { motion_is_a: true }];
@@ -1467,14 +1318,7 @@ pub(crate) fn puppet_pose_in_stance(evaluator: &crate::animation_pose::PoseEvalu
     puppet_pose_in_flags(evaluator, layers, &vec![flags; layers.len()], channel)
 }
 
-/// The puppet pose with each layer in the stance bits it was built with (`flags[i]` for
-/// `layers[i]`; retail bakes the bits into a tree's bind pose at construction, so a transition
-/// blends two trees each closed with its own tail). While every layer shares the bits, the
-/// layers blend first and one tail closes the result (with no bits set: the commands every NPC
-/// drew before the stance port; with the regular bits: the natural stance port); once a newer
-/// layer's bits differ, every layer is closed with its own tail before it blends in. The channel
-/// tree (fakie) is closed with the newest layer's bits, like the player's channel tree built with
-/// the current flags.
+/// Puppet pose with each layer in its own stance bits: docs/hails-additions/26c-living-world-npc-skaters.md#puppet-pose-in-flags
 pub(crate) fn puppet_pose_in_flags(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer], flags: &[StanceFlags], channel: Option<(&[skate_core::animation::playback_tree::PoseCommand], f32)>) -> Option<Vec<Mat4>> {
     use skate_core::animation::playback_tree::PoseCommand;
     let sample = |clip: &str, time: f32| -> Option<PoseCommand> {
@@ -1588,12 +1432,7 @@ pub(crate) fn npc_readout(npcs: &[(LivingWorldId, String, Option<ReplaySample>)]
 /// World ticks between two `NPC_SKATER_BACKWARDS` lines for one NPC (2 s at 30 ticks/s).
 pub(crate) const BACKWARDS_LOG_TICKS: u64 = 60;
 
-/// The `NPC_SKATER_BACKWARDS` line for one NPC sample, `None` when it is not riding backwards
-/// (`skate_core::living_world::replay::facing_check`: drawn heading more than 135 deg from the
-/// velocity yaw at 1 m/s or more; a diagnostic threshold). `recorded_fakie` says the line's own
-/// retail path frame opposes travel there (the recorder rode fakie: retail's target frame does
-/// too); `flip` is retail's latched switch / fakie flip (controller `+927`); `facing_flipped` is
-/// the fix 16 mod option's turn.
+/// `NPC_SKATER_BACKWARDS` line for one NPC sample (135 deg diagnostic threshold): docs/hails-additions/26c-living-world-npc-skaters.md#npc-backwards-line
 pub(crate) fn backwards_line(id: LivingWorldId, character: &str, line: &ReplayLine, cursor: &LineCursor, s: &ReplaySample) -> Option<String> {
     let c = skate_core::living_world::replay::facing_check(line, s)?;
     if !c.backwards {

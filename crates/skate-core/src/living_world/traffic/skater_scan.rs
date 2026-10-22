@@ -1,20 +1,5 @@
-//! A traffic car slowing for a skater coming up BEHIND it, so they can catch it (and skitch). Retail (TU3, evidence
-//! only; re-implemented; `.local/research/npc/b63-traffic-skater-scan.md`, main checked the scan's constants, the
-//! quad B builder and the planner's vault hashes):
-//! - the per-car tick (`sub_82C3D918`) runs the skater scan `sub_82C414A8` after the look-ahead: nothing while a
-//!   skater holds the car (`+4402` bit 0x02); else every actor of the skater list (index order) that is not
-//!   skitching (state 104), whose distance `|p - car| - 0.5 x size` is under the range (`Hash_33466832D8178EAF`,
-//!   40 m) and that lies in the rear zone (quad B, `+3520`) writes the distance (`+3760`) and its speed (`+3756`);
-//!   one facing the car's way also sets `+4403` bit 0x10 (and bit 0x08 from a skater byte). Last match wins; 0x10
-//!   is never cleared inside the loop;
-//! - the speed planner `sub_82C3FA08`, only while the limiter kind is free: with 0x10 set and both speeds above
-//!   `Hash_D20826F15FB15A2E` (20 km/h) the acceleration cap becomes 0, and the car brakes toward the skater's speed
-//!   minus `Hash_256A412E350A2659` (20 km/h): `(max(vs - m, 0)^2 - v^2) / (2 D + 0.001)`, D =
-//!   `Hash_3AB7FC7CF7A17C81` (20 m) when the release grace is over and the skater is in range (FAR), D =
-//!   `Hash_F682D359CDBC4D12` (5 m) when bit 0x08 is set and the skater is within `Hash_D49FC49019181EE5` (20 m)
-//!   (NEAR, overwrites FAR, not gated by the grace);
-//! - the release edge `sub_82C34B30`, once per traffic step after every car: a car let go this step gets the grace
-//!   `Hash_4727CF785EF735C8` (2.5 s), otherwise the grace drops by the step and sits at -1 once negative.
+//! A traffic car slowing for a skater coming up behind it (b63; scan 82C414A8, planner 82C3FA08).
+//! Retail mechanism: docs/hails-additions/26h-living-world-traffic.md#traffic-skater-scan
 
 use super::super::Vec3;
 use super::obstacles::CarFrame;

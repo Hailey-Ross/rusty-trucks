@@ -1,9 +1,5 @@
-//! Data-gated check (doc 26 "Cars flying off, population gone") on the user's own export: the
-//! road districts are separate worlds that overlap in x / z, so the DownTown world must only get
-//! DownTown's roads. Every DownTown lane point over the DownTown walk mesh lies on it (within
-//! 1.5 m), while the whole file holds other districts' roads metres above and below it (where
-//! the first living-world build put cars "in the air"). Skips (passes with a note) when
-//! `SKATE3_ASSET_ROOT` has no `roads.bin` / `navmesh.bin`.
+//! Data-gated (skips without `SKATE3_ASSET_ROOT` data): the DownTown world gets only DownTown's roads (districts overlap in x / z);
+//! every DownTown lane point over the walk mesh lies on it within 1.5 m.
 
 use skate_core::living_world::peds::nav::{NavMesh, NavPoly, NavRules};
 use skate_core::living_world::traffic::RoadNetwork;

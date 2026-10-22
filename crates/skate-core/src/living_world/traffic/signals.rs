@@ -1,38 +1,5 @@
-//! Traffic signals: retail's 4 signal controllers, each with a car light programme and a walk
-//! light programme, ticked by a fixed step.
-//!
-//! Retail [code, TU3; addresses are evidence only]:
-//! - `sub_826B1540` (living-world init) builds 4 controllers (loop to 4 at `0x826B1860`), each a
-//!   car phase list at `+4` and a walk phase list at `+148` (16-byte phases: light, length,
-//!   remaining, word), filled by `sub_82E156D8`. Even controllers: all-red, red (= green +
-//!   amber), all-red, green, amber; odd controllers: all-red, green, amber, all-red, red. So
-//!   controllers 0 / 2 and 1 / 3 alternate. The walk list mirrors the car list, except that a
-//!   green phase splits into walk green `(1 - split) x green` and walk amber `split x green`
-//!   (split = `+300`, the `trafficlights` record's `Hash_5E41C959D17527CC`, 0.4) and every
-//!   other phase is walk red. Jump targets: `+312` / `+316` = the index of the all-red before
-//!   green, `+304` / `+308` = the all-red before red.
-//! - `sub_82E158D8` ticks one controller by a fixed `1/60` s (`0x820849C8`): the current phase's
-//!   remaining time drops; below 0 the next phase starts and inherits the overshoot, except
-//!   when the car list wraps to phase 0 (then the overshoot is dropped and the walk list is
-//!   forced back to its phase 0 too).
-//! - `sub_826B2C18` (from the living-world update `sub_826BDB50`, world tick `sub_82859E70`)
-//!   ticks all 4 every world tick unless the lights are frozen (`+13382`). The world tick is a
-//!   fixed 60 Hz step [trace: 60 ticks per second in the recomp while it renders at ~345 fps],
-//!   so the cycle is 17 s of game time at any frame rate.
-//! - Which controller an approach obeys: the connector's `from_end` (connector `+84`) indexes
-//!   the controllers (road network vtable `+36`, `sub_82E11E90`). Every signalled junction in a
-//!   district shares the 4 controllers: approaches from node ends 0 and 2 run together, 1 and 3
-//!   together, and the whole city switches in step.
-//! - A priority vehicle (`sub_8269B328` sets it, `sub_8269B338` clears it and unfreezes; caller
-//!   not found) gets a green wave: within 50 m (`0x8220E13C`) of a signalled junction, or inside
-//!   one, the manager calls `sub_826B3C88(end)`: the controllers with the end's parity jump to
-//!   their all-red-before-green, the others to their all-red-before-red, and once the end's
-//!   controller shows green the lights freeze until the priority is cleared.
-//!
-//! Durations are data (`livingworld` record `trafficlights`: `signal_green` 7, `signal_amber`
-//! 1, `signal_all_red` 0.5, split 0.4 [data]); [`SignalTimings`] takes them from the export or a
-//! mod. The phase arithmetic stays in f32 like retail, so the phase changes land on the same
-//! ticks.
+//! Traffic signals: retail's 4 controllers with car and walk light programmes, ticked at a fixed 1/60 s.
+//! Retail mechanism (826B1540, 82E158D8, 826B2C18) and data: docs/hails-additions/26h-living-world-traffic.md#traffic-signals
 
 use super::graph::{RoadNetwork, ENDS};
 

@@ -1,34 +1,5 @@
-//! Retail car materials: the `vehicle_chassis` and `vehicle_glass` programs of TU3
-//! `shaders_final.big` (`vehicle_defaultPS`, `vehicle_glass_defaultPS`) as one Bevy material.
-//!
-//! Retail [code, shader microcode; constant tables read from the `.fpo` objects]:
-//! - Constants: `g_vLightDir` c9, `m_params` c14..c19 (rows 0..5), `i_params` c20,
-//!   `i_colorize_red` c21, `i_colorize_blue` c22; samplers `i_diffuse` 3, `i_normal` 4,
-//!   `i_environment` 5 (glass: no diffuse, `i_normal` 3, `i_environment` 4).
-//! - Chassis: `lin = diffuse^2`; a texel with `G^2 < 0.001225` takes `R^2 x i_colorize_red + B^2 x
-//!   i_colorize_blue` (the ped shaders' rule, `skate_core::living_world::peds::colorize`). Light:
-//!   `lin x (ambient + max(N.L, 0) x m_params[1].rgb x shadow) + (pow(sat(V.reflect(L)),
-//!   m_params[2].w) x shadow x m_params[2].rgb + env^2) x (1 - sat(N.V))^m_params[1].w x
-//!   diffuse.a^2`, ambient = the literal `(0.1, 0.175, 0.3)` x `m_params[5].w`, the shadow zero
-//!   where `N.L < 0`; times `m_params[0].y` and the fog factor, plus the fog colour; the
-//!   exposure / tone tail; output alpha `i_params.x`.
-//! - Glass: the same with albedo `m_params[4].rgb` and no diffuse alpha mask; output alpha
-//!   `i_params.x x m_params[4].w`. Render state [code, `sub_82CF0B90`]: alpha blend
-//!   (SRC_ALPHA / INV_SRC_ALPHA), depth test on, depth write off.
-//! - The rows come from the vault row named by each part's `AttribulatorMaterialName`
-//!   (`character.livingworld_vehicles` / `character.livingworld_vehicles_glass` on every car)
-//!   [data]; the converter writes them to `vehicles.json` `materials`.
-//! - `i_params.x` = min(distance fade, fade-in ramp) (`sub_827C1188`) [code, partly read]; the
-//!   engine draws 1 (no fade yet, open).
-//!
-//! Engine: lit with the character lighting's light (`retail_character::Lighting`), Bevy's
-//! directional shadow and, like the character shader, without the vertex fog and the tone tail.
-//! The environment cube is bound when the export carries one (open: not converted yet).
-//!
-//! Moddability: the rows are data (`vehicles.json`) and a mod replaces them per material name
-//! (`VehicleOverrides::material_params`); the palette colours and their gain come from
-//! `VehicleOverrides` as before; a mod GLB names its row with material extras
-//! `{"attrib_material": "..."}`, else gets the row its `kind` used in retail.
+//! Retail car materials (`vehicle_defaultPS`, `vehicle_glass_defaultPS`) as one Bevy material.
+//! Shader rules, engine lighting and mod rows: docs/hails-additions/26h-living-world-traffic.md#car-materials
 
 use bevy::{
     asset::embedded_asset,

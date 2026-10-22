@@ -533,11 +533,7 @@ fn render_ride(ls: &BTreeMap<[u8; 16], ReplayLine>, start: [u8; 16], records: Op
     (max_move, max_turn, times, made)
 }
 
-/// Fix 14 (jitter): a branch moves the root onto a line 0.8 m to the side with another
-/// orientation, a chain onto a start 1.5 m off the end. Rendered at 144 Hz between the 60 Hz
-/// ticks, the root never jumps (each step stays near the 6 m/s line speed plus the decaying
-/// switch offset), the clip time grows by the render step, and a client mirroring the records
-/// draws the identical ride.
+/// Fix 14 (jitter): branch and chain roots never jump at 144 Hz; a mirroring client draws the same.
 #[test]
 fn npc_skater_render_is_smooth_across_branches_and_chains() {
     let turned = [128, 128 + 33, 128, 128 + 123]; // about 30 deg about +Y
@@ -601,13 +597,7 @@ fn npc_skater_render_is_smooth_on_a_seeded_line_network() {
     }
 }
 
-/// Fix 16 rule, now a mod option (`keep_facing = true`, not retail): the skater keeps the way it
-/// faces across a chain or branch. Line 2 was recorded riding the other way round (its skater
-/// frame faces -Z while it travels +Z, fakie), and then turns forward again with a recorded revert.
-/// With the option the NPC keeps facing +Z there and the recorded revert turns it into fakie (the
-/// source of the backwards riding, see the next test). Retail default (`keep_facing = false`): the
-/// recorded facing, the path frame of the node. Deterministic: a client mirroring the record derives
-/// the same flip.
+/// Fix 16 rule as mod option (`keep_facing`, not retail) vs the retail recorded facing: docs/hails-additions/26c-living-world-npc-skaters.md#test-keep-facing-option
 #[test]
 fn npc_skater_keeps_its_facing_across_a_line_switch() {
     const BACKWARD: [u8; 4] = [128, 255, 128, 128]; // (0, 1, 0, 0): +Z turned to -Z.
@@ -663,15 +653,7 @@ fn npc_skater_keeps_its_facing_across_a_line_switch() {
     assert!((rotate(q, [0.0, 0.0, 1.0])[2] + 1.0).abs() < 1e-5 && (rotate(q, [0.0, 1.0, 0.0])[1] - 1.0).abs() < 1e-5);
 }
 
-/// Fix 23 (NPC skaters riding backwards, user test 6), now under the retail rule (fix 23
-/// corrected): a switch stores line `+592/+600` and node `+816` only ([code] `sub_8246C7F8`) and
-/// leaves the latched flip alone; spawned forward, the flip is clear on every line here. Ride:
-/// line 1 forward, chain onto line 2 (recorded fakie for 15 nodes, then a
-/// recorded revert to forward), chain onto line 3 (forward). With the retail rule the drawn skater
-/// never faces against its travel outside a recorded fakie stretch, on any frame once the switch
-/// blend is over, and it rides line 3 forward. The fix 16 option reproduces the bug: it carries the
-/// turn on and rides the forward-recorded part of line 2 and all of line 3 backwards. Host and a
-/// mirroring client agree frame by frame.
+/// Fix 23 under the retail rule: switches leave the latched flip alone; fix 16 reproduces the bug: docs/hails-additions/26c-living-world-npc-skaters.md#test-retail-facing-over-switches
 #[test]
 fn npc_skater_never_rides_a_forward_recorded_line_backwards_across_switches() {
     const BACKWARD: [u8; 4] = [128, 255, 128, 128];
@@ -755,13 +737,7 @@ fn path_frame_turns_the_board_when_the_node_is_board_flipped_like_sub_82453a58()
     assert!((rotate(path_frame(&n), [0.0, 0.0, 1.0])[0] - 1.0).abs() < 1e-3);
 }
 
-/// Fix 23 rule, now the NOT RETAIL [`FacingRule::PerNode`] mod option: the drawn skater faces the
-/// path frame's riding direction per node. A recorder riding
-/// switch (skater frame turned round, board rolling nose first, flag clear) is drawn forward; a
-/// board-flipped node (board turned round, flag set, skater forward) stays forward; a recorded fakie
-/// node (path frame against travel) is drawn fakie. Airborne nodes keep the last grounded turn, so a
-/// shove-it spinning the board in the air does not turn the skater. A cursor ride over a switch
-/// stretch is never drawn against its travel.
+/// Fix 23 rule as the NOT RETAIL `PerNode` mod option: per-node facing of the path frame: docs/hails-additions/26c-living-world-npc-skaters.md#test-per-node-facing
 #[test]
 fn drawn_skater_faces_the_retail_path_frame_direction() {
     const BACKWARD: [u8; 4] = [128, 255, 128, 128];
@@ -821,15 +797,7 @@ fn drawn_skater_faces_the_retail_path_frame_direction() {
     assert!(!retail.flip && retail_backwards > 50, "{retail_backwards}");
 }
 
-/// Retail facing rule (fix 23 corrected, [`FacingRule::RidingEntry`], a mod option until the stance
-/// mirror lands): spawn latch. The character
-/// spawns with the node world frame ([code] `sub_8245C548` -> `sub_82453C58`, the path frame on
-/// a riding node) and the flip latches on that first riding entry ([code] `sub_8246A700`:
-/// `dot(recorded skater row 2, character row 2) < 0`). A recorder riding switch at the spawn node
-/// (skater frame turned round, board forward) sets the flip; the drawn skater is the recorded
-/// frame turned 180 deg about up (rows 0 and 2 negated, [code] `sub_8246B358`). Spawned in the
-/// air, retail's first update sees the takeoff edge (b354); off board, nothing is latched; on the
-/// ground the same test is a stand-in.
+/// Retail facing rule: spawn latch (8245C548 -> 82453C58, 8246A700, 8246B358; b354): docs/hails-additions/26c-living-world-npc-skaters.md#test-spawn-latch
 #[test]
 fn retail_flip_latches_at_spawn_against_the_node_world_frame() {
     const BACKWARD: [u8; 4] = [128, 255, 128, 128];
@@ -866,11 +834,7 @@ fn retail_flip_latches_at_spawn_against_the_node_world_frame() {
     assert!(c.flip && fz(c.sample(&ls, 0.0).unwrap().skater) < -0.99);
 }
 
-/// Retail facing rule: the flip is held across a line switch ([code] `sub_8246C7F8` /
-/// `sub_8246BEE0` store line and node only) and latched again only at takeoff (b354: `+928` is
-/// the airborne byte; here a chain onto a line that starts in the air), against the character's
-/// forward (the drawn body, still the old line's at the edge); the landing keeps it. Host and a
-/// mirroring client agree on the flip frame by frame.
+/// Retail facing rule: the flip holds across switches and relatches only at takeoff (b354).
 #[test]
 fn retail_flip_is_held_across_a_switch_and_relatched_at_takeoff() {
     const BACKWARD: [u8; 4] = [128, 255, 128, 128];
@@ -899,10 +863,7 @@ fn retail_flip_is_held_across_a_switch_and_relatched_at_takeoff() {
     assert!(flips.iter().all(|f| f.3), "held across the switch");
     assert_eq!(c.sample(&ls, 0.0).unwrap().skater, turn_about_up(target_skater(&ls[&id(2)], c.node as usize, c.node as usize + 1, c.frame_in_segment as f32 / 10.0)));
     assert!(fz(c.sample(&ls, 0.0).unwrap().skater) < -0.99);
-    // Relatched at takeoff: line 1 forward, chain onto line 3 whose first nodes are airborne and
-    // recorded turned round (the recorder jumped in fakie). At the edge the body still faces the
-    // old way (+Z): dot < 0 sets the flip, however long the air lasts, and the landing keeps it,
-    // so the landed line is drawn on the body's side.
+    // Relatched at takeoff: chain onto an airborne fakie start; the flip sets and the landing keeps it.
     let air_line = |frames: u8| {
         let mut l = along(3, [0.0, 0.0, 21.0], [0.0, 1.0], 31);
         for (k, n) in l.nodes.iter_mut().enumerate() {
@@ -1024,10 +985,7 @@ fn replay_cursor_keeps_a_phase_history_with_the_span_trick() {
     assert_eq!(c, d);
 }
 
-/// Retail riding-fakie bit on the drawn body (`UpdateRidingFakie82BB2330`): a body drawn against
-/// travel on the ground sets it once the spawn window (`after_teleport_seconds`) is over, the air
-/// clears it, the landing sets it again; the fakie channel fades in and out over 0.3 s. The
-/// per-node rule draws the same line forward and never sets it. Settings are data.
+/// Retail riding-fakie bit on the drawn body (82BB2330): set, air clears, landing sets; channel fades 0.3 s.
 #[test]
 fn retail_fakie_bit_follows_the_drawn_body_against_travel() {
     const BACKWARD: [u8; 4] = [128, 255, 128, 128];

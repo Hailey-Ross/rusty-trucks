@@ -1,10 +1,7 @@
 //! TU3 Sequence82B95C18 and Blend82B96058/82B961F8/82B963D8.
 use super::{clip_clock::AdvanceResult, output::attributes::{AnimationAttribute,AttributeName}, playback::TransitionSettings, playback_parameters::SettableAttribute, playback_tree::{Evaluation,PlaybackTree,PoseCommand}};
 
-/// Blend82B96058's weight of the incoming tree `elapsed` s into a `seconds` long transition:
-/// `elapsed / seconds` clamped to 0..1, eased with `3w^2 - 2w^3` unless the transition is shorter
-/// than 0.05 s (`0x3d4ccccd`), which stays linear. Shared by the player's graph transitions and
-/// the NPC skater puppet crossfade (living world).
+/// Blend82B96058 incoming weight: smoothstep of elapsed / seconds, linear under 0.05 s (0x3d4ccccd).
 pub fn transition_weight(elapsed:f32,seconds:f32)->f32 {
     let value=elapsed/seconds;
     let lower=if -value>=0.0 {0.0} else {value};

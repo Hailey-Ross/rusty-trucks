@@ -1479,3 +1479,423 @@ gated candidate before the time gate. `query` now takes the deck and writes it (
 - **Verification:** test `the_car_is_drawn_on_the_ticks_the_skater_met_it`. Not play-tested.
 - **Open:** NPC skaters that skitch probably had the same gap (unverified). The tow itself may fall behind at high
   car speed (force cap 500, `skate-core/src/riding/skitching.rs`); a session after this change separates the two.
+
+## Code reference: living_world/vehicles.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/living_world/vehicles.rs`; each comment there links its section here.
+
+### Traffic cars engine side
+
+Traffic cars (doc 26, milestone V3): turns the population's vehicle spawn / despawn records into visible cars that drive their lanes.
+
+- **Entity** per spawn record: [`TrafficCar`] (stable `LivingWorldId`, entity / model keys, palette ids and colours, engine record) + `Transform` + #32's [`TrafficAudio`](crate::world_audio::TrafficAudio). [`TrafficState`] keeps the follower cars (`skate_core::living_world::traffic::follow`) and the id -> entity map.
+- **Motion** (`FixedUpdate`, after the population step): one follower step per 60 Hz world tick, the signal clock ticked once per world tick (retail ticks its 4 controllers by 1/60 s per world tick, `sub_826B2C18`); a car spawned at tick `s` steps from tick `s + 1`. Lane state goes back to the population (`LivingWorld::update_lane`, `update_position`) so the census cull and the placement test see the real cars. A car at a dead end leaves (despawn, reason External).
+- **Look** (`Update`): the car's GLB (`private/living_world/vehicles/<recipe>.glb`, or a mod's path from [`VehicleOverrides`]) as a scene, drawn with the glTF materials on render layers 0 and 28 like mod graphics; the `vehicle_chassis` and `vehicle_glass` materials run the retail car programs ([`super::vehicle_material`]: paint rule below, lighting, glass) with the material rows of `vehicles.json` `materials`; the six wheel bones spin with the distance driven over the model's wheel radius (`wheel_hint`, `Hash_FD7A66142F16B9CC`, equal to the wheel bone height [data, V0]). Drivers are part of the body mesh [data, V0]; no vehicle lights exist [data].
+- **Collision**: one kinematic box per car from the GLB bounds (`mesh_bounds`), infinite mass, the car's velocity, joined to the skater solve through `physics::network::Proxies` like the NPC skaters. Solid contact only; bails and roof behaviour are V5.
+- **Audio**: `TrafficAudio { engine: <spec engine_audio record>, speed: +3412, load: +3408 }` and `AudioVelocity`, so #32's traffic engine host (nearest 4 within 40 m, Doppler) plays it.
+- **Events** ([`TrafficEvent`]): spawned, despawned, junction answer changed, entered a junction, entered a lane; the planned `sdk.living_world` events read these.
+
+Paint rule (retail `vehicle_defaultPS`, the program of the `vehicle_chassis` material, TU3 `shaders_final.big`) [code, shader microcode]: the same rule as the ped shaders (`skate_core::living_world::peds::colorize`): `lin = diffuse^2`; a texel with `G^2 < 0.001225` becomes `R^2 x i_colorize_red + B^2 x i_colorize_blue` (constant table: `i_colorize_red` c21, `i_colorize_blue` c22, `i_diffuse` sampler 3), any other keeps `lin`; the shader writes `sqrt` at the end. The body atlases paint the car body pure blue `(0, 0, b)` and the base palettes are chassis `(0, 0, 1)` / secondary `(1, 0, 0)` [data, V0], so chassis -> `i_colorize_blue` and secondary -> `i_colorize_red` (the pair that makes the base palette the identity, as for peds). No gain in retail; [`VehicleOverrides::paint_gain`] scales both colours for mods (default [`PAINT_GAIN`] = 1, retail).
+
+Multiplayer (no networking): a car's motion is a function of its spawn record, the world tick, the signal clock's tick count (= world ticks since the world loaded) and the other cars (which are themselves spawn records); the connector choice reads the occupancy, so a client must run the whole set of cars, not one. See doc 26 V3.
+
+Moddability: [`VehicleOverrides`] (model per entity, GLB per model, colour per palette id, follower numbers per entity, connector choice); restoring `VehicleOverrides::default()` undoes a mod; the spec / palette defaults come from the export (`tables.json`, `vehicles.json`).
+
+### Vehicle hits
+
+The skater's body hit a car (`sub_82C3C150`, actor branch): a contact ahead of the car (ours: along its velocity; retail's axis is the car's vtable +24, inferred forward) latches the hit brake on the follower car. Logs `VEHICLE_HIT`. Every contact also goes to the car alarm rule as a [`VehicleImpact`](crate::world_audio::VehicleImpact) (relative speed at the contact; the rule sets a parked car's alarm off).
+
+### Car look-ahead
+
+V4 look-ahead (`skate_core::living_world::traffic::obstacles`): the obstacle lists (`sub_826B2EE0`: skaters radius 0 and peds, soft; movable props (DMOs) radius half their smallest extent, hard; traffic cars add nothing, `b42`) against each car's look-ahead quad from last frame's pose; the nearest free distance goes to the follower car. Ours: the ped radius is the fallback ped radius (retail 0.5 x the body extents' z, the per-ped value is collision data), props carry no corner points, a bailing skater's four extra points are not added, and the turn widening is off (the turn side `+3748` is open; threshold 0.025).
+
+### Car grab splines
+
+The cars' authored grab splines into the grab scene each tick (retail: the vehicle provider `82C35B98`, scene slot `+4088`, answering the riding skitch query's mode 255; b49). The car's world transform is the record frame, its velocity the record vector. NOT RETAIL YET: the assembly is a stand-in with the car's id (retail reads it from the car's `+172` interface, object open).
+
+## Code reference: skate-core traffic/follow.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/follow.rs`; each comment there links its section here.
+
+### Lane follower
+
+The simple lane follower of milestone V3: census cars drive their lanes, take connectors by retail's least-loaded rule, stop at the stop line when the V1 junction query says so and keep a gap to the car ahead. The full retail driver (look-ahead `sub_82C412D8`, speed planner `sub_82C3FA08` with its lead / obstacle cases, horn and manoeuvre deciders, the state graph) is milestone V4; this module is the part of it V3 needs to put moving, light-obeying traffic on screen, with every simplification named below.
+
+Retail [code, TU3; addresses are evidence only, behaviour re-implemented, not copied]:
+- integrator `sub_82C3FF38`: `speed (+3412) += accel (+3408) x dt`; the accel is forced to 0 while the speed is above the cap `+3688` (= (1.0 + `+3680` (+ `+3684` while held)) x f2, b57); speed and accel are zeroed when both are tiny. [`integrate`] is that step.
+- the cap: the lane's speed limit (14.167 / 13.889 m/s [data]); the recomp shows `+3688` = 14.167 on a 51 km/h road and 17.0 while skitched (`+3684` = 0.2) [trace, `npc-livingworld-re` §7d]. V3 uses the segment's limit on a lane and the exit segment's limit (at most the junction speed) on a connector.
+- stop line (`sub_82C3FA08`): `accel = -v^2 / (2 (d - f2) + 0.001)` with `d` the distance to the line and `f2` the stop distance [code]. [`stop_accel`].
+- a skater coming up behind (`sub_82C3FA08`, `+4403` bit 0x10 from the skater scan, limiter kind free): the car brakes toward the skater's speed minus 20 km/h and never accelerates ([`super::skater_scan`], b63; this was misread as a lead-following rule before).
+- the junction query (`sub_82E11E90`, V1 [`junction_entry`]) runs once the stop line is within `speed + standoff` (`+3660` = length x spec `2ACE3FEE`, `82C376E8`); Go enters, every other answer (Approach included) is a stop target at the line with that standoff, so Approach slows the car until the query answers Go [code, b163].
+- the car ahead (`82C38390` -> `82C41120`): a stop target at the bumper-to-bumper gap with half of `+3664` (length x `73A1989B`) as the standoff, inside `speed + standoff` [code, b162 M1].
+- connector choice: least loaded exit lane per metre on every car (`sub_82C376E8`, V1 [`choose_connector`]) [code]; the load is the number of cars on the exit lane (the retail per-lane vec4 is not read yet, V1 open item).
+- acceleration ramps 0.2 m/s^2 per ~0.25 s up to 2.3-3.4 m/s^2 from a stop [trace 47CAEDA0, proof1]; hard stops reach about -7.3 m/s^2 [trace 47CAEDA0, 164620].
+
+Not retail yet: a car at a dead end stops there (the engine despawns it); the obstacle look-ahead and the query's exit-room check use the engine `min_gap`; two engine-side safeguards: the step never moves a car into its lead's bumper, and [`lead`] treats a car inside the junction on another connector into the same exit lane, nearer the exit, as the car ahead (two lanes of one approach merging into one; retail's junction query does not cover that case, its look-ahead does).
+
+Multiplayer seams: [`step`] is a pure function of the road network, the signal clock, the cars (sorted by key) and `dt`; cars update in key order and see the cars before them already moved (deterministic). A client that runs the same spawn records from the same tick with the same signal tick count gets the same motion; see doc 26 V3.
+
+Moddability: every number is a field of [`FollowParams`] (defaults from the vehicle spec records or the trace values named on each field; a mod overrides per car); the connector choice is the V1 [`ConnectorChoice`].
+
+### Merge safeguard
+
+Merging: a car inside the junction on another connector into the same exit lane that is closer to the exit point goes first. ENGINE SAFEGUARD, NOT RETAIL: retail's junction query never scans the car's own approach (`sub_82E11E90` passes only the ends from_end + 1, + 2 and + 3 (r28 / [r1+80] / r16) to the merge scan `sub_82E11C78` and the crossing scan `sub_82E11980`; its sibling check covers connectors of the same lane only) [code], so two lanes of one approach merging into one exit lane are spaced by the look-ahead / planner (`sub_82C412D8`, `sub_82C3FA08`), which is V4. Replace this with the ported look-ahead then.
+
+### Parked pull-out
+
+Parked (`82C39138`): standing, the parked time runs; `IsRequiredToPullOut` (`82C3A3A8`) after the parked time when the end of the approach is still on this road: the passage back to the outer lane (`82C3AFB8`: d1 = d + approach, from the kerb slot to lane n - 1; the spot is released). A sounding alarm holds the parked time at 0 and blocks the pull-out (`82C39138`, `82C3A3A8`).
+
+### Junction stop target
+
+FollowingLane stores the answer in the same field as the limiter kind (`+4392`: 1 signal, 2 approach, 3 yield, 4 blocked, 5 a yield to a flagged car); a car behind one waiting at a light (1) or a flagged yield (5) counts as waiting itself and does not get the blocked horn. Any answer but Go (`cmpwi r3,0`) is a stop target at the line: best = d, standoff = `+3660`; the planner (`82C3FA08`) brakes `-v^2 / (2 (d - standoff) + 0.001)` and stops the car dead inside the standoff. Approach slows the car this way until it is at the entry speed and the query answers Go. There is no go-through for a car that can no longer stop (no dilemma zone in `82C376E8` / `82C41120`; `+4402` bit 0x04 only feeds the horn timer `+3704`) [code].
+
+### Car ahead
+
+The car ahead (`82C38390` -> `82C41120`): gap = bumper to bumper (`0.5 x (s_me + s_lead)` off the centres), standoff = half of `+3664`; inside `speed + standoff` the lead is the stop target (kind 1 / 3), braking `-v^2 / (2 (gap - standoff))`, dead stop inside the standoff. No lead-speed matching [code]. Ours: the lead search reaches the window only (retail's lead finder `82E14F50` range is not read).
+
+## Code reference: living_world/traffic/signals.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/signals.rs`; each comment there links its section here.
+
+### Traffic signals
+
+Traffic signals: retail's 4 signal controllers, each with a car light programme and a walk light programme, ticked by a fixed step.
+
+Retail [code, TU3; addresses are evidence only]:
+- `sub_826B1540` (living-world init) builds 4 controllers (loop to 4 at `0x826B1860`), each a car phase list at `+4` and a walk phase list at `+148` (16-byte phases: light, length, remaining, word), filled by `sub_82E156D8`. Even controllers: all-red, red (= green + amber), all-red, green, amber; odd controllers: all-red, green, amber, all-red, red. So controllers 0 / 2 and 1 / 3 alternate. The walk list mirrors the car list, except that a green phase splits into walk green `(1 - split) x green` and walk amber `split x green` (split = `+300`, the `trafficlights` record's `Hash_5E41C959D17527CC`, 0.4) and every other phase is walk red. Jump targets: `+312` / `+316` = the index of the all-red before green, `+304` / `+308` = the all-red before red.
+- `sub_82E158D8` ticks one controller by a fixed `1/60` s (`0x820849C8`): the current phase's remaining time drops; below 0 the next phase starts and inherits the overshoot, except when the car list wraps to phase 0 (then the overshoot is dropped and the walk list is forced back to its phase 0 too).
+- `sub_826B2C18` (from the living-world update `sub_826BDB50`, world tick `sub_82859E70`) ticks all 4 every world tick unless the lights are frozen (`+13382`). The world tick is a fixed 60 Hz step [trace: 60 ticks per second in the recomp while it renders at ~345 fps], so the cycle is 17 s of game time at any frame rate.
+- Which controller an approach obeys: the connector's `from_end` (connector `+84`) indexes the controllers (road network vtable `+36`, `sub_82E11E90`). Every signalled junction in a district shares the 4 controllers: approaches from node ends 0 and 2 run together, 1 and 3 together, and the whole city switches in step.
+- A priority vehicle (`sub_8269B328` sets it, `sub_8269B338` clears it and unfreezes; caller not found) gets a green wave: within 50 m (`0x8220E13C`) of a signalled junction, or inside one, the manager calls `sub_826B3C88(end)`: the controllers with the end's parity jump to their all-red-before-green, the others to their all-red-before-red, and once the end's controller shows green the lights freeze until the priority is cleared.
+
+Durations are data (`livingworld` record `trafficlights`: `signal_green` 7, `signal_amber` 1, `signal_all_red` 0.5, split 0.4 [data]); [`SignalTimings`] takes them from the export or a mod. The phase arithmetic stays in f32 like retail, so the phase changes land on the same ticks.
+
+## Code reference: living_world/traffic/spawn.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/spawn.rs`; each comment there links its section here.
+
+### Car placement
+
+Placing a census car on the road (milestone V2): what the retail vehicle factory does with the census spawn point before a car exists.
+
+Retail [code] (TU3, addresses are evidence only; behaviour re-implemented, not copied):
+- the census vehicle pass `sub_826B9B90` hands the factory a spawn record whose position is the random ring point (no heading: the basis rows are the identity, `0x82139A10..`) and flag byte `+84` = 0 ("place on the road"); the census vtable `0x8230C638` slot +8 (`sub_826B83C8`) refuses when the live vehicle count is not below the vehicle limit (census `+148`, 15 from the constructor `sub_826B6D58`; the initial populate uses a literal 15);
+- the factory create `sub_82C36300` (vtable `0x8232260C` slot +20), road branch: 1. the road network (`0x830854C0`, vtable `0x8230C6A8` slot +60 = `sub_826B3B18`) finds the road surface under the point: a grid query of 10 m (`0x821963E4`) for lane pieces, then a point-in-triangle test on each piece's two road triangles (`sub_82E16410`); the first hit wins, no hit = no car; 2. the distance along the segment is the start of that piece (lane run start + the piece's cumulative length minus its length); 3. the point must be at least 15 m (`0x820BD16C`) from both ends of the segment; 4. every lane of the segment is tested with `sub_82E14928` (margin 15 m, extra 0 = `0x82165A10`): the next car ahead on that lane must start (its distance minus half its length, 0.5 = `0x8209975C`) at least `margin + extra` past the point, and the car behind must end (distance + its length + its speed x 1 s) at least `margin / 2` before it; 5. none fits = no car; else the factory takes a car from its pool, then one fitting lane by `trunc(u32 x 100 / 2^32) mod n` from the world RNG (`sub_82970628`, `0x822F94B0`), sets the mover onto (segment, lane, distance) (mover slot +44), and 6. queries the world for objects within 20 m (`0x820996EC`) and gives the car back when its extent overlaps one (the car's extents from vehicle `+36` slots +160 / +172). The car drives in its segment's direction (segments are directed, one per travel direction). Its length is the z of the model's size vector (vehicle `+36` slot +172 returns the z of `[+76]` slot +16) [code]; the engine takes it from the model record (`size_hint`, `vehicles.json`) [data, hypothesis that it is the same vector].
+
+## Code reference: living_world/vehicle_material.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/living_world/vehicle_material.rs`; each comment there links its section here.
+
+### Car materials
+
+Retail car materials: the `vehicle_chassis` and `vehicle_glass` programs of TU3 `shaders_final.big` (`vehicle_defaultPS`, `vehicle_glass_defaultPS`) as one Bevy material.
+
+Retail [code, shader microcode; constant tables read from the `.fpo` objects]:
+- Constants: `g_vLightDir` c9, `m_params` c14..c19 (rows 0..5), `i_params` c20, `i_colorize_red` c21, `i_colorize_blue` c22; samplers `i_diffuse` 3, `i_normal` 4, `i_environment` 5 (glass: no diffuse, `i_normal` 3, `i_environment` 4).
+- Chassis: `lin = diffuse^2`; a texel with `G^2 < 0.001225` takes `R^2 x i_colorize_red + B^2 x i_colorize_blue` (the ped shaders' rule, `skate_core::living_world::peds::colorize`). Light: `lin x (ambient + max(N.L, 0) x m_params[1].rgb x shadow) + (pow(sat(V.reflect(L)), m_params[2].w) x shadow x m_params[2].rgb + env^2) x (1 - sat(N.V))^m_params[1].w x diffuse.a^2`, ambient = the literal `(0.1, 0.175, 0.3)` x `m_params[5].w`, the shadow zero where `N.L < 0`; times `m_params[0].y` and the fog factor, plus the fog colour; the exposure / tone tail; output alpha `i_params.x`.
+- Glass: the same with albedo `m_params[4].rgb` and no diffuse alpha mask; output alpha `i_params.x x m_params[4].w`. Render state [code, `sub_82CF0B90`]: alpha blend (SRC_ALPHA / INV_SRC_ALPHA), depth test on, depth write off.
+- The rows come from the vault row named by each part's `AttribulatorMaterialName` (`character.livingworld_vehicles` / `character.livingworld_vehicles_glass` on every car) [data]; the converter writes them to `vehicles.json` `materials`.
+- `i_params.x` = min(distance fade, fade-in ramp) (`sub_827C1188`) [code, partly read]; the engine draws 1 (no fade yet, open).
+
+Engine: lit with the character lighting's light (`retail_character::Lighting`), Bevy's directional shadow and, like the character shader, without the vertex fog and the tone tail. The environment cube is bound when the export carries one (open: not converted yet).
+
+Moddability: the rows are data (`vehicles.json`) and a mod replaces them per material name (`VehicleOverrides::material_params`); the palette colours and their gain come from `VehicleOverrides` as before; a mod GLB names its row with material extras `{"attrib_material": "..."}`, else gets the row its `kind` used in retail.
+
+## Code reference: living_world/traffic/junction.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/junction.rs`; each comment there links its section here.
+
+### Junction entry
+
+Junction entry: may a car on its approach lane enter its chosen connector now?
+
+A port of retail's car junction query `sub_82E11E90` (callers: FollowingLane `sub_82C376E8` and `sub_82C3B500`) with its two conflict scans `sub_82E11C78` (merging into the same exit lane) and `sub_82E11980` (crossing flows), plus the lane leader lookup `sub_82E14EE0` [code]. The occupancy lists are retail's: each lane of a segment (`+104`, 16-byte list heads per lane) and each connector (`+8` of its 248-byte record) holds its cars newest first.
+
+Results ([`Entry`], retail return 0-4, stored by FollowingLane as the junction state `+4392` together with the stop distance):
+- 0 [`Entry::Go`];
+- 1 [`Entry::Signal`]: the approach's light is red or amber, or green without time to clear the line; a right turn (`to_end == from_end - 1`) ignores the light (turn on red);
+- 2 [`Entry::Approach`]: faster than the connector's entry speed and still beyond the car's look-ahead; at an unsignalled junction (with the light check on) the entry speed is 0.1 m/s (`0x820641A8`), so cars come to a stop first (a stop sign);
+- 3 [`Entry::Yield`]: another connector from the same lane is in use, or a conflicting flow holds the junction (merge into the same exit lane, crossing, oncoming for left turns); at an unsignalled junction cars still on their approach yield by distance to the line (closer first, equal distance: the lower id);
+- 4 [`Entry::Blocked`]: no room on the exit lane, the car ahead on the connector is closer than the minimum gap, or the approach / exit segment is missing. Validation [trace, proof1 + proof2 VEHJUNC, 89 changes]: straight on red / amber always 1, right turns never 1, unsignalled right turns 2, the light skipped when the flag is off.
+
+## Code reference: physics/skitch_state.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/physics/skitch_state.rs`; each comment there links its section here.
+
+### Skitching state 104
+
+PhysicsSkitching 104 (TU3 vtable `0x82327398`; doc 26h "Skitching step 4e"). Enter `82D47278` + reset `82D47318`, Exit `82B61BB8` (empty), Update `82D477C0`, publication `82D4C078`. The maths lives in `skate_core::riding::skitching` (frame, sub-mode, hold, shimmy, target, spring); `physics/skitch_state.rs` composes it in retail order (`.local/research/npc/b50-skitch-prestep-update.md` section 1, b51 sections 1-3). Always on in the game (`ground_runtime::skitch::latch_enabled`, set by `LivingWorldPlugin`). The grab point and the hands' grip points are the record's spline at an along position (`82D2D550`, research b148), the chord only while no geometry is published. NOT RETAIL YET: the sub-mode's hard event comes from the shimmy state.
+
+### Skitch board compose
+
+`82D4AC38` (b51 section 2, arguments b56): capture, spring (tag 6), slide friction (tag 1, heading time = the sub-mode time 948), tilt (no push / damped-turn history; 0 while the board is off the ground), speed wobble (skipped off the ground), anti-flip, truck targets, heading (when balance and spin are both set), manual (powersliding off), the manual and anti-flip displacements, the yaw correction (`82C07328`) while towing fast. Sub-mode 4: tilt, wobble and truck targets only.
+
+## Code reference: roads.rs
+
+Detail moved out of the code comments of `crates/skate-data/src/roads.rs`; each comment there links its section here.
+
+### Road graph
+
+The living-world road graph, `roads.bin` v2 (setup group `livingworld`, written by `tools/asset_pipeline/living_world_roads.py` `write_graph`; format notes in `docs/hails-additions/living-world/vehicles-data.md`). Bytes in, graph out; no file I/O.
+
+The graph is the retail road network (RW object `0x00EB0013`) of every district merged across its tiles: directed segments (retail 64-bit ids; `to_node` is the destination, `from_node` the origin), their lane geometry as ~4 m pieces (cubic Hermite centre line, road edges, arc-length tables), junctions (one per road node: inner / outer quads, 8 end records = the approaches and exits of node ends 0-3 with the connectors each lane may take) and the turn connectors (cubic Hermite curves from an approach lane to an exit lane). Unknown retail fields keep raw names (`flag_04`, `f32_50`, `word_56`). Every element keeps its retail id or index so a mod or a network peer can name it; [`RoadGraph::to_bytes`] writes the same format (synthetic tests, per-map roads of mods).
+
+### District traffic input
+
+The traffic input of one district only (its segments and junctions; a junction end whose segment belongs to another district becomes a map edge). The districts are separate worlds that overlap in x / z [data: University roads lie 16-18 m above the DownTown walk mesh, Industrial roads 47-59 m below it], so a world must only see its own roads; with the whole graph a car placed or routed onto another district's road floats in the air or drives under the ground. `None` when the graph has no district of that name.
+
+## Code reference: living_world/traffic/mod.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/mod.rs`; each comment there links its section here.
+
+### Traffic core
+
+Living-world traffic, milestone V1: the road graph, the lane cursor, the traffic signals and the junction entry query (doc `docs/hails-additions/26h-living-world-traffic.md`, design `docs/hails-additions/living-world/vehicles-design.md`).
+
+Pure and engine-independent like the population core: no I/O, no ECS, no rendering. The data layer turns the user's exported `roads.bin` into a [`RoadInput`] (`skate-data::roads::RoadGraph::traffic_input`); a mod can build one for its own map.
+
+Retail reference (TU3, addresses are evidence only; behaviour re-implemented, not copied):
+- road network object (global `0x830854C0`, vtable `0x8230C6A8`): `+8` vehicle by id, `+16` junction by node, `+24` lane run by id, `+32` segment by id, `+36` / `+40` signal controller by index (`sub_8269B2F0`: `this + 24 + 320 i`);
+- FollowingLane `sub_82C376E8`: connector choice, junction query, lane leader;
+- junction query `sub_82E11E90` (+ `sub_82E11C78`, `sub_82E11980`), leader `sub_82E14EE0`;
+- signals `sub_826B1540` (build), `sub_82E156D8` (phases), `sub_82E158D8` (tick), `sub_826B2C18` (manager), `sub_826B3C88` (green wave).
+
+Multiplayer seams (no networking): everything is a pure function of the roads, the signal clock's tick count and the cars' snapshots; ids are retail ids; iteration is sorted; the only randomness (the unused random connector branch) takes an explicit [`Rng`](super::rng::Rng). A client can rebuild the lights from the host's tick count ([`SignalClock::ticks`]).
+
+Moddability: durations are data ([`SignalTimings`] from the `trafficlights` record), the connector choice is a parameter ([`ConnectorChoice`] plus the load function), the lights can be held for a car ([`SignalClock::request_green`], retail's priority vehicle), and the graph is plain input records a mod can write ([`RoadInput`]).
+
+## Code reference: riding/skitching.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/riding/skitching.rs`; each comment there links its section here.
+
+### Skitch spring
+
+Skitching (physical state 104, held to a car's grab spline): the tow / ride-height spring
+(`sub_82D4B500`, board force tag 6). Retail (TU3, evidence only; re-implemented;
+`.local/research/npc/b27-skitch-state.md`, main checked the vault keys and the constants):
+a velocity-target spring along the hold axis `n` (state+784), not a position pin:
+```text
+cd    = clamp(n . state+624, 0.5, 1.0)
+pred  = state+848 + state+852 + dt * (2 * state+832 - p+2612)
+z     = body height (negated when p+2476 bit 2 is set)
+err   = pred - (p+2820 - z + offset)        offset: 0.1 (sub-mode 2: a second key, 0.1)
+v     = curve(err)                          vault PointGraph, -20 .. +4 m/s
+dv    = (v - damping * (-state+856)) / cd   damping 0.2
+F     = n * dv * mass / dt, length-clamped to 500
+```
+The state fields (+624, +832, +848, +852, +856) come from the skitch frame step `sub_82D48148`
+([`frame`]); this module keeps the spring formula with named inputs.
+
+### Skitch sub-mode writes
+
+`82D49AB8` before its hold step (`82D49D70`), after the shimmy chain (TU3 call order in the state update: `82D49580`, `82D48C98`, `82D49AB8`). Retail (evidence only; re-implemented; main read the switch on 1324):
+- 0: `904 = clamp(864, -928, 928)`;
+- 1: both hands grip again (`1328 = 1332 = 0`) every tick;
+- 2: the edge point `e = +-932` (sign of 836, + only for 836 > 0) latches into 900 once (1344 bit 0x02), a snapped hand (bit 0x01) takes it as 864; 960 counts while the car's along acceleration 868 pushes outward past 50 (both 868 and 836 non-zero, same sign), else 0; the hand on the outer side lets go (836 > 0: hand A off, B on; else A on, B off);
+- 3: the same latch with `e = +-(928 + 0.8)`, both hands off.
+
+## Code reference: living_world/traffic/graph.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/graph.rs`; each comment there links its section here.
+
+### Traffic road graph
+
+The road graph the traffic runs on: directed segments with ~4 m lane pieces, junctions with approach / exit ends and turn connectors (retail RW object `0x00EB0013`, decoded in milestone V0, `docs/hails-additions/living-world/vehicles-data.md`).
+
+Built from plain input records ([`RoadInput`]) that the data layer fills from the user's export (`skate-data::roads::RoadGraph::traffic_input`) or a mod fills from its own map; no I/O here. Every element keeps its retail identity ([`SegmentId`], [`JunctionId`], [`ConnectorId`], [`LaneId`]) and the network stores them sorted by that identity, so the dense indices are the same on every machine that loads the same roads (multiplayer and replay safe).
+
+Lane geometry [data, all 138 shipped connectors]: a piece's centre curve is the middle of the road; lane `k` of `n` sits at `(k + 0.5) / n` of the way from the left edge to the right edge (lanes 4 m apart: -2 / +2 m on the two-lane roads, 0 on one-lane roads), and every connector starts exactly on its approach lane at the last piece's end and ends exactly on its exit lane at the first piece's start. Lane 0 is the left lane: right turns leave from the right lane.
+
+## Code reference: living_world/traffic/cursor.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/cursor.rs`; each comment there links its section here.
+
+### Lane cursor
+
+The lane cursor: where a car is on the road graph (a lane of a segment or a turn connector) and how far along, advanced by distance across pieces, connectors and segments.
+
+Retail [code]: the mover interface (vehicle `+144`, vtable `0x82322240`) keeps the segment id (`+72`, `ld +3992`), the distance along it (`+68`, `+3496`), the lane (`+84`), the chosen connector index (`+76`, stored at vehicle `+4388`), the distance along the connector (`+60`, `+3492`) and whether the car is on a lane (1) or inside the junction (0) (`+52`). FollowingLane (`sub_82C376E8`) picks the next connector when it has none or the segment changed (mover `+76 < 0` or `+72` != the lane's segment) and stores it at `+4388` before it looks at the junction; the choice:
+- with vehicle flag `+4401` bit 0x02 (set by the constructor `sub_82C3B7C8`, 0xCE, on every car and never cleared): the connector of the lane's list whose exit lane has the smallest `load / exit segment length` (exit segment `+136`, one vec4 per lane, x used; strict `<` so the first wins a tie) [code];
+- without it (unused in retail): list entry `trunc(u32 x 100 / 2^32) mod n` from the world RNG (`sub_82970628`, `0x822F94B0` = 100 x 2^-32) [code]. What the per-lane load holds is a runtime value not read yet (open); the engine passes the number of cars on the exit lane by default, a mod or the V4 driver may pass another measure.
+
+## Code reference: graph_host/motion_skitching.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/graph_host/motion_skitching.rs`; each comment there links its section here.
+
+### Skitch graph nodes
+
+The skitch motion graph nodes (doc 26h "Skitching step 4h"). Retail (TU3, evidence only; re-implemented; `.local/research/npc/b60-skitch-graph-nodes.md`, b58 part 2; main read the `anim_skitching/default` record):
+- the behaviours bind `anim_skitching/default` (`8289D550`): +0 a PointNegGraphData8 (the absorb curve over the closing rate, ground+284), then six floats at +80..+100 in the schema's fixed layout (read with `.claude/skills/aems-port/tools/vault_layout.py 07D39B41AACEE50F`): +80 0.1, +84 0.25, +88 0.85, +92 0.05, +96 0.83 (`LongSkitchIntoReachTime`), +100 0.121;
+- SkitchingBehaviour (`82BBC390`) each update: "Crouch" = ground+280 + rec+100, "PushSpeed" = ground+308, "absorbspeed" toward graph(ground+284) by at most 0.04;
+- EnterSkitchingBehaviour (`82BBC538`): "Crouch" the same way (its "reachspeed" is not ported yet);
+- IsSkitchingWithAbsorb (`82BBBD00`): state 104 and graph(ground+284) > 0;
+- IsSkitchShimmying (`82BBC1A0`, attribute `direction` left 1 / right 2): anim+136 (negated by the flip) > 0.25 is 1, < -0.25 is 2.
+- EnterSkitchingBehaviour's "reachspeed" (b61): `rem = 1 - t / len` of the current tree, `X = rem > 0 ? ground+276 / rem : len`, `n = clamp01((X - rec+80) / (rec+96 - rec+80))`, rate-limited by 0.1 once started (the instance starts at -1), "reachspeed" = 1 - n;
+- SkitchShimmyingBehaviour (`82BBC858`): "ShimmySpeed" = `(clamp(|anim+136|, rec+84, rec+88) - rec+84) / (rec+88 - rec+84)`, 0 at the floor. SkitchingPosition's mirror term is (natural stance regular) == (riding switch) and the shimmy flip the mirrored animation bit (b61). NOT RETAIL YET: the shimmy channels SKCH_2H_SHIMMY_LEFT / RIGHT_CHANNEL are not started (their contents are not in the stock assets).
+
+## Code reference: living_world/traffic/horn.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/horn.rs`; each comment there links its section here.
+
+### Traffic horn
+
+The traffic horn (V4, doc 26h "Traffic: the horn"). Retail (TU3, evidence only; re-implemented; `.local/research/npc/b36-traffic-v4-driver.md` sections 2, 4, 5 and 8, `b41-v4-obstacles-corridor.md` section 3, `b44-horn-honker.md`; main re-read the honk receiver `sub_82E3C3D0`):
+- every driving-state update sets the limiter kind `+4392` (0 free, 1 behind a lead that waits itself, 2 stop point, 3 behind any other lead, 4 obstacle from the look-ahead, 5 junction wait); the nearest limit wins. The junction answer is stored in the same field (1 signal, 2 approach, 3 yield, 4 blocked, 5 flagged yield), so a car queued behind one waiting at a red light is "behind a waiting lead" and never gets the blocked horn;
+- blocked timer `+3704` (`sub_82C41120`): no lead or not inside the standoff behind it -> 0; inside it with kind 3 and slower than `honk_approach_speed_kmh` -> `+= dt`;
+- obstacle timer `+3708` (`sub_82C412D8`): no obstacle -> 0; kind 4, not inside a lead's standoff and slow -> `+= dt`; otherwise it holds;
+- the horn decider `sub_82C40660` writes the horn state `+3420` every frame, first match wins: horn disabled (driver bit 0x01) -> 0; kind 5 -> 3; blocked > `honk_blocked_time` -> 4 (driver bit 0x02) or 5; an obstacle with record flag 0 (skater / ped): obstacle timer > `honk_obstacle_time` -> 2 and the honked-at notify to the record's handle, else under 2 s to it (`2 v > d`) and faster than `honk_approach_speed_kmh` -> 1;
+- driver bits (`sub_82C42348`): each a percent roll `rand() % 100 + 1 <= chance x 100` on a driver field. The horn sounds for as long as the decider returns a kind (no hold time in the AI); the sound per kind is the horn AEMS program's (`SFXObj_TrafficHorn`). The parked car alarm (state 6) is the car alarm's, not this.
+
+## Code reference: riding/skitching/frame.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/riding/skitching/frame.rs`; each comment there links its section here.
+
+### Skitch frame step
+
+The skitch frame step (`sub_82D48148`, state 104). Retail (TU3, evidence only; re-implemented; `.local/research/npc/b32-skitch-frame.md` section 1, `b47-skitch-frame-transforms.md` section 1; main checked the constants in b32 and the query side of b47):
+- re-orient: when the board points against the spline direction the endpoints swap and the direction flips;
+- frame history 64 <- 128 <- 192 <- new (row0 spline direction, row1 up, row2 `normalize(d x n)`, row3 the endpoints' midpoint; all three = new on the first frame after a reset);
+- the skater's along-axis coordinate `836` in the previous frame (128) and its rate `840`; the axis point `A = prev.row3 + 836 prev.row0` (b47 corrects b32: the previous frame directly);
+- the grab point (`82D2D550`, current world pose) mapped by `320 = inv(current) * previous` into the previous pose, `672 = g' - A` (zero outside the half range `928`);
+- the car velocity at the grab location `752` (finite difference of frames 128 and 64), the horizontal direction and distance to the axis point (`656`, `852`, rate `856`), the signed sideways offset `848` / `688`, the tow speed `832`, the side target (`624`, `860`, origin pushed 0.5 m along row2) and the "tows fast" gate (state+1345 bit 0x40, `832 >= 1F85F500908C5E17`). Frames are rigid, row-vector style: `p = row3 + x row0 + y row1 + z row2`. The relative transforms 256 / 448 (car motion over the last frame) are kept for the hand targets (`82D4A378`, not ported); 384 is identity in retail and left out.
+
+## Code reference: living_world/traffic/skater_scan.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/skater_scan.rs`; each comment there links its section here.
+
+### Traffic skater scan
+
+A traffic car slowing for a skater coming up BEHIND it, so they can catch it (and skitch). Retail (TU3, evidence only; re-implemented; `.local/research/npc/b63-traffic-skater-scan.md`, main checked the scan's constants, the quad B builder and the planner's vault hashes):
+- the per-car tick (`sub_82C3D918`) runs the skater scan `sub_82C414A8` after the look-ahead: nothing while a skater holds the car (`+4402` bit 0x02); else every actor of the skater list (index order) that is not skitching (state 104), whose distance `|p - car| - 0.5 x size` is under the range (`Hash_33466832D8178EAF`, 40 m) and that lies in the rear zone (quad B, `+3520`) writes the distance (`+3760`) and its speed (`+3756`); one facing the car's way also sets `+4403` bit 0x10 (and bit 0x08 from a skater byte). Last match wins; 0x10 is never cleared inside the loop;
+- the speed planner `sub_82C3FA08`, only while the limiter kind is free: with 0x10 set and both speeds above `Hash_D20826F15FB15A2E` (20 km/h) the acceleration cap becomes 0, and the car brakes toward the skater's speed minus `Hash_256A412E350A2659` (20 km/h): `(max(vs - m, 0)^2 - v^2) / (2 D + 0.001)`, D = `Hash_3AB7FC7CF7A17C81` (20 m) when the release grace is over and the skater is in range (FAR), D = `Hash_F682D359CDBC4D12` (5 m) when bit 0x08 is set and the skater is within `Hash_D49FC49019181EE5` (20 m) (NEAR, overwrites FAR, not gated by the grace);
+- the release edge `sub_82C34B30`, once per traffic step after every car: a car let go this step gets the grace `Hash_4727CF785EF735C8` (2.5 s), otherwise the grace drops by the step and sits at -1 once negative.
+
+## Code reference: living_world/traffic/manoeuvre.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/manoeuvre.rs`; each comment there links its section here.
+
+### Traffic manoeuvres
+
+The traffic manoeuvre decider (retail TU3, evidence only; re-implemented; `.local/research/npc/b69-traffic-manoeuvres.md` with the b71 to b74 extensions; main checked the overtake hash before the first roll, the driver block at `[car+4116]` (schema offsets) and the bit roller):
+- `sub_82C3D830` first: a pending pull-over is cancelled while a skater holds the car (unless the car has the "pulls over while held" trait), outside junction state 2: the spot is released, the timer reset;
+- `sub_82C41CD0`, only while no manoeuvre is pending: (1) the overtake roll (`Hash_9366C67755A24D89`, 0 in every stock record, one draw every call); (2) the lane timer (`+3632`, + dt per tick) past the spec's period (`[spec+48]` = `Hash_90AB56A5DDCF2A3A`, 10 s, sports 5, truck 8) resets and rolls "go" (driver +28 `Hash_52CF2CF3...`: 0.1, taxi 0.4, others 0) and "least loaded" (driver +24 `Hash_7C6B48BD...`); on a road that allows lane changes the adjacent lane (random, one draw, or the least loaded) must pass the gap check (`82E14928`); (3) when the timer fired and no lane change started: the pull-over roll (`Hash_559BA807...`, 0.02, taxi 0.04; 0 while held without the trait) on a road that allows it, on the outer lane, with a spot at least the approach length ahead (`82E14CF8`), which is reserved.
+
+The roll is retail's percent test (`8269A588`: `r % 100 + 1 <= chance x 100`, [`super::horn::percent_roll`]). Multiplayer: [`DeciderState`] is plain per-car data; the host rolls with its seeded RNG.
+
+## Code reference: physics/ground_runtime/skitch.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/physics/ground_runtime/skitch.rs`; each comment there links its section here.
+
+### Skitch query
+
+The riding skater's skitch query (`sub_82D39BB8` / `sub_82D39D98`, doc 26h "Skitching step 3"; `.local/research/npc/b33-skitch-wiring.md` section 2, main read the call site, the box flag and the limits):
+- the ground update runs it instead of `82D749D0` (the grab owner's invalidate) while Processed `+2476` bit 22 is set (`82D37C88` branches between the two);
+- the box: `82D2E250(frame +192, offset, extents, out, true)` ([`skitch_bounds`]);
+- when the owner's validated results are ready (`+12836` bit 0x40) the latch walks them: endpoints oriented by the box's right axis, CanGrabSpline (`82E08DB8`), the re-grab cooldown, the time to the spline `max(0, (dot(P - pos, fwd) - reach) / max(dot(vSkater - vCar, fwd), 0.5))`, a bind (`82585DD8` + vcall +44) per candidate, and a latch on the first one under `latch_time` (state +2729 / +2560 / +2564);
+- always: submit the mode-255 query (`82D74200`: margin 0.25, angles 60 / 30 degrees, cap 5), which reaches the cars' provider (`+4088`). NOT RETAIL YET: a type-2 candidate (world object) is not latched (its box `82D2CF68` is not decoded); `P` is the closest point of the spline's endpoint chord (retail's point choice is not decoded); `+2668` (`skitch_spline_height`) stays 0 and `82D91298(state+28, 2)` is not called.
+
+## Code reference: riding/skitching/shimmy.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/riding/skitching/shimmy.rs`; each comment there links its section here.
+
+### Skitch shimmy
+
+The along-the-bumper offset chain (`sub_82D48C98`): where on the grab edge the skater holds and how the hand shimmies. Retail (TU3, evidence only; re-implemented; `.local/research/npc/b30-skitch-pull-release.md` section 4, `b31-skitch-submode-hold.md` section 2):
+- the car's along acceleration is low-passed (`868 = 0.9 * 868 + 0.1 a`), a hard event (`1000`) is its sign past 40, and the excess over a dead-band curve (`880`) pushes the hand;
+- the stick pushes the hand at 10 (`876`); with neither a velocity servo damps it to rest (`884`);
+- the velocity `892` integrates the total (`888`), capped at 1 (or the stick gain while an event opposes the stick) and unbounded in the event's direction; the hand target `864` moves by it, clamped to the edge range (+-932), and snaps onto the latched edge point 900 when it crosses it. The acceleration `a` is the caller's (its derivation from the frame history is open after b47's frame layout).
+
+## Code reference: riding/skitching/hold.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/riding/skitching/hold.rs`; each comment there links its section here.
+
+### Skitch hold step
+
+The skitch hold step and release (`sub_82D49D70`, the release bits of `82D49580`, the tail `82D4AFB8`, reset `82D47318`). Retail (TU3, evidence only; re-implemented; `.local/research/npc/b53-skitch-hold-step.md`, b51 section 2, b52 section 3; main checked the 1344 masks in `82D49580`):
+- the hand's along target 904 ratchets with the stick while 1344 bit 0x08 is set (`max` / `min` with the clamped position for a stick past +-0.5, else follows it); the bit clears once the skater rests near the posed hand (|rate 840| < 0.02, |836 - 908| < 0.1) and sets again when the hand is 0.2 m off or after 2 s;
+- the posed hand 908 chases 904: `912 = clamp(0.25 (904 - 908), 912 +- 0.03)`, `908 += 912` (per 1/60 tick);
+- release bits (1344): sub-mode 0 clears 0x60, 1 sets 0x40 (pull in), 2 / 3 set 0x20 (push off); the 2 -> 4 switch clears both, 3 -> 4 keeps 0x20; 0x08 is set on every switch but 3 -> 4;
+- the tail: without the grab input (2476 bit 22) the sub-mode becomes 4; in sub-modes 1 / 2 with both hands off (1328 = 1332 = 1) and the hold timer 1020 run out it becomes 4 and sets 0x10; in 4, 1320 counts frames, the first one queues the release impulse (0x40 pull in, else 0x20 push off), past 3 frames 0x10 is set (the state ends), and the re-grab block 1016 is refilled to 0.5 s when empty. The step sizes 0.25 / 0.03 are per 1/60 tick (console cadence).
+
+## Code reference: riding/skitching/target.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/riding/skitching/target.rs`; each comment there links its section here.
+
+### Skitch target and impulses
+
+The skitch hold target (`sub_82D4B8C0` / `82D4BAC0` / `82D4BC58` / `82D4BCF8`) and the release impulses (`82D4B1D0` / `82D4B378`). Retail (TU3, evidence only; re-implemented; `.local/research/npc/b52-skitch-target-impulses.md` sections 1-2; main checked the impulse vault keys):
+- the hold target point `736 = 576 + 864 * 528.row0` (the side-shifted previous frame at the hand's along coordinate 864); `784` = the horizontal unit direction skater -> 736; `952` = the yaw from the direction to the current grab point (836) to 784;
+- `at` = yaw from the skater's facing to 784, `as` = yaw from the facing to the side direction 624; `940 = tows fast ? wrap(at - as) : -as`;
+- the yaw correction `V = up' * sin(clamp(at, +-180 deg/s * dt)) * max(g1(992), g3 * g2(832))` (`up'` = up flipped to y >= 0), applied by `82C07328` only while towing fast and not releasing;
+- release impulses (tag 6, one frame): pull in `624 * min(max(-832, 856 - 2.0), 0) * m / dt` or push off `624 * (856 + 2.5) * m / dt`. The signed angle `8286CD88` is read as the angle a -> b about the axis (internals not decoded [inferred]).
+
+## Code reference: living_world/traffic/passage.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/passage.rs`; each comment there links its section here.
+
+### Lane change passage
+
+A traffic car's lane-change passage (retail TU3, evidence only; re-implemented; `.local/research/npc/b69-traffic-manoeuvres.md` "b71 / b72 extensions"; main checked the progress step 82C3C3C0 and the road-network values 1.3 / 10 in the exported tables):
+- enter `sub_82C3A9E0`: from distance d0 on the source lane to d1 = d0 + ext x the spec's passage factor (`Hash_328B9F4685A14018`, `+3692`) + speed (one second of travel) on the target lane;
+- `sub_82C3F540`: a cubic Hermite curve between the two lane points (`82E14860`), tangents = the lane direction x (d1 - d0) x the road network's tangent scale (`Hash_D2C11CC10C9E0E49`, 1.3);
+- `sub_82E10C88`: an arc-length table of `Hash_E35079BDD5BAE286` (10) chords; its total is the passage length;
+- every tick (`sub_82C3C3C0`): progress += speed x (+1, -1 reversing) x 1/60; the distance along the road is lerp(d0, d1, progress / length); the car sits on the curve at the arc-length parameter, facing its tangent (`sub_82C3F0C8`); done when progress >= length (`sub_82C3A5A8`), the car's lane becomes the target.
+
+Multiplayer: the host owns (lanes, d0, d1, progress); the curve and table rebuild from them and the road.
+
+## Code reference: living_world/traffic/obstacles.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/obstacles.rs`; each comment there links its section here.
+
+### Traffic obstacles ahead
+
+What a traffic car sees ahead (V4, doc 26h "Traffic: obstacles ahead"). Retail (TU3, evidence only; re-implemented; `.local/research/npc/b36-traffic-v4-driver.md`, `b41-v4-obstacles-corridor.md`, main checked the characteristics / driver values and the 0.68 s constant):
+- the traffic manager refills two obstacle lists every frame (`sub_826B2EE0`): skaters (radius 0, "soft") and world actors (peds radius 0.5 x their size, soft; cars radius 0.5 x their smallest extent, hard);
+- each car builds a look-ahead quad (`sub_82C400A8`): from the car centre (half width x (1 + `E88C`, 0.0)) to the front bumper, widened on the turning side by half width x (1 + `02A6` (2.0) x speed ratio), then both front corners pushed `speed + standoff` further along their side edges;
+- a record is in the way when its circle touches the quad's side / front edges or its centre is inside (`sub_82C41BD0`, `sub_82C41A90`); its free distance is `|pos - car| - radius - 0.68 x speed` (`0x82099764`); below 20 km/h soft records count only for drivers that opt in (`+4401` bit 0x08, every stock driver does);
+- the nearest one becomes the planner's obstacle (`sub_82C412D8`): braking `-v^2 / (2 (d - standoff) + 0.001)` when `standoff < d <= v + standoff`, `-v` inside the standoff (`sub_82C3FA08`).
+
+## Code reference: living_world/traffic/spots.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/spots.rs`; each comment there links its section here.
+
+### Stop spots
+
+Road-side stop spots for pulling over and the lane-change gap check (retail TU3, evidence only; re-implemented; `.local/research/npc/b69-traffic-manoeuvres.md` "b71 extension", main checked the passage step 82C3C3C0):
+- `sub_82E151D0` / `sub_82E15368` keep one (car, stop distance) pair per pulling-over car on a road, sorted by stop distance, far end first; only other cars' spot searches read them;
+- `sub_82E14CF8` searches a spot up to 0.75 x the road length: the middle of the road when nothing is reserved, else the middle of the first gap (walking from the far end) longer than the car plus 5 m and beyond d + 1.5 x the car's length + speed; the gap behind the last reservation is never tried;
+- `sub_82E14928` checks a lane-change gap: not near either road end, and one second of travel plus the lengths clear of the cars ahead and behind on the target lane.
+
+Multiplayer: [`Reservations`] is plain per-road data the host owns.
+
+## Code reference: riding/skitching/hands.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/riding/skitching/hands.rs`; each comment there links its section here.
+
+### Skitch hands
+
+The skitch hands (`sub_82D4A378`): where each hand grips the grab edge, when a hand lets go, and the hand IK weights. Retail (TU3, evidence only; re-implemented; `.local/research/npc/b59-skitch-hand-targets.md`; main checked the IK write path against ours):
+- sub-mode 0 clears the hand-off flags (1328 / 1332); a lean yaw (940) outside -60..35 / -35..60 degrees sets them;
+- 988 follows the world grab height: `clamp(988 + 0.1 ((c M).y - S(908).y), 0, 0.8)`, `c = (0, grab y, grab z)`;
+- each hand's spline parameter is the posed hand (908) plus its part's skeleton-local x minus the anchor's x, clamped to the range (x / z mirrored by Processed 2476 bit 2); a shoulder part farther than 0.9 + 0.7 m (through the skeleton and the car's last-frame motion) from its spline point lets that hand go;
+- on a flag change the hand's weight target becomes 0 (off) or 1 (on); the weight moves toward it by +0.03 / -0.2;
+- a hand with weight > 0 gets an IK target: the spline point plus the car's velocity over one tick, clamped to 0.9 m from the shoulder; the bitmask 984 says which hands are on.
+
+## Code reference: riding/skitching/lean.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/riding/skitching/lean.rs`; each comment there links its section here.
+
+### Skitch lean
+
+The skitch lean (`sub_82D4A0C0`): the skater leans toward the hold target. Retail (TU3, evidence only; re-implemented; `.local/research/npc/b58-skitch-lean-outputs.md` part 1, b51 section 2):
+- `T = sign(940) * graph(|940| in degrees) in radians`, 0 while Processed 2488 bit 0x00800000 is set;
+- `944 += clamp((T - 944) * 0.25, -2 deg, +2 deg)` per update;
+- above 2 degrees the board offset's orientation becomes a rotation of 944 about Y for 15 updates (Skeleton+15696, +16389 = 1, +16392 = 15; the height channel is not touched).
+
+## Code reference: living_world/traffic/tests.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/tests.rs`; each comment there links its section here.
+
+### Traced signal phase gaps
+
+proof1.tsv TRAFLIGHT2, controller 0: the first line (one tick in, 0.483 left) then 29 ticks to phase 1, 480 to phase 2, 30 to the green, 252 to the walk amber, 168 to the car amber, 60 to phase 0, 30 to phase 1, 480 ... [trace]. Controller 1 (f32 carries make its walk light lead the car light by one tick): 30 to the green, 253 to the walk amber, 167 to the car amber, 1 to the walk red, 59 to the all-red, 1, 29 to the red, 1, 479 [trace].

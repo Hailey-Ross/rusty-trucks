@@ -1,17 +1,5 @@
-//! The riding skater's skitch query (`sub_82D39BB8` / `sub_82D39D98`, doc 26h "Skitching step 3";
-//! `.local/research/npc/b33-skitch-wiring.md` section 2, main read the call site, the box flag and the limits):
-//! - the ground update runs it instead of `82D749D0` (the grab owner's invalidate) while Processed `+2476`
-//!   bit 22 is set (`82D37C88` branches between the two);
-//! - the box: `82D2E250(frame +192, offset, extents, out, true)` ([`skitch_bounds`]);
-//! - when the owner's validated results are ready (`+12836` bit 0x40) the latch walks them: endpoints oriented
-//!   by the box's right axis, CanGrabSpline (`82E08DB8`), the re-grab cooldown, the time to the spline
-//!   `max(0, (dot(P - pos, fwd) - reach) / max(dot(vSkater - vCar, fwd), 0.5))`, a bind (`82585DD8` + vcall
-//!   +44) per candidate, and a latch on the first one under `latch_time` (state +2729 / +2560 / +2564);
-//! - always: submit the mode-255 query (`82D74200`: margin 0.25, angles 60 / 30 degrees, cap 5), which reaches
-//!   the cars' provider (`+4088`).
-//! NOT RETAIL YET: a type-2 candidate (world object) is not latched (its box `82D2CF68` is not decoded); `P` is
-//! the closest point of the spline's endpoint chord (retail's point choice is not decoded); `+2668`
-//! (`skitch_spline_height`) stays 0 and `82D91298(state+28, 2)` is not called.
+//! The riding skater's skitch query (82D39BB8 / 82D39D98, b33).
+//! Box, latch, query and gaps: docs/hails-additions/26h-living-world-traffic.md#skitch-query
 use super::super::biped_ground::grab_runtime::Owner;
 use skate_core::player::input_phase::ProcessedPhysicsInput;
 use skate_core::player::offboard::grab_scene::{qualify, Descriptor, Query, Record};

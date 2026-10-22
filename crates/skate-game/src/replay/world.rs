@@ -1,7 +1,5 @@
-//! Every drawn actor in the replay: NPC skaters, peds, traffic cars and props are recorded as drawn (root and joint
-//! local transforms, after their presenters) and played back from the recording instead of freezing, as retail's
-//! DataTracker records the census actors and skaters every frame (b364, `sub_827BF090`). Mods reach it through the
-//! components: any entity with a [`ReplayActor`] (and optionally [`ReplayJoints`]) is recorded.
+//! Every drawn actor in the replay is recorded as drawn and played back (b364, 827BF090); mods via [`ReplayActor`].
+//! Details: docs/hails-additions/37-instant-replay.md#replay-world-actors
 use super::Replay;
 use bevy::prelude::*;
 use skate_core::replay_buffer::{ActorPose, JointPose};
@@ -112,11 +110,7 @@ pub(crate) fn retire(commands: &mut Commands, entity: Entity) {
     });
 }
 
-/// A jointless model actor (a ped's hand prop) leaving its recorded life: dropped from the hand, put away or culled.
-/// A hidden copy of its model stays where it was (same parent, so a held prop's hand-space keys stay right) under the
-/// replay id it was recorded with, and the original stops being that actor, so its track ends here; a dropped prop
-/// then starts a new prop track in world space (research b453: retail records the prop as its own actor for its
-/// whole life). Call before the original is detached or despawned. Nothing happens for an unrecorded entity.
+/// A jointless model actor leaving its recorded life keeps a hidden copy; a dropped prop starts a new track (b453).
 pub(crate) fn keep_model(commands: &mut Commands, entity: Entity) {
     commands.queue(move |world: &mut World| {
         let Ok(e) = world.get_entity(entity) else { return };
@@ -214,10 +208,7 @@ pub(super) fn record(
         replay.world.end(id);
     }
     for (entity, actor, root, list, visibility) in &actors {
-        // A jointless actor (a prop) whose root and visibility did not change keeps its last key. One without a track
-        // yet always records: its `Added` tick falls on a render frame without a new replay frame most of the time,
-        // and such a prop then had no key until it next moved, so it was hidden in the replay (laptop session
-        // 2026-10-20: a bench and the ped on it appeared only once they were touched again).
+        // A jointless actor with no change keeps its last key; one without a track yet always records.
         let changed = actor.is_added() || root.is_changed() || visibility.as_ref().is_some_and(|v| v.is_changed())
             || !replay.world.contains(actor.id);
         if list.is_none() && !changed {

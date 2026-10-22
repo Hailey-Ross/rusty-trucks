@@ -60,33 +60,17 @@ pub(crate) const TRANSPARENT_ENVIRONMENT_FAMILY: u32 = 16;
 /// `sub_82CEC170`): GREATEREQUAL 16, tested against the output alpha.
 const TRANSPARENT_ALPHA_REF: f32 = 16. / 255.;
 
-/// Shader family of the retail `advertisement.default` materials
-/// (`advertisement_defaultPS`): billboards. Diffuse^2 times the boxed, shadowed
-/// lightmap (slots 19..31), raised to a global light floor (slot 32), times
-/// `m_params` (slot 34); no `kd`, no normal or specular map, plain opaque state,
-/// and the reduced output curve of `environmentdiffuse` (slots 36..41).
+/// Family 17: retail `advertisement_defaultPS` billboards: docs/hails-additions/35-world-shading-parity.md#advertisement-family-17
 pub(crate) const ADVERTISEMENT_FAMILY: u32 = 17;
 
-/// Shader family of the retail `incandescent.transparent` materials
-/// (`transparentincandescent_defaultPS`): lit signs. Diffuse^2 times `m_params`
-/// (slots 3..4), fog, the full output curve, output alpha = diffuse alpha (slot
-/// 14); no lightmap or shadow. Drawn with blend state 24: blended, depth write
-/// on, all four channels written, no alpha test (technique setter `sub_82CED6D8`).
+/// Family 18: retail `transparentincandescent_defaultPS` lit signs (blend state 24, 82CED6D8): docs/hails-additions/35-world-shading-parity.md#incandescent-transparent-family-18
 pub(crate) const INCANDESCENT_TRANSPARENT_FAMILY: u32 = 18;
 
-/// Shader families of the retail `trafficlight.one` / `trafficlight.two`
-/// materials (DownTown). Byte-identical pixel programs: unsquared diffuse times
-/// `m_params` (slot 3), fog, the full output curve; the vertex programs pick
-/// each lamp's UV set from `g_TrafficLightsStatus_1` / `_2`. Opaque blend state
-/// 26 (RGB writes), depth state 2, rasterizer state 0 (no culling).
+/// Families 19 / 20: retail `trafficlight.one` / `.two` (lamp UV sets from `g_TrafficLightsStatus_*`): docs/hails-additions/35-world-shading-parity.md#traffic-light-families
 pub(crate) const TRAFFIC_LIGHT_ONE_FAMILY: u32 = 19;
 pub(crate) const TRAFFIC_LIGHT_TWO_FAMILY: u32 = 20;
 
-/// Shader family of the retail `animated.flag` material (DownTown memorial
-/// flag): `vertexanimate_defaultPS` (lightmap^2 * diffuse^2 * g_ViewDotLight.x,
-/// fog, full curve, alpha = diffuse alpha) with the cloth sway of
-/// `vertexanimate_defaultVS` (`m_params` c8..c10 in `water[0..2]`, weights in the
-/// decal UV set). Blend state 1 (alpha test, ref 30), rasterizer 0 (two-sided).
+/// Family 21: retail `animated.flag` (`vertexanimate_defaultPS` / `_defaultVS` cloth sway): docs/hails-additions/35-world-shading-parity.md#animated-flag-family-21
 pub(crate) const ANIMATED_FLAG_FAMILY: u32 = 21;
 
 /// Shared per-frame state: shadow floor, animation clock and authored ocean PCA.
@@ -184,22 +168,10 @@ fn pack_slot(class: usize, layer: usize, clamp: bool) -> u32 {
     (u32::from(clamp) << 31) | ((class as u32) << 16) | layer as u32
 }
 
-/// Retail dynamic-shadow floor on the baked world, RGB. Every retail world
-/// receiver shader (`defaultenvironment_defaultPS`, `environmentdiffuse_defaultPS`,
-/// `baseterrain_defaultPS`, the decal / reflective / transparent variants and
-/// `water_defaultPS` / `flowingwater_defaultPS` in `shaders_final.big`) computes
-/// `min(lightmap^2, csm_visibility + (0.05, 0.09, 0.13))`: the same constant for
-/// every caster and receiver, with no per-caster height or depth window. A
-/// shadow that lands in baked shade darker than this floor therefore leaves no
-/// mark, which is what keeps a car on a bridge from printing its shadow onto the
-/// shaded ground below (the city geometry itself casts nothing into this map).
+/// Retail dynamic-shadow floor on the baked world: `min(lightmap^2, csm + (0.05, 0.09, 0.13))`: docs/hails-additions/35-world-shading-parity.md#world-shadow-floor
 pub(crate) const RETAIL_WORLD_SHADOW_FLOOR: Vec3 = Vec3::new(0.05, 0.09, 0.13);
 
-/// Shader family of the props' retail `dynamicobject.default` /
-/// `dynamicobject.alphatest` materials (`dynamicobject_defaultPS` in
-/// `shaders_final.big`): no lightmap, lit by the sun direction with the dynamic
-/// shadow and the material's `m_params` rows (ambient, multiplier), see the
-/// `fam==15u` branch of `retail_world.wgsl` and doc 27 "D9".
+/// Family 15: the props' retail `dynamicobject_defaultPS` (no lightmap, sun + dynamic shadow), doc 27 "D9".
 pub(crate) const DYNAMIC_OBJECT_FAMILY: u32 = 15;
 
 /// Engine-side setting for the world shadow floor: retail by default, patched by
@@ -225,10 +197,7 @@ fn log_world_shadow_floor(settings: Res<WorldShadowSettings>) {
 /// Retail world decal strength: the decal programs blend at the decal texture's own alpha.
 pub(crate) const RETAIL_DECAL_OPACITY: f32 = 1.0;
 
-/// Engine-side strength of every world decal over its base surface: retail by default, patched by
-/// mods through `sdk.world.set_tuning('decals', {opacity = 0..1})` and rebuilt from the default when
-/// the mod stops (`modding::world_tuning`). Published every frame as `frame_state.clock.w`, so a
-/// change applies at once without rebuilding the map's materials.
+/// Strength of every world decal (retail default; mods: `set_tuning('decals')`), as `frame_state.clock.w`.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DecalSettings {
     pub opacity: f32,
@@ -273,15 +242,9 @@ pub(crate) struct FrameStateData {
     pub fountain_body: Vec4,
     /// Water look fountain basins (not retail): x wave tilt gain.
     pub fountain_ripple: Vec4,
-    /// Retail world constant `g_ViewDotLight`, shared by every draw (bound by
-    /// name hash 0xE552F1C3 in `sub_826DD6B8` to `*(0x83083C60)+0x44370`),
-    /// written each frame by `advance_view_dot_light` from `ViewDotLightParams`.
-    /// .x scales and .y floors the tree lightmap, .z is the billboard floor.
+    /// Retail `g_ViewDotLight` (hash 0xE552F1C3, 826DD6B8): .x scales, .y floors tree lightmap, .z billboard floor.
     pub view_dot_light: Vec4,
-    /// Retail `g_TrafficLightsStatus_1` / `_2`: one component per lamp slot of
-    /// the `trafficlight.one` / `.two` meshes; above 1 a lamp shows its "on"
-    /// texels. Who drives them in retail (the light cycle) is not ported yet,
-    /// so every lamp stays off until something writes these rows.
+    /// Retail `g_TrafficLightsStatus_1` / `_2`: one component per lamp slot; above 1 the lamp is on.
     pub traffic_lights: [Vec4; 2],
 }
 
@@ -308,13 +271,7 @@ impl Default for FrameStateData {
 /// perpendicular to the light (see `ViewDotLightParams`).
 const RETAIL_VIEW_DOT_LIGHT: Vec4 = Vec4::new(0.5, 0.02, 0.4, 0.);
 
-/// Inputs of `g_ViewDotLight`, from the VLT `rendering` row `default` (the same in
-/// every district): `sub_828012D0` stores
-/// `(bias + scale * dot(camera forward, light), tree_floor, light_floor, 0)`
-/// (`stvx` at view + 0x44370; the four values looked up by hash). Checked in the
-/// recomp on 2026-10-09: the logged .x matches the camera's view direction with
-/// this formula. Loaded from `render-parameters.json` (`rendering.default`), so a
-/// mod can change them; the retail values are the fallback.
+/// Inputs of `g_ViewDotLight` from VLT `rendering.default` (828012D0), mod-changeable: docs/hails-additions/35-world-shading-parity.md#viewdotlight-inputs
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ViewDotLightParams {
     pub light: Vec3,
@@ -581,10 +538,7 @@ impl WorldMaterial {
     }
 }
 
-/// The per-draw inputs of the environmentpark programs (research b442 / b443): the piece's tint (`i_tint_colour`,
-/// multiplies the squared diffuse; the layout record, white by default, b439) and its world's g_DynamicShadowColour /
-/// g_ExponentialShadowColour (a park world's row; (0.2, 0.2, 0.2) elsewhere, the retail code constant). Unused by
-/// every other program.
+/// Per-draw inputs of the environmentpark programs (b439, b442 / b443): tint and shadow colours.
 #[derive(bevy::render::render_resource::ShaderType, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ParkDraw {
     pub tint: Vec4,
@@ -1314,11 +1268,7 @@ struct Channel {
 /// `render-parameters.json` predates the advertisement export.
 const ADVERTISEMENT_M_PARAMS_Y: f32 = 0.35;
 
-/// `m_params.y`, the lit-colour multiplier the world shader reads as
-/// `surface.w`. The environment classes carry 1.0 in retail
-/// (`.local/research/world-m-params.md`); billboards (0.35), lit signs and the
-/// incandescent family 12 (videoscreens 0.25) take theirs from the setup data
-/// (`render-parameters.json`), so a mod can change it.
+/// `m_params.y`, the lit-colour multiplier (`surface.w`): 1.0 for environment, others from setup data.
 fn material_multiplier(family: u32, tuning: &MaterialTuning, shader: &str) -> f32 {
     let fallback = match family {
         ADVERTISEMENT_FAMILY => ADVERTISEMENT_M_PARAMS_Y,
@@ -1512,11 +1462,7 @@ impl Request {
     }
 }
 
-/// Better Water fountains (water_look.rs `fountain_water`, not retail): every family 30 material whose
-/// detail, macro and decal slots are empty gets the map's largest family 33 body (the donor) bound there:
-/// its normal in macro, its `normal2` in detail, its diffuse in decal, all repeating, and its `water` rows
-/// in `fountain`. Bound at load whatever the look, so the toggle stays a run-time switch; the presence
-/// flags in `mode.y` stay as authored, so the retail program never reads these slots.
+/// Better Water fountains (not retail): bind the largest family 33 body's maps to family 30: docs/hails-additions/35-world-shading-parity.md#fountain-donor-binding
 fn bind_fountain_donor(requests: &mut [Option<Request>]) {
     let donor = requests
         .iter()
@@ -1902,10 +1848,7 @@ fn advance_frame_state(
     state.fountain_ripple = look.fountain_ripple_row().into();
 }
 
-/// The PCA frame at `rate` x the retail 30 Hz, blended linearly between
-/// neighbouring frames (PCA weights combine linearly) so a slower rate does
-/// not stutter. The last frame blends into the first, as the animation loops.
-/// Water look layer (`wave_rate`), not retail.
+/// PCA frame at `rate` x retail 30 Hz, blended between frames (water look `wave_rate`, not retail).
 fn slow_pca(pca: &OceanPca, elapsed: f64, rate: f64) -> [Vec4; 7] {
     let position = (elapsed * f64::from(pca.hz) * rate).rem_euclid(pca.frames.len() as f64);
     let index = position as usize % pca.frames.len();
@@ -1916,13 +1859,7 @@ fn slow_pca(pca: &OceanPca, elapsed: f64, rate: f64) -> [Vec4; 7] {
     })
 }
 
-/// Water scroll time: retail's `g_fAnimationTime`, which sub_82791628
-/// accumulates without a reset at 1.0 per second (recomp watch, doc 09), times
-/// the look's `scroll_rate`. Loops over a period at which every authored
-/// scroll speed (all multiples of 0.001) completes whole texture repeats, so
-/// the loop is invisible, while keeping t small enough for f32 shader
-/// precision. `seamless_clock = false` publishes 0x82790858's restarting
-/// value instead (a jump every 10 s; never shown by retail).
+/// Water scroll time: retail `g_fAnimationTime` (82791628) x `scroll_rate`, looped seamlessly: docs/hails-additions/35-world-shading-parity.md#water-scroll-time
 const WATER_TIME_PERIOD: f64 = 1000.0;
 
 /// The water's own clock: real time in play; during a replay it follows the playback cursor going forward only, so
@@ -1950,16 +1887,7 @@ fn water_time(elapsed_secs: f64, rate: f64) -> f32 {
     (elapsed_secs * rate).rem_euclid(WATER_TIME_PERIOD) as f32
 }
 
-/// The lamp states the retail renderer uploads as `g_TrafficLightsStatus_1` /
-/// `_2`: one row per crossing direction, one component per lamp slot (0 red,
-/// 1 amber, 2 green, 3 lit together with green), 2.0 = on.
-///
-/// Read in the recomp (2026-10-09, DownTown Aletown, `.local/research/
-/// traffic-light-status/`): a 17 s cycle, direction 1 green 7 s, amber 1 s, all
-/// red 0.5 s, then the same for direction 2, matching the `trafficlights`
-/// controller timing in the living-world notes. Every traffic light shares the
-/// two rows, so all crossings show the same phase. A resource so a mod, or the
-/// traffic controllers once they drive cars, can replace the table or the clock.
+/// Lamp states for `g_TrafficLightsStatus_1` / `_2` (17 s cycle, recomp-read); replaceable resource: docs/hails-additions/35-world-shading-parity.md#traffic-lamp-states
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub(crate) struct TrafficLightCycle {
     /// (duration in seconds, status_1, status_2), played in order and looped.

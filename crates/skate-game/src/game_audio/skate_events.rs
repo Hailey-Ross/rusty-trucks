@@ -377,10 +377,7 @@ pub(crate) fn observe(
     debug_assert_eq!((built.state_id, built.on_rail, built.board), (state, on_rail, board));
     let Built { state: audio_state, wheels, surface, plant_edge, push_edge, state55, unridden, .. } = built;
     let com_speed_212 = seen.skater.com_speed_212;
-    // A sudden speed loss (or gain) while rolling, with where it happened, so a session log can point at a catch
-    // (USER-ASKS 237); rate-limited, on in normal play.
-    // Riding states only; wheel contact is not required (a catch lifts the wheels as the speed goes, see the
-    // 2026-10-22 MegaPark trace: wheels 15 -> 0 on the stopping frames).
+    // Log sudden speed changes while rolling (riding states, rate-limited) so a catch can be placed in the log.
     let rolling = matches!(state, 100 | 101) && !audio_state.bail && !braking && !on_rail;
     let now_ms = time.elapsed_secs_f64() * 1000.0;
     if let Some((from, to, over)) = seen.speed_watch.observe(now_ms, audio_state.ground_speed.abs(), rolling, push_edge) {
@@ -391,6 +388,14 @@ pub(crate) fn observe(
             board.x, board.y, board.z, at[0].atan2(at[2]),
             (0..4).filter(|&i| audio_state.wheel_contact[i]).count(),
         );
+        // USER-ASKS 236: which contact took the speed (body, normal, point).
+        for c in physics.world_contacts().iter().take(8) {
+            let (n, p) = (c.contact.normal, c.contact.position_on_b);
+            info!(
+                "SKATE_SPEED_CONTACT body={:?} normal=({:.3}, {:.3}, {:.3}) at=({:.3}, {:.3}, {:.3}) tag={}",
+                c.body_a, n.x, n.y, n.z, p.x, p.y, p.z, c.contact.tag
+            );
+        }
     }
     if super::state_log::enabled() {
         let p = &skater.player_input.physical;

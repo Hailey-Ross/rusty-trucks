@@ -108,10 +108,7 @@ pub enum GameplayCondition {
 /// branch; the retail dead zone is not recovered, so reuse a quarter stick.
 const OBJECT_MOVE_THRESHOLD: f32 = 0.25;
 
-/// IsMovingObject window test: moved when the OB_ObjectMv stick leaves the
-/// dead zone; the authored degree window then selects the push/pull quadrant.
-/// Wrap windows (anglestart 180, angleend -110) follow the same end<start
-/// convention as `select_grab_score`.
+/// IsMovingObject window: moved past the dead zone, the degree window picks the push / pull quadrant.
 fn object_move_window(angle_start: f32, angle_end: f32, z: f32, x: f32) -> bool {
     if (x * x + z * z).sqrt() < OBJECT_MOVE_THRESHOLD {
         return false;

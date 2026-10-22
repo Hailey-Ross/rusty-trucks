@@ -143,7 +143,11 @@ def template_collision(raw, table, at):
         shapes = [s for s in shapes if s]
         if not shapes:
             return None
-        return {key: [v for s in shapes for v in s[key]] for key in ('triangles', 'edges', 'surfaces')}
+        meshes = 0
+        for s in shapes:
+            s['vertex_keys'] = [[[m + meshes, c, i] for m, c, i in k] for k in s['vertex_keys']]
+            meshes = 1 + max((m for k in s['vertex_keys'] for m, _, _ in k), default=meshes - 1)
+        return {key: [v for s in shapes for v in s[key]] for key in ('triangles', 'edges', 'surfaces', 'units', 'vertex_keys')}
     assembly = u32(base+8)
     if kind(assembly) != 0x00040006:
         return None
@@ -178,15 +182,35 @@ def collision_from_volume(raw, table, root):
     walk(root, 0)
     if not meshes:
         return None
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/university/tools/vanilla_map_extraction/tools'))
-    from retail_collision_mesh import decode_clustered_mesh
-    triangles, edges, surfaces = [], [], []
-    for data in meshes:
-        for t in decode_clustered_mesh(data).triangles:
+    triangles, edges, surfaces, units, keys = [], [], [], [], []
+    for m, data in enumerate(meshes):
+        decoded, unit_list = decode_with_units(data)
+        for t, cluster, (unit_type, sub, corners) in zip(decoded.triangles, decoded.triangle_cluster_indices, unit_list):
             triangles.append([list(t.a), list(t.b), list(t.c)])
             edges.append(list(t.edge_codes) if t.edge_codes is not None else None)
             surfaces.append(t.surface)
-    return dict(triangles=triangles, edges=edges, surfaces=surfaces)
+            units.append([unit_type, sub])
+            keys.append([[m, cluster, i] for i in corners])
+    return dict(triangles=triangles, edges=edges, surfaces=surfaces, units=units, vertex_keys=keys)
+
+
+def decode_with_units(data):
+    """docs/hails-additions/39-skatepark-layouts.md#fused-vertex-order"""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/university/tools/vanilla_map_extraction/tools'))
+    import retail_collision_mesh as rcm
+    units, original = [], rcm._triangulate_unit
+    def recording(unit_type, indices):
+        out = original(unit_type, indices)
+        units.extend((unit_type, sub, list(corners)) for sub, corners in enumerate(out))
+        return out
+    rcm._triangulate_unit = recording
+    try:
+        decoded = rcm.decode_clustered_mesh(data)
+    finally:
+        rcm._triangulate_unit = original
+    if len(units) != len(decoded.triangles):
+        raise ValueError('ClusteredMesh unit record does not match its triangles')
+    return decoded, units
 
 
 def decode_grind_splines(raw):

@@ -48,10 +48,7 @@ pub(super) struct State {
     /// The map's crossfade bank, the content generation its layouts were built for, and the
     /// layouts (built when either changes, i.e. at map load or an audio content restart).
     layouts: Option<(Option<String>, u64, super::crossfade_layouts::Layouts)>,
-    /// The bed files of every zone the map can reach, read ahead at map load on the worker thread and kept loaded
-    /// while the map lasts, so entering a zone never reads a 15-29 MB bed on the game thread (b198: 150-290 ms
-    /// hitches from an HDD). Same bytes, same start frame: a bed not read yet is read on the spot as before.
-    /// With the map name, map generation and audio content generation they were picked for.
+    /// Bed files of every reachable zone read ahead at map load and kept (b198); same bytes and start frame.
     resident: (Option<(String, u64, u64)>, std::collections::BTreeSet<String>),
 }
 

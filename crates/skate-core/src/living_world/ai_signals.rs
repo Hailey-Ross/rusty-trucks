@@ -1,35 +1,5 @@
-//! The ActionGraph signals an AI skater's PathController posts so a simulated NPC skater rides
-//! into its recorded tricks like a player would (doc 26 "Simulated NPC skaters do their tricks").
-//! Retail writes named signals into the same intent map the player's pad listener fills; no pad
-//! bits or stick gestures (`.local/research/npc/m7-ai-trick-signals.md`, main checked
-//! `sub_824691A0` and the signal addresses).
-//!
-//! Retail (TU3, evidence only; re-implemented):
-//! - anticipation `sub_824691A0` (each tick from the node advance `sub_8246D560`): within 3.0 m of
-//!   the line (`pc+828`, `0x82063B08`) it looks up to 60 recorded frames past the cursor for a
-//!   start-trick node (`sub_82456550`); an ollie or flip there (category 1 / 2) sets `AnticMag`
-//!   1.0 and `AnticAngle` 0, or pi for a nollie (the recorded trick, `sub_82469048`);
-//!   `sub_824696B8` posts them (and `Crouch` on a crouched node outside a trick, `Manual` before a
-//!   manual) when the skater faces along the line (under pi/4, `0x821A9C28`) [code, the posting
-//!   gates partly inferred];
-//! - dispatch `sub_8246A2E0`: on the tick the committed cursor reaches the start-trick node it
-//!   posts `Trick`, the trick's scorable name, `GestureSpeed`, `TrickHeight` and
-//!   `DontMirrorTrick`, all 1.0 (the graph enters the trick on `HasAGIntent <name>`, names
-//!   compare case-insensitively); only the newest event node of the tick, none when the cursor
-//!   crossed more than 3 nodes (1 right after spawn). That perform path is the ollie / flip one only
-//!   (categories 1 / 2, `sub_8246A080`); the other categories keep the trick in the slot and the
-//!   per-tick writer posts its timed intents, like a player's held inputs (below, research b113).
-//! - trick slot: `pc+832` category (from the recorded trick, table 0x820862A8), `pc+844` trick, `pc+904`
-//!   ticks since the start node (0 there, +1 after every writer call); an end node or a failed dispatch
-//!   clears the category (0x8246A6D4). Jump table 0x8246A45C: 1 / 2 perform; 3 / 4 / 12 take the trick only
-//!   when the profile's slot-tricks byte (+51) is set (`sub_82469EF0`; else the slot keeps the old trick);
-//!   5 / 7 / 10 / 13 take it; 6 / 9 only validate; 8 is the manual value; 11 (revert) posts `Trick` and
-//!   `SlideFs180` (fsrevert, id 4) / `SlideBs180` (bsrevert, id 5) (`sub_8246A1E8`).
-//! - per-tick writer `sub_824696B8` (jump table 0x824698F8): categories 1-5, 7, 10, 12, 13 post the slot
-//!   trick's `SkaterIntentTuple` list (`sub_82470ED0`: entry live from `start` to `end`, `end` < 0 = open);
-//!   6 (handplant) posts `GrabWorld` 1.0; 8 `Manual`; 9 the powerslide keys; 11 nothing.
-//! - takeoff board yaw (`sub_8246B1F8`) and its post in the air arm (`sub_8246B358` -> `sub_82471008`): see
-//!   [`BoardYaw`].
+//! ActionGraph signals an AI skater's PathController posts so a simulated NPC rides into its recorded tricks.
+//! Retail mechanism (824691A0, 8246A2E0, 824696B8): docs/hails-additions/26e-living-world-skater-ai.md#ai-trick-signals
 
 use super::replay::{node_events, node_flags, ReplayLine};
 use super::Vec3;
@@ -286,10 +256,7 @@ pub struct BoardYaw {
 }
 
 impl BoardYaw {
-    /// `sub_8246B1F8` on the takeoff edge, from the cursor node's recorded board and skater frames:
-    /// d = heading(board forward) - heading(skater forward) ([`retail_heading`]), wrapped to [-pi, pi], folded to
-    /// [-pi/2, pi/2] (nose and tail lie on the same board line); outside the dead zone the angle is +-pi/2 by the sign
-    /// of d and the magnitude |d| x scale (not clamped here).
+    /// 8246B1F8 on the takeoff edge: board yaw from the node's recorded board and skater frames: docs/hails-additions/26e-living-world-skater-ai.md#takeoff-board-yaw
     pub fn takeoff(board: [f32; 4], skater: [f32; 4], t: &BoardYawTuning) -> Self {
         use core::f32::consts::{FRAC_PI_2, PI, TAU};
         let z = [0.0, 0.0, 1.0];

@@ -133,11 +133,7 @@ fn advance_inner(
         .chain(&skeleton_world_volumes)
         .copied()
         .collect();
-    // A grind on a prop rail does not push that prop (user, from retail play): its body is spared the skater's
-    // volumes while the skater is in a grind state (4xx).
-    // Also while the air aim has locked onto that prop's rail (2xx): the board drops into the prop's box on the way
-    // down and the box pushed the bench sideways before the grind took the rail (laptop 2026-10-17: the bench seat,
-    // lower than the bench's box top, was shoved on every try and the grind dropped the next frame).
+    // A grind on a prop rail (4xx), or an air aim locked on it (2xx), does not push that prop.
     let state = skater.player_input.processed.state_2508;
     let grinding = (400..500).contains(&state);
     let aimed = if (200..300).contains(&state) { skater.trajectory.selector.selection().and_then(|s| s.grind).map(|g| g.edge.owner) } else { None };

@@ -1,15 +1,5 @@
-//! Road-side stop spots for pulling over and the lane-change gap check (retail TU3, evidence only;
-//! re-implemented; `.local/research/npc/b69-traffic-manoeuvres.md` "b71 extension", main checked the passage
-//! step 82C3C3C0):
-//! - `sub_82E151D0` / `sub_82E15368` keep one (car, stop distance) pair per pulling-over car on a road, sorted by
-//!   stop distance, far end first; only other cars' spot searches read them;
-//! - `sub_82E14CF8` searches a spot up to 0.75 x the road length: the middle of the road when nothing is reserved,
-//!   else the middle of the first gap (walking from the far end) longer than the car plus 5 m and beyond
-//!   d + 1.5 x the car's length + speed; the gap behind the last reservation is never tried;
-//! - `sub_82E14928` checks a lane-change gap: not near either road end, and one second of travel plus the lengths
-//!   clear of the cars ahead and behind on the target lane.
-//!
-//! Multiplayer: [`Reservations`] is plain per-road data the host owns.
+//! Road-side stop spots and the lane-change gap check (82E151D0 / 82E15368, 82E14CF8, 82E14928; b71).
+//! Details: docs/hails-additions/26h-living-world-traffic.md#stop-spots
 
 /// Retail numbers (code constants); a mod may override them.
 #[derive(Clone, Copy, Debug, PartialEq)]

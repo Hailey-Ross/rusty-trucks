@@ -1,7 +1,5 @@
-//! The generic population engine: per kind a roster of live entities with stable ids, a seeded
-//! decision RNG, the cull test, the spawn pass budget; the console-tick driver that runs the
-//! census rotation (peds, vehicles) and the ambient skater cycle; and the scorer trait the kind
-//! rules use to rank candidates.
+//! The generic population engine: rosters, seeded decisions, cull / spawn passes and the console-tick driver.
+//! Details: docs/hails-additions/26b-living-world-population.md#population-engine
 
 use super::census::{self, CensusMap, VehicleCatalog};
 use super::traffic::{spawn as placement, LaneCar, RoadNetwork, SegmentId};
@@ -436,11 +434,7 @@ pub(crate) fn census_pass(cfg: &CensusKindConfig, st: &mut KindState, inputs: &T
     }
 }
 
-/// The vehicle spawn pass (`sub_826B9B90` -> `sub_826B8B88` -> census slot +8 `sub_826B83C8` ->
-/// factory `sub_82C36300`) [code]: per attempt a ring point (no heading draw), the cap at the
-/// point and the category and entity rolls, the vehicle limit (15), then the road placement
-/// (`traffic::spawn`): road under the point, 15 m from the segment ends, fitting lanes, a lane
-/// roll, the overlap check. Needs the roads and the vehicle catalog; without them no car spawns.
+/// Vehicle spawn pass (826B9B90 -> 826B8B88 -> 826B83C8 -> 82C36300): docs/hails-additions/26b-living-world-population.md#vehicle-spawn-pass
 #[allow(clippy::too_many_arguments)]
 fn vehicle_spawns(
     cfg: &CensusKindConfig,

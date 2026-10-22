@@ -1,22 +1,5 @@
-//! The NPC skater's AI physics record (AIPhysicsInput, 164 bytes) built from its recorded line
-//! (doc 26, "Simulated NPC skaters"). The physics reads it in the ground states' board path
-//! (`crate::riding::grounded::state::board_path`).
-//!
-//! Retail (TU3, evidence only; re-implemented): `sub_8246DB50` -> `sub_8246DE38` each tick:
-//! - target frame = the path frame of the committed cursor node (`sub_82453AD0`: board orientation
-//!   `+0x18`, turned about up on board-flipped nodes, `sub_82453A58`) at the node position; when its
-//!   forward points away from the skater's (`dot < 0`), its Ri and At rows are negated (the line is
-//!   ridden switch / fakie instead of turning round);
-//! - target velocity = the node's per-frame displacement (`+0x0C`) x 60 (`0x8302EE08`), its length
-//!   clamped to 99.9 (`0x822F94D4`); above 0.001 (`0x82063A48`) the speed shape `sub_82470830`
-//!   may scale it (`0.3 * s * influence + 0.125 * s * speed factor`, applied when it changes the
-//!   speed by more than 0.01; both inputs not decoded yet, 0 here = no change);
-//! - flags `+160`: bit 25 = on-board steering (`pc+922`, seeded by `sub_8246DB50`); with it (`pc+922`) bit 31 always, bit 30 = A and C, bit 29 = B
-//!   and C, bit 28 = B, where A = (state byte `14652` clear and `pc+933` clear), B = A and
-//!   `pc+945` clear, C = `pc+944` clear or trick category (`pc+832`) 9; without it all of bits
-//!   31..28 (holding the cached pose when the skater is more than 10 m off the path,
-//!   `0x821963E4`, AI kind 0).
-//! The record's other words (trajectory block +80..+144, bits 27..25) are not built yet.
+//! The NPC skater's AI physics record (AIPhysicsInput, 164 bytes) built from its recorded line.
+//! Retail build (8246DB50 -> 8246DE38): docs/hails-additions/26e-living-world-skater-ai.md#ai-physics-record
 
 use super::replay::rotate;
 use super::Vec3;
@@ -110,19 +93,12 @@ pub fn without_steering(state: &SteerState) -> ExternalPhysicsInput {
     ExternalPhysicsInput { vectors, flags: u32::from(state.on_board_steering) << 25 }
 }
 
-/// `sub_8246DB50`'s gate for `sub_8246DE38` (main checked 0x8246DCAC..0x8246DD1C): the steering record is
-/// built when the skater is on the path and past the start nodes (`pc+920`, `pc+937`), or always without
-/// on-board steering (`pc+922` clear). Not modelled yet: actor `1904` bit 26 and motion state 104, which
-/// also skip it.
+/// 8246DB50 gate for 8246DE38: on path and past the start nodes, or no on-board steering (partly modelled).
 pub fn steers(state: &SteerState, on_path: bool, past_start: bool) -> bool {
     !state.on_board_steering || (on_path && past_start)
 }
 
-/// The spawn push (`sub_824701F8` hold branch): while the skater is still within 0.01 m
-/// (`0x820D71E8`; 0.05 m `0x82165A00` when the cursor's node `pc+816` is not 0) of its node in the
-/// ground plane, every board part gets the node's per-frame displacement x 60 x 0.75
-/// (`0x821814A0`; x 0.5 `0x8209975C` for AI kind 1 outside motion states 19 / 20) as its velocity
-/// (`82C04168`). `None` once it has left the node.
+/// Spawn push (824701F8 hold branch, 82C04168): node step x 60 x 0.75 while within 0.01 m: docs/hails-additions/26e-living-world-skater-ai.md#spawn-push
 pub fn spawn_push(skater: Vec3, node: Vec3, step: Vec3, first_node: bool, ai_kind_1_slow: bool) -> Option<Vec3> {
     let limit: f32 = if first_node { 0.01 } else { 0.05 };
     let (dx, dz) = (skater[0] - node[0], skater[2] - node[2]);
@@ -141,10 +117,7 @@ pub const FLAG_LANDS_IN_GRIND: u32 = 1 << 27;
 /// The ext data's HasTrajectory bit (ext byte `+39` bit 0).
 pub const EXT_HAS_TRAJECTORY: u8 = 1;
 
-/// `sub_8246DA18` / `sub_82453870`: put a recorded jump into the record: +80 start position, +96
-/// start velocity, +112 gravity (0, -9.8, 0), +128 the -1 splat, +144 the recorded offset; bit 26,
-/// and bit 27 when it lands in a grind or slide ([`lands_in_grind`]). Nothing without the
-/// HasTrajectory bit.
+/// 8246DA18 / 82453870: a recorded jump into the record (+80..+144, bits 26 / 27).
 pub fn with_trajectory(record: &mut ExternalPhysicsInput, jump: &super::replay::ReplayJump, lands_in_grind: bool) {
     if jump.flags & EXT_HAS_TRAJECTORY == 0 {
         return;
@@ -170,22 +143,13 @@ pub fn trajectory_node(line: &super::replay::ReplayLine, node: u32, frame_in_seg
     if seg > 0 && frame_in_segment as f32 / seg as f32 >= 0.5 { node + 1 } else { node }
 }
 
-/// The record's trajectory this tick: the ext of [`trajectory_node`], only with HasTrajectory
-/// (ext byte `+0x27` bit 0). Between jumps there is none, and the gate reads the cached previous
-/// jump (`publication.rs`), as retail does. Bit 27 comes from `lands_in_grind(line, max(node - 1, 0))`
-/// with the cursor's node (`pc+704`), not the ext's.
+/// The record's trajectory this tick (HasTrajectory only; bit 27 from the cursor node, pc+704).
 pub fn current_trajectory(line: &super::replay::ReplayLine, node: u32, frame_in_segment: u32) -> Option<&super::replay::ReplayJump> {
     let n = line.nodes.get(trajectory_node(line, node, frame_in_segment) as usize)?;
     n.jump.and_then(|j| line.jumps.get(j as usize)).filter(|j| j.flags & EXT_HAS_TRAJECTORY != 0)
 }
 
-/// `sub_824551C0(path, node)`: whether the recorded jump after `from` lands in a grind or slide.
-/// From the first node carrying a trajectory on, it walks the line summing the recorded frames:
-/// a start-trick of category 5 (grind / slide, `catalog::category`, `sub_824545F0`) answers yes;
-/// category 8 / 9 (manual / powerslide), incidental air, an end-trick on the ground, another
-/// trajectory more than 60 frames later or more than 600 frames in all answer no; after an
-/// airborne end-trick the first ground node answers yes only when the next node starts a
-/// category-5 trick.
+/// 824551C0(path, node): whether the recorded jump after `from` lands in a grind or slide: docs/hails-additions/26e-living-world-skater-ai.md#lands-in-grind
 pub fn lands_in_grind(line: &super::replay::ReplayLine, from: u32) -> bool {
     use super::replay::{node_events, node_flags};
     let category = |n: &super::replay::ReplayNode| crate::scoring::catalog::category(line.node_trick(n)).unwrap_or(0);

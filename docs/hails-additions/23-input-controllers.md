@@ -117,3 +117,19 @@ gamepad backend). It extends #24 instead of opening another input PR. Todos: `co
 - Keep `xbox::convert`'s subtype-7 (alternate guitar) path meaningful for SDL, or drop it? Unchanged here.
 - The PS3 disc's front end has PlayStation prompt art; if the engine ever plays retail prompt movies, `prompt_style`
   is where to pick the set.
+
+## Code reference: rumble.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/rumble.rs`; each comment there links its section here.
+
+### Rumble
+
+Controller rumble, ported from the TU3 rumble controller (research `.local/research/rumble.md`, constants main-checked in the TU3 image): each pad keeps channels of {low, high, decay}; a start overwrites its channel (`sub_82694D38`); every tick (`sub_82695010`) sums the channels per motor, caps the sum at `max + (1 - max) * headroom`, then decays each channel and drops it below the threshold; the device curve (`sub_8296D480`) turns the level into a motor speed. Retail's values are [`RumbleTuning::RETAIL`]; a mod can replace them. Engine-independent and deterministic (plain f32, retail's order of operations).
+
+### Rumble device curve
+
+The device curve: a motor level (0..1) as a 16-bit motor speed. `wireless` = retail's test in `sub_8296D480`: capability type 1 and flags & 0x0002 (X_INPUT_CAPS_WIRELESS); every other pad takes the wired curve. Retail's order: curve, clamp to 0..1, exactly 0 stays 0, else trunc(v * 65535). So a wireless pad's motor 1 at level 0 is 0.05 * 65535 = 3276, as in retail.
+
+### Rumble on pads
+
+Controller rumble on the pads: the TU3 rumble controller (`skate_core::rumble`) ticked at retail's 60 Hz whatever the frame rate, gated by Game Settings > Control > Vibration (settings +163), sent through the pad backend (`input::platform::set_rumble`). Who starts a rumble: switching Vibration on plays retail's test rumble (0.5 / 0.5, rate 5.0, `sub_8260DF40`) on the active pad; mods start and stop channels (`sdk.input.rumble` / `sdk.input.stop_rumble`, capability `input_rumble`). NOT PORTED YET: retail's gameplay rumble (the posters `sub_82BB8CF0` 0.5 / 0.5 / 1.2 and the per-item channels of `sub_8259E3D0`, events not identified; research `.local/research/rumble.md`).

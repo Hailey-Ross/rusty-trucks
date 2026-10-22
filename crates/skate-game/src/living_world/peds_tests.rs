@@ -1,7 +1,5 @@
-//! Headless, seeded tests of the ped body (doc 26, peds M2): spawn records become peds with the
-//! seeded look, they animate and move from the record and the tick alone (any frame rate), they
-//! publish foot plants, despawn cleans up, mod overrides apply. No window, no assets (one
-//! data-gated test loads the real bank and tables).
+//! Headless, seeded tests of the ped body: look, animation, foot plants, despawn, mod overrides.
+//! No window, no assets (one data-gated test).
 
 use super::peds::*;
 use super::*;
@@ -271,11 +269,7 @@ fn living_world_ped_mod_overrides_and_render_helpers() {
     assert!((g[2].w_axis.truncate() - Vec3::new(0.0, 1.52, 0.1)).length() < 1e-5, "{:?}", g[2].w_axis);
 }
 
-/// fix10 (peds rendered warped): the skin matrix is `global x basis x inverse(GLB bind)`, with the
-/// basis read from the GLB's bind frames. Retail ped GLBs keep the rig's reference frames (basis
-/// identity, data test `ped_glb_bind_frames_are_the_rig_reference_frames`); before the fix the
-/// skater's bone-local basis was applied to them, twisting the torso -90 and the legs +90 degrees
-/// about their own axes (180 apart at the hips: the pinched waist).
+/// fix10: ped skin matrix `global x basis x inverse(GLB bind)`, basis from the GLB bind frames (identity).
 #[test]
 fn ped_skin_rests_in_the_reference_pose_and_never_twists_bones() {
     let skater_basis = Mat4::from_cols(Vec4::X, -Vec4::Z, Vec4::Y, Vec4::W);
@@ -339,11 +333,7 @@ fn living_world_ped_data_loads_from_the_export() {
     assert!(gap < 0.2, "hand prop bone {gap} m from the hand");
 }
 
-/// Visual check helper (no window): with `SKATE_PED_POSE_DUMP=<file.json>` and the data roots,
-/// write native model-space matrices (all 50 rig bones, column-major) for
-/// `.claude/skills/living-world/tools/render_glb.py --pose`: for the `default` set and up to two
-/// more sets (with a model each), poses mid-blend into start / walk / stop / idle / both turns, mid
-/// walk, mid stop, idle and mid right / mirrored left turn. Each pose carries its label, set and model.
+/// Visual check helper: `SKATE_PED_POSE_DUMP=<file.json>` writes model-space poses for render_glb.py: docs/hails-additions/26f-living-world-peds.md#ped-pose-dump
 #[test]
 fn living_world_ped_pose_dump_for_a_render_check() {
     use skate_core::living_world::peds::anim::Intent;
@@ -615,10 +605,7 @@ fn living_world_ped_tint_applies_to_ped_body_materials_only() {
     assert!(!ped_material_colorized(None, None));
 }
 
-/// Floating peds (2026-10-06): the render ground probe took the first hit from one agent height
-/// (1.6 m) above the navmesh, so overhead geometry lifted peds into the air. Count, over the
-/// DownTown navmesh polygon centres, how far the drawn height would sit above the navmesh with
-/// the old window and with the step-height window.
+/// Floating peds: compare drawn height over the navmesh with the old and the step-height probe window.
 #[test]
 #[ignore = "requires an installed DownTown map and living_world navmesh (SKATE3_ASSET_ROOT, SKATE3_MAP)"]
 fn ped_render_ground_does_not_lift_onto_overhead_geometry() {

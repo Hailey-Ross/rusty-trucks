@@ -81,10 +81,7 @@ impl HornState {
 
 /// A traffic vehicle's audio (retail `SFXObj_TrafficEngine` / `TrafficHorn` / `TrafficSkids`;
 /// the vehicle audio record `+144..+168`, `sub_824B2A28`).
-/// A vehicle's EFFECTIVE horn state (the bridge's hold from `VehicleHorn` / `VehicleAlarm`, else the AI's `horn`), the
-/// one value the audio host plays. The replay records it with the actor and plays it back at the playhead, so a seek or
-/// rewind into a sounding alarm or horn plays it (research b409: retail keeps a 4-bit horn field per vehicle entry per
-/// recorded frame).
+/// A vehicle's effective horn state: docs/hails-additions/11-audio.md#code-reference-grain_bedrs-world_audiors
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VehicleHornState(pub HornState);
 

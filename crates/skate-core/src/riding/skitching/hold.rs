@@ -1,17 +1,5 @@
-//! The skitch hold step and release (`sub_82D49D70`, the release bits of `82D49580`, the tail `82D4AFB8`, reset
-//! `82D47318`). Retail (TU3, evidence only; re-implemented; `.local/research/npc/b53-skitch-hold-step.md`, b51
-//! section 2, b52 section 3; main checked the 1344 masks in `82D49580`):
-//! - the hand's along target 904 ratchets with the stick while 1344 bit 0x08 is set (`max` / `min` with the clamped
-//!   position for a stick past +-0.5, else follows it); the bit clears once the skater rests near the posed hand
-//!   (|rate 840| < 0.02, |836 - 908| < 0.1) and sets again when the hand is 0.2 m off or after 2 s;
-//! - the posed hand 908 chases 904: `912 = clamp(0.25 (904 - 908), 912 +- 0.03)`, `908 += 912` (per 1/60 tick);
-//! - release bits (1344): sub-mode 0 clears 0x60, 1 sets 0x40 (pull in), 2 / 3 set 0x20 (push off); the 2 -> 4
-//!   switch clears both, 3 -> 4 keeps 0x20; 0x08 is set on every switch but 3 -> 4;
-//! - the tail: without the grab input (2476 bit 22) the sub-mode becomes 4; in sub-modes 1 / 2 with both hands
-//!   off (1328 = 1332 = 1) and the hold timer 1020 run out it becomes 4 and sets 0x10; in 4, 1320 counts frames,
-//!   the first one queues the release impulse (0x40 pull in, else 0x20 push off), past 3 frames 0x10 is set (the
-//!   state ends), and the re-grab block 1016 is refilled to 0.5 s when empty.
-//! The step sizes 0.25 / 0.03 are per 1/60 tick (console cadence).
+//! The skitch hold step and release (82D49D70, 82D49580, tail 82D4AFB8, reset 82D47318; b51 to b53).
+//! Details: docs/hails-additions/26h-living-world-traffic.md#skitch-hold-step
 
 /// The release bits of state+1344.
 pub mod bits {

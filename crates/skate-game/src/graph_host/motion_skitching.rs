@@ -1,23 +1,5 @@
-//! The skitch motion graph nodes (doc 26h "Skitching step 4h"). Retail (TU3, evidence only; re-implemented;
-//! `.local/research/npc/b60-skitch-graph-nodes.md`, b58 part 2; main read the `anim_skitching/default` record):
-//! - the behaviours bind `anim_skitching/default` (`8289D550`): +0 a PointNegGraphData8 (the absorb curve over the
-//!   closing rate, ground+284), then six floats at +80..+100 in the schema's fixed layout (read with
-//!   `.claude/skills/aems-port/tools/vault_layout.py 07D39B41AACEE50F`): +80 0.1, +84 0.25, +88 0.85, +92 0.05,
-//!   +96 0.83 (`LongSkitchIntoReachTime`), +100 0.121;
-//! - SkitchingBehaviour (`82BBC390`) each update: "Crouch" = ground+280 + rec+100, "PushSpeed" = ground+308,
-//!   "absorbspeed" toward graph(ground+284) by at most 0.04;
-//! - EnterSkitchingBehaviour (`82BBC538`): "Crouch" the same way (its "reachspeed" is not ported yet);
-//! - IsSkitchingWithAbsorb (`82BBBD00`): state 104 and graph(ground+284) > 0;
-//! - IsSkitchShimmying (`82BBC1A0`, attribute `direction` left 1 / right 2): anim+136 (negated by the flip) > 0.25 is 1,
-//!   < -0.25 is 2.
-//! - EnterSkitchingBehaviour's "reachspeed" (b61): `rem = 1 - t / len` of the current tree, `X = rem > 0 ?
-//!   ground+276 / rem : len`, `n = clamp01((X - rec+80) / (rec+96 - rec+80))`, rate-limited by 0.1 once started (the
-//!   instance starts at -1), "reachspeed" = 1 - n;
-//! - SkitchShimmyingBehaviour (`82BBC858`): "ShimmySpeed" = `(clamp(|anim+136|, rec+84, rec+88) - rec+84) /
-//!   (rec+88 - rec+84)`, 0 at the floor.
-//! SkitchingPosition's mirror term is (natural stance regular) == (riding switch) and the shimmy flip the mirrored
-//! animation bit (b61). NOT RETAIL YET: the shimmy channels SKCH_2H_SHIMMY_LEFT / RIGHT_CHANNEL are not started (their
-//! contents are not in the stock assets).
+//! The skitch motion graph nodes (b58, b60, b61; `anim_skitching/default` 8289D550).
+//! Behaviours, conditions and gaps: docs/hails-additions/26h-living-world-traffic.md#skitch-graph-nodes
 use skate_core::point_graph::PointGraph;
 use skate_data::collections::Collections;
 

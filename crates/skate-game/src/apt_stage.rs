@@ -1,15 +1,5 @@
-//! The front-end stage (doc 31, Milestone 5a): several retail menu movies running in ONE script
-//! VM, like retail's single APT player where FE_root, the screen manager and every screen movie
-//! share `_global`. Movies are loaded into clips at runtime (MovieClipLoader.loadClip, used by
-//! screenmanager.apt OpenScreen) and clips are created by script (createEmptyMovieClip).
-//!
-//! The C++ side of retail (screen stack, Game.OnScreen* handlers, CoreMenu, ...) is supplied by a
-//! `StageNatives` implementation: the stage only routes calls on the named host objects to it.
-//! Movie sources come from a `MovieSource` (the linked retail set with mod overrides layered in,
-//! `RetailMenuMovies`), so a mod-replaced screen is what gets loaded.
-//!
-//! Each loaded movie keeps its own timeline rate (`Movie::milliseconds_per_frame`), so screens
-//! run at their authored speed for any engine frame rate.
+//! The front-end stage: several retail menu movies in ONE script VM sharing `_global`, like retail's APT player.
+//! Details: docs/hails-additions/31-retail-menus.md#front-end-stage
 use crate::{
     apt_imports::library_key,
     apt_movie::{Movie, Pending, CLASS_CONSTRUCTOR},
@@ -155,10 +145,7 @@ impl Bindings<'_> {
                 return Ok(Some(Value::Undefined));
             }
             "setTextFormat" | "setNewTextFormat" => {
-                // TextField.setTextFormat([begin[, end],] format): the format's colour becomes the field's text colour
-                // (the renderer's `textColor`, apt_scene). button_menu's SetInfo uses it for its prompt labels
-                // (videocal: 0xFFFEEC on the black calibration page). NOT RETAIL YET: standard AS2 semantics, applied
-                // to the whole field and kept for later text; font and size are not applied.
+                // TextField.setTextFormat: the format colour becomes the field's text colour (NOT RETAIL YET: AS2 semantics).
                 if let (Some(Value::Object(format)), Some(level)) = (args.last(), self.level_of(object)) {
                     self.state.levels[level].movie.set_text_format(vm, object, *format)?;
                 }
@@ -527,10 +514,7 @@ impl Stage {
             .collect();
         movie.initialize_into(&mut self.vm, into)?;
         let root = movie.root;
-        // Retail load completion (sub_82E7EF28) gives a loaded root clip flag 0x80, not the playing flag 0x40
-        // (set only by play(), action 0x06 82E6BCC8); the tick (82E5B640) advances 0x80 clips only when the APT
-        // config byte [0x83037510+64] is set, which Skate 3's init leaves 0. So a loaded root runs its frame-0
-        // actions once and stays there until its script calls play(); its child sprites play as usual.
+        // Retail load completion (82E7EF28) flags a root 0x80, not playing 0x40, so it holds frame 0 until play(): docs/hails-additions/31-retail-menus.md#loaded-root-clips-hold
         if let Some(instance) = movie.instances.get_mut(&root) {
             instance.playing = false;
         }
@@ -700,12 +684,7 @@ impl Stage {
             levels.join(", ")
         )
     }
-    /// Frees objects nothing reaches any more, between updates: closed screens leave their clips, listeners and
-    /// script objects behind, and without this a few pause menu opens filled the VM's object budget (session
-    /// 2026-10-12). Roots are `_global` plus every object id the stage and its movies hold. The script-made clip
-    /// table is weak: a clip made inside a screen must not keep that screen alive through its parent once the
-    /// screen unloads, so its entry goes when the clip is collected.
-    /// NOT RETAIL (mechanism): retail's APT player refcounts its objects; this only keeps the slots bounded.
+    /// Frees unreachable objects between updates (NOT RETAIL mechanism: retail refcounts): docs/hails-additions/31-retail-menus.md#stage-object-collection
     pub fn collect(&mut self) -> Result<(), String> {
         let state = &self.state;
         let mut roots = vec![state.loader_prototype, state.object_class];
@@ -776,11 +755,7 @@ impl Stage {
         let top = self.state.levels.iter().position(|l| l.movie.root == current).unwrap_or(usize::MAX);
         (top, path)
     }
-    /// Draws every level under the clip it was loaded into, in display-tree order (`display_path`: the screen
-    /// manager's screens under gScreens, popups under gPopups above them), load order between equal places.
-    /// `scene` gives a level's shapes and textures. NOT RETAIL YET (order): retail draws one display tree by depth;
-    /// here each level draws as one block at its holder clip's place (a level's clips never interleave with another
-    /// level's).
+    /// Draws every level under its holder clip in display-tree order (NOT RETAIL YET: per-level blocks): docs/hails-additions/31-retail-menus.md#stage-draw-order
     pub fn draw<'s, S: crate::apt_scene::ShapeSource>(
         &'s self,
         scene: impl Fn(&'s str, &'s Movie) -> S,
@@ -863,10 +838,7 @@ mod tests {
         assert!(vm.call_method(a, "unknown", vec![], &mut Stub).is_err());
     }
 
-    /// The real retail screen manager + core_menu from the exported set (skipped without it): the
-    /// screen manager's class registers, OpenScreen with retail's CrossBar arguments creates a
-    /// clip and loads the screen into it on the next update, and the screen reports
-    /// OnScreenLoaded / OnScreenIntroComplete like retail (AS id 600 + template index).
+    /// The real retail screen manager + core_menu: OpenScreen with CrossBar arguments loads and reports like retail.
     #[test]
     fn retail_screen_manager_opens_a_screen() {
         retail_screen_manager(false);
@@ -1226,12 +1198,7 @@ unhandled: {:?}", game.calls, stage.unhandled());
         assert!(names.iter().any(|n| n == "mItem0"), "no row clips: {names:?}");
     }
 
-    /// The Challenge Map (template 68, movie map/challengemap) through the screen manager on the real vault tree:
-    /// every FEChallengeMap native the movie calls is answered, the list shows the location folders, A opens Downtown
-    /// and A again picks a location the teleport handler enables. Data-gated (a version 6 menu set, the collections).
-    /// The Skate Profile (FE 61, template 106): the movie loads, every Progression / Stats native it calls is answered,
-    /// and the three tab pages (SetState 5 / 10 / 20, with the tab sync 30 between) run with mod-filled rows.
-    /// Data-gated (a menu set with offline_skateProfile).
+    /// Challenge Map (template 68) and Skate Profile (FE 61) through the screen manager on real data (data-gated).
     #[test]
     fn retail_skate_profile_screen_opens_and_shows_each_tab() {
         let Some(root) = crate::apt_imports::test_menu_set() else {

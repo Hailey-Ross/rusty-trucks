@@ -428,3 +428,56 @@ fn travel_fits_the_arrival_onto_the_ground() {
     assert!(deck - ground < 1.0, "landed near the ground ({ground}), not 3 m up: deck {deck}");
     assert!(physics.board.bodies()[6].rates.linear_velocity.y.abs() < 0.5, "no fall after the arrival");
 }
+
+/// b457 / b469 row 14: a Challenge Map teleport to another map waits for the map transition and places once on the
+/// new map; when the transition left the old map current, it is dropped (never another map's coordinates).
+#[test]
+#[ignore = "requires private stock animation banks and collections"]
+fn a_far_challenge_map_teleport_places_after_its_map_loads() {
+    use crate::challenge_map::{finish_travel, ChallengeMapTravel, TeleportRequest};
+    use crate::map_transition::{CurrentMap, MapTransition};
+    use bevy::ecs::system::RunSystemOnce;
+    use std::path::PathBuf;
+    let root = std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT");
+    let root = std::path::Path::new(&root);
+    let assets = skate_data::GameAssets::load(root).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(root, &assets).unwrap();
+    let physics = GamePhysics::load(root).unwrap();
+    let skater = SkaterRuntime::load(root, &graphs, &physics, "normal").unwrap();
+    let (downtown, university) = (PathBuf::from("maps/DownTown.skate"), PathBuf::from("maps/University.skate"));
+    let current = |path: &PathBuf| CurrentMap {
+        path: Some(path.clone()), name: String::new(), spawn: [0.0; 3], heading: 0.0, generation: 0, audio_tag: None, layout: None,
+    };
+    let mut target = skater.animated_skeleton.roots.animation_to_world;
+    target[3][2] += 5.0;
+    let request = TeleportRequest { destination: "dist_university_x".into(), map: "University".into(), transform: target, on_board: false, session_marker: false };
+    let entry = crate::map_library::Entry { label: "University".into(), path: Some(university.clone()), world: None };
+    let start = |world: &mut World| {
+        let mut transition = MapTransition::default();
+        let mut travel = ChallengeMapTravel::default();
+        travel.start((request.clone(), Some(entry.clone())), Some(downtown.clone()), &mut transition);
+        assert!(transition.busy(), "another map: the transition is requested");
+        world.insert_resource(transition);
+        world.insert_resource(travel);
+        world.insert_resource(current(&downtown));
+    };
+    let mut world = World::new();
+    world.insert_resource(skater);
+    start(&mut world);
+    world.run_system_once(finish_travel).unwrap();
+    assert!(!world.resource::<SkaterRuntime>().teleport_pending(), "nothing while the map loads");
+    assert!(world.resource::<ChallengeMapTravel>().pending.is_some());
+    world.insert_resource(MapTransition::default());
+    world.insert_resource(current(&university));
+    world.run_system_once(finish_travel).unwrap();
+    assert!(world.resource::<SkaterRuntime>().teleport_pending(), "placed once the new map is current");
+    assert!(world.resource::<ChallengeMapTravel>().pending.is_none());
+    // A transition that ended with the old map still current drops the teleport.
+    let mut world = World::new();
+    world.insert_resource(SkaterRuntime::load(root, &graphs, &physics, "normal").unwrap());
+    start(&mut world);
+    world.insert_resource(MapTransition::default());
+    world.run_system_once(finish_travel).unwrap();
+    assert!(!world.resource::<SkaterRuntime>().teleport_pending(), "dropped on the old map");
+    assert!(world.resource::<ChallengeMapTravel>().pending.is_none());
+}

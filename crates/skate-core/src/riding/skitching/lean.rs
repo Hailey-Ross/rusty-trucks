@@ -1,9 +1,5 @@
-//! The skitch lean (`sub_82D4A0C0`): the skater leans toward the hold target. Retail (TU3, evidence only;
-//! re-implemented; `.local/research/npc/b58-skitch-lean-outputs.md` part 1, b51 section 2):
-//! - `T = sign(940) * graph(|940| in degrees) in radians`, 0 while Processed 2488 bit 0x00800000 is set;
-//! - `944 += clamp((T - 944) * 0.25, -2 deg, +2 deg)` per update;
-//! - above 2 degrees the board offset's orientation becomes a rotation of 944 about Y for 15 updates (Skeleton+15696,
-//!   +16389 = 1, +16392 = 15; the height channel is not touched).
+//! The skitch lean (82D4A0C0, b58, b51): the skater leans toward the hold target.
+//! Details: docs/hails-additions/26h-living-world-traffic.md#skitch-lean
 
 use crate::point_graph::PointGraph;
 

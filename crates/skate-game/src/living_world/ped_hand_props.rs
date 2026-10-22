@@ -1,19 +1,5 @@
-//! Ped hand props (b87, b89): the `livingworld_handprops` records (offset, carry channel) and their models
-//! (`living_world/hand_props.json` + `hand_props/<key>.glb`, setup `tools/asset_pipeline/hand_props.py` from the
-//! retail DMO templates), and the held object on the ped.
-//!
-//! Retail: SpawnInteractionBasedHandProp requests the record (`82E3DDA0`, `brain+3279` 0x01); the ped update
-//! creates the DMO (`82E3DE18`) and attaches it (`82E3EC60`: `ped+5920`, `brain+3278` 0x02); every frame
-//! `82E3E4F0` / `82E3E1B0` put it at the hand matrix composed with the record's local offset [code].
-//! NOT RETAIL YET: the hand bone is RIGHTHANDPROP (rig 26) [inferred: every carry channel is `*RH`; which bone fills
-//! the hand matrix at skeleton +19504 is not decoded]; the record fields `Hash_3FE1...` = Euler rotation in degrees
-//! and `Hash_DC20...` = translation in metres, applied translation then X, Y, Z [inferred from the value shapes; the
-//! record loader is not read].
-//!
-//! Release (b90, b91): the brain's throw / drop (`skate_core::living_world::peds::hand_prop`) releases the object here:
-//! it becomes a prop body created mid-game (`GamePhysics::spawn_runtime_prop`, doc 27 "Props created mid-game") with
-//! the release velocity, its model follows the body, and the ped keeps the link until the prop leaves the unlink box.
-//! The ped never removes it (b90 §3); the dynamic-object pool (49) and the census cull (100 m) do.
+//! Ped hand props (b87, b89): records, models and the held object on the ped; release as a prop (b90, b91).
+//! Retail mechanism and gaps: docs/hails-additions/26g-living-world-ped-interactions.md#ped-hand-props
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -330,10 +316,7 @@ pub(crate) fn sync_hand_props(
     });
 }
 
-/// The released hand props in the skater's body contact solve (b94): each one is a solid proxy with its box, mass and
-/// velocity in contact group 12 (heavy) or 14 (small), so a hit goes through the ordinary skeleton contact: the relative
-/// normal speed (halved for small objects) feeds the region forces and the usual wipeout checks (`82BD4A30` ->
-/// `82BD88A0`). Retail has no hand-prop hit code (b92 Q2). The prop's own reaction stays the prop step's skater push.
+/// Released hand props in the skater's contact solve (groups 12 / 14; b94, b92): docs/hails-additions/26g-living-world-ped-interactions.md#hand-prop-proxies
 pub(crate) fn push_hand_prop_proxies(
     released: Res<ReleasedHandProps>,
     settings: Res<super::LivingWorldSettings>,
@@ -386,10 +369,7 @@ fn hand_prop_proxy(id: u32, (c, basis, half, v, w, inertia): BodyState, small_ma
     }
 }
 
-/// Turn the held object into a prop body at its world pose moving at `velocity`: collision from its meshes (in the
-/// object's frame, scale folded in), the default physics block (NOT RETAIL YET: the template's
-/// `livingworld_dynamicobject_characteristics` record is not resolved for hand prop templates, b91), and its model
-/// detached from the hand and following the body. `None` when the pool is full or the model has no triangles yet.
+/// Turn the held object into a prop body (default physics block: NOT RETAIL YET, b91); `None` if pool full.
 #[allow(clippy::too_many_arguments)]
 fn release(
     commands: &mut Commands,

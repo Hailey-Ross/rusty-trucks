@@ -1,15 +1,5 @@
-//! Opt-in per-system cost readout (`SKATE_SYSTEM_TIMING=1`, also under trace-all): once per second one
-//! `SYSTEM_TIMING` log line with the systems that took the most wall time, as mean ms per frame, the longest single run
-//! and the run count. Bevy opens a `system` span (field `name`) around every system run (the `trace` feature is always
-//! on, research b214); this layer names each span once when Bevy creates it and adds up the time between enter and exit
-//! per name, with no allocation per run. Parallel systems overlap, so the per-system numbers add up to more than the
-//! frame; they show where the CPU goes, the frame log shows the frame. Off: the layer is not installed at all.
-//!
-//! `SKATE_FIXED_TIMING=1` (research b214 / b268): the same spans inside the fixed step only, once per second one
-//! `FIXED_TIMING` line with the step's wall time, the time any fixed system or command application ran (`busy`), the
-//! rest (`gaps`: executor and sync points), and every fixed-schedule system per step. The step is the span of
-//! `FixedMain::run_fixed_main` (one per step, single-threaded); fixed systems run on pool threads with no span parent,
-//! so the window is a global flag, and render systems that overlap it are kept apart by schedule membership.
+//! Opt-in per-system cost readout (`SKATE_SYSTEM_TIMING=1`, `SKATE_FIXED_TIMING=1`; b214 / b268).
+//! Details: docs/hails-additions/25-perf-diagnostics.md#system-timing
 use bevy::log::tracing::{Id, Subscriber, field::Field, field::Visit, span::Attributes};
 use bevy::log::tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 use bevy::prelude::*;

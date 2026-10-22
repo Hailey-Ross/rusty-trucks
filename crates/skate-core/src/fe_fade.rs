@@ -1,8 +1,5 @@
-//! The front end's fade to black (doc 31 "Fade to black"): retail's FE fader object (`[[0x830CFE14]+304]`, TU3).
-//! A screen change holds a bit: the alpha rises 0.04 per FE tick, and when the screen is black the waiting actions
-//! run (hold sub_825E6B30, tick sub_825E69A0). Releasing the last bit fades back in at 0.04 per tick (release
-//! sub_825E6BF8; with its instant flag in one tick). Alpha 1 = black. Values are data (`FeFadeParams`), retail's
-//! the defaults.
+//! The front end's fade to black (FE fader, hold 825E6B30, tick 825E69A0, release 825E6BF8); data.
+//! Details: docs/hails-additions/31-retail-menus.md#fe-fade
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FeFadeParams {

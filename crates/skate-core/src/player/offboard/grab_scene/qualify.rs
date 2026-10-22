@@ -22,10 +22,7 @@ pub fn qualify(record: &Record, position: Vector, bounds: Bounds,
     qualify_at(record, position, distance, bounds, limits)
 }
 
-/// 82E08EE8: the tests of [`qualify`] at a given arc distance along the
-/// spline (82E08DB8 passes the nearest point clamped by the end margin; Move
-/// Object's held update 82D44A10 passes its grip position +1128). The margin
-/// of `limits` is not used here.
+/// 82E08EE8: the [`qualify`] tests at an arc distance (82E08DB8 nearest point; 82D44A10 grip +1128).
 pub fn qualify_at(record: &Record, position: Vector, distance: f32, bounds: Bounds,
     limits: BoardLimits) -> bool {
     let length = record.scalar(176);

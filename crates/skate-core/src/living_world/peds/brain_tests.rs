@@ -825,11 +825,7 @@ fn hand_prop_conditions_and_the_weighted_pick() {
     assert_eq!(h.condition_activation(0, &f), 0);
 }
 
-/// After a takedown the chase ends through EndChase's aggressivecapture branch like retail
-/// (`pedestrian_endchase.xml`: IgnoreCollisionsWithWantTarget angrychase, UnsetWant angrychase, SuppressMoodAboutChasee
-/// 5.5): the chase want (flag 0x40 from its mood result) forgets the chasee's mood records and perception entry on
-/// unset, and the chasee's contacts are ignored. Without this a ped chased again the moment its taunt ended, without a
-/// new collision (play test, 2026-10-12).
+/// After a takedown the chase ends through EndChase's aggressivecapture branch (`pedestrian_endchase.xml`).
 #[test]
 fn a_captured_chasee_is_forgotten_and_its_contacts_ignored() {
     use super::super::chase::ChaseGroupInfo;

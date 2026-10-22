@@ -1,9 +1,5 @@
-//! Retail post FX colour matrices (`post_fx` vault records `colour_matrix`, `colour_matrix_zombiemode`, ...; research
-//! b100). Each record has a near and a far band; a band's values build one 3x4 affine colour matrix with
-//! `sub_827F13D8` [code]: contrast about a midpoint plus an add, then saturation with luma weights (0.3, 0.6, 0.1),
-//! then a per-channel multiply: `out = multiply * Sat_s(contrast * (x - midpoint) + midpoint + add)`.
-//!
-//! The multiply-last order is [inferred] from the instruction order (b100); the base record is the identity.
+//! Retail post FX colour matrices (`post_fx` records, b100), built like 827F13D8.
+//! Formula: docs/hails-additions/35-world-shading-parity.md#colour-matrix-records
 
 /// One band's record values (`near_*` / `far_*`).
 #[derive(Clone, Copy, Debug, PartialEq)]

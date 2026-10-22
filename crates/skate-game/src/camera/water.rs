@@ -1,13 +1,5 @@
-//! Water camera. Retail footage (PS3 version in RPCS3: Aletown canal and the
-//! University fountain channel) shows the same shot whenever the skater bails
-//! into water: the camera rises high above and behind the skater, looks down
-//! about 60 degrees and slowly drifts toward overhead, with a dark rounded
-//! vignette. This blends the normal camera into that shot during a water bail
-//! (the physics water state, not mere proximity: water surfaces reach under
-//! nearby walkways) and back out afterwards; the weight also drives the
-//! vignette (`retail_exposure`, tone pass). Separately, a camera under a water
-//! surface is lifted just above it. Distances and timings are project choices
-//! matched by eye (docs/hails-additions/09-water.md).
+//! Water camera: the retail high, looking-down shot during a water bail, plus lifting a camera out of water.
+//! Details (project choices matched by eye): docs/hails-additions/09-water.md#water-camera
 use skate_core::{camera::CameraFrame, math::{Basis3, Vector3}, physics::board_world::BoardWorld};
 
 /// Camera height above the water surface.

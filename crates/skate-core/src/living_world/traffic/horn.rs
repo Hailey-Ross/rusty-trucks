@@ -1,21 +1,5 @@
-//! The traffic horn (V4, doc 26h "Traffic: the horn"). Retail (TU3, evidence only; re-implemented;
-//! `.local/research/npc/b36-traffic-v4-driver.md` sections 2, 4, 5 and 8, `b41-v4-obstacles-corridor.md` section 3,
-//! `b44-horn-honker.md`; main re-read the honk receiver `sub_82E3C3D0`):
-//! - every driving-state update sets the limiter kind `+4392` (0 free, 1 behind a lead that waits itself, 2 stop
-//!   point, 3 behind any other lead, 4 obstacle from the look-ahead, 5 junction wait); the nearest limit wins. The
-//!   junction answer is stored in the same field (1 signal, 2 approach, 3 yield, 4 blocked, 5 flagged yield), so a
-//!   car queued behind one waiting at a red light is "behind a waiting lead" and never gets the blocked horn;
-//! - blocked timer `+3704` (`sub_82C41120`): no lead or not inside the standoff behind it -> 0; inside it with kind 3
-//!   and slower than `honk_approach_speed_kmh` -> `+= dt`;
-//! - obstacle timer `+3708` (`sub_82C412D8`): no obstacle -> 0; kind 4, not inside a lead's standoff and slow ->
-//!   `+= dt`; otherwise it holds;
-//! - the horn decider `sub_82C40660` writes the horn state `+3420` every frame, first match wins: horn disabled
-//!   (driver bit 0x01) -> 0; kind 5 -> 3; blocked > `honk_blocked_time` -> 4 (driver bit 0x02) or 5; an obstacle
-//!   with record flag 0 (skater / ped): obstacle timer > `honk_obstacle_time` -> 2 and the honked-at notify to the
-//!   record's handle, else under 2 s to it (`2 v > d`) and faster than `honk_approach_speed_kmh` -> 1;
-//! - driver bits (`sub_82C42348`): each a percent roll `rand() % 100 + 1 <= chance x 100` on a driver field.
-//! The horn sounds for as long as the decider returns a kind (no hold time in the AI); the sound per kind is the
-//! horn AEMS program's (`SFXObj_TrafficHorn`). The parked car alarm (state 6) is the car alarm's, not this.
+//! The traffic horn (V4): limiter kinds, blocked / obstacle timers and the horn decider 82C40660.
+//! Retail mechanism: docs/hails-additions/26h-living-world-traffic.md#traffic-horn
 
 /// Limiter kinds (`+4392`).
 pub mod limiter {

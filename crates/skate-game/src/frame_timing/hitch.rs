@@ -1,20 +1,5 @@
-//! `FRAME_HITCH` log line: one line per hitch frame (rate-limited), so a reported stutter can be
-//! placed and attributed from the session log alone (logs must diagnose).
-//!
-//! A frame is a hitch when it took longer than `factor` x its expected time (the overlay's rule,
-//! [`super::stats::expected_ms`]: the median frame without physics plus its fixed steps x the median step cost; the
-//! line's `median_ms=` is that expected time) or longer than `floor_ms`. The line carries the frame's split
-//! (main-thread CPU, physics loop, wait outside the schedules), the wall time of the main stages
-//! (fixed: input / controls / physics, and inside the physics tick: animation graphs, collision
-//! and solve, finish, scoring; frame: assets / physics present / animation / audio pass), the game
-//! thread's wait for the audio render lock, the player (state, airborne, trick, position, tick),
-//! the entity count and the audio load (mixer voices, AEMS instances of the last block).
-//!
-//! Observation only: the marker systems write only [`HitchSpans`] and read clocks; the phase
-//! timers are relaxed atomics around the physics phases. Gameplay is identical with or without it.
-//!
-//! Thresholds are data ([`HitchConfig`], defaults below), overridable without a rebuild through
-//! `SKATE_FRAME_HITCH` (`off`, or `factor=2,floor_ms=50,interval_s=0.5`).
+//! `FRAME_HITCH` log line per hitch frame (rate-limited); observation only, thresholds via `SKATE_FRAME_HITCH`.
+//! Details: docs/hails-additions/25-perf-diagnostics.md#frame-hitch-line
 use bevy::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -70,10 +55,7 @@ impl HitchConfig {
     }
 }
 
-/// Wall time of the frame's stages, between marker systems at the set boundaries.
-/// `pre_update` = frame start (First) to Update (First, PreUpdate: asset events, input); `post_render` = end of Update to
-/// the next frame start (PostUpdate with visibility, Last, render extract and render): 2026-10-15, hitches of 30 to
-/// 60 ms had every other stage near 1 ms.
+/// Wall time of the frame's stages between marker systems (`pre_update`, `post_render` span the frame edges).
 pub(crate) const STAGES: [&str; 9] = ["fixed_input", "fixed_controls", "fixed_physics", "assets", "present", "animation", "audio", "pre_update", "post_render"];
 const F_INPUT: usize = 0;
 const F_CONTROLS: usize = 1;
@@ -86,10 +68,7 @@ const U_PRE: usize = 7;
 const U_POST: usize = 8;
 const NONE: usize = usize::MAX;
 
-/// Phases inside the physics tick (`physics::frame::advance`), summed over the frame's ticks.
-/// Plus the scoring HUD (its fixed-step `advance` and its per-frame `render`).
-/// `solve_*` split `solve` (all skaters' shared solves, player and simulated NPCs) into its parts, and `solve_npc` is the
-/// part spent on simulated NPC skaters (diagnostics, 2026-10-15).
+/// Phases inside the physics tick, summed over the frame's ticks; `solve_*` split `solve`, `solve_npc` = sim NPCs.
 pub(crate) const PHASES: [&str; 11] = ["anim_graphs", "solve", "finish_skater", "scoring", "hud_advance", "hud_render", "solve_queries", "solve_contacts", "solve_solver", "solve_rest", "solve_npc"];
 pub(crate) const PHASE_SOLVE_QUERIES: usize = 6;
 pub(crate) const PHASE_SOLVE_CONTACTS: usize = 7;

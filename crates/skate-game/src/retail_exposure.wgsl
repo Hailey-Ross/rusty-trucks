@@ -1,8 +1,5 @@
 // Native multiplicative evaluator (827F0D00) and centre weighting (827F0B78).
-// Meter input as retail: the alpha of bloom_dof_tap4_minusthresholdPS, i.e.
-// dp3_sat(sat(tm/2), meter weights 0.3/0.4/0.3), stored 8-bit and read back
-// as byte/255. NOT RETAIL: sampled as a 16x16 bilinear grid of the HDR target,
-// not the console's 4-tap downsample chain (box averages; same mean).
+// docs/hails-additions/35-world-shading-parity.md#code-reference-retail_exposurers--retail_exposurewgsl
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var source_sampler: sampler;
 struct Settings { tuning: vec4<f32>, timing: vec4<f32>, meter: vec4<f32> }
