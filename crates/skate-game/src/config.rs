@@ -3,9 +3,12 @@ use std::path::PathBuf;
 
 /// Whether the start map is read by the map loader after the game has started, with the
 /// loading screen up, rather than before the window exists. On the Switch a city's read, physics
-/// and scene build left the screen black for about 46 s (findings 59); elsewhere the start
-/// stays as it was, which `--verify` captures and `--teleport` rely on.
-pub(crate) const LOAD_START_MAP_IN_BACKGROUND: bool = cfg!(target_os = "horizon");
+/// and scene build left the screen black for about 46 s (findings 59); `SKATE_BACKGROUND_START=0`
+/// gives it the old start for comparison. Elsewhere the start stays as it was, which `--verify`
+/// captures and `--teleport` rely on.
+pub(crate) fn load_start_map_in_background() -> bool {
+    cfg!(target_os = "horizon") && std::env::var("SKATE_BACKGROUND_START").map_or(true, |v| v.trim() != "0")
+}
 
 #[derive(Resource)]
 pub(crate) struct Config {
@@ -15,7 +18,7 @@ pub(crate) struct Config {
     pub map_path: Option<PathBuf>,
     /// The start map when the map loader reads it after the game has started, behind the loading
     /// screen (`world::spawn` requests it), not before the window exists: `map` and `map_path`
-    /// stay `None` until it is committed. See [`LOAD_START_MAP_IN_BACKGROUND`].
+    /// stay `None` until it is committed. See [`load_start_map_in_background`].
     pub boot_map: Option<PathBuf>,
     pub difficulty: crate::difficulty::Difficulty,
     pub check_assets: bool,
@@ -134,7 +137,7 @@ impl Config {
         }
         if !explicit_map {
             if let Some(path) = crate::map_library::start_map(&config.asset_root)? {
-                if LOAD_START_MAP_IN_BACKGROUND {
+                if load_start_map_in_background() {
                     config.boot_map = Some(path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?);
                 } else {
                     let (map, fingerprint) = skate_data::skate_map::SkateMap::load_with_fingerprint(&path)?;

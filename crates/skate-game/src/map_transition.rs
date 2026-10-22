@@ -69,6 +69,9 @@ impl Default for MapTransition {
 }
 impl MapTransition {
     pub fn busy(&self) -> bool { !matches!(self.phase, Phase::Idle) }
+    /// Whether the loader thread is (about to be) reading the map, before anything is published.
+    #[cfg(target_os = "horizon")]
+    pub fn loading(&self) -> bool { matches!(self.phase, Phase::Requested(_) | Phase::Loading { .. }) }
     pub fn request(&mut self, entry: Entry) {
         if !self.busy() { self.phase = Phase::Requested(entry); }
     }

@@ -3,13 +3,14 @@
 //! loading with the seconds since the load began, and the last four finished steps dimmed below.
 //! Here it is twice her splash's size, in the middle of the screen.
 //!
-//! On the Switch it is up from the first moment of `main` ([`show_early_splash`]): bevy_horizon
-//! redraws it into a libnx framebuffer from a thread of its own and closes it when the game's
-//! first frame takes the screen, and the same layout carries on in Bevy's UI. Bevy's UI also
-//! covers every map change, and stays up until the published world is on the GPU, so nothing pops
-//! in once it goes: every mesh, image and storage buffer the scene published is ready in the
-//! render world (meshes bevy_horizon holds back for later frames aren't), and no shader pipeline
-//! is still compiling, for a few frames in a row (findings 59).
+//! On the Switch the start's screen is up from the first moment of `main` ([`show_early_splash`]):
+//! bevy_horizon redraws it into a libnx framebuffer from a thread of its own, and it holds the
+//! screen through the start map's load, so the game's first frame on screen is the game. Bevy's UI
+//! draws the same layout over every map change after that. Either way the screen stays up until
+//! the published world is on the GPU, so nothing pops in once it goes: every mesh, image and
+//! storage buffer the scene published is ready in the render world (meshes bevy_horizon holds back
+//! for later frames aren't), and no shader pipeline is still compiling, for a few frames in a row
+//! (findings 59).
 //!
 //! Once a world is committed it runs behind the screen, so its first frames render and their
 //! pipelines compile, but the player's input doesn't reach it (`input::publish_actions`). The
@@ -44,12 +45,15 @@ const READY_FRAMES: u8 = 5;
 const MAX_WAIT: Duration = Duration::from_secs(90);
 
 /// Hails's splash, 560 × 240 of its pixels, drawn at `SCALE` times that in the middle of a
-/// 1280 × 720 screen (the early splash's framebuffer, and Bevy's UI in proportion).
+/// 1280 × 720 screen (the early splash's framebuffer, and Bevy's UI in proportion): the screen is
+/// `SCREEN` splash pixels, and her box sits at `PANEL` on it.
 const SPLASH_WIDTH: f32 = 560.;
 const SPLASH_HEIGHT: f32 = 240.;
 const SCALE: f32 = BOARD_SCALE as f32;
 const SCREEN_WIDTH: u32 = 1280;
 const SCREEN_HEIGHT: u32 = 720;
+const SCREEN: (f32, f32) = (SCREEN_WIDTH as f32 / SCALE, SCREEN_HEIGHT as f32 / SCALE);
+const PANEL: (f32, f32) = ((SCREEN.0 - SPLASH_WIDTH) / 2., (SCREEN.1 - SPLASH_HEIGHT) / 2.);
 /// Where her `paint` puts each part, in splash pixels: the title's top, the board's, the status
 /// line's and the first finished line's, the finished lines' spacing, and the lines' side margin.
 const TITLE_TOP: f32 = 16.;
@@ -89,6 +93,8 @@ impl Plugin for LoadingScreenPlugin {
             .add_systems(Startup, spawn_screen)
             .add_systems(PreUpdate, update_screen.after(crate::map_transition::MapTransitionSet))
             .add_systems(Update, roll_board);
+        #[cfg(target_os = "horizon")]
+        app.add_systems(PreUpdate, release_splash.after(update_screen)).add_systems(Last, ease_off_while_held);
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             // After `RenderSystems::Render`, where the pipeline cache works through its queue.
             render.insert_resource(readiness).add_systems(
@@ -180,11 +186,13 @@ fn fit(text: &str, size: f32) -> String {
     cut
 }
 
-/// The board image's left edge `seconds` after the launch, in splash pixels: it rolls left to
-/// right across the splash and comes round again, as on Hails's. From the launch, so the board
-/// carries on where the early splash left it.
+/// The board image's left edge, in splash pixels from the screen's left edge, `seconds` after the
+/// launch: it rolls left to right across the whole screen at Hails's speed and comes round again.
+/// Across the screen, not her box: on a full screen her box's edges are nowhere, and the board
+/// vanished at them. From the launch, so the board carries on where the early splash left it.
 fn board_left(seconds: f32) -> f32 {
-    (seconds * ROLL_SPEED) % (SPLASH_WIDTH + BOARD_LENGTH) - BOARD_LENGTH - BOARD_PAD
+    let width = BOARD_LENGTH + 2. * BOARD_PAD;
+    (seconds * ROLL_SPEED) % (SCREEN.0 + width) - width
 }
 
 fn since_launch() -> f32 {
@@ -192,8 +200,10 @@ fn since_launch() -> f32 {
 }
 
 /// Puts the loading screen up from the first moment of the start, before the window exists
-/// (bevy_horizon's splash, a libnx framebuffer). `SKATE_EARLY_SPLASH=0` leaves the screen black
-/// until the first frame, as before.
+/// (bevy_horizon's splash, a libnx framebuffer). With the start map loading in the background the
+/// splash holds the screen until that world is on the GPU (`release_splash` lets go), so the
+/// whole start is this one screen, drawn on a thread of its own however busy the game is.
+/// `SKATE_EARLY_SPLASH=0` leaves the screen black until the first frame, as before.
 #[cfg(target_os = "horizon")]
 pub(crate) fn show_early_splash() {
     if std::env::var("SKATE_EARLY_SPLASH").is_ok_and(|v| v.trim() == "0") {
@@ -201,33 +211,68 @@ pub(crate) fn show_early_splash() {
         return;
     }
     let started = Instant::now();
-    let board = board_pixels();
-    let font = SplashFont::new();
+    let mut drawing = SplashDrawing::new();
     let shown = bevy_horizon::splash::show(SCREEN_WIDTH, SCREEN_HEIGHT, Duration::from_millis(33), move |frame| {
         let mut painter = Painter { pixels: frame.pixels, width: frame.width as usize, height: frame.height as usize, stride: frame.stride };
         let (line, history) = current_lines();
-        draw_splash(&mut painter, font.as_ref(), &board, since_launch(), &line, &history);
+        drawing.draw(&mut painter, since_launch(), &line, &history);
     });
-    eprintln!("[Skate] start-up splash {} ({} ms to set up)", if shown { "up" } else { "unavailable" }, started.elapsed().as_millis());
+    let held = shown && crate::config::load_start_map_in_background();
+    bevy_horizon::splash::hold(held);
+    eprintln!(
+        "[Skate] start-up splash {}{} ({} ms to set up)",
+        if shown { "up" } else { "unavailable" },
+        if held { ", holding the screen until the start map is on the GPU" } else { "" },
+        started.elapsed().as_millis(),
+    );
 }
 
-/// One frame of the early splash: Hails's layout at `SCALE`, in the middle of the frame.
+/// The early splash's frames: Hails's layout at `SCALE`, in the middle of the frame. The
+/// framebuffer keeps what was drawn, so after the first frame only the board's band is drawn
+/// again, and the lines when their text changes: a full frame each time made the board stutter.
 #[cfg(any(target_os = "horizon", test))]
-fn draw_splash(painter: &mut Painter<'_>, font: Option<&SplashFont>, board: &Rgba, seconds: f32, line: &str, history: &[String]) {
-    painter.fill(BACKGROUND);
-    let origin = ((painter.width as f32 - SPLASH_WIDTH * SCALE) / 2., (painter.height as f32 - SPLASH_HEIGHT * SCALE) / 2.);
-    let x = |splash: f32| origin.0 + splash * SCALE;
-    let y = |splash: f32| origin.1 + splash * SCALE;
-    let panel = (x(0.) as i32, x(SPLASH_WIDTH) as i32);
-    let margins = (x(LINE_MARGIN) as i32, x(SPLASH_WIDTH - LINE_MARGIN) as i32);
-    let centre = x(SPLASH_WIDTH / 2.);
-    painter.image(x(board_left(seconds)).round() as i32, y(BOARD_TOP).round() as i32, board, panel);
-    let Some(font) = font else { return };
-    font.line(painter, TITLE, TITLE_SIZE * SCALE, centre, y(TITLE_TOP), TITLE_COLOUR, panel);
-    font.line(painter, &fit(line, LINE_SIZE), LINE_SIZE * SCALE, centre, y(LINE_TOP), LINE_COLOUR, margins);
-    for (i, finished) in history.iter().take(HISTORY_LINES).enumerate() {
-        let top = y(HISTORY_TOP + i as f32 * HISTORY_SPACING);
-        font.line(painter, &fit(finished, HISTORY_SIZE), HISTORY_SIZE * SCALE, centre, top, HISTORY_COLOUR, margins);
+struct SplashDrawing {
+    font: Option<SplashFont>,
+    /// The board over the background, so drawing it is a copy.
+    board: Rgba,
+    /// The lines drawn last; `None` before the first frame.
+    drawn: Option<(String, Vec<String>)>,
+}
+
+#[cfg(any(target_os = "horizon", test))]
+impl SplashDrawing {
+    fn new() -> Self {
+        Self { font: SplashFont::new(), board: board_pixels().over(BACKGROUND), drawn: None }
+    }
+
+    fn draw(&mut self, painter: &mut Painter<'_>, seconds: f32, line: &str, history: &[String]) {
+        let origin = ((painter.width as f32 - SCREEN.0 * SCALE) / 2., (painter.height as f32 - SCREEN.1 * SCALE) / 2.);
+        let x = |splash: f32| origin.0 + splash * SCALE;
+        let y = |splash: f32| origin.1 + splash * SCALE;
+        let screen = (0, painter.width as i32);
+        let margins = (x(PANEL.0 + LINE_MARGIN) as i32, x(PANEL.0 + SPLASH_WIDTH - LINE_MARGIN) as i32);
+        let centre = x(SCREEN.0 / 2.);
+        if self.drawn.is_none() {
+            painter.fill_rows(0, painter.height, BACKGROUND);
+            if let Some(font) = &self.font {
+                font.line(painter, TITLE, TITLE_SIZE * SCALE, centre, y(PANEL.1 + TITLE_TOP), TITLE_COLOUR, screen);
+            }
+        }
+        let top = y(PANEL.1 + BOARD_TOP).round() as usize;
+        painter.fill_rows(top, top + self.board.height, BACKGROUND);
+        painter.copy(x(board_left(seconds)).round() as i32, top, &self.board);
+        if self.drawn.as_ref().is_none_or(|(drawn, finished)| drawn != line || finished[..] != *history) {
+            let bottom = y(PANEL.1 + HISTORY_TOP + HISTORY_LINES as f32 * HISTORY_SPACING) as usize;
+            painter.fill_rows(y(PANEL.1 + LINE_TOP) as usize, bottom, BACKGROUND);
+            if let Some(font) = &self.font {
+                font.line(painter, &fit(line, LINE_SIZE), LINE_SIZE * SCALE, centre, y(PANEL.1 + LINE_TOP), LINE_COLOUR, margins);
+                for (i, finished) in history.iter().take(HISTORY_LINES).enumerate() {
+                    let top = y(PANEL.1 + HISTORY_TOP + i as f32 * HISTORY_SPACING);
+                    font.line(painter, &fit(finished, HISTORY_SIZE), HISTORY_SIZE * SCALE, centre, top, HISTORY_COLOUR, margins);
+                }
+            }
+            self.drawn = Some((line.to_owned(), history.to_vec()));
+        }
     }
 }
 
@@ -243,13 +288,33 @@ struct Painter<'a> {
 
 #[cfg(any(target_os = "horizon", test))]
 impl Painter<'_> {
-    fn fill(&mut self, [r, g, b]: [u8; 3]) {
-        let row = self.width * 4;
-        for pixel in self.pixels[..row].chunks_exact_mut(4) {
+    /// The rows from `top` to `bottom` in `colour`.
+    fn fill_rows(&mut self, top: usize, bottom: usize, [r, g, b]: [u8; 3]) {
+        let (top, bottom) = (top.min(self.height), bottom.min(self.height));
+        if top >= bottom {
+            return;
+        }
+        let (first, row) = (top * self.stride, self.width * 4);
+        for pixel in self.pixels[first..first + row].chunks_exact_mut(4) {
             pixel.copy_from_slice(&[r, g, b, 255]);
         }
-        for y in 1..self.height {
-            self.pixels.copy_within(0..row, y * self.stride);
+        for y in top + 1..bottom {
+            self.pixels.copy_within(first..first + row, y * self.stride);
+        }
+    }
+
+    /// An opaque image from column `left` on row `top`, cut to the frame.
+    fn copy(&mut self, left: i32, top: usize, image: &Rgba) {
+        let start = left.clamp(0, self.width as i32) as usize;
+        let end = (left + image.width as i32).clamp(0, self.width as i32) as usize;
+        if start >= end {
+            return;
+        }
+        let skip = (start as i32 - left) as usize;
+        for y in 0..image.height.min(self.height.saturating_sub(top)) {
+            let from = (y * image.width + skip) * 4;
+            let to = (top + y) * self.stride + start * 4;
+            self.pixels[to..to + (end - start) * 4].copy_from_slice(&image.data[from..from + (end - start) * 4]);
         }
     }
 
@@ -262,17 +327,6 @@ impl Painter<'_> {
         let alpha = alpha.min(1.);
         for (channel, value) in self.pixels[at..at + 3].iter_mut().zip(colour) {
             *channel = (f32::from(*channel) + (f32::from(value) - f32::from(*channel)) * alpha).round() as u8;
-        }
-    }
-
-    fn image(&mut self, left: i32, top: i32, image: &Rgba, clip: (i32, i32)) {
-        for y in 0..image.height {
-            for x in 0..image.width {
-                let pixel = &image.data[(y * image.width + x) * 4..][..4];
-                if pixel[3] > 0 {
-                    self.blend(left + x as i32, top + y as i32, [pixel[0], pixel[1], pixel[2]], f32::from(pixel[3]) / 255., clip);
-                }
-            }
         }
     }
 }
@@ -486,14 +540,14 @@ impl Line {
     }
 }
 
-/// Hails's layout in Bevy's UI: a panel her splash's shape in the middle of the screen, each part
-/// where her `paint` puts it, in percent of the panel.
+/// Hails's layout in Bevy's UI: her box's lines in the middle of the screen, each where her
+/// `paint` puts it, in percent of the box; the board on the screen itself, so it rolls from edge
+/// to edge.
 fn spawn_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>, screen: Res<LoadingScreen>) {
     if !screen.enabled {
         return;
     }
     let board = images.add(board_image());
-    let (screen_width, screen_height) = (SCREEN_WIDTH as f32 / SCALE, SCREEN_HEIGHT as f32 / SCALE);
     let across = |splash: f32| Val::Percent(splash / SPLASH_WIDTH * 100.);
     let down = |splash: f32| Val::Percent(splash / SPLASH_HEIGHT * 100.);
     let row = |top: f32, margin: f32| Node {
@@ -518,12 +572,24 @@ fn spawn_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>, scree
             BackgroundColor(colour(BACKGROUND)),
         ))
         .with_children(|root| {
+            root.spawn((
+                Board,
+                ImageNode::new(board),
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Percent((PANEL.1 + BOARD_TOP) / SCREEN.1 * 100.),
+                    left: Val::Percent(board_left(since_launch()) / SCREEN.0 * 100.),
+                    width: Val::Percent((BOARD_LENGTH + 2. * BOARD_PAD) / SCREEN.0 * 100.),
+                    height: Val::Percent(BOARD_HEIGHT / SCREEN.1 * 100.),
+                    ..default()
+                },
+            ));
             root.spawn(Node {
                 position_type: PositionType::Absolute,
-                left: Val::Percent((screen_width - SPLASH_WIDTH) / 2. / screen_width * 100.),
-                top: Val::Percent((screen_height - SPLASH_HEIGHT) / 2. / screen_height * 100.),
-                width: Val::Percent(SPLASH_WIDTH / screen_width * 100.),
-                height: Val::Percent(SPLASH_HEIGHT / screen_height * 100.),
+                left: Val::Percent(PANEL.0 / SCREEN.0 * 100.),
+                top: Val::Percent(PANEL.1 / SCREEN.1 * 100.),
+                width: Val::Percent(SPLASH_WIDTH / SCREEN.0 * 100.),
+                height: Val::Percent(SPLASH_HEIGHT / SCREEN.1 * 100.),
                 overflow: Overflow::clip(),
                 ..default()
             })
@@ -531,18 +597,6 @@ fn spawn_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>, scree
                 panel.spawn(row(TITLE_TOP, 0.)).with_children(|row| {
                     row.spawn(text(Line::Title, TITLE_COLOUR));
                 });
-                panel.spawn((
-                    Board,
-                    ImageNode::new(board),
-                    Node {
-                        position_type: PositionType::Absolute,
-                        top: down(BOARD_TOP),
-                        left: across(board_left(since_launch())),
-                        width: across(BOARD_LENGTH + 2. * BOARD_PAD),
-                        height: down(BOARD_HEIGHT),
-                        ..default()
-                    },
-                ));
                 panel.spawn(row(LINE_TOP, LINE_MARGIN)).with_children(|row| {
                     row.spawn(text(Line::Status, LINE_COLOUR));
                 });
@@ -624,10 +678,36 @@ fn roll_board(screen: Res<LoadingScreen>, mut boards: Query<&mut Node, With<Boar
     if !screen.shown() {
         return;
     }
-    let left = Val::Percent(board_left(since_launch()) / SPLASH_WIDTH * 100.);
+    let left = Val::Percent(board_left(since_launch()) / SCREEN.0 * 100.);
     for mut node in &mut boards {
         node.left = left;
     }
+}
+
+/// Gives the screen back to the game once the start's world is on the GPU, or its load failed and
+/// the menu has to show why; at once when no start map loads behind the splash (a map named in
+/// `options.txt` is read before the first frame). The window attaches the frame after.
+#[cfg(target_os = "horizon")]
+fn release_splash(screen: Res<LoadingScreen>, config: Res<crate::config::Config>) {
+    let done = !screen.enabled || config.boot_map.is_none() || (screen.ups > 0 && !screen.shown);
+    if done && bevy_horizon::splash::held() {
+        bevy_horizon::splash::hold(false);
+        info!("LOADING_SCREEN the start-up splash gives the screen to the game");
+    }
+}
+
+/// While the splash holds the screen and the loader thread reads the start map, the game draws
+/// nothing and only polls it, so it updates 20 times a second instead of 60, leaving the CPU to
+/// the loader. Once the map is published it runs at full speed, uploading it and compiling its
+/// pipelines behind the splash.
+#[cfg(target_os = "horizon")]
+fn ease_off_while_held(transition: Res<crate::map_transition::MapTransition>, mut last: Local<Option<Instant>>) {
+    if bevy_horizon::splash::held() && transition.loading() {
+        if let Some(rest) = last.and_then(|previous| Duration::from_millis(50).checked_sub(previous.elapsed())) {
+            std::thread::sleep(rest);
+        }
+    }
+    *last = Some(Instant::now());
 }
 
 fn rgba_image(width: u32, height: u32, data: Vec<u8>) -> Image {
@@ -648,6 +728,21 @@ struct Rgba {
     width: usize,
     height: usize,
     data: Vec<u8>,
+}
+
+#[cfg(any(target_os = "horizon", test))]
+impl Rgba {
+    /// These pixels over an opaque `background`.
+    fn over(mut self, background: [u8; 3]) -> Self {
+        for pixel in self.data.chunks_exact_mut(4) {
+            let alpha = f32::from(pixel[3]) / 255.;
+            for (channel, back) in pixel[..3].iter_mut().zip(background) {
+                *channel = (f32::from(back) + (f32::from(*channel) - f32::from(back)) * alpha).round() as u8;
+            }
+            pixel[3] = 255;
+        }
+        self
+    }
 }
 
 /// The board's length and the height of its box, in the splash's pixels, and the margin either
@@ -986,32 +1081,64 @@ mod tests {
         }
     }
 
+    const FRAME: (usize, usize) = (SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize);
+
+    fn at(pixels: &[u8], x: usize, y: usize) -> [u8; 3] {
+        let at = (y * FRAME.0 + x) * 4;
+        [pixels[at], pixels[at + 1], pixels[at + 2]]
+    }
+
+    fn draw(drawing: &mut SplashDrawing, pixels: &mut [u8], seconds: f32, line: &str, history: &[String]) {
+        drawing.draw(&mut Painter { pixels, width: FRAME.0, height: FRAME.1, stride: FRAME.0 * 4 }, seconds, line, history);
+    }
+
+    /// When the board's image starts `left` splash pixels from the screen's left edge.
+    fn when_left(left: f32) -> f32 {
+        (left + BOARD_LENGTH + 2. * BOARD_PAD) / ROLL_SPEED
+    }
+
     #[test]
-    fn the_early_splash_draws_hails_layout() {
-        let (width, height) = (SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize);
-        let mut pixels = vec![0u8; width * height * 4];
-        let board = board_pixels();
-        // The board's deck starts 194 splash pixels into the panel, its image 188.
-        let seconds = (194. + BOARD_LENGTH) / ROLL_SPEED;
+    fn the_early_splash_draws_hails_layout_then_only_what_changes() {
+        let mut pixels = vec![0u8; FRAME.0 * FRAME.1 * 4];
+        let mut drawing = SplashDrawing::new();
         let history = ["Reading the settings".to_owned()];
-        let mut painter = Painter { pixels: &mut pixels, width, height, stride: width * 4 };
-        draw_splash(&mut painter, SplashFont::new().as_ref(), &board, seconds, "Loading physics  (3 s)", &history);
-        let at = |x: usize, y: usize| -> [u8; 4] { pixels[(y * width + x) * 4..][..4].try_into().unwrap() };
-        assert_eq!(at(0, 0), [14, 14, 17, 255], "background");
-        // The panel is 1120 × 480 at (80, 120); each text band has something lit.
-        let lit = |top: f32, size: f32| {
-            let first = (120. + top * SCALE) as usize;
-            (first..first + (size * SCALE) as usize).any(|y| (0..width).any(|x| at(x, y)[0] > 40))
+        draw(&mut drawing, &mut pixels, when_left(300.), "Loading physics  (3 s)", &history);
+        assert_eq!(at(&pixels, 0, 0), BACKGROUND);
+        // Her box is 1120 × 480 at (80, 120); each text band has something lit.
+        let lit = |pixels: &[u8], top: f32, size: f32| {
+            let first = ((PANEL.1 + top) * SCALE) as usize;
+            (first..first + (size * SCALE) as usize).any(|y| (0..FRAME.0).any(|x| at(pixels, x, y)[0] > 40))
         };
-        assert!(lit(TITLE_TOP, TITLE_SIZE), "title");
-        assert!(lit(LINE_TOP, LINE_SIZE), "status line");
-        assert!(lit(HISTORY_TOP, HISTORY_SIZE), "the finished line");
-        assert!(!lit(HISTORY_TOP + HISTORY_SPACING, HISTORY_SIZE), "only one finished line");
+        assert!(lit(&pixels, TITLE_TOP, TITLE_SIZE), "title");
+        assert!(lit(&pixels, LINE_TOP, LINE_SIZE), "status line");
+        assert!(lit(&pixels, HISTORY_TOP, HISTORY_SIZE), "the finished line");
+        assert!(!lit(&pixels, HISTORY_TOP + HISTORY_SPACING, HISTORY_SIZE), "only one finished line");
         // The tail wheel's coloured core, where the board's own image has it.
-        let x = 80. + (board_left(seconds) + 42.8 + BOARD_PAD) * SCALE;
-        let y = 120. + (BOARD_TOP + 26.5) * SCALE;
-        let [r, g, b, _] = at(x as usize, y as usize);
-        assert_eq!([r, g, b], [86, 146, 214]);
+        let core = |left: f32| (((left + 42.8 + BOARD_PAD) * SCALE) as usize, ((PANEL.1 + BOARD_TOP + 26.5) * SCALE) as usize);
+        let (x, y) = core(300.);
+        assert_eq!(at(&pixels, x, y), [86, 146, 214]);
+        // A later frame moves the board and clears where it was; the text stays.
+        draw(&mut drawing, &mut pixels, when_left(400.), "Loading physics  (3 s)", &history);
+        assert_eq!(at(&pixels, x, y), BACKGROUND, "where the board was");
+        let (x, y) = core(400.);
+        assert_eq!(at(&pixels, x, y), [86, 146, 214]);
+        assert!(lit(&pixels, TITLE_TOP, TITLE_SIZE) && lit(&pixels, LINE_TOP, LINE_SIZE));
+        // New lines replace the old ones.
+        draw(&mut drawing, &mut pixels, when_left(400.), "Loading the skater  (5 s)", &[]);
+        assert!(lit(&pixels, LINE_TOP, LINE_SIZE));
+        assert!(!lit(&pixels, HISTORY_TOP, HISTORY_SIZE), "no finished lines now");
+    }
+
+    #[test]
+    fn the_board_rolls_in_from_the_screen_edge_not_her_box() {
+        let mut pixels = vec![0u8; FRAME.0 * FRAME.1 * 4];
+        let mut drawing = SplashDrawing::new();
+        // Half the board off the left edge: its middle, mid-deck, is at the edge, left of her box.
+        let left = -(BOARD_LENGTH + 2. * BOARD_PAD) / 2.;
+        assert!((board_left(when_left(left)) - left).abs() < 1e-3);
+        draw(&mut drawing, &mut pixels, when_left(left), "", &[]);
+        let y = ((PANEL.1 + BOARD_TOP + 14.) * SCALE) as usize;
+        assert_eq!(at(&pixels, 2, y), [214, 176, 124], "the maple, at the screen's edge");
     }
 
     fn pixel(image: &Rgba, x: f32, y: f32) -> [u8; 4] {
