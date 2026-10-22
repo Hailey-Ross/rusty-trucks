@@ -103,6 +103,65 @@ pub(crate) struct Seen {
     trace: Option<bool>,
     /// Rows written to the audio state log.
     log_frame: u64,
+    /// Sudden ground speed changes while rolling (`SKATE_SPEED_DROP` / `SKATE_SPEED_GAIN`, USER-ASKS 237).
+    speed_watch: SpeedWatch,
+}
+
+/// Recent ground speeds while rolling, for the sudden-change log lines (diagnostics only: nothing reads them back).
+#[derive(Default)]
+struct SpeedWatch {
+    /// (ms, |ground speed|) over the last [`SpeedWatch::WINDOW_MS`]; cleared off the ground.
+    recent: std::collections::VecDeque<(f64, f32)>,
+    last_log_ms: Option<f64>,
+    /// The last push plant (a one-frame pulse; the speed-up it starts lasts several hundred ms).
+    last_push_ms: Option<f64>,
+}
+
+impl SpeedWatch {
+    const WINDOW_MS: f64 = 150.0;
+    /// A drop of at least this much (m/s) inside the window from at least `FROM` m/s is logged.
+    const DROP: f32 = 2.0;
+    const FROM: f32 = 3.0;
+    /// A gain of at least this much (m/s) inside the window, more than `AFTER_PUSH_MS` after a push, is logged.
+    const GAIN: f32 = 3.0;
+    const AFTER_PUSH_MS: f64 = 800.0;
+    const QUIET_MS: f64 = 500.0;
+
+    /// The change to log this frame: (from, to, ms over which it happened); `to < from` is a drop. `rolling` =
+    /// riding, not bailing, braking or grinding; any other frame resets the window.
+    fn observe(&mut self, now: f64, speed: f32, rolling: bool, push: bool) -> Option<(f32, f32, f64)> {
+        if push {
+            self.last_push_ms = Some(now);
+        }
+        let pushing = self.last_push_ms.is_some_and(|t| now - t <= Self::AFTER_PUSH_MS);
+        if !rolling {
+            self.recent.clear();
+            return None;
+        }
+        while self.recent.front().is_some_and(|&(t, _)| now - t > Self::WINDOW_MS) {
+            self.recent.pop_front();
+        }
+        self.recent.push_back((now, speed));
+        if self.last_log_ms.is_some_and(|t| now - t < Self::QUIET_MS) {
+            return None;
+        }
+        let (&(t_max, max), &(t_min, min)) = (
+            self.recent.iter().max_by(|a, b| a.1.total_cmp(&b.1))?,
+            self.recent.iter().min_by(|a, b| a.1.total_cmp(&b.1))?,
+        );
+        let change = if max >= Self::FROM && max - speed >= Self::DROP {
+            Some((max, speed, now - t_max))
+        } else if !pushing && speed - min >= Self::GAIN {
+            Some((min, speed, now - t_min))
+        } else {
+            None
+        };
+        if change.is_some() {
+            self.last_log_ms = Some(now);
+            self.recent.clear();
+        }
+        change
+    }
 }
 
 /// The per-skater memory the audio-state builder ([`skater_audio_state`]) keeps between physics
@@ -318,6 +377,21 @@ pub(crate) fn observe(
     debug_assert_eq!((built.state_id, built.on_rail, built.board), (state, on_rail, board));
     let Built { state: audio_state, wheels, surface, plant_edge, push_edge, state55, unridden, .. } = built;
     let com_speed_212 = seen.skater.com_speed_212;
+    // A sudden speed loss (or gain) while rolling, with where it happened, so a session log can point at a catch
+    // (USER-ASKS 237); rate-limited, on in normal play.
+    // Riding states only; wheel contact is not required (a catch lifts the wheels as the speed goes, see the
+    // 2026-10-22 MegaPark trace: wheels 15 -> 0 on the stopping frames).
+    let rolling = matches!(state, 100 | 101) && !audio_state.bail && !braking && !on_rail;
+    let now_ms = time.elapsed_secs_f64() * 1000.0;
+    if let Some((from, to, over)) = seen.speed_watch.observe(now_ms, audio_state.ground_speed.abs(), rolling, push_edge) {
+        let at = physics.board.part_transforms()[BodyId::Deck.index()].basis.columns[2];
+        info!(
+            "{} actor=player from={from:.2} to={to:.2} over_ms={over:.0} at=({:.2}, {:.2}, {:.2}) heading={:.3} wheels={} surface={surface} state={state}",
+            if to < from { "SKATE_SPEED_DROP" } else { "SKATE_SPEED_GAIN" },
+            board.x, board.y, board.z, at[0].atan2(at[2]),
+            (0..4).filter(|&i| audio_state.wheel_contact[i]).count(),
+        );
+    }
     if super::state_log::enabled() {
         let p = &skater.player_input.physical;
         let s = &audio_state;
@@ -745,6 +819,38 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// USER-ASKS 237: a catch (8.5 -> 4.1 m/s in two frames, the 2026-10-22 MegaPark kicker toe) logs one drop with
+    /// its size and timing; a slow roll-off, a push's speed-up, a bail and a brake do not; the line is rate-limited.
+    #[test]
+    fn speed_watch_logs_catches_not_pushes_or_slowdowns() {
+        let frame = 1000.0 / 60.0;
+        let mut watch = SpeedWatch::default();
+        let mut feed = |watch: &mut SpeedWatch, speeds: &[f32], start: f64, rolling: bool, push_at: Option<usize>| {
+            speeds.iter().enumerate().filter_map(|(i, &v)| {
+                watch.observe(start + i as f64 * frame, v, rolling, push_at == Some(i))
+            }).collect::<Vec<_>>()
+        };
+        let caught = feed(&mut watch, &[8.5, 8.5, 8.5, 6.2, 4.1, 4.0], 0.0, true, None);
+        assert_eq!(caught.len(), 1);
+        let (from, to, over) = caught[0];
+        assert_eq!((from, to), (8.5, 6.2));
+        assert!(over <= 2.0 * frame && to < from);
+        // Rate-limited: a second drop right after is quiet.
+        assert!(feed(&mut watch, &[6.5, 3.0], 120.0, true, None).is_empty());
+        // Rolling uphill: ~1 m/s lost per 150 ms.
+        let slow: Vec<f32> = (0..60).map(|i| 8.0 - i as f32 * 0.11).collect();
+        assert!(feed(&mut SpeedWatch::default(), &slow, 0.0, true, None).is_empty());
+        // A push's speed-up (3.5 m/s over a few frames right after the plant pulse) is not a gain.
+        assert!(feed(&mut SpeedWatch::default(), &[2.0, 2.0, 3.0, 4.5, 5.5], 0.0, true, Some(0)).is_empty());
+        // The same speed-up with no push is.
+        let gained = feed(&mut SpeedWatch::default(), &[2.0, 2.0, 3.0, 4.5, 5.5], 0.0, true, None);
+        assert!(gained.len() == 1 && gained[0].1 > gained[0].0);
+        // Not rolling (bail, brake, grind): nothing, and the window restarts.
+        let mut off = SpeedWatch::default();
+        assert!(feed(&mut off, &[8.5, 8.5, 1.0], 0.0, false, None).is_empty());
+        assert!(feed(&mut off, &[1.0, 1.0], 50.0, true, None).is_empty());
+    }
 
     /// `+236` across an ollie as the recomp's TREAT capture has it (session all_20261002_223306,
     /// 60 Hz ticks): 0 on the ground, 1/60 on the first air tick, still counting on the landing

@@ -1124,6 +1124,12 @@ fn fused_edge_features(
         for e in 0..3 {
             let u = neighbour[t][e];
             if u == usize::MAX {
+                // Unpaired (a ramp toe on the map floor, an open border): retail's edge writer 82AC2390 ORs the
+                // convex bit only for a score below 1.0 (8231A844) and an unpaired edge keeps score 1.0, so it is
+                // written unmatched (0x9A), cosine 1, NOT convex (research b487). Convex would let the wheels take
+                // edge contacts on the toe that retail never takes.
+                cosines[t][e] = 1.0;
+                flags[t] &= !(0x20 << e);
                 continue;
             }
             let (a, b) = (vertices[t][e], vertices[t][(e + 1) % 3]);
@@ -2257,8 +2263,9 @@ mod tests {
         assert!(seam(&fused).iter().all(|&(convex, cosine)| !convex && (cosine - 1.0).abs() < 1e-5), "paired: flat, not convex");
         let mapped = welded_edge_features_within(&flush, true, None).unwrap();
         assert!(seam(&mapped).iter().all(|&(convex, _)| convex), "the 1 mm grid keeps them open");
+        // A real gap stays unpaired: retail writes such an edge unmatched with cosine 1, not convex (82AC2390, b487).
         let gap = fuse(&plates([0.05, 0.0, 0.0]));
-        assert!(seam(&gap).iter().all(|&(convex, _)| convex), "a real gap still catches");
+        assert!(seam(&gap).iter().all(|&(convex, cosine)| !convex && cosine == 1.0), "unpaired: not convex");
         // Deterministic: the same input gives the same features.
         assert_eq!(fused, fuse(&flush));
     }

@@ -260,6 +260,37 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
   - Asset-gated `ignore_fuser_counts_per_layout`: 16 / 8 / 9 / 13 in backlot_full / Downtown_Fullpark / ZenPlaza_Full
     / Nightpark, 0 in MegaPark and Starter.
 - **Not play-tested.** Skating through a hedge or bush in these layouts is now retail behaviour.
+- **Known gap (props):** retail props still touch these pieces. The DmoGround task reads the TerrainPool with no filter,
+  so props get every piece's own mesh, fused pieces included (research b485: `8277C5D8` -> `8277CAA0`, bbox test only;
+  `82763EE0` kicks it with r8=0, the GroundPool tasks with r8=1, checked by main). Ours: props step against the
+  skater's world (`physics.rs` `step_with_actors(&self.world, ..)`), so they now pass through these pieces too. Port
+  needs a props-only set of the unfused pieces; whether retail's double read of fused pieces changes the outcome is open.
+
+## Unpaired fused edges are not convex: no catch at ramp toes (2026-10-22, USER-ASKS 235 / 237)
+
+- **Problem (laptop session 2026-10-22 00:10, MegaPark full, the user):** "skate.park maps: the collision between
+  placed objects and the ground is not quite right and causes you to stop or slowdown when transitioning". The trace
+  (`audio_state.tsv`): three catches rolling from the map floor onto a piece's toe (`da_minirampkicker_University`,
+  `ac_ramp_md_University`, `cd_pipeflatbank_lrg_University`): speed 8.5 to 4.1 / 6.4 / 6.7 m/s in two frames, all
+  wheels off, the board lifted 4 to 6 cm, no bail.
+- **Cause [code]:** a toe edge sits on the map floor, which is not in the fused set (retail's too: `827765C0` passes only
+  the piece entries to the builder), so it has no partner. Ours left such edges at the default flags: convex, cosine 1.
+  Our wheel contact takes edge contacts on a convex edge within about 8 degrees of the face normal; a non-convex edge
+  with cosine 1 is rejected (`ground.rs` thresholds, research b487).
+- **Retail [code, research b487, writer checked by main in the recomp]:** after pairing, `82AC2438` writes each edge
+  byte with `82AC2390`: the convex bit 0x20 only for a score below 1.0 (`8231A844`), 0x1A above the concave limit,
+  0x9A (unmatched) with no neighbour. An unpaired edge keeps score 1.0, so retail writes it unmatched, not convex.
+- **Change:** `skate_world.rs` `fused_edge_features`: unpaired edges of the fused set get cosine 1 and no convex bit.
+  Fused park path only; disc maps and props keep theirs.
+- **Diagnostics (ask 237):** the log now has `SKATE_SPEED_DROP` / `SKATE_SPEED_GAIN actor=player from= to= over_ms= at=
+  heading= wheels= surface= state=` for a loss of 2 m/s or more from 3 m/s or more inside 150 ms while riding (or a gain
+  of 3 m/s more than 800 ms after a push), at most one every 500 ms (`game_audio/skate_events.rs` `SpeedWatch`). On the
+  last two laptop traces it flags exactly the reported catches (MegaPark toes, Back Lot stairs and plaza pad seam,
+  DownTown pad edge) and no pushes.
+- **Tests:** `fused_park_pieces_pair_their_flush_seams` (a 5 cm gap stays unpaired: not convex, cosine 1),
+  `speed_watch_logs_catches_not_pushes_or_slowdowns`. skate-game 887 passed. Not play-tested.
+- **Open:** the concave rule above 1.8 (retail writes cosine about 1.0, ours keeps the pair's cosine); where retail
+  sets vertex-disable bits (`82875200` / `82AC2BE8`, ours: the coplanar rule); which pool holds the map floor.
 
 ## Seam audit of every layout (2026-10-22, USER-ASKS 231 / 232)
 
