@@ -198,6 +198,9 @@ pub(crate) struct Replay {
     markers: VecDeque<Marker>,
     /// The mod whose `sdk.replay.set_limits` is in force (last writer wins).
     limits_owner: Option<String>,
+    /// The editor's limits (retail defaults; a mod's `share_max_seconds` lands here). The editor and the instant
+    /// replay's share check read the same value (b470 item 5).
+    pub(crate) edit_limits: skate_core::replay_edit::EditLimits,
     /// The player's Extended Replays length, s (PC overlay, not retail); None = retail's window. A mod's limits win.
     user_seconds: Option<u32>,
     /// The cursor the audio feed last published up to, and whether it moved forward this frame.
@@ -361,15 +364,17 @@ impl Replay {
     }
 
     /// `sdk.replay.set_limits`: both absent restores the defaults (retail, or the player's Extended Replays).
-    pub(crate) fn set_limits(&mut self, owner: &str, max_frames: Option<u32>, byte_budget: Option<u64>) {
+    pub(crate) fn set_limits(&mut self, owner: &str, max_frames: Option<u32>, byte_budget: Option<u64>, share_max_seconds: Option<u32>) {
         let defaults = self.base_limits();
-        if max_frames.is_none() && byte_budget.is_none() {
+        if max_frames.is_none() && byte_budget.is_none() && share_max_seconds.is_none() {
             if self.limits_owner.as_deref() == Some(owner) {
                 self.world.limits = defaults;
+                self.edit_limits = Default::default();
                 self.limits_owner = None;
             }
             return;
         }
+        self.edit_limits.share_max_seconds = share_max_seconds.unwrap_or(skate_core::replay_edit::EditLimits::default().share_max_seconds);
         self.world.limits = skate_core::replay_buffer::ReplayLimits {
             max_frames: max_frames.unwrap_or(defaults.max_frames),
             byte_budget: byte_budget.map_or(defaults.byte_budget, |b| b as usize),
@@ -399,7 +404,7 @@ impl Replay {
     /// A mod stopped: its markers, its limits and its camera rules go.
     pub(crate) fn clear_owner(&mut self, owner: &str) {
         self.markers.retain(|m| m.owner != owner);
-        self.set_limits(owner, None, None);
+        self.set_limits(owner, None, None, None);
         self.set_camera(owner, None, None, None);
     }
 
@@ -407,6 +412,7 @@ impl Replay {
     pub(crate) fn clear_mods(&mut self) {
         self.markers.clear();
         self.world.limits = self.base_limits();
+        self.edit_limits = Default::default();
         self.limits_owner = None;
         self.camera_collision = Default::default();
         self.camera_owner = None;
@@ -1065,7 +1071,7 @@ pub(crate) fn controls(
     if replay.editor.is_none() {
         if (pressed & A != 0 || keys.just_pressed(KeyCode::Enter)) && !replay.panel_hidden && retail_ui.as_ref().is_some_and(|r| r.0) {
             let (start, end) = replay.bounds();
-            replay.editor = editor::Editor::open(start, end, Default::default());
+            replay.editor = editor::Editor::open(start, end, replay.edit_limits.clone());
             if replay.editor.is_some() {
                 replay.playing = false;
                 info!("REPLAY_EDITOR open at={:.1}s", replay.cursor - start);
@@ -1213,7 +1219,7 @@ fn publish_feed(replay: Res<Replay>, mut feed: ResMut<ReplayFeed>) {
         Some(e) => (e.edit.encoded_seconds(), e.edit.can_share()),
         None => {
             let seconds = (end - start).max(0.0).round() as u32;
-            (seconds, seconds <= skate_core::replay_edit::EditLimits::default().share_max_seconds)
+            (seconds, seconds <= replay.edit_limits.share_max_seconds)
         }
     };
     let next = crate::replay_menu_host::ReplayScreenFeed {

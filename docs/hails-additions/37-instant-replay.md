@@ -694,5 +694,6 @@ replay 44 tests (new: the film pack lane channels). Not play-tested.
 The Finished menu's "Save to PC" row (ours; retail's rows need sign-in) was a literal English string. It is now
 `ID_HAILS_REPLAY_SAVE_TO_PC`, with "Save to PC" as a default under the disc's language table
 (`apt_text::ENGINE_STRINGS`), so a language table or mod text with the id replaces it. Test
-`our_string_ids_have_text_a_language_table_can_replace`. b470 item 5 (share limit from data) stays open: the editor
-and the instant replay both use `EditLimits::default()`, nothing sets the limits from data or a mod yet.
+`our_string_ids_have_text_a_language_table_can_replace`. b470 item 5 (2026-10-21, later): the editor and the instant
+replay's share check now read one `Replay::edit_limits` (retail defaults), and `sdk.replay.set_limits{share_max_seconds
+= n}` (1..600 s) sets its share limit; nil or the mod's disable restores 60 s. Test in `replay/tests.rs` (limits).

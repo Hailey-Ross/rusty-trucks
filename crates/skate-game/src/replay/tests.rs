@@ -253,14 +253,19 @@ fn mod_markers_and_limits_are_owned_and_go_with_their_mod() {
         replay.add_marker("b", "x".into()).unwrap();
     }
     assert!(replay.add_marker("a", "one too many".into()).is_err());
-    replay.set_limits("a", Some(1800), None);
+    replay.set_limits("a", Some(1800), None, None);
     assert_eq!(replay.world.limits.max_frames, 1800);
     assert!((replay.window() - 30.).abs() < 1e-9);
     // Another mod's reset does not drop a's limits; a's disable does.
-    replay.set_limits("b", None, None);
+    replay.set_limits("b", None, None, None);
     assert_eq!(replay.world.limits.max_frames, 1800);
     replay.clear_owner("a");
     assert_eq!(replay.world.limits.max_frames, 5400);
+    // A mod's share limit (b470 item 5) reaches the editor's limits; its disable restores retail's 60 s.
+    replay.set_limits("a", None, None, Some(120));
+    assert_eq!(replay.edit_limits.share_max_seconds, 120);
+    replay.clear_owner("a");
+    assert_eq!(replay.edit_limits.share_max_seconds, 60);
     let state = replay.state();
     assert_eq!(state["markers"].as_array().unwrap().len(), MAX_MARKERS - 1);
     assert_eq!(state["max_frames"], 5400);
@@ -540,7 +545,7 @@ fn extended_replays_scale_the_window_and_a_mod_still_wins() {
     assert_eq!(replay.world.limits.max_frames, 240 * 60);
     assert_eq!(replay.world.limits.byte_budget, retail.byte_budget * 240 / 90);
     // A mod's limits win; clearing them goes back to the player's length, not retail.
-    replay.set_limits("m", Some(600), None);
+    replay.set_limits("m", Some(600), None, None);
     assert_eq!(replay.world.limits.max_frames, 600);
     replay.set_user_length(Some(120));
     assert_eq!(replay.world.limits.max_frames, 600);

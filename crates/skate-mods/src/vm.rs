@@ -352,6 +352,9 @@ pub enum Command {
         max_frames: Option<u32>,
         #[serde(default)]
         byte_budget: Option<u64>,
+        /// The longest encoded edit that can be shared / saved, s (retail 60, `EditLimits::share_max_seconds`).
+        #[serde(default)]
+        share_max_seconds: Option<u32>,
     },
     /// Override the replay cameras' world collision (switch, sphere radius m) and leash (m); all absent restores
     /// retail's (on, 0.1, 40).
@@ -785,8 +788,9 @@ impl Command {
             Self::ReplayOpen {} => true,
             Self::ReplayMarker { label } => !label.is_empty() && label.len() <= 64 && !label.chars().any(char::is_control),
             // 1 s to 10 min at 60 frames per second; 1 MiB to 1 GiB.
-            Self::ReplaySetLimits { max_frames, byte_budget } => max_frames.is_none_or(|f| (60..=36_000).contains(&f))
-                && byte_budget.is_none_or(|b| (1 << 20..=1 << 30).contains(&b)),
+            Self::ReplaySetLimits { max_frames, byte_budget, share_max_seconds } => max_frames.is_none_or(|f| (60..=36_000).contains(&f))
+                && byte_budget.is_none_or(|b| (1 << 20..=1 << 30).contains(&b))
+                && share_max_seconds.is_none_or(|s| (1..=600).contains(&s)),
             // Up to a 2 m sphere; a 1 m to 1 km leash.
             Self::ReplaySetCamera { radius, leash, .. } => radius.is_none_or(|r| (0.0..=2.0).contains(&r))
                 && leash.is_none_or(|l| (1.0..=1000.0).contains(&l)),
@@ -2724,7 +2728,7 @@ mod world_audio_tests {
         assert_eq!(kinds, ["world_set_tuning", "world_set_tuning", "request", "world_reset_moved_props", "world_reset_prop", "world_upright_prop", "world_spawn_prop", "world_remove_prop",
             "replay_open", "replay_marker", "replay_set_limits", "replay_set_limits", "replay_set_camera"]);
         assert!(matches!(&cmds[12], Command::ReplaySetCamera { collide: Some(false), radius: None, leash: Some(80.0) }));
-        assert!(matches!(&cmds[11], Command::ReplaySetLimits { max_frames: None, byte_budget: None }), "nil restores");
+        assert!(matches!(&cmds[11], Command::ReplaySetLimits { max_frames: None, byte_budget: None, share_max_seconds: None }), "nil restores");
         assert!(cmds.iter().all(Command::validate));
         assert!(matches!(&cmds[1], Command::WorldSetTuning { patch: None, .. }), "nil restores");
         let _ = std::fs::remove_dir_all(root);
