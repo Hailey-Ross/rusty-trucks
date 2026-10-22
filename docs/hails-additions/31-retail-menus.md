@@ -2330,8 +2330,9 @@ looked at in the running game (keyboard look, popup over the keyboard).
   `debug_menus` is set, so mod listings with the flag behave the same.
 - **Debug Menus (ours, not retail):** PC overlay EXTRAS > Debug > "Debug Menus" (saved in `settings/graphics.json`
   `debug_menus`) sets the fact. With it on the map gets the "debug_list_all" tab: the challenge-type folders (empty,
-  our game has no challenges yet), Art Gallery, Maloof Money Cup 2010 NYC and one folder without a title
-  (`Hash_0573E271B978991A`, open).
+  our game has no challenges yet), Art Gallery, Maloof Money Cup 2010 NYC and a blank row: the folder
+  `progression_all_team_spacer` points at a map_category with an empty label (a spacer); folders that point at a
+  category now take its label, and an empty label shows no count.
 - **Compiled out in TU3 (b479):** the pause / start hub "Debug Menu" (`ID_PAUSEMENU_DEBUGMENU`,
   `ID_START_HUB_DEBUG_MENU`: only the strings and a `debug` icon frame in core_menu remain, no table row or screen)
   and an "AI Paths | Options" page (strings only). Nothing to re-enable; anything there would be ours. Challenges
