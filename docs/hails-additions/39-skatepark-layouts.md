@@ -129,7 +129,12 @@ Not retail (ours, the same outcome): a layout change reloads the map instead of 
 join the static pass, so under the 40-record cap they come before the props (retail queries them after the DMO
 provider; parks have few props).
 
-NOT RETAIL YET: the parks' projected lightmaps (see "Park shading"); the DLC packs' recipe precedence.
+Recipe precedence across packs (checked 2026-10-21, `.local/tools/recipe-precedence.py`): the disc's `_000` and the packs'
+`_005` / `_010` / `_012` / `_015` / `_017` static recipes share 664 of 682 piece ids and the dynamic `_000` / `_015` /
+`_017` share 140 of 141; no shared id has a different name, model (arena id) or cap row, so the load order cannot
+change a piece. Setup reads them disc first, then the packs.
+
+NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
 
 ## Moddability and multiplayer
 
@@ -163,7 +168,8 @@ NOT RETAIL YET: the parks' projected lightmaps (see "Park shading"); the DLC pac
 ## Open questions
 
 - The tint path on the CPU and the `environmentpark` families (b433 change list).
-- Movable pieces (b435), the Monster Park challenge locator, the DLC recipe precedence, `cap.AllowCollision`.
+- Movable pieces (b435), the Monster Park challenge locator, `cap.AllowCollision` (the DLC recipe precedence is moot, see
+  "Recipe precedence across packs" above).
 
 ## The pieces fuse into one collision set: no catching on seams (2026-10-21, research b477 / b478)
 
