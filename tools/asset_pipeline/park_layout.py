@@ -121,7 +121,7 @@ def recipe(raw):
 class Sources:
     """The disc's park files and the player's packs, read in order: a later archive's recipe row, model or texture
     with the same id replaces the earlier one (the packs' recipes are numbered supersets of the disc's `_000`;
-    which number wins between packs is open, b425)."""
+    no shared id differs between them, doc 39, so the order is moot)."""
 
     def __init__(self, archives):
         self.layouts, self.models, self.textures, self.static, self.dynamic, self.lightmaps = {}, {}, {}, {}, {}, {}

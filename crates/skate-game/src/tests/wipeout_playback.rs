@@ -302,6 +302,47 @@ fn travel_keeps_the_mods_arrival_velocity() {
     travel_once(Some([2.0, 0.0, 0.0]));
 }
 
+/// Laptop session 2026-10-21 21:38: an on-foot arrival (Challenge Map, a marker set on foot) went Teleporting ->
+/// BipedGround -> PhysicsAir in one tick and flung the skater tens of metres. It must stay at the target.
+#[test]
+#[ignore = "requires private stock animation banks and collections"]
+fn travel_on_foot_stays_at_the_target() {
+    let root = std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT");
+    let root = std::path::Path::new(&root);
+    let assets = skate_data::GameAssets::load(root).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(root, &assets).unwrap();
+    let mut physics = GamePhysics::load(root).unwrap();
+    let mut skater = SkaterRuntime::load(root, &graphs, &physics, "normal").unwrap();
+    let mut controls = PlayerControls::default();
+    let mut input = crate::input::ControllerInput::default();
+    let mut camera = crate::camera::CameraRuntime::load(root).unwrap();
+    let mut target = [[0.0f32; 4]; 4];
+    for tick in 0..180 {
+        if tick == 60 {
+            target = skater.animated_skeleton.roots.animation_to_world;
+            target[3][2] += 5.0;
+            skater.travel_ex(target, None, false).unwrap();
+        }
+        input.sample_raw_for_test(XboxState { buttons: 0, triggers: [0; 2], left: [0; 2], right: [0; 2] });
+        let mut actions = input.player_actions();
+        controls.update(
+            &mut actions,
+            physics.settings.step.simulation.time_step,
+            physics.settings.input_magnitude_threshold,
+            skater.player_input.physical.scoring.capabilities_204,
+        );
+        frame::advance(&mut physics, &mut skater, &mut controls, &graphs, &mut actions, true, &mut camera)
+            .unwrap_or_else(|error| panic!("On-foot travel tick{tick}: {error}"));
+        if tick > 61 {
+            let at = skater.animated_skeleton.roots.animation_to_world[3];
+            let off = ((at[0] - target[3][0]).powi(2) + (at[2] - target[3][2]).powi(2)).sqrt();
+            assert!(off < 2.0, "tick {tick}: {:?} is {off:.1} m from the target, state {:?}", at,
+                skater.player_state.current());
+        }
+    }
+    assert_eq!(skater.player_state.current(), PhysicalStateId::BipedGround, "an on-foot arrival ends on foot");
+}
+
 fn travel_once(velocity: Option<[f32; 3]>) {
     let root = std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT");
     let root = std::path::Path::new(&root);

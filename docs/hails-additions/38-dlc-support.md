@@ -444,6 +444,19 @@ Not yet run end to end: the launcher's import followed by its automatic refresh 
 - **Tests:** `travel_is_one_placement_and_refuses_a_second_request`, `travel_keeps_the_mods_arrival_velocity`
   (asset-gated, pass on the dev assets); regression: boundary, air timeout, checkpoint reply pass;
   `marker_reply_restores_on_foot` fails as before (pre-existing, gotchas). Not play-tested.
+- **Regression found in play (laptop session 2026-10-21 21:38):** an on-foot arrival (Challenge Map, retail-menu return,
+  a marker set on foot, a mod dismount) flung the skater 20 to 150 m and often out of the world (DW MegaCompund,
+  Sanitarium, Maloof NYC, Art Gallery, Black Box, University). The log shows Teleporting -> BipedGround -> PhysicsAir in
+  one tick, 11 times; no session since 2026-10-17 had a Teleporting -> BipedGround exit at all.
+- **Root cause [code]:** ours since the session marker (5e2310d4): `enter_after_teleport` entered BipedGround directly
+  for a manual on-foot reply. While the host teleport ran first, its reset always exited to PhysicsGround, so that
+  branch never ran; with the reply as the only reset it did. Retail `82DB8E40` always enters state 100 after the reset.
+- **Fix:** the reset always enters PhysicsGround; the reply's on-foot byte (64) takes the skater to BipedGround through
+  the ordinary selection, as a bail checkpoint and the first map load already do.
+- **Tests:** `travel_on_foot_stays_at_the_target` (asset-gated; failed before the fix: 9 m off, PhysicsAir, two ticks
+  after the arrival; passes, ends on foot). `marker_reply_restores_on_foot` passes now too. Note: NPC skaters write the
+  same `player teleport spawn` log line, so the notes' University "teleport burst" (03:50:41 to 03:50:54) was their
+  respawns, not the player.
 
 ## Teleport arrivals fit onto the ground (2026-10-21, research b475)
 
