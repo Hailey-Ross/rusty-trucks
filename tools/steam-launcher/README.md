@@ -10,8 +10,9 @@ What it does:
   desktop layout (arrows, Enter, Esc / Space). It hides while a game runs, so the game gets the front and Steam's
   gamepad layout, and comes back with the session's result when the game closes. The main screen is a hero card
   with the selected version and Play, then tiles (D-pad in all four directions); the splash's skateboard is the mark.
-  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|job|build|failed]` draws one screen at 1920x1080 into
-  a PNG and exits (checking the look without opening the window).
+  The engine's play screen (Play, Play + trace all, ...) uses the same tiles, two wide and as many rows as needed.
+  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|play|job|build|failed]` draws one screen at 1920x1080
+  into a PNG and exits (checking the look without opening the window).
 - **Builds:** while a version builds, the window shows cargo's own step count as a progress bar, the crate being
   built, the warning count and, if it fails, the first error in a fixed-width block. The whole output goes to
   `<version>\logs\launcher-build-<id>-<time>.log` (the newest 10 per version are kept), named on the result screen.

@@ -53,6 +53,7 @@ class Page {
     public string Body;          // a text page (notes, results) instead of a list
     public Action OnBack;        // null = pop the page
     public string Mono;          // a fixed-width block under the body (a build's first error)
+    public int Cols;             // > 0: the items are tiles like the main screen's, Cols wide (0 = full-width rows)
 }
 
 // Build progress from the build output (launcher.ps1 marks the build with LAUNCHER_BUILD lines and turns on cargo's own
@@ -193,6 +194,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         pages.Push(MainPage());
         if (screen == "versions") pages.Push(VersionPage());
         if (screen == "tools") pages.Push(EntryPage("Tools", "tools"));
+        if (screen == "play") pages.Push(EntryPage("Play: " + St("version"), "rust"));
         if (screen == "waiting") {
             job = new Process(); jobTitle = "Update and build";
             build.Feed("LAUNCHER_BUILD\tbegin\thails-additions\t94774ce\t");
@@ -351,7 +353,9 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         return p;
     }
     Page EntryPage(string title, string group) {
-        var p = new Page { Title = title };
+        // The engine's play screen (Play, Play + trace all, ...): buttons two wide like the main screen (laptop notes
+        // 2026-10-21 22:23).
+        var p = new Page { Title = title, Cols = group == "rust" ? 2 : 0 };
         foreach (var e in Rows("entries", 7)) {
             if (e[4] != group) continue;
             var row = e;
@@ -600,6 +604,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             // "ok" first: the main page's grid move used to swallow it, so A / Enter did nothing there (laptop 2026-10-18).
             if (a == "ok") { var it = p.Items[p.Sel]; if (it.On && it.Run != null) it.Run(); }
             else if (IsMain(p)) p.Sel = GridMove(p.Sel, a, p.Items.Count);
+            else if (p.Cols > 0) p.Sel = PageGridMove(p.Sel, a, p.Items.Count, p.Cols);
             else if (a == "up" || a == "left") p.Sel = (p.Sel - 1 + p.Items.Count) % p.Items.Count;
             else if (a == "down" || a == "right") p.Sel = (p.Sel + 1) % p.Items.Count;
         } else if (a == "ok" && p.Body != null) {
@@ -614,6 +619,15 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (a == "right") return Math.Min(count - 1, sel + 1);
         if (a == "down") return sel == 0 ? Math.Min(1, count - 1) : Math.Min(count - 1, sel + TileCols);
         if (a == "up") return sel <= TileCols ? 0 : sel - TileCols;
+        return sel;
+    }
+
+    // A tile page's grid (Page.Cols wide): down onto a shorter last row lands on its last tile.
+    static int PageGridMove(int sel, string a, int count, int cols) {
+        if (a == "left") return Math.Max(0, sel - 1);
+        if (a == "right") return Math.Min(count - 1, sel + 1);
+        if (a == "down") return sel / cols < (count - 1) / cols ? Math.Min(count - 1, sel + cols) : sel;
+        if (a == "up") return sel >= cols ? sel - cols : sel;
         return sel;
     }
 
@@ -948,6 +962,23 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             y = br.Bottom + h * 0.025f;
         }
         if (p.Items.Count == 0) return;
+        if (p.Cols > 0) {
+            // Tiles like the main screen's, Cols wide and as many rows as needed; rows scroll to keep the selected one.
+            float tgap = w * 0.012f, tw = (w - 2 * m - tgap * (p.Cols - 1)) / p.Cols, th = h * 0.15f;
+            int rows = (p.Items.Count + p.Cols - 1) / p.Cols;
+            int fitRows = Math.Max(1, (int)((bottom - y + tgap) / (th + tgap)));
+            int firstRow = Math.Max(0, Math.Min(p.Sel / p.Cols - fitRows / 2, rows - fitRows));
+            var thint = PageHintFont(g, p, 0, new RectangleF(0, 0, tw, th), true);
+            for (int i = firstRow * p.Cols; i < p.Items.Count && i < (firstRow + fitRows) * p.Cols; i++) {
+                int k = i - firstRow * p.Cols;
+                var r = new RectangleF(m + (k % p.Cols) * (tw + tgap), y + (k / p.Cols) * (th + tgap), tw, th);
+                Tile(g, p.Items[i], i == p.Sel, r, true, thint);
+                hits.Add(new KeyValuePair<RectangleF, int>(r, i));
+            }
+            if (rows > fitRows)
+                Write(g, (p.Sel + 1) + " / " + p.Items.Count, smallFont, Faint, new RectangleF(m, top, w - 2 * m, titleFont.Height * 1.3f), StringAlignment.Far, StringAlignment.Center, false);
+            return;
+        }
         // A scrolling list of cards: the selected one stays in view.
         float ch = h * 0.095f, gap = h * 0.014f;
         int fit = Math.Max(1, (int)((bottom - y + gap) / (ch + gap)));
