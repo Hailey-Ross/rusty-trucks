@@ -783,6 +783,7 @@ function sdk.menus.popup(key, options) submit{kind="menu_popup",key=key,options=
 -- key; options {label, value (number or text), order, hidden}). Unset fields keep the current value; nil options
 -- drop this mod's change. Mods apply in load order; removed when the mod stops.
 function sdk.menus.profile(page, key, options) submit{kind="menu_profile",page=page,key=key,options=options} end
+function sdk.menus.credits(key, lines) submit{kind="menu_credits",key=key,lines=lines} end
 -- Replace one bitmap of a menu movie by its stable id: the movie's import name plus the bitmap
 -- character id (sdk.menus.info().movies.bitmaps lists them), with a PNG in the mod's folder. The
 -- image covers the same fill area as the retail bitmap; newest mod wins; removed when the mod stops.

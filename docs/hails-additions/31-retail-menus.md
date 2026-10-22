@@ -2291,7 +2291,7 @@ Change:
   the zombie toggle to `LivingWorldSettings.zombie` (session only, like retail per b304).
 - Movie set version 9 (`main/extras` added; an older set forces Refresh Game Files). The asset check now checks the
   set the menus load (`SKATE3_MENU_MOVIES` when set).
-- NOT RETAIL YET / ours: the keyboard look; who posts retail's first SetState(10); the zombie mode gate (retail's mode
+- NOT RETAIL YET / ours: the keyboard look (since 2026-10-22 the Extras popup frame, see "The cheat entry in the menus' popup style"); who posts retail's first SetState(10); the zombie mode gate (retail's mode
   values 0 / 3 / 4 not decoded; ours: Free Play). Rows 1-3 (the code unlocks) unlock directly (`ExtrasRules::default`
   in `skate-core/src/extras.rs`); Credits / Licenses / Skate Reel stay greyed until FE 25 / FE 3 / FE 24 are ported
   (Licenses: the FE 3 viewer work is kept, WIP, user 2026-10-19). The other retail cheat codes change things the engine does not have and are not listed.
@@ -2314,6 +2314,24 @@ looked at in the running game (keyboard look, popup over the keyboard).
   exit when the launch would restart into Refresh Game Files (laptop 2026-10-19: it printed READY with v9 menus while
   the game reads v10, so a play session became a refresh).
 
+## The cheat entry in the menus' popup style (2026-10-22, USER-ASKS 239)
+
+- **Problem (the user):** "the cheat entry screen needs better ui and implementation". The keyboard was a generic Bevy panel (system font, flat dark box, button help as wrapping text) over the unblurred game, unlike every other menu screen.
+- **Retail:** FE 46 opened the Xbox system keyboard (b305), so the look is ours. The user chose "Skate 3 popup style" (2026-10-22).
+- **Change (`text_entry_ui.rs`, `retail_menu_stage.rs` render, `retail_menu_movies.rs` `shared_text_assets`, `fe_backdrop.rs`):**
+  - The keyboard is now drawn on the menu stage's layer as stage draws, not a Bevy UI panel.
+  - The frame is the Extras popup's own `controls/panel` frame rebuilt at the keyboard's size: 16 px paper corners, 8 px edges, cream inner paper, the title band, the body, the tinted inner corners and side strips, the paper grain at 0.325, the cream footer. Pieces, UV turns and colours are copied from the Extras movie's draws (`SKATE3_DUMP_DRAWS=1` on `retail_extras_screen_lists_its_rows_and_opens_cheat_entry` prints them, with the UVs of the panel pieces).
+  - The title is in Futura Overprint (tan), the keys and the field in Futura Std Medium, and the highlighted key in the settings rows' selected blue (0x37A5FF).
+  - The prompts (A Select, X Delete, Y Shift, Start Done, B Back) are the connected pad's glyphs (`prompt/<button>`, as the movies' CustomButtons) with futuraheavy labels, right-aligned on the paper footer like the Extras popup.
+  - The game blurs behind FE 46 like behind the menus (ours; mods can turn it off per screen).
+  - Input is unchanged: pad grid, A type, X delete, Y shift, Start done, B back; PC typing, Backspace, Enter, Escape. The PC key map only binds arrows, F8, Enter and Backspace, so typed letters and Space never double as pad keys.
+- **Verification:** `keyboard_draws_frame_keys_and_prompts_on_the_stage` (frame pieces, every key, five prompts, all on the stage, one lit key, nothing while hidden or closed). Automated runs (`SKATE3_RETAIL_MENUS_KEYS`, pause menu > Options > Extras > Enter Cheat Code): the panel draws in the retail look; "zombie" typed on the pad grid and Start gives "Zombie Mode Enabled". Not yet seen by the user in play.
+- **Open:** PC typing on the laptop (ask 110) is not confirmed: the `TEXT_ENTRY typed` lines will show it in the next session.
+## Credits (FE 25): WIP, row greyed (2026-10-22)
+
+- **Retail [code / data, research b489, template and screen record checked by main]:** template 30 `Credits` (`extras/credits.swf`, only in fedynamic.big), screen `0bdb6ab1cb803a1b` (suspends gameplay, no blur, no movie input). The lines come from `data\credits\credits.txt` in miscload.big (Latin-1, `<font> <size> <spacing> "<text>"`, `#ID_` ids localised, `\n` / `^` splits); the movie asks for them through `FECredits` (GetNumCredits, GetFontSize, GetLineSpacing, GetLineOffset, GetLine, ExitCredits), scrolls them itself and calls ExitCredits after the last; B pops the screen.
+- **Done (uncommitted parts committed 2026-10-22):** skate-core `credits` (parser, Latin-1 / UTF-8 decode, the six answers, mod sections; tests), `extras_host::CreditsHost` / `CreditsMods`, the stage's FE 25 open / close / Back / Rolling / ExitCredits, `sdk.menus.credits(key, lines)` (skate-mods `MenuCredits`, cleared on mod disable), the exporter's narrow fedynamic cache for the movie and `credits.txt` in the set; menu movie set version 13.
+- **Not working yet:** the screen opens and loads 979 lines, but no line draws (the movie's `createTextField` lines; next: dump the tree / draws after SetState(1)), and the Back label shows its raw tag `<B:B_hud>`: inline button tags in APT text are not laid out (research b491, `.local/research/b491-inline-button-tags.md`: parser 82CA14D0 turns each tag into `||`, drawn by 82808708 as a white icon, pen advance 48 x scale - 2; 194 strings use them). The Extras Credits row stays greyed until both work.
 ## Challenge Map: tab rules, row counts and Debug Menus (2026-10-21)
 
 - **Problems [screenshots, automated with `SKATE3_RETAIL_MENUS_KEYS`]:** next to retail's list (recomp, Locations tab)

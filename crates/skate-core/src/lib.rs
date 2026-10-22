@@ -23,6 +23,7 @@ pub mod fe_stack;
 pub mod menus;
 pub mod challenge_map;
 pub mod cheats;
+pub mod credits;
 pub mod extras;
 pub mod offline_profile;
 pub mod text_entry;

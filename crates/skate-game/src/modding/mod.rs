@@ -1637,6 +1637,10 @@ fn apply_one(
             let mut profile = world.get_resource_mut::<crate::offline_profile_host::ProfileMods>().ok_or("menus are not ready")?;
             profile.set(id, &page, &key, options);
         }
+        Command::MenuCredits { key, lines } => {
+            let mut credits = world.get_resource_mut::<crate::extras_host::CreditsMods>().ok_or("menus are not ready")?;
+            credits.set(id, &key, lines);
+        }
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
     Ok(())

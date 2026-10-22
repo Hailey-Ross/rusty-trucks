@@ -96,6 +96,72 @@ impl TosHost {
     }
 }
 
+/// The credits FE 25's `FECredits` object (registrar 0x825AAE58, research b489) while the credits are loaded.
+#[derive(Clone, Default)]
+pub struct CreditsHost {
+    pub credits: Option<skate_core::credits::Credits>,
+    /// ExitCredits (825AB188) was called: the movie scrolled past the last line; the screen pops on its next update.
+    pub exit: bool,
+}
+
+impl CreditsHost {
+    pub fn call(&mut self, language: &std::collections::BTreeMap<String, String>, method: &str, args: &[Value]) -> Option<Value> {
+        let Some(c) = &self.credits else { return None };
+        let i = i64::from(args.first().map_or(0, to_integer));
+        Some(match method {
+            "GetNumCredits" => Value::Number(c.count() as f64),
+            "GetFontSize" => Value::Number(f64::from(c.font_size(i))),
+            "GetLineSpacing" => Value::Number(f64::from(c.line_spacing(i))),
+            "GetLineOffset" => Value::Number(f64::from(c.line_offset(i))),
+            "GetLine" => Value::Text(c.line(i, |id| text_of(language, id))),
+            "ExitCredits" => {
+                self.exit = true;
+                Value::Undefined
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// Mods' credit sections (`sdk.menus.credits(key, lines)`), in the order they were first set; read when the credits
+/// open, so a change shows the next time.
+#[derive(bevy::prelude::Resource, Default)]
+pub(crate) struct CreditsMods {
+    sections: Vec<(String, String, Vec<skate_core::credits::Entry>)>,
+}
+
+impl CreditsMods {
+    pub(crate) fn set(&mut self, owner: &str, key: &str, lines: Option<Vec<skate_mods::menus::CreditLine>>) {
+        let entries = lines.map(|lines| {
+            lines
+                .into_iter()
+                .map(|l| skate_core::credits::Entry {
+                    // A string id goes through GetLine's localisation; anything else is literal text (APT's `#`).
+                    text: if l.text.starts_with('#') { l.text } else { format!("#{}", l.text) },
+                    font: 2,
+                    size: l.size,
+                    spacing: l.spacing as f32,
+                })
+                .collect::<Vec<_>>()
+        });
+        match (self.sections.iter_mut().find(|(o, k, _)| o == owner && k == key), entries) {
+            (Some(section), Some(entries)) => section.2 = entries,
+            (None, Some(entries)) => self.sections.push((owner.to_owned(), key.to_owned(), entries)),
+            (_, None) => self.sections.retain(|(o, k, _)| !(o == owner && k == key)),
+        }
+    }
+
+    /// Drop one mod's sections (None: every mod's).
+    pub(crate) fn clear_owner(&mut self, owner: Option<&str>) {
+        self.sections.retain(|(o, _, _)| owner.is_some_and(|owner| o != owner));
+    }
+
+    /// The sections in order, named `owner:key`.
+    pub(crate) fn sections(&self) -> Vec<(String, Vec<skate_core::credits::Entry>)> {
+        self.sections.iter().map(|(o, k, e)| (format!("{o}:{k}"), e.clone())).collect()
+    }
+}
+
 /// The Licenses text (ours; `tools/gen_licenses.py` writes it from `cargo metadata`).
 pub const LICENSES: &str = include_str!("licenses.txt");
 
@@ -146,8 +212,10 @@ mod tests {
         assert_eq!(host.call("Extras_GetOptionTitle", &[Value::Number(0.0)]), Some(Value::Text("ID_EXTRA_CHEAT_CODE".into())));
         assert_eq!(host.call("Extras_MenuTitle", &[]), Some(Value::Text("ID_MAIN_MENU_EXTRAS".into())));
         assert_eq!(host.call("OnMenuGetItemEnabled", &[Value::Number(0.0), Value::Number(0.0)]), Some(Value::Bool(true)));
-        assert_eq!(host.call("OnMenuGetItemEnabled", &[Value::Number(0.0), Value::Number(4.0)]), Some(Value::Bool(false)), "credits greyed");
+        assert_eq!(host.call("OnMenuGetItemEnabled", &[Value::Number(0.0), Value::Number(4.0)]), Some(Value::Bool(false)), "credits greyed (WIP)");
+        assert_eq!(host.call("OnMenuGetItemEnabled", &[Value::Number(0.0), Value::Number(6.0)]), Some(Value::Bool(false)), "videos greyed");
         host.call("OnMenuSelect", &[Value::Number(0.0), Value::Number(0.0), Value::Text("x".into())]);
+        host.call("OnMenuSelect", &[Value::Number(0.0), Value::Number(6.0), Value::Text("x".into())]);
         host.call("OnMenuSelect", &[Value::Number(0.0), Value::Number(4.0), Value::Text("x".into())]);
         assert_eq!(host.selected, vec![ExtrasAction::CheatEntry], "a greyed row selects nothing");
     }

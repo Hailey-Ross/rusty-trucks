@@ -31,7 +31,7 @@ from vendor.skate3_ui.scene_graph import AssetCache, SceneFlattener
 from vendor.skate3_ui.actions import Actions
 
 FORMAT = 'skate3-menu-movies'
-VERSION = 12  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies; 6: the challenge map; 7: named runtime images (challenge map pictures); 8: the Skate Profile (FE 61); 9: Extras (FE 18); 10: the text viewer (FE 3); 11: the replay editor and help (FE 12 / 13); 12: every DLC pack's text tables (Challenge Map DLC location names)
+VERSION = 13  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies; 6: the challenge map; 7: named runtime images (challenge map pictures); 8: the Skate Profile (FE 61); 9: Extras (FE 18); 10: the text viewer (FE 3); 11: the replay editor and help (FE 12 / 13); 12: every DLC pack's text tables (Challenge Map DLC location names); 13: the credits (FE 25) and their lines file
 # Menu screens the engine's retail menus start from (pause menu, Game Settings,
 # Freeskate options, the screen manager and its helpers). Library movies are
 # found through imports, not listed.
@@ -81,6 +81,14 @@ MENU_ROOTS = (
     'source/screens/popup/sk8popup',
     'source/screens/popup/small_popup',
 )
+# Movies only in fedynamic.big, extracted into their own cache (prefix-limited, so no movie above changes archive):
+# the Extras Credits row's screen (template 30 Credits, FE screen 25, host object FECredits; research b489).
+DYNAMIC_ROOTS = ('source/screens/extras/credits',)
+DYNAMIC_PREFIXES = ('data/fe/source/screens/extras/',)
+# The credit lines the credits screen reads (cCreditsManager, `data\credits\credits.txt` in miscload.big), copied
+# into the set as `credits.txt` (retail_menu_stage.rs CREDITS_FILE).
+CREDITS_ARCHIVE = 'miscload.big'
+CREDITS_ENTRY = 'data/credits/credits.txt'
 # Movies from the player's own DLC packages (optional): the Skate.Create Upgrade Pack (product CCF0007) carries the
 # DLC replay editor (template 71 Replay3, `replay2/replay_editor3.swf`, with the look channels) and its help
 # (template 74 ReplayHelp2); research b410 / b411. Exported only when the package is there.
@@ -334,21 +342,37 @@ def prepare(game, output, collections, roots=MENU_ROOTS, dlc=None):
                                  if (cache_root / 'raw' / ('data/fe/' + r + '.apt')).is_file() and r not in roots)
     cache = AssetCache(cache_root)
     mappings = font_mapping(collections, cache)
+    # fedynamic-only movies: their own narrow cache; without fedynamic.big they are reported missing.
+    dynamic_root = output / 'cache-movies-dynamic'
+    try:
+        extract_project(game, dynamic_root, include_dynamic=True, prefixes=DYNAMIC_PREFIXES, update=True)
+        dynamic = AssetCache(dynamic_root)
+    except FileNotFoundError:
+        dynamic = None
+    roots = roots + tuple(r for r in DYNAMIC_ROOTS if r not in roots)
     runtime = output / 'runtime'
     if runtime.exists():
         shutil.rmtree(runtime)
     (runtime / 'movies').mkdir(parents=True)
     queue, movies, families, missing = list(roots), {}, set(), []
+    # The cache each exported movie came from (its payloads are copied from there).
+    sources = {}
     while queue:
         key = library_key(queue.pop(0))
         if key in movies or key in missing:
             continue
         if len(movies) >= MAX_MOVIES:
             raise ValueError('Too many menu movies')
-        if not (cache_root / 'raw' / ('data/fe/' + key + '.apt')).is_file():
+        apt = 'data/fe/' + key + '.apt'
+        if (cache_root / 'raw' / apt).is_file():
+            source, source_cache = cache_root, cache
+        elif dynamic is not None and (dynamic_root / 'raw' / apt).is_file():
+            source, source_cache = dynamic_root, dynamic
+        else:
             missing.append(key)  # reported; apt_imports.rs reports the import as MissingMovie
             continue
-        movie, used = export_movie(cache, cache_root / 'raw', key)
+        movie, used = export_movie(source_cache, source / 'raw', key)
+        sources[key] = source
         families |= used
         target = runtime / 'movies' / (key + '.json')
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -385,13 +409,17 @@ def prepare(game, output, collections, roots=MENU_ROOTS, dlc=None):
               'fallback_font': fallback}
     (runtime / 'shared.json').write_text(json.dumps(shared, separators=(',', ':')) + '\n', encoding='utf-8')
     # RGBA payloads referenced by shapes and fonts, copied from the cache.
-    payloads = set()
-    for file in movies.values():
+    payloads = {}
+    for key, file in movies.items():
         for shape in json.loads((runtime / file).read_text(encoding='utf-8'))['shapes'].values():
-            payloads.update(p['texture']['rgba'] for p in shape if p.get('texture'))
-    payloads.update(f['texture'] for f in fonts.values() if f)
-    for relative in sorted(payloads):
-        source = _contained(cache_root, relative)
+            for p in shape:
+                if p.get('texture'):
+                    payloads.setdefault(p['texture']['rgba'], sources[key])
+    for f in fonts.values():
+        if f:
+            payloads.setdefault(f['texture'], cache_root)
+    for relative, root in sorted(payloads.items()):
+        source = _contained(root, relative)
         target = _contained(runtime, relative)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
@@ -422,6 +450,15 @@ def prepare(game, output, collections, roots=MENU_ROOTS, dlc=None):
         maps, missing_images = {}, (missing_images or '') + f' world maps: {error}'
     finally:
         shutil.rmtree(output / 'db', ignore_errors=True)
+    # The credits' lines file (optional: without it the credits screen shows no lines).
+    try:
+        from vendor.skate3_ui.big import BigArchive
+        from vendor.skate3_ui.project import find_big_directory
+        lines = BigArchive(find_big_directory(game) / CREDITS_ARCHIVE)
+        entry = next(e for e in lines.entries if e.path.lower() == CREDITS_ENTRY)
+        (runtime / 'credits.txt').write_bytes(lines.read(entry))
+    except (FileNotFoundError, StopIteration) as error:
+        missing_images = (missing_images or '') + f' credits lines: {error!r}'
     files = {p.relative_to(runtime).as_posix(): _digest(p) for p in sorted(runtime.rglob('*')) if p.is_file()}
     manifest = {'format': FORMAT, 'version': VERSION, 'roots': list(roots), 'movies': movies,
                 'missing_movies': missing, 'shared': 'shared.json',

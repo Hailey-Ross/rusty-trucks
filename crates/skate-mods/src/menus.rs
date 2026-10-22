@@ -472,6 +472,35 @@ impl ProfileOptions {
     }
 }
 
+/// One line of `sdk.menus.credits(key, lines)`: a string id (`ID_...`, localised) or `#literal text`, its font size
+/// and its line advance as a multiple of the line's height (retail lines: size 18 to 30, spacing 2).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreditLine {
+    pub text: String,
+    #[serde(default = "credit_size")]
+    pub size: i32,
+    #[serde(default = "credit_spacing")]
+    pub spacing: f64,
+}
+
+fn credit_size() -> i32 {
+    18
+}
+
+fn credit_spacing() -> f64 {
+    2.0
+}
+
+/// Lines one credits section may hold.
+pub const MAX_CREDIT_LINES: usize = 512;
+
+impl CreditLine {
+    pub fn validate(&self) -> bool {
+        !self.text.is_empty() && self.text.len() <= 512 && (8..=96).contains(&self.size) && (0.0..=10.0).contains(&self.spacing)
+    }
+}
+
 pub fn valid_trick_guide_key(s: &str) -> bool {
     (s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())) || valid_menu_id(s)
 }

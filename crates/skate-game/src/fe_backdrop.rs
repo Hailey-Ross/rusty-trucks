@@ -47,6 +47,8 @@ pub(crate) const EXTRAS_SCREEN: &str = "62b6afde0ba6567b";
 pub(crate) const TEXT_ENTRY_SCREEN: &str = "47ddadb752e051b6";
 /// The text viewer's id (TU3 FE id 3, ToSScreen, template 28 `nucleus/nucleus_tos.swf`, b322).
 pub(crate) const TEXT_VIEWER_SCREEN: &str = "bd688a2a5602e595";
+/// The credits screen's id (TU3 FE id 25, template 30 `extras/credits.swf`, b489).
+pub(crate) const CREDITS_SCREEN: &str = "0bdb6ab1cb803a1b";
 
 #[derive(Resource, Default)]
 pub(crate) struct FeBackdrop {
@@ -121,7 +123,9 @@ impl FeBackdrop {
 
     /// Blur flag and ramp for a screen: retail's record, then each mod's fields, newest last.
     fn resolve(&self, key: &str) -> (bool, FeBlurParams) {
-        let mut on = self.screens.iter().find(|s| s.id == key).is_some_and(|s| s.blur);
+        // Ours: FE 46's on-screen keyboard is a menu popup, so the game blurs behind it like behind the menus (retail
+        // showed the system keyboard over the game; user 2026-10-22 chose the Skate 3 popup look). Mods can turn it off.
+        let mut on = self.screens.iter().find(|s| s.id == key).is_some_and(|s| s.blur || s.id == TEXT_ENTRY_SCREEN);
         let mut p = FeBlurParams::RETAIL;
         for (_, _, o) in self.mods.iter().filter(|(_, s, _)| s == key) {
             on = o.blur.unwrap_or(on);

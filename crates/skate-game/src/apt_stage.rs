@@ -1349,7 +1349,19 @@ unhandled: {:?}", game.calls, stage.unhandled());
         stage.call_path("_global.ScreenManager.UpdateInput", vec![Value::Text(id.clone()), Value::Text("2".into()), Value::Text("0".into())], &mut game).unwrap();
         step(&mut stage, &mut game, 10);
         assert_eq!(game.extras.selected, vec![skate_core::extras::ExtrasAction::CheatEntry], "calls: {:?}", game.calls);
-        assert!(stage.draw(|key, movie| set.scene(key, movie)).is_ok());
+        let draws = stage.draw(|key, movie| set.scene(key, movie));
+        assert!(draws.is_ok());
+        if std::env::var_os("SKATE3_DUMP_DRAWS").is_some() {
+            for d in draws.iter().flatten() {
+                let (lo, hi) = d.vertices.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), v| {
+                    ([lo[0].min(v.position[0]), lo[1].min(v.position[1])], [hi[0].max(v.position[0]), hi[1].max(v.position[1])])
+                });
+                eprintln!("draw {:?} {:?} mul {:?} {lo:?}..{hi:?}", d.texture, d.fill, d.multiply);
+                if d.texture.contains("controls/panel/") {
+                    eprintln!("  uv {:?}", d.vertices.iter().map(|v| (v.position, v.uv)).collect::<Vec<_>>());
+                }
+            }
+        }
     }
 
     /// The text viewer (FE 3, template 28 ToSScreen) with our licenses: the movie loads, SetState(1) reads the words

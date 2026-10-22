@@ -697,6 +697,8 @@ pub enum Command {
     MenuPopup { key: String, #[serde(default)] options: Option<crate::menus::PopupOptions> },
     /// Change a Skate Profile bar or add / change a table row by key; no options = drop this mod's change to it.
     MenuProfile { page: String, key: String, #[serde(default)] options: Option<crate::menus::ProfileOptions> },
+    /// This mod's credit lines by key, after the retail credits (Extras > Credits); no lines = drop the section.
+    MenuCredits { key: String, #[serde(default)] lines: Option<Vec<crate::menus::CreditLine>> },
     CameraClearCapture {
         key: String,
     },
@@ -1049,6 +1051,10 @@ impl Command {
             Self::MenuProfile { page, key, options } => {
                 crate::menus::PROFILE_PAGES.contains(&page.as_str()) && crate::menus::valid_menu_id(key) && options.as_ref().is_none_or(|o| o.validate(page))
             }
+            Self::MenuCredits { key, lines } => {
+                crate::menus::valid_menu_id(key)
+                    && lines.as_ref().is_none_or(|l| l.len() <= crate::menus::MAX_CREDIT_LINES && l.iter().all(crate::menus::CreditLine::validate))
+            }
             Self::CameraClearCapture { key } => crate::schema::valid_id(key),
         }
     }
@@ -1175,6 +1181,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::MenuTrickGuide { .. } => "menu_trick_guide",
         Command::MenuPopup { .. } => "menu_popup",
         Command::MenuProfile { .. } => "menu_profile",
+        Command::MenuCredits { .. } => "menu_credits",
         Command::MenuBitmap { .. } => "menu_bitmap",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
