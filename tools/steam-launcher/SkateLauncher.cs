@@ -46,6 +46,8 @@ static class Native {
 // One menu row: greyed rows (On = false) can be selected to read why, but do nothing.
 class Item {
     public string Text, Hint; public bool On = true; public Action Run;
+    public string Info = ""; public string[] Records = new string[0];   // the play screen's detail panel
+    public string Icon;   // the text the tile's glyph is picked from (null = Text)
     public Item(string text, string hint, bool on, Action run) { Text = text; Hint = hint ?? ""; On = on; Run = run; }
 }
 class Page {
@@ -147,7 +149,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     string waitEntry, waitLabel, waitName;   // waiting for another game to close before starting
     bool cancelArmed, cancelled;             // B pressed once / twice while a build waits for another build
     ushort prevPad; int held; string lastAction = ""; bool lastFromPad; DateTime lastActionTime = DateTime.MinValue;
-    Font monoFont, titleFont, itemFont, smallFont, heroFont, markFont, markLight, playFont, iconFont, iconSmall, itemBold, smallBold;
+    Font monoFont, titleFont, itemFont, smallFont, heroFont, markFont, markLight, playFont, iconFont, iconSmall, itemBold, smallBold, bodyFont;
 
     public LauncherForm(string[] argv) {
         // --after-update: started by the previous exe after it updated itself (shows what changed), not a direct entry.
@@ -180,6 +182,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         smallFont = new Font("Segoe UI", h / 52f, GraphicsUnit.Pixel);
         monoFont = new Font("Consolas", h / 50f, GraphicsUnit.Pixel);
         smallBold = new Font("Segoe UI Semibold", h / 52f, GraphicsUnit.Pixel);
+        bodyFont = new Font("Segoe UI", h / 42f, GraphicsUnit.Pixel);
         markFont = new Font("Segoe UI Black", h / 30f, GraphicsUnit.Pixel);
         markLight = new Font("Segoe UI Light", h / 30f, GraphicsUnit.Pixel);
         playFont = new Font("Segoe UI Black", h / 26f, GraphicsUnit.Pixel);
@@ -194,7 +197,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         pages.Push(MainPage());
         if (screen == "versions") pages.Push(VersionPage());
         if (screen == "tools") pages.Push(EntryPage("Tools", "tools"));
-        if (screen == "play") pages.Push(EntryPage("Play: " + St("version"), "rust"));
+        if (screen == "play" || screen == "play-traceall") pages.Push(EntryPage("Play: " + St("version"), "rust"));
+        if (screen == "play-traceall") pages.Peek().Sel = Math.Min(1, pages.Peek().Items.Count - 1);
         if (screen == "waiting") {
             job = new Process(); jobTitle = "Update and build";
             build.Feed("LAUNCHER_BUILD\tbegin\thails-additions\t94774ce\t");
@@ -360,9 +364,13 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             if (e[4] != group) continue;
             var row = e;
             bool on = row[5] == "1";
-            p.Items.Add(new Item(row[1], on ? row[2] : row[6], on, delegate {
+            var item = new Item(row[1], on ? row[2] : row[6], on, delegate {
                 if (row[3] == "1") pages.Push(LabelPage(row)); else Begin(row[0], "", row[1]);
-            }));
+            });
+            // The detail panel's text (launcher.ps1 entries columns 8 and 9; an older launcher.ps1 has neither).
+            if (row.Length > 7) item.Info = row[7];
+            if (row.Length > 8 && row[8] != "") item.Records = row[8].Split('|');
+            p.Items.Add(item);
         }
         if (group == "tools") p.Items.Add(new Item("Clear builds and build caches", "Frees disk space: everything, or one version's build cache or whole build. Asks before deleting.", true, delegate { pages.Push(ClearPage()); }));
         if (p.Items.Count == 0) p.Items.Add(new Item("Nothing here yet", "See README.md to set these up.", false, null));
@@ -604,7 +612,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             // "ok" first: the main page's grid move used to swallow it, so A / Enter did nothing there (laptop 2026-10-18).
             if (a == "ok") { var it = p.Items[p.Sel]; if (it.On && it.Run != null) it.Run(); }
             else if (IsMain(p)) p.Sel = GridMove(p.Sel, a, p.Items.Count);
-            else if (p.Cols > 0) p.Sel = PageGridMove(p.Sel, a, p.Items.Count, p.Cols);
+            else if (GridCols(p) > 0) p.Sel = PageGridMove(p.Sel, a, p.Items.Count, GridCols(p));
             else if (a == "up" || a == "left") p.Sel = (p.Sel - 1 + p.Items.Count) % p.Items.Count;
             else if (a == "down" || a == "right") p.Sel = (p.Sel + 1) % p.Items.Count;
         } else if (a == "ok" && p.Body != null) {
@@ -657,6 +665,9 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     // The main page: item 0 is the hero's Play card, the rest tiles in rows of TileCols.
     const int TileCols = 4;
     static bool IsMain(Page p) { return p.Title == "Skate launcher" && p.OnBack != null; }
+    // Every list page (no body text, not the main screen) is a grid of buttons two wide with the detail panel beside it
+    // (user 2026-10-21: the play screen's layout for the rest of the launcher).
+    static int GridCols(Page p) { return p.Cols > 0 ? p.Cols : (p.Body == null && !IsMain(p) ? 2 : 0); }
 
     static System.Drawing.Drawing2D.GraphicsPath Round(RectangleF r, float rad) {
         var path = new System.Drawing.Drawing2D.GraphicsPath();
@@ -883,7 +894,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (icon) {
             var ib = new RectangleF(r.X + pad, r.Y + (r.Height - r.Height * 0.5f) / 2, r.Height * 0.5f, r.Height * 0.5f);
             Card(g, ib, ib.Height * 0.28f, Fade(it.On ? (sel ? Accent : Cool) : Faint, 50), Fade(it.On ? (sel ? Accent : Cool) : Faint, 25), Color.Empty, 0);
-            Write(g, Glyph(it.Text), iconSmall, it.On ? (sel ? Accent : Ink) : Faint, ib, StringAlignment.Center, StringAlignment.Center, false);
+            Write(g, Glyph(it.Icon ?? it.Text), iconSmall, it.On ? (sel ? Accent : Ink) : Faint, ib, StringAlignment.Center, StringAlignment.Center, false);
             tx = ib.Right + pad * 0.8f;
         }
         float tw = r.Right - tx - pad;
@@ -898,6 +909,11 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             tw = pill.X - tx - pad * 0.5f;
         }
         float ty = r.Y + r.Height * 0.16f, hy = ty + itemBold.Height * 1.15f;
+        if (it.Hint == "") {
+            // No hint (the play screen's buttons; its panel has the text): the name wraps over two lines, centred.
+            Write(g, title, itemBold, ink, new RectangleF(tx, r.Y, tw, r.Height), StringAlignment.Near, StringAlignment.Center, true);
+            return;
+        }
         Write(g, title, itemBold, ink, new RectangleF(tx, ty, tw, itemBold.Height * 1.15f), StringAlignment.Near, StringAlignment.Near, false);
         // The hint in the space left under the title, in the page's hint font (PageHintFont).
         Write(g, it.Hint, hint, it.On ? Dim : Faint, HintArea(r, icon), StringAlignment.Near, StringAlignment.Near, true);
@@ -962,17 +978,23 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             y = br.Bottom + h * 0.025f;
         }
         if (p.Items.Count == 0) return;
-        if (p.Cols > 0) {
-            // Tiles like the main screen's, Cols wide and as many rows as needed; rows scroll to keep the selected one.
-            float tgap = w * 0.012f, tw = (w - 2 * m - tgap * (p.Cols - 1)) / p.Cols, th = h * 0.15f;
-            int rows = (p.Items.Count + p.Cols - 1) / p.Cols;
+        int cols = GridCols(p);
+        if (cols > 0) {
+            // Buttons like the main screen's tiles, cols wide and as many rows as needed (rows scroll to keep the selected
+            // one), on the left; a large panel on the right shows the selected option: what it does and, for the play
+            // options, what it records (user 2026-10-21).
+            float tgap = w * 0.012f, gridW = (w - 2 * m) * 0.48f;
+            float tw = (gridW - tgap * (cols - 1)) / cols, th = h * 0.105f;
+            RenderDetail(g, p.Items[p.Sel], new RectangleF(m + gridW + tgap * 2, y, w - 2 * m - gridW - tgap * 2, bottom - y), h);
+            int rows = (p.Items.Count + cols - 1) / cols;
             int fitRows = Math.Max(1, (int)((bottom - y + tgap) / (th + tgap)));
-            int firstRow = Math.Max(0, Math.Min(p.Sel / p.Cols - fitRows / 2, rows - fitRows));
+            int firstRow = Math.Max(0, Math.Min(p.Sel / cols - fitRows / 2, rows - fitRows));
             var thint = PageHintFont(g, p, 0, new RectangleF(0, 0, tw, th), true);
-            for (int i = firstRow * p.Cols; i < p.Items.Count && i < (firstRow + fitRows) * p.Cols; i++) {
-                int k = i - firstRow * p.Cols;
-                var r = new RectangleF(m + (k % p.Cols) * (tw + tgap), y + (k / p.Cols) * (th + tgap), tw, th);
-                Tile(g, p.Items[i], i == p.Sel, r, true, thint);
+            for (int i = firstRow * cols; i < p.Items.Count && i < (firstRow + fitRows) * cols; i++) {
+                int k = i - firstRow * cols;
+                var r = new RectangleF(m + (k % cols) * (tw + tgap), y + (k / cols) * (th + tgap), tw, th);
+                var shown = new Item(ShortName(p.Items[i].Text), "", p.Items[i].On, null) { Icon = p.Items[i].Text };
+                Tile(g, shown, i == p.Sel, r, true, thint);
                 hits.Add(new KeyValuePair<RectangleF, int>(r, i));
             }
             if (rows > fitRows)
@@ -992,6 +1014,80 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         if (first > 0 || first + fit < p.Items.Count)
             Write(g, (p.Sel + 1) + " / " + p.Items.Count, smallFont, Faint, new RectangleF(m, top, w - 2 * m, titleFont.Height * 1.3f), StringAlignment.Far, StringAlignment.Center, false);
+    }
+
+    // A play option's button label: the panel shows the full name, so the button drops the "Play + " / "Play with the "
+    // lead ("Play + trace all" -> "Trace all").
+    // Other long names get a short button label too, and a trailing " (...)" note (version names) goes to the panel only.
+    static readonly Dictionary<string, string> ShortLabels = new Dictionary<string, string> {
+        { "Update and build the selected version", "Update and build" },
+        { "Clear builds and build caches", "Clear builds" },
+        { "Send the logs now", "Send logs" },
+        { "Recomp: get the newest build", "Recomp: newest build" },
+        { "Recomp: get the main PC save", "Recomp: main PC save" },
+    };
+    static string ShortName(string name) {
+        string current = name.StartsWith("> ") ? "> " : "";
+        name = name.Substring(current.Length);
+        string label;
+        if (ShortLabels.TryGetValue(name, out label)) return current + label;
+        foreach (var lead in new[] { "Play + ", "Play with the ", "Play with " })
+            if (name.StartsWith(lead) && name.Length > lead.Length) return current + char.ToUpper(name[lead.Length]) + name.Substring(lead.Length + 1);
+        int note = name.IndexOf(" (");
+        if (note > 0 && name.EndsWith(")")) name = name.Substring(0, note);
+        return current + name;
+    }
+
+    // The play screen's detail panel: the selected option's name with a status pill, what it does, and what it records.
+    // Records come from launcher.ps1 as rows "name: what it is"; "#TITLE: folder" rows start a section.
+    void RenderDetail(Graphics g, Item it, RectangleF r, int h) {
+        Card(g, r, h * 0.02f, Color.FromArgb(26, 31, 43), Color.FromArgb(18, 21, 29), Stroke, 1);
+        float pad = h * 0.04f, x = r.X + pad, cw = r.Width - 2 * pad, y = r.Y + pad * 0.9f;
+        string name = it.Text.StartsWith("> ") ? it.Text.Substring(2) : it.Text;
+        float nh = Math.Min(g.MeasureString(name, titleFont, (int)cw).Height, titleFont.Height * 2.5f);
+        Write(g, name, titleFont, Ink, new RectangleF(x, y, cw, nh), StringAlignment.Near, StringAlignment.Near, true);
+        y += nh + titleFont.Height * 0.25f;
+        // Status pill: READY, or NOT AVAILABLE with the reason beside it.
+        string pill = it.On ? "READY" : "NOT AVAILABLE";
+        var ps = g.MeasureString(pill, smallBold);
+        var pr = new RectangleF(x, y, ps.Width + smallBold.Height * 0.9f, smallBold.Height * 1.4f);
+        Color pc = it.On ? Color.FromArgb(108, 196, 74) : Color.FromArgb(228, 76, 70);
+        Card(g, pr, pr.Height / 2, Fade(pc, 40), Fade(pc, 40), Fade(pc, 140), 1);
+        Write(g, pill, smallBold, pc, pr, StringAlignment.Center, StringAlignment.Center, false);
+        if (!it.On) Write(g, it.Hint, smallFont, Dim, new RectangleF(pr.Right + pad * 0.4f, y, x + cw - pr.Right - pad * 0.4f, pr.Height), StringAlignment.Near, StringAlignment.Center, false);
+        y += pr.Height + h * 0.028f;
+        string info = it.Info != "" ? it.Info : it.Hint;
+        if (info != "") {
+            float ih = Math.Min(g.MeasureString(info, bodyFont, (int)cw).Height, r.Bottom - pad - y);
+            Write(g, info, bodyFont, Color.FromArgb(200, 205, 215), new RectangleF(x, y, cw, ih), StringAlignment.Near, StringAlignment.Near, true);
+            y += ih + h * 0.03f;
+        }
+        // Sections of "name  what it is" rows with hairlines between them.
+        float nameW = cw * 0.36f, dx = x + nameW + pad * 0.5f, dw = x + cw - dx, rowGap = h * 0.008f;
+        using (var line = new Pen(Color.FromArgb(38, 255, 255, 255), 1)) {
+            foreach (var rec in it.Records) {
+                int cut = rec.IndexOf(": ");
+                string a = cut > 0 ? rec.Substring(0, cut) : rec, b = cut > 0 ? rec.Substring(cut + 2) : "";
+                if (a.StartsWith("#")) {
+                    // Section header: TITLE in accent caps, its folder after it.
+                    if (y + smallBold.Height * 2.4f > r.Bottom - pad) return;
+                    y += h * 0.008f;
+                    string head = a.Substring(1).ToUpperInvariant();
+                    var hs = g.MeasureString(head, smallBold);
+                    Write(g, head, smallBold, Accent, new RectangleF(x, y, hs.Width + 4, smallBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+                    if (b != "") Write(g, b, monoFont, Faint, new RectangleF(x + hs.Width + pad * 0.3f, y, cw - hs.Width - pad * 0.3f, smallBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Center, false);
+                    y += smallBold.Height * 1.5f;
+                    continue;
+                }
+                float rh = Math.Max(g.MeasureString(a, monoFont, (int)nameW).Height, g.MeasureString(b, smallFont, (int)dw).Height);
+                if (y + rh + rowGap > r.Bottom - pad) { Write(g, "...", smallFont, Faint, new RectangleF(x, y, cw, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false); return; }
+                g.DrawLine(line, x, y, x + cw, y);
+                y += rowGap;
+                Write(g, a, monoFont, Ink, new RectangleF(x, y, nameW, rh), StringAlignment.Near, StringAlignment.Near, true);
+                Write(g, b, smallFont, Dim, new RectangleF(dx, y, dw, rh), StringAlignment.Near, StringAlignment.Near, true);
+                y += rh + rowGap;
+            }
+        }
     }
 
     // A build: the version and commit, cargo's own step count as a progress bar with the board riding its head, the

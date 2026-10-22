@@ -711,6 +711,35 @@ if ($Config -and $Config.rpcs3_entries) {
 }
 $Labels = @('session', 'ride', 'grind', 'bail', 'push', 'emit', 'carve', 'water', 'marker')
 
+# The play screen's detail panel: what each play option does (Info) and what it records. Records are rows
+# "name: what it is"; a row starting with '#' is a section header "TITLE: folder". Every session writes the game log;
+# Play + trace all lists what the selected version actually has (trace_all.rs SWITCHES).
+$GameLogHead = '#Game log: logs\game-<time>.log'
+$GameLogRow = 'game-<time>.log: The game''s own log (errors in .stderr.log)'
+$PlayDetails = @{
+    'rust-play'     = @{ Info = 'Starts the selected version with no extra traces. For playing and for checking how a change feels.'; Records = @($GameLogHead, $GameLogRow) }
+    'rust-traceall' = @{ Info = 'Records every trace the version has in one folder, which the after-session send picks up. The game plays exactly as with Play.' }
+    'rust-statelog' = @{ Info = 'Records what the audio saw every frame (speed, wheels, grinds, landings, bails), for tuning sounds against retail.'; Records = @('#Files: .local\audio-state-logs\', 'state_<time>.tsv: Audio state, one row per audio frame', $GameLogHead, 'AUDIO_TIMING: Audio cost each second') }
+    'rust-trace'    = @{ Info = 'Writes every native sound start and stop and every gameplay sound event to the game log.'; Records = @($GameLogHead, 'AUDIO_NATIVE: Every native sound start and stop', 'AUDIO_EVENT: Brake, push, grind and landing sound events') }
+    'rust-devmods'  = @{ Info = "Turns on the version's dev test mod (mods_enable in versions.json) to try a mod feature before it ships."; Records = @($GameLogHead, $GameLogRow) }
+    'rust-perf'     = @{ Info = 'Records a 10 s performance trace of every system and render pass, for finding stutter.'; Records = @('#Files: the version folder', 'trace-downtown-lag.json: Chrome trace, open in Perfetto or chrome://tracing', $GameLogHead, $GameLogRow) }
+}
+# What Play + trace all records for a version, from the traces its source has.
+function TraceAll-Records($v) {
+    $t = Version-Traces $v
+    $r = @('#Files: logs\trace-all-<time>\')
+    if ($t -contains 'traceall' -or $t -contains 'frametimes') { $r += 'frames.tsv: Frame times, one row per frame' }
+    if ($t -contains 'traceall' -or $t -contains 'statelog') { $r += 'audio_state.tsv: Audio state, one row per audio frame' }
+    if ($t -contains 'traceall') { $r += 'perf.json: Performance report with GPU and render timings' }
+    $r += $GameLogHead
+    if ($t -contains 'traceall' -or $t -contains 'audiotrace') { $r += 'AUDIO_NATIVE / EVENT: Every sound start, stop and sound event' }
+    if ($t -contains 'traceall') { $r += '*_TIMING: Audio, system and fixed-step costs each second' }
+    if ($t -contains 'traceall' -or $t -contains 'livingdbg') { $r += 'LIVING_WORLD: Population, NPC skaters and traffic every 5 s' }
+    if ($t -contains 'traceall') { $r += 'SKATE_FPS_SAMPLE: Frame rate' }
+    if ($t.Count -eq 0) { $r = @('#Not known yet: the version is not set up', 'Its source decides: Set it up once and this lists its traces') }
+    return ,$r
+}
+
 # What the first-time setup still needs ('' = nothing): setup.ps1's checks (git, Rust, C++ build tools, LLVM, Python,
 # Vulkan). The window opens on the setup page while this names something.
 . (Join-Path $Here 'setup.ps1')
@@ -936,13 +965,16 @@ if ($Entry -eq 'pending') {
 
 # Commands SkateLauncher.exe reads (tab-separated).
 if ($Entry -eq 'entries') {
-    # id, name, hint, ask (1 = ask for a session-folder label), group, on (1/0), why it is off
+    # id, name, hint, ask (1 = ask for a session-folder label), group, on (1/0), why it is off, info, records ("|")
     $selVer = Get-Version $Version
     foreach ($k in $Entries.Keys) {
         $e = $Entries[$k]
         $ask = 0; if ($e.Recomp -and $e.Recomp.ask_label) { $ask = 1 }
         $why = Entry-Blocked $k $selVer
-        "{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}" -f $k, $e.Name, ($e.Hint -replace "`t", ' '), $ask, $e.Group, $(if ($why) { 0 } else { 1 }), $why
+        $d = $PlayDetails[$k]
+        $info = if ($d) { $d.Info } else { '' }
+        $records = if ($k -eq 'rust-traceall') { TraceAll-Records $selVer } elseif ($d) { $d.Records } else { @() }
+        "{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}`t{7}`t{8}" -f $k, $e.Name, ($e.Hint -replace "`t", ' '), $ask, $e.Group, $(if ($why) { 0 } else { 1 }), $why, $info, ((@($records) | ForEach-Object { $_ -replace '[\t|]', ' ' }) -join '|')
     }
     exit 0
 }
