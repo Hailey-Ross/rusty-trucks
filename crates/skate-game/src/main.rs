@@ -74,6 +74,9 @@ fn main() -> bevy::app::AppExit {
     LAUNCH.get_or_init(std::time::Instant::now);
     #[cfg(target_os = "horizon")]
     horizon::init();
+    // After `init`, which reads options.txt's `env` lines (SKATE_EARLY_SPLASH).
+    #[cfg(target_os = "horizon")]
+    loading_screen::show_early_splash();
     // The Switch has no updater or setup tools, and runs one process: no crash-reporting supervisor.
     #[cfg(not(target_os = "horizon"))]
     {
@@ -210,6 +213,7 @@ pub(crate) fn since_launch_ms() -> u128 {
 fn report_stage(stage: &str) {
     eprintln!("REPORT_META stage={stage}");
     eprintln!("BOOT_TIMING stage={stage} since_launch_ms={}", since_launch_ms());
+    loading_screen::boot_stage(stage);
 }
 
 /// On the Switch, logs `[Memory] <stage>: ` and bevy_horizon's `memory_report` to log.txt: the

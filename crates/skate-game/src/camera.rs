@@ -62,9 +62,15 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
     mut cameras: Query<(&mut Camera, &mut Transform, &mut Projection), With<GameplayCamera>>) {
     // Off while the Switch's start map loads behind the loading screen: there is nothing to draw
     // yet, and until a retail map commits this isn't the HDR camera it gets then. Drawing the
-    // skater through the non-HDR lit path lost the Switch's GPU 11 s after the first frame, as
-    // the test world does (findings 55, 59).
+    // skater through the non-HDR lit path lost the Switch's GPU 11–19 s after the first frame, as
+    // the test world does (findings 55, 59). Switched off here, not just left alone: the menu's
+    // setup replaces its `Camera` with one that is on.
     if config.is_some_and(|c| c.boot_map.is_some()) && current.is_none_or(|c| c.generation == 0) {
+        for (mut camera, ..) in &mut cameras {
+            if camera.is_active {
+                camera.is_active = false;
+            }
+        }
         return;
     }
     if let Ok(window) = windows.single() {

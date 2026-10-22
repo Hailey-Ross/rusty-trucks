@@ -1,17 +1,24 @@
-//! The loading screen: the skating crab, a skateboard rolling under it and what is loading. It is
-//! up while a map loads (the start map on the Switch, `world::spawn`, and every map change) and
-//! then until that world is on the GPU, so nothing pops in once it goes: every mesh, image and
-//! storage buffer the scene published is ready in the render world (meshes bevy_horizon holds
-//! back for later frames aren't), and no shader pipeline is still compiling, for a few frames in
-//! a row (findings 59).
+//! The loading screen, laid out like Hails's start-up splash on her `world/living-world` branch
+//! (splash.rs): "SKATE 3 RUST ENGINE", a side-view skateboard rolling across, the step that is
+//! loading with the seconds since the load began, and the last four finished steps dimmed below.
+//! Here it is twice her splash's size, in the middle of the screen.
+//!
+//! On the Switch it is up from the first moment of `main` ([`show_early_splash`]): bevy_horizon
+//! redraws it into a libnx framebuffer from a thread of its own and closes it when the game's
+//! first frame takes the screen, and the same layout carries on in Bevy's UI. Bevy's UI also
+//! covers every map change, and stays up until the published world is on the GPU, so nothing pops
+//! in once it goes: every mesh, image and storage buffer the scene published is ready in the
+//! render world (meshes bevy_horizon holds back for later frames aren't), and no shader pipeline
+//! is still compiling, for a few frames in a row (findings 59).
 //!
 //! Once a world is committed it runs behind the screen, so its first frames render and their
 //! pipelines compile, but the player's input doesn't reach it (`input::publish_actions`). The
 //! render-side check runs only while the screen waits for a world.
 //!
-//! The board is Hails's side-view skateboard from the Windows start-up splash on her
-//! `world/living-world` branch (splash.rs `draw_board`): the same shapes and colours, drawn here
-//! without GDI so it works on the Switch.
+//! The layout and the board are Hails's (splash.rs `paint` and `draw_board`), redrawn without GDI
+//! so they work on the Switch. Both renderers write in Bevy's built-in Fira Mono.
+#[cfg(any(target_os = "horizon", test))]
+use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use bevy::{
     asset::{AssetId, RenderAssetUsages},
     image::ImageSampler,
@@ -24,6 +31,7 @@ use bevy::{
         storage::{GpuShaderStorageBuffer, ShaderStorageBuffer},
         texture::GpuImage,
     },
+    text::{LineBreak, TextLayout},
     window::PrimaryWindow,
 };
 use std::sync::{Arc, Mutex, PoisonError, atomic::{AtomicU64, Ordering}};
@@ -35,12 +43,40 @@ const READY_FRAMES: u8 = 5;
 /// The longest the screen waits for a published world before it gives way.
 const MAX_WAIT: Duration = Duration::from_secs(90);
 
-const BACKGROUND: Color = Color::srgb_u8(14, 14, 17);
-const TEXT: Color = Color::srgb_u8(217, 217, 217);
-/// The crab's height, the board's, and the time the board takes to cross the screen.
-const CRAB_VH: f32 = 40.;
-const BOARD_VH: f32 = 9.;
-const ROLL_SECONDS: f32 = 3.;
+/// Hails's splash, 560 × 240 of its pixels, drawn at `SCALE` times that in the middle of a
+/// 1280 × 720 screen (the early splash's framebuffer, and Bevy's UI in proportion).
+const SPLASH_WIDTH: f32 = 560.;
+const SPLASH_HEIGHT: f32 = 240.;
+const SCALE: f32 = BOARD_SCALE as f32;
+const SCREEN_WIDTH: u32 = 1280;
+const SCREEN_HEIGHT: u32 = 720;
+/// Where her `paint` puts each part, in splash pixels: the title's top, the board's, the status
+/// line's and the first finished line's, the finished lines' spacing, and the lines' side margin.
+const TITLE_TOP: f32 = 16.;
+const BOARD_TOP: f32 = 52.;
+const LINE_TOP: f32 = 122.;
+const HISTORY_TOP: f32 = 152.;
+const HISTORY_SPACING: f32 = 19.;
+const LINE_MARGIN: f32 = 16.;
+/// Her font sizes, in splash pixels: the title, the status line, the finished lines.
+const TITLE_SIZE: f32 = 13.;
+const LINE_SIZE: f32 = 16.;
+const HISTORY_SIZE: f32 = 13.;
+const HISTORY_LINES: usize = 4;
+/// Splash pixels a second the board rolls.
+const ROLL_SPEED: f32 = 170.;
+const TITLE: &str = "SKATE 3 RUST ENGINE";
+/// Fira Mono's advance, in ems: every glyph is 600 of its 1000 units wide.
+const ADVANCE: f32 = 0.6;
+
+const BACKGROUND: [u8; 3] = [14, 14, 17];
+const TITLE_COLOUR: [u8; 3] = [160, 160, 165];
+const LINE_COLOUR: [u8; 3] = [217, 217, 217];
+const HISTORY_COLOUR: [u8; 3] = [110, 110, 115];
+
+const fn colour([r, g, b]: [u8; 3]) -> Color {
+    Color::srgb_u8(r, g, b)
+}
 
 pub(crate) struct LoadingScreenPlugin;
 
@@ -59,6 +95,224 @@ impl Plugin for LoadingScreenPlugin {
                 Render,
                 check_world.after(RenderSystems::Render).before(RenderSystems::Cleanup),
             );
+        }
+    }
+}
+
+/// What the screen says: the step that is loading, the finished ones (oldest first) and when
+/// the steps began. One copy, shared by the early splash's thread and Bevy's UI.
+struct Steps {
+    current: String,
+    finished: Vec<String>,
+    started: Instant,
+}
+
+impl Steps {
+    fn new(started: Instant) -> Self {
+        Self { current: String::new(), finished: Vec::new(), started }
+    }
+
+    /// A new step ("Loading physics"); the current one moves to the finished lines.
+    fn step(&mut self, label: &str) {
+        if self.current == label {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.current, label.to_owned());
+        if !previous.is_empty() {
+            self.finished.push(previous);
+            let excess = self.finished.len().saturating_sub(HISTORY_LINES);
+            self.finished.drain(..excess);
+        }
+    }
+
+    /// The status line as Hails's splash writes it, and the finished lines, newest first.
+    fn lines(&self, now: Instant) -> (String, Vec<String>) {
+        let current = if self.current.is_empty() { "Starting" } else { self.current.as_str() };
+        let seconds = now.saturating_duration_since(self.started).as_secs();
+        (format!("{current}  ({seconds} s)"), self.finished.iter().rev().cloned().collect())
+    }
+}
+
+static STEPS: Mutex<Option<Steps>> = Mutex::new(None);
+
+/// A new step for the loading screen; the first one starts its clock.
+pub(crate) fn step(label: &str) {
+    let mut steps = STEPS.lock().unwrap_or_else(PoisonError::into_inner);
+    steps.get_or_insert_with(|| Steps::new(Instant::now())).step(label);
+}
+
+/// `main`'s boot stage (`report_stage`) as a step.
+pub(crate) fn boot_stage(stage: &str) {
+    step(match stage {
+        "configuration_and_installation" => "Reading the settings",
+        "gameplay_configuration" => "Loading the gameplay settings",
+        "asset_manifest" => "Reading the asset manifest",
+        "stock_graphs" => "Loading the animation graphs",
+        "map_validation" => "Checking the map",
+        "physics_initialization" => "Loading physics",
+        "skater_initialization" => "Loading the skater",
+        "controls_initialization" => "Loading the controls",
+        "renderer_and_app_initialization" => "Starting the renderer",
+        "app_run" => "Starting the game",
+        other => other,
+    });
+}
+
+fn current_lines() -> (String, Vec<String>) {
+    let steps = STEPS.lock().unwrap_or_else(PoisonError::into_inner);
+    steps.as_ref().map_or_else(|| ("Starting  (0 s)".to_owned(), Vec::new()), |s| s.lines(Instant::now()))
+}
+
+/// The steps of a map change after the start, from now.
+fn restart_steps() {
+    *STEPS.lock().unwrap_or_else(PoisonError::into_inner) = Some(Steps::new(Instant::now()));
+}
+
+/// `text` cut to what fits between the lines' margins at `size`, ending "..." when cut.
+fn fit(text: &str, size: f32) -> String {
+    // 528 / 9.6 is 54.99… in f32.
+    let room = ((SPLASH_WIDTH - 2. * LINE_MARGIN) / (size * ADVANCE) + 1e-3) as usize;
+    if text.chars().count() <= room {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(room.saturating_sub(3)).collect();
+    cut.push_str("...");
+    cut
+}
+
+/// The board image's left edge `seconds` after the launch, in splash pixels: it rolls left to
+/// right across the splash and comes round again, as on Hails's. From the launch, so the board
+/// carries on where the early splash left it.
+fn board_left(seconds: f32) -> f32 {
+    (seconds * ROLL_SPEED) % (SPLASH_WIDTH + BOARD_LENGTH) - BOARD_LENGTH - BOARD_PAD
+}
+
+fn since_launch() -> f32 {
+    crate::since_launch_ms() as f32 / 1000.
+}
+
+/// Puts the loading screen up from the first moment of the start, before the window exists
+/// (bevy_horizon's splash, a libnx framebuffer). `SKATE_EARLY_SPLASH=0` leaves the screen black
+/// until the first frame, as before.
+#[cfg(target_os = "horizon")]
+pub(crate) fn show_early_splash() {
+    if std::env::var("SKATE_EARLY_SPLASH").is_ok_and(|v| v.trim() == "0") {
+        eprintln!("[Skate] SKATE_EARLY_SPLASH=0: no start-up splash; the screen stays black until the first frame");
+        return;
+    }
+    let started = Instant::now();
+    let board = board_pixels();
+    let font = SplashFont::new();
+    let shown = bevy_horizon::splash::show(SCREEN_WIDTH, SCREEN_HEIGHT, Duration::from_millis(33), move |frame| {
+        let mut painter = Painter { pixels: frame.pixels, width: frame.width as usize, height: frame.height as usize, stride: frame.stride };
+        let (line, history) = current_lines();
+        draw_splash(&mut painter, font.as_ref(), &board, since_launch(), &line, &history);
+    });
+    eprintln!("[Skate] start-up splash {} ({} ms to set up)", if shown { "up" } else { "unavailable" }, started.elapsed().as_millis());
+}
+
+/// One frame of the early splash: Hails's layout at `SCALE`, in the middle of the frame.
+#[cfg(any(target_os = "horizon", test))]
+fn draw_splash(painter: &mut Painter<'_>, font: Option<&SplashFont>, board: &Rgba, seconds: f32, line: &str, history: &[String]) {
+    painter.fill(BACKGROUND);
+    let origin = ((painter.width as f32 - SPLASH_WIDTH * SCALE) / 2., (painter.height as f32 - SPLASH_HEIGHT * SCALE) / 2.);
+    let x = |splash: f32| origin.0 + splash * SCALE;
+    let y = |splash: f32| origin.1 + splash * SCALE;
+    let panel = (x(0.) as i32, x(SPLASH_WIDTH) as i32);
+    let margins = (x(LINE_MARGIN) as i32, x(SPLASH_WIDTH - LINE_MARGIN) as i32);
+    let centre = x(SPLASH_WIDTH / 2.);
+    painter.image(x(board_left(seconds)).round() as i32, y(BOARD_TOP).round() as i32, board, panel);
+    let Some(font) = font else { return };
+    font.line(painter, TITLE, TITLE_SIZE * SCALE, centre, y(TITLE_TOP), TITLE_COLOUR, panel);
+    font.line(painter, &fit(line, LINE_SIZE), LINE_SIZE * SCALE, centre, y(LINE_TOP), LINE_COLOUR, margins);
+    for (i, finished) in history.iter().take(HISTORY_LINES).enumerate() {
+        let top = y(HISTORY_TOP + i as f32 * HISTORY_SPACING);
+        font.line(painter, &fit(finished, HISTORY_SIZE), HISTORY_SIZE * SCALE, centre, top, HISTORY_COLOUR, margins);
+    }
+}
+
+/// RGBA8 rows to draw the early splash into: the framebuffer's, or a test's.
+#[cfg(any(target_os = "horizon", test))]
+struct Painter<'a> {
+    pixels: &'a mut [u8],
+    width: usize,
+    height: usize,
+    /// Bytes from one row to the next.
+    stride: usize,
+}
+
+#[cfg(any(target_os = "horizon", test))]
+impl Painter<'_> {
+    fn fill(&mut self, [r, g, b]: [u8; 3]) {
+        let row = self.width * 4;
+        for pixel in self.pixels[..row].chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[r, g, b, 255]);
+        }
+        for y in 1..self.height {
+            self.pixels.copy_within(0..row, y * self.stride);
+        }
+    }
+
+    /// `colour` at `alpha` over the pixel at (`x`, `y`), if it is inside the columns `clip`.
+    fn blend(&mut self, x: i32, y: i32, colour: [u8; 3], alpha: f32, clip: (i32, i32)) {
+        if alpha <= 0. || x < clip.0.max(0) || x >= clip.1.min(self.width as i32) || y < 0 || y >= self.height as i32 {
+            return;
+        }
+        let at = y as usize * self.stride + x as usize * 4;
+        let alpha = alpha.min(1.);
+        for (channel, value) in self.pixels[at..at + 3].iter_mut().zip(colour) {
+            *channel = (f32::from(*channel) + (f32::from(value) - f32::from(*channel)) * alpha).round() as u8;
+        }
+    }
+
+    fn image(&mut self, left: i32, top: i32, image: &Rgba, clip: (i32, i32)) {
+        for y in 0..image.height {
+            for x in 0..image.width {
+                let pixel = &image.data[(y * image.width + x) * 4..][..4];
+                if pixel[3] > 0 {
+                    self.blend(left + x as i32, top + y as i32, [pixel[0], pixel[1], pixel[2]], f32::from(pixel[3]) / 255., clip);
+                }
+            }
+        }
+    }
+}
+
+/// Bevy's built-in Fira Mono, for the early splash, which is drawn before Bevy exists.
+#[cfg(any(target_os = "horizon", test))]
+struct SplashFont(FontRef<'static>);
+
+#[cfg(any(target_os = "horizon", test))]
+impl SplashFont {
+    fn new() -> Option<Self> {
+        FontRef::try_from_slice(bevy::text::DEFAULT_FONT_DATA).ok().map(Self)
+    }
+
+    /// `text` on one line, centred on `centre`, its top at `top`, inside the columns `clip`. `size`
+    /// is the em, as Bevy's font size and GDI's are.
+    fn line(&self, painter: &mut Painter<'_>, text: &str, size: f32, centre: f32, top: f32, colour: [u8; 3], clip: (i32, i32)) {
+        let scale = PxScale::from(size * self.0.height_unscaled() / self.0.units_per_em().unwrap_or(1000.));
+        let font = self.0.as_scaled(scale);
+        let (mut caret, mut previous) = (0., None);
+        let glyphs: Vec<_> = text
+            .chars()
+            .map(|c| {
+                let id = font.glyph_id(c);
+                if let Some(previous) = previous {
+                    caret += font.kern(previous, id);
+                }
+                let glyph = id.with_scale_and_position(scale, ab_glyph::point(caret, font.ascent()));
+                caret += font.h_advance(id);
+                previous = Some(id);
+                glyph
+            })
+            .collect();
+        let (left, top) = ((centre - caret / 2.).round() as i32, top.round() as i32);
+        for glyph in glyphs {
+            let Some(outline) = self.0.outline_glyph(glyph) else { continue };
+            let bounds = outline.px_bounds();
+            outline.draw(|x, y, coverage| {
+                painter.blend(left + bounds.min.x as i32 + x as i32, top + bounds.min.y as i32 + y as i32, colour, coverage, clip);
+            });
         }
     }
 }
@@ -96,6 +350,8 @@ pub(crate) struct LoadingScreen {
     enabled: bool,
     shown: bool,
     shown_at: Option<Instant>,
+    /// How many times it has come up: the first is the start, whose steps began in `main`.
+    ups: u32,
     /// The published world the screen waits for: its token and when it was published.
     waiting: Option<(u64, Instant)>,
     ready_frames: u8,
@@ -108,9 +364,9 @@ pub(crate) struct LoadingScreen {
 enum Change {
     None,
     Up,
-    /// The world was ready this long after its publish.
+    /// The world was ready this long after its publish, and the screen went.
     Ready(Duration),
-    /// It still wasn't, this long after.
+    /// It still wasn't, this long after, and the screen went anyway.
     GaveUp(Duration),
     /// The load ended with no world to wait for: it failed.
     Down,
@@ -118,7 +374,7 @@ enum Change {
 
 impl LoadingScreen {
     fn new(enabled: bool, readiness: Readiness) -> Self {
-        Self { enabled, shown: false, shown_at: None, waiting: None, ready_frames: 0, last_token: 0, readiness }
+        Self { enabled, shown: false, shown_at: None, ups: 0, waiting: None, ready_frames: 0, last_token: 0, readiness }
     }
 
     pub(crate) fn shown(&self) -> bool {
@@ -137,7 +393,8 @@ impl LoadingScreen {
     }
 
     /// One frame: `busy` while a map loads, `ready` the token the render world last found all on
-    /// the GPU.
+    /// the GPU. A world that gets ready while another load runs ends its wait quietly: the screen
+    /// stays up for the load.
     fn advance(&mut self, busy: bool, ready: u64, now: Instant) -> Change {
         let mut change = Change::None;
         if let Some((token, published)) = self.waiting {
@@ -145,15 +402,20 @@ impl LoadingScreen {
             let waited = now.saturating_duration_since(published);
             if self.ready_frames >= READY_FRAMES {
                 self.waiting = None;
-                change = Change::Ready(waited);
+                if !busy {
+                    change = Change::Ready(waited);
+                }
             } else if waited > MAX_WAIT {
                 self.waiting = None;
-                change = Change::GaveUp(waited);
+                if !busy {
+                    change = Change::GaveUp(waited);
+                }
             }
         }
         let shown = self.enabled && (busy || self.waiting.is_some());
         if shown && !self.shown {
             self.shown_at = Some(now);
+            self.ups += 1;
             change = Change::Up;
         } else if !shown && self.shown && change == Change::None {
             change = Change::Down;
@@ -206,24 +468,45 @@ fn check_world(
 struct ScreenRoot;
 #[derive(Component)]
 struct Board;
-#[derive(Component)]
-struct Status;
+/// Which of the screen's text lines a `Text` is.
+#[derive(Component, Clone, Copy)]
+enum Line {
+    Title,
+    Status,
+    Finished(usize),
+}
 
+impl Line {
+    fn size(self) -> f32 {
+        match self {
+            Line::Title => TITLE_SIZE,
+            Line::Status => LINE_SIZE,
+            Line::Finished(_) => HISTORY_SIZE,
+        }
+    }
+}
+
+/// Hails's layout in Bevy's UI: a panel her splash's shape in the middle of the screen, each part
+/// where her `paint` puts it, in percent of the panel.
 fn spawn_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>, screen: Res<LoadingScreen>) {
     if !screen.enabled {
         return;
     }
-    let started = Instant::now();
-    let crab = crab_image()
-        .inspect_err(|error| warn!("Loading screen: the crab didn't decode: {error}"))
-        .ok()
-        .map(|image| {
-            let aspect = image.width() as f32 / image.height() as f32;
-            (images.add(image), aspect)
-        });
     let board = images.add(board_image());
-    info!("LOADING_SCREEN the crab and the board drawn in {} ms", started.elapsed().as_millis());
-    let board_aspect = (BOARD_LENGTH + 2. * BOARD_PAD) / BOARD_HEIGHT;
+    let (screen_width, screen_height) = (SCREEN_WIDTH as f32 / SCALE, SCREEN_HEIGHT as f32 / SCALE);
+    let across = |splash: f32| Val::Percent(splash / SPLASH_WIDTH * 100.);
+    let down = |splash: f32| Val::Percent(splash / SPLASH_HEIGHT * 100.);
+    let row = |top: f32, margin: f32| Node {
+        position_type: PositionType::Absolute,
+        top: down(top),
+        left: across(margin),
+        width: across(SPLASH_WIDTH - 2. * margin),
+        justify_content: JustifyContent::Center,
+        ..default()
+    };
+    let text = |line: Line, colour_of: [u8; 3]| {
+        (line, Text::new(""), TextFont { font_size: line.size() * SCALE, ..default() }, TextColor(colour(colour_of)), TextLayout::new_with_linebreak(LineBreak::NoWrap))
+    };
     commands
         .spawn((
             ScreenRoot,
@@ -231,45 +514,44 @@ fn spawn_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>, scree
             GlobalZIndex(1000),
             Visibility::Hidden,
             bevy::ui::FocusPolicy::Block,
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.),
-                height: Val::Percent(100.),
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                row_gap: Val::Vh(3.),
-                ..default()
-            },
-            BackgroundColor(BACKGROUND),
+            Node { position_type: PositionType::Absolute, width: Val::Percent(100.), height: Val::Percent(100.), ..default() },
+            BackgroundColor(colour(BACKGROUND)),
         ))
         .with_children(|root| {
-            if let Some((crab, aspect)) = crab {
-                root.spawn((
-                    ImageNode::new(crab),
-                    Node { height: Val::Vh(CRAB_VH), width: Val::Vh(CRAB_VH * aspect), ..default() },
-                ));
-            }
             root.spawn(Node {
-                width: Val::Percent(100.),
-                height: Val::Vh(BOARD_VH),
-                overflow: Overflow::clip_x(),
+                position_type: PositionType::Absolute,
+                left: Val::Percent((screen_width - SPLASH_WIDTH) / 2. / screen_width * 100.),
+                top: Val::Percent((screen_height - SPLASH_HEIGHT) / 2. / screen_height * 100.),
+                width: Val::Percent(SPLASH_WIDTH / screen_width * 100.),
+                height: Val::Percent(SPLASH_HEIGHT / screen_height * 100.),
+                overflow: Overflow::clip(),
                 ..default()
             })
-            .with_children(|track| {
-                track.spawn((
+            .with_children(|panel| {
+                panel.spawn(row(TITLE_TOP, 0.)).with_children(|row| {
+                    row.spawn(text(Line::Title, TITLE_COLOUR));
+                });
+                panel.spawn((
                     Board,
                     ImageNode::new(board),
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Percent(-100.),
-                        height: Val::Vh(BOARD_VH),
-                        width: Val::Vh(BOARD_VH * board_aspect),
+                        top: down(BOARD_TOP),
+                        left: across(board_left(since_launch())),
+                        width: across(BOARD_LENGTH + 2. * BOARD_PAD),
+                        height: down(BOARD_HEIGHT),
                         ..default()
                     },
                 ));
+                panel.spawn(row(LINE_TOP, LINE_MARGIN)).with_children(|row| {
+                    row.spawn(text(Line::Status, LINE_COLOUR));
+                });
+                for i in 0..HISTORY_LINES {
+                    panel.spawn(row(HISTORY_TOP + i as f32 * HISTORY_SPACING, LINE_MARGIN)).with_children(|row| {
+                        row.spawn(text(Line::Finished(i), HISTORY_COLOUR));
+                    });
+                }
             });
-            root.spawn((Status, Text::new(""), TextFont { font_size: 18., ..default() }, TextColor(TEXT)));
         });
 }
 
@@ -279,7 +561,7 @@ fn update_screen(
     current: Res<crate::map_transition::CurrentMap>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut roots: Query<&mut Visibility, With<ScreenRoot>>,
-    mut status: Query<(&mut Text, &mut TextFont), With<Status>>,
+    mut texts: Query<(&Line, &mut Text, &mut TextFont)>,
 ) {
     let now = Instant::now();
     let ready = screen.readiness.0.ready.load(Ordering::Relaxed);
@@ -287,9 +569,15 @@ fn update_screen(
     let shown_for = screen.shown_at.map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
     match screen.advance(transition.busy(), ready, now) {
         Change::None => {}
-        Change::Up => info!("LOADING_SCREEN up: {}", if transition.busy() { transition.label() } else { format!("{} published", current.name) }),
+        Change::Up => {
+            // The start's steps began in `main`; a later load's begin now.
+            if screen.ups > 1 {
+                restart_steps();
+            }
+            info!("LOADING_SCREEN up: {}", transition.step().unwrap_or_else(|| format!("{} published", current.name)));
+        }
         Change::Ready(waited) => info!(
-            "LOADING_SCREEN {} on the GPU {:.1} s after its publish; the screen was up {:.1} s",
+            "LOADING_SCREEN down: {} on the GPU {:.1} s after its publish; the screen was up {:.1} s",
             current.name, waited.as_secs_f32(), shown_for.as_secs_f32(),
         ),
         Change::GaveUp(waited) => {
@@ -312,69 +600,34 @@ fn update_screen(
     if !screen.shown {
         return;
     }
-    let text = if transition.busy() {
-        transition.label()
-    } else {
-        format!("Loading {} — uploading textures and shaders…", current.name)
-    };
-    let font_size = windows.single().map_or(18., |w| (w.height() * 0.024).max(12.));
-    for (mut status, mut font) in &mut status {
-        if status.0 != text {
-            status.0.clone_from(&text);
+    step(&transition.step().unwrap_or_else(|| format!("Loading {}: uploading to the GPU", current.name)));
+    let (line, history) = current_lines();
+    // Logical pixels a splash pixel: `SCALE` on a 720-row screen, in proportion on others.
+    let pixel = windows.single().map_or(SCALE, |w| w.height() / SCREEN_HEIGHT as f32 * SCALE);
+    for (&which, mut text, mut font) in &mut texts {
+        let value = match which {
+            Line::Title => TITLE.to_owned(),
+            Line::Status => fit(&line, LINE_SIZE),
+            Line::Finished(i) => history.get(i).map_or_else(String::new, |h| fit(h, HISTORY_SIZE)),
+        };
+        if text.0 != value {
+            text.0 = value;
         }
-        if font.font_size != font_size {
-            font.font_size = font_size;
+        let size = which.size() * pixel;
+        if font.font_size != size {
+            font.font_size = size;
         }
     }
 }
 
-/// The board rolls left to right across the screen and comes round again.
-fn roll_board(
-    screen: Res<LoadingScreen>,
-    time: Res<Time<Real>>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    mut boards: Query<&mut Node, With<Board>>,
-) {
+fn roll_board(screen: Res<LoadingScreen>, mut boards: Query<&mut Node, With<Board>>) {
     if !screen.shown() {
         return;
     }
-    let Ok(window) = windows.single() else { return };
-    let board = BOARD_VH / 100. * window.height() * (BOARD_LENGTH + 2. * BOARD_PAD) / BOARD_HEIGHT;
-    let track = window.width() + board;
-    let x = (time.elapsed_secs() * track / ROLL_SECONDS) % track - board;
+    let left = Val::Percent(board_left(since_launch()) / SPLASH_WIDTH * 100.);
     for mut node in &mut boards {
-        node.left = Val::Px(x);
+        node.left = left;
     }
-}
-
-/// The skating crab (docs/images), decoded and scaled down to the rows it is drawn at: the Switch
-/// build's Bevy has no PNG decoder, and the 920-row original drawn at 40% of a 720-row screen
-/// would alias without mips.
-const CRAB_PNG: &[u8] = include_bytes!("../../../docs/images/skating-crab.png");
-const CRAB_HEIGHT: u32 = 480;
-
-fn crab_image() -> Result<Image, String> {
-    let mut crab = ::image::load_from_memory_with_format(CRAB_PNG, ::image::ImageFormat::Png)
-        .map_err(|e| e.to_string())?
-        .into_rgba8();
-    let width = (u64::from(crab.width()) * u64::from(CRAB_HEIGHT) / u64::from(crab.height())) as u32;
-    // Scaled with premultiplied alpha, so the transparent surround doesn't fringe the edge dark.
-    for pixel in crab.pixels_mut() {
-        let alpha = u32::from(pixel[3]);
-        for channel in &mut pixel.0[..3] {
-            *channel = ((u32::from(*channel) * alpha + 127) / 255) as u8;
-        }
-    }
-    let mut scaled = ::image::imageops::resize(&crab, width, CRAB_HEIGHT, ::image::imageops::FilterType::CatmullRom);
-    for pixel in scaled.pixels_mut() {
-        let alpha = u32::from(pixel[3]);
-        if alpha > 0 {
-            for channel in &mut pixel.0[..3] {
-                *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
-            }
-        }
-    }
-    Ok(rgba_image(width, CRAB_HEIGHT, scaled.into_raw()))
 }
 
 fn rgba_image(width: u32, height: u32, data: Vec<u8>) -> Image {
@@ -388,6 +641,13 @@ fn rgba_image(width: u32, height: u32, data: Vec<u8>) -> Image {
     );
     image.sampler = ImageSampler::linear();
     image
+}
+
+/// RGBA8 pixels, row after row.
+struct Rgba {
+    width: usize,
+    height: usize,
+    data: Vec<u8>,
 }
 
 /// The board's length and the height of its box, in the splash's pixels, and the margin either
@@ -528,7 +788,7 @@ impl Canvas {
     }
 
     /// Averages each pixel's samples in linear light.
-    fn into_image(self) -> Image {
+    fn into_rgba(self) -> Rgba {
         let per = SUPERSAMPLE;
         let (width, height) = (self.width / per, self.height / per);
         let linear = PALETTE.map(|[r, g, b, a]| [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), f32::from(a) / 255.]);
@@ -551,7 +811,7 @@ impl Canvas {
                 data.push((alpha * 255.).round() as u8);
             }
         }
-        rgba_image(width as u32, height as u32, data)
+        Rgba { width, height, data }
     }
 }
 
@@ -575,7 +835,7 @@ fn linear_to_srgb(value: f32) -> u8 {
 
 /// The board, side view: kicked nose and tail, griptape over a maple edge, two trucks, solid
 /// urethane wheels and a shadow on the ground (splash.rs `draw_board`, the splash's coordinates).
-fn board_image() -> Image {
+fn board_pixels() -> Rgba {
     let mut canvas = Canvas::new();
     let l = BOARD_LENGTH;
     canvas.ellipse((l / 2., 35.), ((l - 20.) / 2., 2.5), SHADOW);
@@ -607,7 +867,12 @@ fn board_image() -> Image {
         canvas.ellipse((ax, 26.5), (3.9, 3.9), WHEEL_CORE);
         canvas.ellipse((ax, 26.5), (1.7, 1.7), BEARING);
     }
-    canvas.into_image()
+    canvas.into_rgba()
+}
+
+fn board_image() -> Image {
+    let Rgba { width, height, data } = board_pixels();
+    rgba_image(width as u32, height as u32, data)
 }
 
 #[cfg(test)]
@@ -643,6 +908,21 @@ mod tests {
         let newer = s.wait_for(later);
         assert_ne!(newer, token);
         assert_eq!(s.advance(false, token, later), Change::Up);
+        assert_eq!(s.ups, 2);
+    }
+
+    #[test]
+    fn a_world_ready_during_another_load_ends_its_wait_quietly() {
+        let start = Instant::now();
+        let mut s = screen();
+        // The Switch's empty start scene, published before its start map loads.
+        let token = s.wait_for(start);
+        assert_eq!(s.advance(true, token, start), Change::Up);
+        for _ in 1..READY_FRAMES {
+            assert_eq!(s.advance(true, token, start), Change::None);
+        }
+        assert_eq!(s.advance(true, token, start), Change::None);
+        assert!(s.shown() && s.waiting.is_none());
     }
 
     #[test]
@@ -673,18 +953,77 @@ mod tests {
         assert!(!s.shown());
     }
 
-    fn pixel(image: &Image, x: f32, y: f32) -> [u8; 4] {
+    #[test]
+    fn finished_steps_move_below_and_the_last_four_stay() {
+        let start = Instant::now();
+        let mut steps = Steps::new(start);
+        assert_eq!(steps.lines(start), ("Starting  (0 s)".to_owned(), Vec::new()));
+        for label in ["a", "b", "c", "d", "e", "f"] {
+            steps.step(label);
+        }
+        // The same step again changes nothing.
+        steps.step("f");
+        let (line, finished) = steps.lines(start + Duration::from_secs(7));
+        assert_eq!(line, "f  (7 s)");
+        assert_eq!(finished, ["e", "d", "c", "b"]);
+    }
+
+    #[test]
+    fn long_lines_are_cut_to_the_margins() {
+        assert_eq!(fit("Loading physics  (3 s)", LINE_SIZE), "Loading physics  (3 s)");
+        let cut = fit(&"x".repeat(80), LINE_SIZE);
+        // 528 pixels between the margins, 9.6 a character at 16.
+        assert_eq!(cut.chars().count(), 55);
+        assert!(cut.ends_with("..."));
+    }
+
+    #[test]
+    fn fira_mono_is_as_wide_as_the_cut_assumes() {
+        let font = SplashFont::new().unwrap();
+        for c in ['W', 'i', ' ', '(', '.'] {
+            let advance = font.0.h_advance_unscaled(font.0.glyph_id(c)) / font.0.units_per_em().unwrap();
+            assert_eq!(advance, ADVANCE, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn the_early_splash_draws_hails_layout() {
+        let (width, height) = (SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize);
+        let mut pixels = vec![0u8; width * height * 4];
+        let board = board_pixels();
+        // The board's deck starts 194 splash pixels into the panel, its image 188.
+        let seconds = (194. + BOARD_LENGTH) / ROLL_SPEED;
+        let history = ["Reading the settings".to_owned()];
+        let mut painter = Painter { pixels: &mut pixels, width, height, stride: width * 4 };
+        draw_splash(&mut painter, SplashFont::new().as_ref(), &board, seconds, "Loading physics  (3 s)", &history);
+        let at = |x: usize, y: usize| -> [u8; 4] { pixels[(y * width + x) * 4..][..4].try_into().unwrap() };
+        assert_eq!(at(0, 0), [14, 14, 17, 255], "background");
+        // The panel is 1120 × 480 at (80, 120); each text band has something lit.
+        let lit = |top: f32, size: f32| {
+            let first = (120. + top * SCALE) as usize;
+            (first..first + (size * SCALE) as usize).any(|y| (0..width).any(|x| at(x, y)[0] > 40))
+        };
+        assert!(lit(TITLE_TOP, TITLE_SIZE), "title");
+        assert!(lit(LINE_TOP, LINE_SIZE), "status line");
+        assert!(lit(HISTORY_TOP, HISTORY_SIZE), "the finished line");
+        assert!(!lit(HISTORY_TOP + HISTORY_SPACING, HISTORY_SIZE), "only one finished line");
+        // The tail wheel's coloured core, where the board's own image has it.
+        let x = 80. + (board_left(seconds) + 42.8 + BOARD_PAD) * SCALE;
+        let y = 120. + (BOARD_TOP + 26.5) * SCALE;
+        let [r, g, b, _] = at(x as usize, y as usize);
+        assert_eq!([r, g, b], [86, 146, 214]);
+    }
+
+    fn pixel(image: &Rgba, x: f32, y: f32) -> [u8; 4] {
         // Splash coordinates to the image pixel they fall in.
         let (px, py) = (((x + BOARD_PAD) * BOARD_SCALE as f32) as usize, (y * BOARD_SCALE as f32) as usize);
-        let data = image.data.as_ref().unwrap();
-        let at = (py * image.width() as usize + px) * 4;
-        data[at..at + 4].try_into().unwrap()
+        image.data[(py * image.width + px) * 4..][..4].try_into().unwrap()
     }
 
     #[test]
     fn the_board_has_its_deck_wheels_and_shadow_where_the_splash_draws_them() {
-        let board = board_image();
-        assert_eq!((board.width(), board.height()), (384, 80));
+        let board = board_pixels();
+        assert_eq!((board.width, board.height), (384, 80));
         assert_eq!(pixel(&board, -5., 1.), [0, 0, 0, 0], "clear around it");
         // The maple between the griptape (to 13.4) and the centre ply (from 14.6), mid-deck.
         assert_eq!(pixel(&board, 90., 14.), [214, 176, 124, 255]);
@@ -693,14 +1032,5 @@ mod tests {
         assert_eq!(pixel(&board, 42.8, 26.5), [86, 146, 214, 255]);
         assert_eq!(pixel(&board, BOARD_LENGTH - 42. + 5.5, 26.5), [240, 235, 220, 255], "nose wheel");
         assert_eq!(pixel(&board, 90., 35.), [0, 0, 0, 128], "shadow");
-    }
-
-    #[test]
-    fn the_crab_decodes_at_its_drawing_size_with_its_transparency() {
-        let crab = crab_image().unwrap();
-        assert_eq!(crab.height(), CRAB_HEIGHT);
-        assert_eq!(crab.width(), 1208 * CRAB_HEIGHT / 920);
-        let alphas: Vec<u8> = crab.data.as_ref().unwrap().chunks_exact(4).map(|p| p[3]).collect();
-        assert!(alphas.contains(&0) && alphas.contains(&255));
     }
 }

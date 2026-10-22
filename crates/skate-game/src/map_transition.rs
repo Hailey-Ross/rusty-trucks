@@ -84,6 +84,20 @@ impl MapTransition {
             Phase::Publishing { .. } => "Loading — publishing the new world…".into(),
         }
     }
+    /// The load's step for the loading screen: ASCII, since its font is Bevy's subset of Fira
+    /// Mono, and short, since its status line holds 55 characters.
+    pub(crate) fn step(&self) -> Option<String> {
+        match &self.phase {
+            Phase::Idle => None,
+            Phase::Requested(entry) => Some(format!("Loading {}", entry.label)),
+            Phase::Loading { entry, progress, .. } => Some(format!("Loading {}: {}", entry.label,
+                match progress.load(Ordering::Relaxed) {
+                    0 => "reading the map", 1 => "building collision",
+                    2 => "setting up the skater", _ => "finishing the scene",
+                })),
+            Phase::Publishing { .. } => Some("Publishing the new world".into()),
+        }
+    }
 }
 
 pub(crate) struct MapTransitionPlugin;
