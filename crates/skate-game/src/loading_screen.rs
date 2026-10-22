@@ -213,6 +213,7 @@ fn spawn_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>, scree
     if !screen.enabled {
         return;
     }
+    let started = Instant::now();
     let crab = crab_image()
         .inspect_err(|error| warn!("Loading screen: the crab didn't decode: {error}"))
         .ok()
@@ -221,6 +222,7 @@ fn spawn_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>, scree
             (images.add(image), aspect)
         });
     let board = images.add(board_image());
+    info!("LOADING_SCREEN the crab and the board drawn in {} ms", started.elapsed().as_millis());
     let board_aspect = (BOARD_LENGTH + 2. * BOARD_PAD) / BOARD_HEIGHT;
     commands
         .spawn((

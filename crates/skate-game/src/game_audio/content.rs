@@ -229,7 +229,8 @@ fn reset_hosts(world: &mut World) {
 }
 
 /// The first system of the audio pass: the native runtime's first start (after the first mod
-/// scan, or at once without the mod system) and the restart after an overlay change.
+/// scan, or at once without the mod system, and once the start-up banks' thread is done) and the
+/// restart after an overlay change.
 pub(super) fn frame(world: &mut World) {
     let mods = world.contains_resource::<crate::modding::Mods>();
     let Some(content) = world.get_resource::<AudioContent>() else { return };
@@ -244,6 +245,10 @@ pub(super) fn frame(world: &mut World) {
     match runtime {
         Runtime::NotStarted => {
             if mods && !scanned {
+                return;
+            }
+            // Started once the start-up banks are in, so no frame waits for their thread.
+            if world.get_resource::<super::native::startup::EarlyLoads>().is_some_and(|early| !early.finished()) {
                 return;
             }
             // Overlays found by the first scan are merged before the first start; without any the

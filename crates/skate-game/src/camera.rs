@@ -58,7 +58,15 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
     history: Res<crate::presentation::Presentation>, time: Res<Time<Fixed>>,
     replay: Res<crate::replay::Replay>,
     customiser: Option<Res<crate::customiser::Customiser>>,
+    config: Option<Res<Config>>, current: Option<Res<crate::map_transition::CurrentMap>>,
     mut cameras: Query<(&mut Camera, &mut Transform, &mut Projection), With<GameplayCamera>>) {
+    // Off while the Switch's start map loads behind the loading screen: there is nothing to draw
+    // yet, and until a retail map commits this isn't the HDR camera it gets then. Drawing the
+    // skater through the non-HDR lit path lost the Switch's GPU 11 s after the first frame, as
+    // the test world does (findings 55, 59).
+    if config.is_some_and(|c| c.boot_map.is_some()) && current.is_none_or(|c| c.generation == 0) {
+        return;
+    }
     if let Ok(window) = windows.single() {
         // A minimized window reports 0x0, and 0/0 is NaN. That poisons the
         // projection's field of view and trips the non-finite frame check, so

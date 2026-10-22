@@ -6,9 +6,12 @@
 //!   sources ([`begin`]).
 //! - The thread runs the loads the game thread would run ([`BankSource::load`],
 //!   [`SpliceSource::load`], [`wheels_load`]) and keeps the ones that loaded, each with its source.
-//! - The first `native::launch` joins it (waiting while it is still loading). `start_from` takes a
-//!   result only when its source is the one the current library names: mod overlays merged before
-//!   the first start change a bank's source, and that bank loads in frame 0 as before.
+//! - The first start waits for it to finish (`content::frame` checks [`EarlyLoads::finished`]
+//!   each frame) and `native::launch` then joins it: no frame waits for the loads. On a Switch
+//!   whose start map loads in the background they take about 30 s, and joining mid-load held the
+//!   first frame for 24 s. `start_from` takes a result only when its source is the one the
+//!   current library names: mod overlays merged before the first start change a bank's source,
+//!   and that bank loads as before.
 //! - Only the data moves: `Runtime::load_bank`, the Splice installs and the streams run where and
 //!   in the order they did, so the runtime sees exactly what it saw before.
 //! - `SKATE_AUDIO_EARLY_LOAD=0` turns it off.
@@ -136,6 +139,11 @@ fn pcm_len(pcm: &Pcm) -> usize {
 }
 
 impl EarlyLoads {
+    /// Whether the thread is done, so [`join`](Self::join) won't wait.
+    pub(crate) fn finished(&self) -> bool {
+        self.thread.is_finished()
+    }
+
     /// Wait for the thread (while it is still loading) and take what it loaded; nothing when it
     /// panicked (everything then loads as before).
     pub(crate) fn join(self) -> Loaded {
