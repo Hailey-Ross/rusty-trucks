@@ -170,6 +170,13 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
 - The tint path on the CPU and the `environmentpark` families (b433 change list).
 - Movable pieces (b435), the Monster Park challenge locator, `cap.AllowCollision` (the DLC recipe precedence is moot, see
   "Recipe precedence across packs" above).
+- Do-not-fuse pieces: retail leaves static entries with flag bit 2 out of the fused mesh (`827765C0`, checked); the
+  recipe column that sets it is inferred as `IgnoreFuser` (research b481, record +0x10), not proven. Our fuse takes
+  every piece.
+- The two dead stops of the laptop session 2026-10-21 21:38 where the user saw nothing (see "Seam audit of every
+  layout"): whether the stair / bench / ramp pieces there draw in game.
+- The seam audit's leftovers: 8 floor gaps in Back Lot, 4 in Zen Plaza; edges with more than two triangles and flat
+  floor ridges not yet classified.
 
 ## The pieces fuse into one collision set: no catching on seams (2026-10-21, research b477 / b478)
 
