@@ -2313,3 +2313,34 @@ looked at in the running game (keyboard look, popup over the keyboard).
   `ASSET_CHECK`: `SKATE_ASSETS_STALE group=... reason=...` per finding, and `SKATE_ASSETS_REFRESH_NEEDED` with a failing
   exit when the launch would restart into Refresh Game Files (laptop 2026-10-19: it printed READY with v9 menus while
   the game reads v10, so a play session became a refresh).
+
+## Challenge Map: tab rules, row counts and Debug Menus (2026-10-21)
+
+- **Problems [screenshots, automated with `SKATE3_RETAIL_MENUS_KEYS`]:** next to retail's list (recomp, Locations tab)
+  ours had no row counts ("Downtown District (14)" in retail) and a fourth tab "debug_list_all" retail never shows.
+- **Tab rules [data]:** each `map_listing` carries a tab Lua (`Hash_3E294F92C056A144`, skatercollections): Challenges
+  (`progression_active`) and All (`progression_all`) hide in free skate, Completed also while nothing is completed;
+  Locations always shows. Ported as menu rules (`menus.rs` `install_retail_rules`, facts `game_mode` (missing = 0,
+  free skate) and `completed_challenges`). Our pause menu is retail's Free Play one, so the map shows Locations only.
+- **Debug listings [code + data, research b479 `.local/research/b479-debug-menus.md`, main checked the hash and the
+  values]:** `Hash_755772463A459824` is `IsDebug` (hash64 of the name); only `progression_all` has it set
+  (`default` = 0). Retail's filter 82D0C0E0 skips an IsDebug row when filling the tab list (82D0BDD0) and the folders
+  (82D0D728); nothing in TU3 turns it on. Setup's vault reader exports the flagged listings
+  (`skate_data::challenge_map::debug_listings`, `MenuData::map_debug`) and the registry hides each unless the fact
+  `debug_menus` is set, so mod listings with the flag behave the same.
+- **Debug Menus (ours, not retail):** PC overlay EXTRAS > Debug > "Debug Menus" (saved in `settings/graphics.json`
+  `debug_menus`) sets the fact. With it on the map gets the "debug_list_all" tab: the challenge-type folders (empty,
+  our game has no challenges yet), Art Gallery, Maloof Money Cup 2010 NYC and one folder without a title
+  (`Hash_0573E271B978991A`, open).
+- **Compiled out in TU3 (b479):** the pause / start hub "Debug Menu" (`ID_PAUSEMENU_DEBUGMENU`,
+  `ID_START_HUB_DEBUG_MENU`: only the strings and a `debug` icon frame in core_menu remain, no table row or screen)
+  and an "AI Paths | Options" page (strings only). Nothing to re-enable; anything there would be ours. Challenges
+  flagged `DebugOnly` (0xFD40E4A31027C984) are kept out of the map's item pool by 82645B70; no exported challenge sets
+  it.
+- **Row counts [code, b255]:** `sub_8264ACF8` localizes a row's label and formats "%s (%d)" when the child's showCount
+  is set; ours: folder rows (`map_listing`) carry their real row count (`challenge_map::Row::count`, headers left
+  out) and the host appends it after localizing. Capture: Downtown 14, Industrial 12, University 10, skate.School 1,
+  skate.Park 8, Maloof 2, Black Box 1, MMC NYC 1, Danny Way 1, Sanatorium 1, Art Gallery 1, the same as retail.
+- **Tests:** `challenge_map` (tabs in career and free skate, folder counts), `menus` (IsDebug listings hidden without
+  the fact), overlay rows. Not play-tested by the user.
+

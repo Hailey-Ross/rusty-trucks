@@ -62,6 +62,9 @@ struct GraphicsSettings {
     /// Better Object Mover (QoL, not retail; user 2026-10-20): every prop can be moved, not only those with authored
     /// grab splines (`prop_dynamics::generated_grab_splines`).
     better_object_mover: bool,
+    /// Debug Menus (not retail; user 2026-10-21): shows the menus retail ships hidden (the Challenge Map's debug
+    /// listings first; research b479), through the retail menus' `debug_menus` fact.
+    debug_menus: bool,
 }
 impl Default for GraphicsSettings {
     fn default() -> Self {
@@ -80,6 +83,7 @@ impl Default for GraphicsSettings {
             extended_replays: false,
             replay_seconds: REPLAY_LENGTHS[0],
             better_object_mover: false,
+            debug_menus: false,
         }
     }
 }
@@ -160,6 +164,10 @@ impl Menu {
     pub(crate) fn better_object_mover(&self) -> bool {
         self.settings.better_object_mover
     }
+    /// Debug Menus: retail's hidden debug menus are shown (not retail).
+    pub(crate) fn debug_menus(&self) -> bool {
+        self.settings.debug_menus
+    }
     /// The player's instant replay length (Extended Replays), s; None = retail's window.
     pub(crate) fn replay_seconds(&self) -> Option<u32> {
         self.settings.extended_replays.then_some(self.settings.replay_seconds)
@@ -224,6 +232,7 @@ const HEADERS: &[(usize, &str)] = &[
     (914, "Water"),
     (915, "Replay"),
     (916, "Objects"),
+    (917, "Debug"),
 ];
 
 /// How a row behaves (the recomp's `RowSpec::Kind`).
@@ -311,7 +320,7 @@ impl Menu {
             1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
             2 => vec![0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW],
             // Quitting is the rail's Close Game; Refresh Game Files only while the game files are out of date.
-            4 => [11, 14, 19, BETTER_WATER_ROW, EXTENDED_REPLAYS_ROW, REPLAY_LENGTH_ROW, BETTER_MOVER_ROW].into_iter().chain((!crate::setup::stale_groups().is_empty()).then_some(REFRESH_ROW)).collect(),
+            4 => [11, 14, 19, BETTER_WATER_ROW, EXTENDED_REPLAYS_ROW, REPLAY_LENGTH_ROW, BETTER_MOVER_ROW, DEBUG_MENUS_ROW].into_iter().chain((!crate::setup::stale_groups().is_empty()).then_some(REFRESH_ROW)).collect(),
             5 => [MORE_AUDIBLE_ROW, SPEECH_ROW].into_iter().chain(OPT_IN_ROWS).collect(),
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
@@ -338,6 +347,7 @@ impl Menu {
                 (true, 4, BETTER_WATER_ROW) => Some(914),
                 (true, 4, EXTENDED_REPLAYS_ROW) => Some(915),
                 (true, 4, BETTER_MOVER_ROW) => Some(916),
+                (true, 4, DEBUG_MENUS_ROW) => Some(917),
                 (true, 4, REFRESH_ROW) => Some(912),
                 (true, 0, id) if id >= 1_000_000 && page.last().is_none_or(|last| *last < 1_000_000) => Some(910),
                 _ => None,
@@ -522,6 +532,9 @@ impl Menu {
             16 => audio_view(16, "Master Volume", "Overall game volume."),
             17 => audio_view(17, "Ambience Volume", "The world's ambience beds."),
             18 => audio_view(18, "Effects Volume", "Skating and world sound effects."),
+            DEBUG_MENUS_ROW => RowView::new(Kind::Enum { index: s.debug_menus as usize, count: 2, wrap: false }, "Debug Menus",
+                if s.debug_menus { "On  (not retail)" } else { "Retail" },
+                "Shows the debug menus Skate 3 ships hidden, such as the Challenge Map's debug_list_all tab. They are developer leftovers and may not all work.").reset(),
             BETTER_MOVER_ROW => RowView::new(Kind::Enum { index: s.better_object_mover as usize, count: 2, wrap: false }, "Better Object Mover",
                 if s.better_object_mover { "On  (not retail)" } else { "Retail" },
                 "Lets you pick up and move every prop. Retail only lets you move the props that have grab handles.").reset(),
@@ -756,6 +769,8 @@ const BETTER_WATER_ROW: usize = 30;
 const EXTENDED_REPLAYS_ROW: usize = 34;
 const REPLAY_LENGTH_ROW: usize = 35;
 const BETTER_MOVER_ROW: usize = 36;
+/// EXTRAS row: retail's hidden debug menus (not retail).
+const DEBUG_MENUS_ROW: usize = 37;
 const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time. None turns off all NPC skaters, peds and cars.";
 fn draw_distance_label(multiplier: f32) -> String {
     if multiplier == skate_core::living_world::DrawDistance::NONE { "None  (no NPCs, not retail)".into() } else if multiplier == skate_core::living_world::DrawDistance::RETAIL { "Retail".into() } else { format!("{multiplier}x  (not retail)") }
@@ -1143,7 +1158,7 @@ pub(crate) fn interact(
         info!("PC_OVERLAY now {:?} = {:?}", now.label, now.value);
     }
     if let Some(row) = saved_row {
-        if ((row < 3 || row == FRAME_STATS_ROW || row == NPC_DRAW_DISTANCE_ROW || row == EXTENDED_REPLAYS_ROW || row == REPLAY_LENGTH_ROW || row == BETTER_MOVER_ROW || OPT_IN_ROWS.contains(&row)) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
+        if ((row < 3 || row == FRAME_STATS_ROW || row == NPC_DRAW_DISTANCE_ROW || row == EXTENDED_REPLAYS_ROW || row == REPLAY_LENGTH_ROW || row == BETTER_MOVER_ROW || row == DEBUG_MENUS_ROW || OPT_IN_ROWS.contains(&row)) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
             let save = (|| -> Result<(), String> {
                 std::fs::create_dir_all(menu.path.parent().unwrap()).map_err(|e| e.to_string())?;
                 std::fs::write(
@@ -1325,6 +1340,7 @@ fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
             }
             EXTENDED_REPLAYS_ROW => menu.settings.extended_replays = !menu.settings.extended_replays,
             BETTER_MOVER_ROW => menu.settings.better_object_mover = !menu.settings.better_object_mover,
+            DEBUG_MENUS_ROW => menu.settings.debug_menus = !menu.settings.debug_menus,
             REPLAY_LENGTH_ROW => menu.settings.replay_seconds = cycle(REPLAY_LENGTHS, menu.settings.replay_seconds, direction),
             FRAME_STATS_ROW => {
                 // Off, Simple, Verbose (the original readout).
@@ -1392,6 +1408,7 @@ fn reset_row(menu: &mut Menu, row: usize, audio: &mut crate::game_audio::AudioSe
         FRAME_STATS_ROW => (s.frame_stats, s.frame_stats_simple) = (defaults.frame_stats, defaults.frame_stats_simple),
         EXTENDED_REPLAYS_ROW => s.extended_replays = defaults.extended_replays,
         BETTER_MOVER_ROW => s.better_object_mover = defaults.better_object_mover,
+        DEBUG_MENUS_ROW => s.debug_menus = defaults.debug_menus,
         REPLAY_LENGTH_ROW => s.replay_seconds = defaults.replay_seconds,
         NPC_DRAW_DISTANCE_ROW => {
             s.npc_draw_distance = defaults.npc_draw_distance;
@@ -1662,7 +1679,7 @@ mod tests {
         m.select_section(1);
         assert_eq!(m.page(), vec![904, 3, 906, CAMERA_ANGLE_ROW, 907, 8, 10]);
         m.select_section(4);
-        assert_eq!(m.page(), vec![908, 11, 14, 909, 19, 914, BETTER_WATER_ROW, 915, EXTENDED_REPLAYS_ROW, REPLAY_LENGTH_ROW, 916, BETTER_MOVER_ROW]);
+        assert_eq!(m.page(), vec![908, 11, 14, 909, 19, 914, BETTER_WATER_ROW, 915, EXTENDED_REPLAYS_ROW, REPLAY_LENGTH_ROW, 916, BETTER_MOVER_ROW, 917, DEBUG_MENUS_ROW]);
         m.select_section(3);
         assert_eq!(m.page(), m.rows(), "no headers in the multiplayer pages");
         m.select_section(0);
@@ -1729,7 +1746,7 @@ mod tests {
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
             // Audio, controller identity, and frame-time rows are spawned.
-            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || *id == BETTER_WATER_ROW || *id == EXTENDED_REPLAYS_ROW || *id == REPLAY_LENGTH_ROW || *id == BETTER_MOVER_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
+            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || *id == BETTER_WATER_ROW || *id == EXTENDED_REPLAYS_ROW || *id == REPLAY_LENGTH_ROW || *id == BETTER_MOVER_ROW || *id == DEBUG_MENUS_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
