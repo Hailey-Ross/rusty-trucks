@@ -12,6 +12,11 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use skate_mods::presentation::WaterLookPatch;
 
+/// Better Water basin colour and reflection share: matched to the Aletown canal by capture (doc 09).
+const FOUNTAIN_COLOUR: [f32; 3] = [0.018, 0.024, 0.032];
+const FOUNTAIN_REFLECTION: f32 = 0.15;
+const FOUNTAIN_RIPPLE: f32 = 7.;
+
 /// Every value of the look layer. The default is off (retail water); the
 /// other defaults are the look approved in play (doc 09), used when the
 /// player turns on "Better Water" (pause menu, EXTRAS). Retail values are in
@@ -74,6 +79,16 @@ pub(crate) struct WaterLook {
     pub cascade_rate: f32,
     /// White foam on cascades from the two flow layers; 0 = none.
     pub cascade_foam: f32,
+    /// Basin body colour (linear rgb) under the lighting. University's fountains have a black diffuse, so with only
+    /// the reflection they read "just too blue" (laptop session 2026-10-21); this brings them in line with the
+    /// Aletown canal, whose own diffuse gives its colour.
+    pub fountain_colour: [f32; 3],
+    /// Basin reflection as a share of the material's own specular mask: University's fountains carry a plain white
+    /// mask (about 0.9), DownTown's water `pool_S_30per` (about 0.18).
+    pub fountain_reflection: f32,
+    /// Basin wave tilt gain: a flat basin colour shows the waves only through the lighting, so they need more tilt
+    /// than the canal, whose own diffuse carries its ripple ("the fountain doesnt ripple enough", 2026-10-21).
+    pub fountain_ripple: f32,
 }
 
 impl WaterLook {
@@ -98,6 +113,9 @@ impl WaterLook {
         fountain_waves: 0.,
         cascade_rate: 1.,
         cascade_foam: 0.,
+        fountain_colour: [0.; 3],
+        fountain_reflection: 1.,
+        fountain_ripple: 1.,
     };
 
     fn apply(&mut self, patch: &WaterLookPatch) {
@@ -121,6 +139,9 @@ impl WaterLook {
         if let Some(v) = patch.fountain_waves { self.fountain_waves = v; }
         if let Some(v) = patch.cascade_rate { self.cascade_rate = v; }
         if let Some(v) = patch.cascade_foam { self.cascade_foam = v; }
+        if let Some(v) = patch.fountain_colour { self.fountain_colour = v; }
+        if let Some(v) = patch.fountain_reflection { self.fountain_reflection = v; }
+        if let Some(v) = patch.fountain_ripple { self.fountain_ripple = v; }
     }
 
     /// `FrameState.fountain`: tile (m), calming floor, foam and the cascade clock `clock`; all zero = off.
@@ -129,6 +150,24 @@ impl WaterLook {
             return [0.; 4];
         }
         [self.fountain_tile.max(0.5), self.fountain_waves.clamp(0., 1.), self.cascade_foam.max(0.), clock]
+    }
+
+    /// `FrameState.fountain_body`: basin colour (rgb) and reflection share; zero when fountains are off (the shader
+    /// reads it only on basins, which need `fountain_row`).
+    pub fn fountain_body_row(&self) -> [f32; 4] {
+        if !self.fountain_water {
+            return [0.; 4];
+        }
+        let [r, g, b] = self.fountain_colour.map(|c| c.clamp(0., 1.));
+        [r, g, b, self.fountain_reflection.clamp(0., 2.)]
+    }
+
+    /// `FrameState.fountain_ripple`: x the basin wave tilt gain; zero when fountains are off.
+    pub fn fountain_ripple_row(&self) -> [f32; 4] {
+        if !self.fountain_water {
+            return [0.; 4];
+        }
+        [self.fountain_ripple.clamp(0., 8.), 0., 0., 0.]
     }
 
     /// `FrameState.water_tint.w`: the flowing water's ripple scale, 0 = the look stays off flowing water.
@@ -167,10 +206,13 @@ impl Default for WaterLook {
             ocean_swell_length: 40.,
             ocean_swell_speed: 7.9,
             fountain_water: true,
-            fountain_tile: 4.,
-            fountain_waves: 0.5,
+            fountain_tile: 2.,
+            fountain_waves: 1.,
             cascade_rate: 1.5,
             cascade_foam: 0.6,
+            fountain_colour: FOUNTAIN_COLOUR,
+            fountain_reflection: FOUNTAIN_REFLECTION,
+            fountain_ripple: FOUNTAIN_RIPPLE,
         }
     }
 }
@@ -305,7 +347,7 @@ mod tests {
         assert_eq!(WaterLook::RETAIL.cascade_rate, 1.);
         assert_eq!(WaterLook::default().effective().fountain_row(5.), [0.; 4], "Better Water off by default");
         let on = WaterLook { enabled: true, ..WaterLook::default() }.effective();
-        assert_eq!(on.fountain_row(5.), [4., 0.5, 0.6, 5.]);
+        assert_eq!(on.fountain_row(5.), [2., 1., 0.6, 5.]);
         assert!(on.cascade_rate > 1.);
         let mut s = WaterLookSettings::new(WaterLook { enabled: true, ..WaterLook::default() }, PathBuf::from("unused/water-look.json"));
         let patch = WaterLookPatch { fountain_tile: Some(8.), cascade_foam: Some(0.), ..Default::default() };
@@ -314,11 +356,35 @@ mod tests {
         assert!(!WaterLookPatch { fountain_waves: Some(2.), ..Default::default() }.validate());
         assert!(!WaterLookPatch { cascade_rate: Some(-1.), ..Default::default() }.validate());
         s.patch("fountains", Some(patch)).unwrap();
-        assert_eq!(s.active().effective().fountain_row(1.), [8., 0.5, 0., 1.]);
+        assert_eq!(s.active().effective().fountain_row(1.), [8., 1., 0., 1.]);
         s.patch("fountains", Some(WaterLookPatch { fountain_water: Some(false), ..Default::default() })).unwrap();
         assert_eq!(s.active().effective().fountain_row(1.), [0.; 4]);
         s.clear_owner(Some("fountains"));
-        assert_eq!(s.active().effective().fountain_row(1.)[0], 4.);
+        assert_eq!(s.active().effective().fountain_row(1.)[0], 2.);
+    }
+
+    #[test]
+    fn basins_take_their_colour_and_reflection_from_the_look() {
+        assert_eq!(WaterLook::RETAIL.fountain_body_row(), [0.; 4], "off: basins keep the retail shading");
+        let on = WaterLook { enabled: true, ..WaterLook::default() }.effective();
+        let [r, g, b, reflection] = on.fountain_body_row();
+        assert_eq!([r, g, b], FOUNTAIN_COLOUR);
+        assert_eq!(reflection, FOUNTAIN_REFLECTION);
+        assert!(reflection < 1., "University's white mask reflects less, as the canal's");
+        let mut s = WaterLookSettings::new(on.clone(), PathBuf::from("unused/water-look.json"));
+        let patch = WaterLookPatch { fountain_colour: Some([0.1, 0.2, 0.3]), fountain_reflection: Some(1.), ..Default::default() };
+        assert!(patch.validate());
+        assert!(!WaterLookPatch { fountain_colour: Some([0., 2., 0.]), ..Default::default() }.validate());
+        assert!(!WaterLookPatch { fountain_reflection: Some(3.), ..Default::default() }.validate());
+        assert!(!WaterLookPatch { fountain_ripple: Some(9.), ..Default::default() }.validate());
+        assert_eq!(on.fountain_ripple_row()[0], FOUNTAIN_RIPPLE);
+        assert_eq!(WaterLook::RETAIL.fountain_ripple_row(), [0.; 4]);
+        s.patch("basins", Some(patch)).unwrap();
+        assert_eq!(s.active().effective().fountain_body_row(), [0.1, 0.2, 0.3, 1.]);
+        s.patch("basins", Some(WaterLookPatch { fountain_water: Some(false), ..Default::default() })).unwrap();
+        assert_eq!(s.active().effective().fountain_body_row(), [0.; 4]);
+        s.clear_owner(Some("basins"));
+        assert_eq!(s.active().effective().fountain_body_row()[3], FOUNTAIN_REFLECTION);
     }
 
     #[test]

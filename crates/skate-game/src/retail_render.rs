@@ -269,6 +269,10 @@ pub(crate) struct FrameStateData {
     /// Water look fountains (family 30, not retail): x metres per basin wave tile (0 = off), y basin calming
     /// floor, z cascade foam, w the cascade clock (`water_time` at `cascade_rate`).
     pub fountain: Vec4,
+    /// Water look fountain basins (not retail): rgb body colour, w reflection share of the material's mask.
+    pub fountain_body: Vec4,
+    /// Water look fountain basins (not retail): x wave tilt gain.
+    pub fountain_ripple: Vec4,
     /// Retail world constant `g_ViewDotLight`, shared by every draw (bound by
     /// name hash 0xE552F1C3 in `sub_826DD6B8` to `*(0x83083C60)+0x44370`),
     /// written each frame by `advance_view_dot_light` from `ViewDotLightParams`.
@@ -292,6 +296,8 @@ impl Default for FrameStateData {
             water_tint: Vec4::ZERO,
             ocean_swell: Vec4::ZERO,
             fountain: Vec4::ZERO,
+            fountain_body: Vec4::ZERO,
+            fountain_ripple: Vec4::ZERO,
             view_dot_light: RETAIL_VIEW_DOT_LIGHT,
             traffic_lights: [Vec4::ZERO; 2],
         }
@@ -346,7 +352,7 @@ impl ViewDotLightParams {
 }
 
 impl FrameStateData {
-    const SIZE: usize = 23 * 16;
+    const SIZE: usize = 25 * 16;
 
     /// Turns the world's dynamic-shadow reads on with `floor` as the lightest
     /// value a dynamic shadow can leave on the baked world (see
@@ -355,13 +361,13 @@ impl FrameStateData {
         self.shadow = floor.clamp(Vec3::ZERO, Vec3::ONE).extend(1.);
     }
 
-    /// The rows in shader order (shadow, clock, PCA, slow PCA, water look, tint, ocean swell and fountain, view-dot-light, traffic lights).
+    /// The rows in shader order (shadow, clock, PCA, slow PCA, water look, tint, ocean swell, fountain and basin body, view-dot-light, traffic lights).
     fn rows(&self) -> impl Iterator<Item = Vec4> + '_ {
         std::iter::once(self.shadow)
             .chain(std::iter::once(self.clock))
             .chain(self.pca)
             .chain(self.pca_slow)
-            .chain([self.water_look, self.water_tint, self.ocean_swell, self.fountain])
+            .chain([self.water_look, self.water_tint, self.ocean_swell, self.fountain, self.fountain_body, self.fountain_ripple])
             .chain(std::iter::once(self.view_dot_light))
             .chain(self.traffic_lights)
     }
@@ -383,7 +389,7 @@ impl FrameStateData {
             .chain(std::iter::once(self.clock))
             .chain(self.pca)
             .chain(self.pca_slow)
-            .chain([self.water_look, self.water_tint, self.ocean_swell, self.fountain])
+            .chain([self.water_look, self.water_tint, self.ocean_swell, self.fountain, self.fountain_body, self.fountain_ripple])
             .chain(std::iter::once(self.view_dot_light))
             .chain(self.traffic_lights)
         {
@@ -1159,6 +1165,25 @@ impl MaterialTable {
                 request.params.decal.y = area;
             }
         }
+        // One line per water material: where each body is, for water look reports (fountains vs the canal).
+        let mut bounds = BTreeMap::<usize, (Vec3, Vec3)>::new();
+        for v in &map.geometry.vertices {
+            let Some(m) = (v.material as usize).checked_sub(1) else { continue };
+            if water.get(m) == Some(&true) || flowing.get(m) == Some(&true) {
+                let p = Vec3::from_array(v.position);
+                let b = bounds.entry(m).or_insert((p, p));
+                *b = (b.0.min(p), b.1.max(p));
+            }
+        }
+        for (m, (lo, hi)) in &bounds {
+            info!(
+                "WATER_BODY material={m} name={} family={} area={:.0} min=[{:.1}, {:.1}, {:.1}] max=[{:.1}, {:.1}, {:.1}]",
+                map.materials[*m].name,
+                if water[*m] { 33 } else { 30 },
+                areas[*m].max(flowing_areas[*m]),
+                lo.x, lo.y, lo.z, hi.x, hi.y, hi.z
+            );
+        }
         // One line per table (logs must diagnose props / car shadows: which shader family each
         // material ended up in, e.g. 15 = dynamicobject (D9), 1 = the plain fallback).
         info!(
@@ -1873,6 +1898,8 @@ fn advance_frame_state(
     state.water_tint = Vec3::from_array(look.reflection_tint).extend(look.flowing_lane());
     state.ocean_swell = look.ocean_swell_row().into();
     state.fountain = look.fountain_row(water_time(elapsed, f64::from(look.cascade_rate))).into();
+    state.fountain_body = look.fountain_body_row().into();
+    state.fountain_ripple = look.fountain_ripple_row().into();
 }
 
 /// The PCA frame at `rate` x the retail 30 Hz, blended linearly between
@@ -2385,6 +2412,8 @@ mod tests {
             pca_slow: std::array::from_fn(|_| next()),
             water_look: next(),
             water_tint: next(),
+            fountain_body: next(),
+            fountain_ripple: next(),
             view_dot_light: next(),
             traffic_lights: std::array::from_fn(|_| next()),
             ..FrameStateData::default()

@@ -181,6 +181,12 @@ pub struct WaterLookPatch {
     pub cascade_rate: Option<f32>,
     /// Foam on cascades, 0 = none (retail none).
     pub cascade_foam: Option<f32>,
+    /// Basin body colour under the lighting (linear rgb, 0..1 each).
+    pub fountain_colour: Option<[f32; 3]>,
+    /// Basin reflection strength as a share of the material's own mask, 0..2.
+    pub fountain_reflection: Option<f32>,
+    /// Basin wave tilt gain, 0..8 (1 = the waves as the large water draws them).
+    pub fountain_ripple: Option<f32>,
 }
 impl WaterLookPatch {
     pub fn validate(&self) -> bool {
@@ -190,6 +196,9 @@ impl WaterLookPatch {
             && ok(self.fountain_waves, 0.0, 1.0)
             && ok(self.cascade_rate, 0.0, 8.0)
             && ok(self.cascade_foam, 0.0, 2.0)
+            && ok(self.fountain_reflection, 0.0, 2.0)
+            && ok(self.fountain_ripple, 0.0, 8.0)
+            && self.fountain_colour.is_none_or(|c| c.iter().all(|&v| range(v, 0.0, 1.0)))
             && ok(self.flowing_ripple_scale, 0.1, 16.0)
             && ok(self.shallow_splash, 0.0, 2.0)
             && ok(self.ocean_swell, 0.0, 0.3)
