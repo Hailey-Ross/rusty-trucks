@@ -224,3 +224,22 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
   checked; research b480): those keep their own per-piece collision. Which recipe column sets the bit (b480: record
   +0x10, likely `IgnoreFuser`, not proven) is open; our fuse takes every piece. The editor flow (b480,
   `.local/research/b480-park-editor.md`) is partial.
+
+## Seam audit of every layout (2026-10-22, USER-ASKS 231 / 232)
+
+Asset-gated report tests in `skate_world.rs` (run with `-- --ignored --nocapture`):
+
+- `park_layout_render_vs_collision`: every placed piece of all 11 layouts (disc and DLC: backlot_full,
+  Downtown_Nightpark_Fullpark, ZenPlaza_Full and the disc parks) has its collision inside its drawn mesh bounds (no
+  template overhangs by more than 0.25 m). So no layout has collision without a drawn piece; the laptop session's two
+  dead stops (Back Lot (-164.22, 0.09, 73.63), DownTown park (47.66, 0.09, -93.84)) are 0.45 m in front of a stair
+  piece's 0.37 m riser and a bench / steep ramp toe. The user saw nothing there (2026-10-22: "nothing was visible"),
+  so whether those pieces draw in game is the open question (a verify capture at the spot).
+- `park_layout_seam_audit` after the back-to-back fix: unjoined floor edges lying beside another floor edge within
+  1 cm (gaps the weld did not close, T-junctions): 0 in nine layouts, 8 in backlot_full (around (-225, 0, 26) and
+  (-224, 0, 2)), 4 in ZenPlaza_Full (around (97, 2, -43)). Edges still shared by more than two triangles: 161 to
+  3465 per layout (not yet classified: overlapping pieces that are not exactly back to back, or a piece's own
+  non-manifold edges). Joined convex ridges over 3 degrees between near-flat floors: 16 to 1337 per layout (many can
+  be real geometry, such as mellow ramp lips).
+- Play test 2026-10-21 23:07 (laptop, build db1cd1e5): "stadium full seams are WAY better" (one bail in about 70 s
+  against 4 in 25 s on the big ramp before) and "backlot collision is way better".
