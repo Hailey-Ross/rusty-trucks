@@ -834,7 +834,7 @@ fn append_pieces(
     // 828728B8 / 82876188), so flush seams between pieces pair up instead of keeping each piece's open borders.
     let (more, surfaces, piece_meshes) =
         portable_parts_fused(&pieces.collision, &pieces.materials, material, Some(&pieces.ranges), true, Some(pieces.weld))?;
-    info!("SKATE_PARK_FUSE weld={} m triangles={} kept={} (seams between pieces paired, edge codes rebuilt)",
+    info!("SKATE_PARK_FUSE weld={} m triangles={} kept={} (collapsed and back-to-back faces dropped, seams paired, edge codes rebuilt)",
         pieces.weld, pieces.collision.len(), more.len());
     let offset = triangles.len();
     triangles.extend(more);
@@ -962,6 +962,174 @@ fn welded_edge_features_within(
     Ok((positions, vertices, flags, cosines))
 }
 
+/// Retail's fused-mesh edge score (`82AC00A0`): d = n1.n2; a convex or flat edge (edge . (n1 x n2) > -1e-6) scores
+/// max(d, -1) in [-1, 1], a concave one min(2 - d, 3) in [1, 3]. Faces folded flat onto each other score 3 (concave)
+/// or -1 (a convex knife edge).
+fn fused_edge_score(n1: Vec3, n2: Vec3, edge: Vec3) -> f32 {
+    let d = n2.z * n1.z + n2.x * n1.x + n2.y * n1.y;
+    if edge.dot(n1.cross(n2)) > -1.0e-6 { d.max(-1.0) } else { (2.0 - d).min(3.0) }
+}
+
+/// Retail's back-to-back cull thresholds (`828755B8`: 2.99 `822F90E8`, -0.99 `822F8E60`).
+const FUSED_FOLD_ABOVE: f32 = 2.99;
+const FUSED_FOLD_BELOW: f32 = -0.99;
+
+/// The fused park set's edge features, as retail's fuser finalise `82876188` builds them (b478, USER-ASKS 221):
+/// vertices merge within `merge` ([`welded_edge_features_within`]); triangles the merge collapses or flattens are
+/// dropped (`82AC2010`); faces of DIFFERENT pieces lying back to back on each other (the side walls of two abutting
+/// pieces, under their tops) are removed in pairs, or as two quads (`828755B8` with `82875438`); then each edge pairs
+/// with the neighbour of the highest [`fused_edge_score`], a better pair displacing a worse one (`82875B20` /
+/// `82875CA8`). `pieces[i]` = triangle i's piece. Returns the features plus `dropped[i]` (collapsed or removed).
+#[allow(clippy::type_complexity)]
+fn fused_edge_features(
+    triangles: &[[[f32; 3]; 3]],
+    merge: f32,
+    pieces: &[usize],
+) -> Result<(Vec<Vec3>, Vec<[usize; 3]>, Vec<u32>, Vec<[f32; 3]>, Vec<bool>), String> {
+    let (positions, vertices, mut flags, mut cosines) = welded_edge_features_within(triangles, false, Some(merge))?;
+    let n = vertices.len();
+    let normals: Vec<Option<Vec3>> = vertices
+        .iter()
+        .map(|v| {
+            let [a, b, c] = v.map(|id| positions[id]);
+            (v[0] != v[1] && v[1] != v[2] && v[0] != v[2]).then(|| (b - a).cross(c - a).try_normalize()).flatten()
+        })
+        .collect();
+    let mut dropped: Vec<bool> = normals.iter().map(Option::is_none).collect();
+    // Retail's vertex -> triangle table, in vertex then triangle order.
+    let mut users = vec![Vec::new(); positions.len()];
+    for (i, v) in vertices.iter().enumerate() {
+        if !dropped[i] {
+            for &id in v {
+                if users[id].last() != Some(&i) {
+                    users[id].push(i);
+                }
+            }
+        }
+    }
+    let normal = |i: usize| normals[i].unwrap_or(Vec3::ZERO);
+    // 82875438: the live triangle of `t`'s piece across `t`'s edge (from, to), and its third vertex.
+    let partner = |dropped: &[bool], t: usize, from: usize, to: usize| {
+        users[from].iter().copied().filter(|&u| u != t && !dropped[u] && pieces[u] == pieces[t]).find_map(|u| {
+            (0..3).find(|&j| vertices[u][j] == from && vertices[u][(j + 2) % 3] == to).map(|j| (u, vertices[u][(j + 1) % 3]))
+        })
+    };
+    // 828755B8: back-to-back faces of different pieces.
+    for t in 0..n {
+        if dropped[t] {
+            continue;
+        }
+        for e in 0..3 {
+            let (a, b, c) = (vertices[t][e], vertices[t][(e + 1) % 3], vertices[t][(e + 2) % 3]);
+            for &u in &users[a] {
+                if u <= t || dropped[u] || pieces[u] == pieces[t] {
+                    continue;
+                }
+                for k in 0..3 {
+                    if vertices[u][k] != a || vertices[u][(k + 2) % 3] != b {
+                        continue;
+                    }
+                    let score = fused_edge_score(normal(t), normal(u), positions[b] - positions[a]);
+                    if !(score > FUSED_FOLD_ABOVE || score < FUSED_FOLD_BELOW) {
+                        continue;
+                    }
+                    let x = vertices[u][(k + 1) % 3];
+                    if c == x {
+                        dropped[t] = true;
+                        dropped[u] = true;
+                    } else if let (Some((t2, t2_third)), Some((u2, u2_third))) =
+                        (partner(&dropped, t, b, c), partner(&dropped, u, a, x))
+                    {
+                        if t2_third == x && u2_third == c {
+                            for i in [t, t2, u, u2] {
+                                dropped[i] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 82875B20 / 82875CA8: best-score pairing; unpaired edges keep score 1.
+    let mut neighbour = vec![[usize::MAX; 3]; n];
+    let mut best = vec![[1.0f32; 3]; n];
+    let unlink = |neighbour: &mut Vec<[usize; 3]>, best: &mut Vec<[f32; 3]>, x: usize, from: usize| {
+        if let Some(j) = (0..3).find(|&j| neighbour[x][j] == from) {
+            neighbour[x][j] = usize::MAX;
+            best[x][j] = 1.0;
+        }
+    };
+    for t in 0..n {
+        if dropped[t] {
+            continue;
+        }
+        for e in 0..3 {
+            let (a, b) = (vertices[t][e], vertices[t][(e + 1) % 3]);
+            for ui in 0..users[a].len() {
+                let u = users[a][ui];
+                if u >= t || dropped[u] {
+                    continue;
+                }
+                let Some(ue) = (0..3).find(|&k| vertices[u][k] == b && vertices[u][(k + 1) % 3] == a) else { continue };
+                let score = fused_edge_score(normal(t), normal(u), positions[b] - positions[a]);
+                let (tn, un) = (neighbour[t][e], neighbour[u][ue]);
+                let replace = match (tn == usize::MAX, un == usize::MAX) {
+                    (true, true) => true,
+                    (true, false) => best[u][ue] < score,
+                    (false, true) => best[t][e] < score,
+                    (false, false) => tn != u && un != t && best[t][e] < score && best[u][ue] < score,
+                };
+                if !replace {
+                    continue;
+                }
+                if tn != usize::MAX {
+                    unlink(&mut neighbour, &mut best, tn, t);
+                }
+                if un != usize::MAX {
+                    unlink(&mut neighbour, &mut best, un, u);
+                }
+                neighbour[t][e] = u;
+                neighbour[u][ue] = t;
+                best[t][e] = score;
+                best[u][ue] = score;
+            }
+        }
+    }
+    // Edge codes from the chosen pairs, as the map path writes them (ExtendedEdgeCosine / MakeEdgeCode).
+    for t in 0..n {
+        if dropped[t] {
+            continue;
+        }
+        for e in 0..3 {
+            let u = neighbour[t][e];
+            if u == usize::MAX {
+                continue;
+            }
+            let (a, b) = (vertices[t][e], vertices[t][(e + 1) % 3]);
+            let cosine = normal(t).dot(normal(u)).clamp(-1., 1.);
+            let orientation = (positions[b] - positions[a]).dot(normal(t).cross(normal(u)));
+            cosines[t][e] = cosine;
+            if orientation <= -1.0e-6 || cosine >= 1. {
+                flags[t] &= !(0x20 << e);
+            }
+        }
+    }
+    for (v, faces) in users.iter().enumerate() {
+        let faces: Vec<usize> = faces.iter().copied().filter(|&i| !dropped[i]).collect();
+        let Some(&first) = faces.first() else { continue };
+        if faces.iter().all(|&i| (normal(first).dot(normal(i)) - 1.).abs() <= 0.01) {
+            for &i in &faces {
+                for corner in 0..3 {
+                    if vertices[i][corner] == v {
+                        flags[i] |= 0x200 << corner;
+                    }
+                }
+            }
+        }
+    }
+    Ok((positions, vertices, flags, cosines, dropped))
+}
+
 /// Portable triangle world: 1 mm vertex welding, reconstructed adjacency and
 /// contiguous-range broadphase metadata. Shared by the playable map and by
 /// static prop instances, which supply already-placed world-space triangles.
@@ -1009,16 +1177,20 @@ fn portable_parts_fused(
     fuse: Option<f32>,
 ) -> Result<(Vec<WorldTriangle>, Vec<u16>, Vec<QueryMesh>), String> {
     let points: Vec<_> = collision.iter().map(|t| t.points).collect();
-    let reconstruct = fuse.is_some() || collision.iter().any(|t| t.native_edges.is_none());
-    let (positions, vertices, mut flags, mut cosines) = welded_edge_features_within(&points, reconstruct, fuse)?;
-    let kept: Vec<bool> = vertices
-        .iter()
-        .map(|v| {
-            fuse.is_none()
-                || (v[0] != v[1] && v[1] != v[2] && v[0] != v[2]
-                    && (positions[v[1]] - positions[v[0]]).cross(positions[v[2]] - positions[v[0]]).try_normalize().is_some())
-        })
-        .collect();
+    let (positions, vertices, mut flags, mut cosines, kept) = if let Some(merge) = fuse {
+        // The piece of each triangle: one split range per piece (append_pieces), else one piece.
+        let mut pieces = vec![0; points.len()];
+        for (piece, range) in splits.unwrap_or(&[]).iter().enumerate() {
+            pieces[range.clone()].fill(piece);
+        }
+        let (positions, vertices, flags, cosines, dropped) = fused_edge_features(&points, merge, &pieces)?;
+        (positions, vertices, flags, cosines, dropped.into_iter().map(|d| !d).collect::<Vec<bool>>())
+    } else {
+        let reconstruct = collision.iter().any(|t| t.native_edges.is_none());
+        let (positions, vertices, flags, cosines) = welded_edge_features_within(&points, reconstruct, None)?;
+        let kept = vec![true; vertices.len()];
+        (positions, vertices, flags, cosines, kept)
+    };
     let fused_splits: Option<Vec<std::ops::Range<usize>>> = (fuse.is_some()).then(|| {
         let before: Vec<usize> = std::iter::once(0).chain(kept.iter().scan(0, |n, &k| { *n += usize::from(k); Some(*n) })).collect();
         splits.map_or_else(|| vec![0..before[kept.len()]], |s| s.iter().map(|r| before[r.start]..before[r.end]).filter(|r| !r.is_empty()).collect())
@@ -2054,15 +2226,124 @@ mod tests {
             // Triangle 1 edge 2 (x = 1, z 1 -> 0) and triangle 2 edge 0 (x = 1, z 0 -> 1).
             [(1, 2), (2, 0)].map(|(t, e)| (flags[t] & (0x20 << e) != 0, cosines[t][e]))
         };
+        let fuse = |points: &[[[f32; 3]; 3]]| {
+            let (p, v, f, c, _) = fused_edge_features(points, crate::park_layout::FUSE_WELD, &[0, 0, 1, 1]).unwrap();
+            (p, v, f, c)
+        };
         let flush = plates([0.0015, 0.001, 0.0]);
-        let fused = welded_edge_features_within(&flush, true, Some(crate::park_layout::FUSE_WELD)).unwrap();
-        assert_eq!(seam(&fused), [(false, 1.0), (false, 1.0)], "paired: flat, not convex");
+        let fused = fuse(&flush);
+        // Normals come from the merged corners (retail), so plate B's 1.5 mm pull tilts it by a hair.
+        assert!(seam(&fused).iter().all(|&(convex, cosine)| !convex && (cosine - 1.0).abs() < 1e-5), "paired: flat, not convex");
         let mapped = welded_edge_features_within(&flush, true, None).unwrap();
         assert!(seam(&mapped).iter().all(|&(convex, _)| convex), "the 1 mm grid keeps them open");
-        let gap = welded_edge_features_within(&plates([0.05, 0.0, 0.0]), true, Some(crate::park_layout::FUSE_WELD)).unwrap();
+        let gap = fuse(&plates([0.05, 0.0, 0.0]));
         assert!(seam(&gap).iter().all(|&(convex, _)| convex), "a real gap still catches");
         // Deterministic: the same input gives the same features.
-        assert_eq!(fused, welded_edge_features_within(&flush, true, Some(crate::park_layout::FUSE_WELD)).unwrap());
+        assert_eq!(fused, fuse(&flush));
+    }
+
+    /// The real "Back Lot Park - Full" layout (laptop session 2026-10-21 21:38: pops crossing the aa_PlazaPad seam at
+    /// x -151.77, z 74.5): after fusing, every top edge on that seam is paired flat and the pads' back-to-back walls
+    /// are gone. Needs SKATE3_ASSET_ROOT with private/park-layouts (the layout's own render package carries the mark).
+    #[test]
+    #[ignore = "requires private converted assets and the DLC park layouts"]
+    fn backlot_plaza_pad_seam_is_flat_after_fusing() {
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT"));
+        let data = std::fs::read(crate::park_layout::directory(&root).join("backlot_full.skate")).unwrap();
+        let mut map = SkateMap::parse_render_only(&data).unwrap();
+        map.extensions.push(skate_data::skate_map::Extension {
+            tag: crate::park_layout::EXTENSION_TAG,
+            schema: 1,
+            payload: b"backlot_full".to_vec(),
+        });
+        let pieces = crate::park_layout::load_pieces(&root, &map).expect("backlot_full pieces");
+        let points: Vec<_> = pieces.collision.iter().map(|t| t.points).collect();
+        let mut piece_of = vec![0; points.len()];
+        for (piece, range) in pieces.ranges.iter().enumerate() {
+            piece_of[range.clone()].fill(piece);
+        }
+        let (positions, vertices, flags, cosines, dropped) = fused_edge_features(&points, pieces.weld, &piece_of).unwrap();
+        let on_seam = |p: Vec3| (p.x + 151.77).abs() < 0.02 && (p.y - 0.749).abs() < 0.02 && (73.0..76.0).contains(&p.z);
+        let (mut found, mut open, mut bent) = (0, 0, 0);
+        for t in (0..points.len()).filter(|&i| !dropped[i]) {
+            for e in 0..3 {
+                let [a, b] = [vertices[t][e], vertices[t][(e + 1) % 3]].map(|v| positions[v]);
+                if on_seam(a) && on_seam(b) && (a - b).length() > 0.05 {
+                    found += 1;
+                    // An unpaired edge keeps the defaults: convex bit and cosine exactly 1.
+                    open += usize::from(flags[t] & (0x20 << e) != 0 && cosines[t][e] == 1.0);
+                    // Paired with the other pad's top (merged corners: within 0.02 degrees), not with a side wall.
+                    bent += usize::from(cosines[t][e] < 0.9999);
+                }
+            }
+        }
+        let removed = dropped.iter().filter(|&&d| d).count();
+        println!("backlot_full: {} triangles, {removed} dropped, seam top edges {found}, open {open}, bent {bent}", points.len());
+        assert!(found >= 2, "the seam's top edges were found");
+        assert_eq!((open, bent), (0, 0), "every seam top edge pairs flat with the other pad's top");
+    }
+
+    /// Two raised pads side by side (laptop session 2026-10-21 21:38, BackLot's aa_PlazaPad seams at x -151.77 and
+    /// -139.77: the board popped crossing them). Each pad's side wall at the shared face lies back to back on the
+    /// other's, so the top seam edge had four triangles. Retail `828755B8` removes such faces between different
+    /// pieces, as a pair (same diagonal) or as two quads (crossed diagonals); the tops then pair flat.
+    #[test]
+    fn fused_pads_drop_their_back_to_back_walls_and_pair_the_top_seam() {
+        let tri = |a: [f32; 3], b: [f32; 3], c: [f32; 3], out: Vec3| {
+            let n = (Vec3::from_array(b) - Vec3::from_array(a)).cross(Vec3::from_array(c) - Vec3::from_array(a));
+            if n.dot(out) < 0. { [a, c, b] } else { [a, b, c] }
+        };
+        // A closed box from x0 to x1 (y 0..0.75, z 0..1); `cross` splits the x = x1 face on the other diagonal.
+        let pad = |x0: f32, x1: f32, cross: bool| {
+            let (y, h) = (0.0, 0.75);
+            let centre = Vec3::new((x0 + x1) / 2., h / 2., 0.5);
+            let mut out = Vec::new();
+            let mut face = |q: [[f32; 3]; 4], other: bool| {
+                let n = q.iter().map(|p| Vec3::from_array(*p)).sum::<Vec3>() / 4. - centre;
+                if other {
+                    out.push(tri(q[1], q[2], q[3], n));
+                    out.push(tri(q[1], q[3], q[0], n));
+                } else {
+                    out.push(tri(q[0], q[1], q[2], n));
+                    out.push(tri(q[0], q[2], q[3], n));
+                }
+            };
+            face([[x0, h, 0.], [x1, h, 0.], [x1, h, 1.], [x0, h, 1.]], false);
+            face([[x0, y, 0.], [x1, y, 0.], [x1, y, 1.], [x0, y, 1.]], false);
+            face([[x0, y, 0.], [x1, y, 0.], [x1, h, 0.], [x0, h, 0.]], false);
+            face([[x0, y, 1.], [x1, y, 1.], [x1, h, 1.], [x0, h, 1.]], false);
+            face([[x0, y, 0.], [x0, h, 0.], [x0, h, 1.], [x0, y, 1.]], false);
+            face([[x1, y, 0.], [x1, h, 0.], [x1, h, 1.], [x1, y, 1.]], cross);
+            out
+        };
+        // Pad B is built mirrored (x0 = 2, x1 = 1) so its x = 1 face is the `cross` one.
+        for cross in [false, true] {
+            let mut points = pad(0., 1., false);
+            points.extend(pad(2., 1., cross));
+            let pieces: Vec<usize> = (0..points.len()).map(|i| i / 12).collect();
+            let (positions, vertices, flags, cosines, dropped) =
+                fused_edge_features(&points, crate::park_layout::FUSE_WELD, &pieces).unwrap();
+            let walls: Vec<usize> = (0..points.len())
+                .filter(|&i| points[i].iter().all(|p| (p[0] - 1.).abs() < 1e-6))
+                .collect();
+            assert_eq!(walls.len(), 4);
+            assert_eq!((0..points.len()).filter(|&i| dropped[i]).collect::<Vec<_>>(), walls, "cross {cross}: the walls go");
+            // Every top edge on the seam (both ends at x = 1, y = 0.75) is paired flat: no convex bit, cosine 1.
+            let mut seam_edges = 0;
+            for t in (0..points.len()).filter(|&i| !dropped[i]) {
+                for e in 0..3 {
+                    let [a, b] = [vertices[t][e], vertices[t][(e + 1) % 3]].map(|v| positions[v]);
+                    if [a, b].iter().all(|p| (p.x - 1.).abs() < 1e-6 && (p.y - 0.75).abs() < 1e-6) {
+                        seam_edges += 1;
+                        assert_eq!((flags[t] & (0x20 << e), cosines[t][e]), (0, 1.0), "cross {cross}: triangle {t} edge {e}");
+                    }
+                }
+            }
+            assert!(seam_edges >= 2, "both tops have a seam edge");
+            // The same pads inside ONE piece keep their walls (retail culls only between different pieces).
+            let (_, _, _, _, one) = fused_edge_features(&points, crate::park_layout::FUSE_WELD, &vec![0; points.len()]).unwrap();
+            assert!(one.iter().all(|d| !d));
+        }
     }
 
     /// b478: the fused set ignores the pieces' own edge codes (keeps their surfaces), drops triangles the merge

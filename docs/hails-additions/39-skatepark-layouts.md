@@ -194,3 +194,33 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
   open; a 5 cm gap stays open; deterministic), `fused_pieces_drop_collapsed_triangles_and_keep_their_ranges`; verify
   runs load "Stadium - Full" (450 pieces, 197832 triangles) and "Back Lot Park - Full" (453, 188784). skate-game 882.
   Not play-tested: whether the ramp and BackLot still catch.
+
+## Back-to-back faces between pieces are removed; edges pair with the best neighbour (2026-10-21, USER-ASKS 221)
+
+- **Problem (laptop session 2026-10-21 21:38, the user):** "in the skate.park maps still lots of physics and collision
+  issues both at seams between objects and just in general around objects". The trace (`.local/tools/park-catches.py`
+  on `audio_state.tsv`): on Back Lot the wheels left the ground and the board rose 5 to 15 cm on flat ground exactly on
+  the line where two `aa_PlazaPad_sm_Downtown` pads meet (x -151.77 and -139.77, 0.749 m high). Two dead stops (Back
+  Lot into the foot of `ab_stairs_sm`, DownTown park into a bench / steep ramp toe) are real collisions, not seams.
+- **Cause [data]:** each pad has its own side wall on the shared face, so after fusing the top seam edge is shared by
+  four triangles (two tops +Y, two walls +X / -X; `.local/tools/park-seam-edges.py`). Our pairing took the first
+  reversed edge it met, so a top could pair with a wall: a 90 degree convex lip under the wheels.
+- **Retail [code]:** `82876188` runs, before pairing, `828755B8`: two triangles of DIFFERENT pieces (triangle +0x14)
+  sharing an opposite-wound edge whose score is above 2.99 (`822F90E8`) or below -0.99 (`822F8E60`) are faces lying
+  back to back; with the same third vertex both are marked 0x80 (removed), otherwise their quads (`82875438`: the same
+  piece's triangle across the next edge) are compared and all four removed when they cover the same corners. The score
+  `82AC00A0`: d = n1.n2; convex or flat (edge . (n1 x n2) > -1e-6, `822F8ABC`) -> max(d, -1); concave -> min(2 - d, 3)
+  (constants `8216DEE0` -1, `82060C50` 2, `82063B08` 3). Pairing `82875B20` / `82875CA8`: per edge the neighbour with
+  the highest score wins, a better pair displacing a worse one (unpaired edges score 1.0, `8231A844`).
+- **Change:** `skate_world.rs` `fused_edge_features` (the fused park path only; disc maps and props keep their path):
+  zero-area drop, the back-to-back removal (pairs and quads), best-score pairing, normals from the merged corners (as
+  retail), then the edge codes as before. `portable_parts_fused` drops the removed triangles and keeps the piece ranges.
+  Back Lot Park - Full: 188784 triangles, 19650 removed.
+- **Tests:** `fused_pads_drop_their_back_to_back_walls_and_pair_the_top_seam` (same and crossed diagonals; the same pads
+  inside one piece keep their walls), `fused_park_pieces_pair_their_flush_seams` (cosine within 1e-5 now, merged
+  normals), asset-gated `backlot_plaza_pad_seam_is_flat_after_fusing` (all 6 seam top edges pair flat with the other
+  pad's top). skate-game 885 passed. Not play-tested.
+- **Open:** retail skips static entries with flag bit 2 (`entry+0xB8 & 2`) when it builds the fused mesh (`827765C0`,
+  checked; research b480): those keep their own per-piece collision. Which recipe column sets the bit (b480: record
+  +0x10, likely `IgnoreFuser`, not proven) is open; our fuse takes every piece. The editor flow (b480,
+  `.local/research/b480-park-editor.md`) is partial.
