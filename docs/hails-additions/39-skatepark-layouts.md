@@ -164,3 +164,27 @@ NOT RETAIL YET: the parks' projected lightmaps (see "Park shading"); the DLC pac
 
 - The tint path on the CPU and the `environmentpark` families (b433 change list).
 - Movable pieces (b435), the Monster Park challenge locator, the DLC recipe precedence, `cap.AllowCollision`.
+
+## The pieces fuse into one collision set: no catching on seams (2026-10-21, research b477 / b478)
+
+- **Problem (laptop session 2026-10-21, the user):** "going to stadium full, I tried skating down the big ramp and
+  bailed almost immediately from the cracks between the objects not connecting properly causing you to get stuck,
+  stop, bail, bump over the crack" and "backlot dlc map: ... tje cracks between surfaces often catch you or stop you
+  while skating". The log: 4 bails in 25 s down the Stadium ramp, 4 on BackLot's flat ground, all on layout pieces.
+- **Cause [data / code, b477]:** the seams are flush (0.1 to 1.5 mm), but each piece kept its own retail edge codes:
+  its open borders are coded convex (0x60 = cosine -0.234), and nothing paired the edges two pieces share
+  (`portable_parts` decoded the native codes over the welded pass). The trace shows the wheel contact mask dropping at
+  the seam crossings.
+- **Retail [code, b478, medium-high]:** the SkateParkView (`world+0xBC` slot +0x20, vtable `82310560`) fuses all
+  static pieces in its "fuserJob" (`827762D0`, build `827765C0` -> `828728B8`): per piece `82872D70` copies only the
+  posed corners, piece index and surface of each triangle (the edge-code bytes are skipped), and `82876188` merges
+  vertices, removes zero-area triangles (`82AC2010`) and pairs neighbours over the whole set. Open: the exact
+  edge-writing function and which builder default (0.01 or 0.1) is the vertex merge.
+- **Change:** `skate_world.rs` `portable_parts_fused`: the posed pieces' vertices merge across the whole set within
+  `Pieces::weld` (data: the layout sidecar's `fuse_weld`, default 0.01 m), every edge code is rebuilt over the fused
+  set (the pieces' own codes are ignored, their surfaces kept), triangles the merge collapses are dropped and the
+  piece ranges follow. Disc maps and props keep the exact 1 mm path. Log: `SKATE_PARK_FUSE`.
+- **Verification:** `fused_park_pieces_pair_their_flush_seams` (1.5 mm seam paired and flat; the 1 mm path leaves it
+  open; a 5 cm gap stays open; deterministic), `fused_pieces_drop_collapsed_triangles_and_keep_their_ranges`; verify
+  runs load "Stadium - Full" (450 pieces, 197832 triangles) and "Back Lot Park - Full" (453, 188784). skate-game 882.
+  Not play-tested: whether the ramp and BackLot still catch.

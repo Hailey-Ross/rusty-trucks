@@ -404,3 +404,19 @@ next to the game) and the other asset check tests (6); setup `test_dlc` (7, new
 `test_a_dlc_folder_next_to_the_game_copy_and_its_listing`). The launcher's non-interactive import was run on a temp
 folder with one real pack and one other file (1 added and 1 skipped, then 1 already there; a missing path refused).
 Not yet run end to end: the launcher's import followed by its automatic refresh on a fresh copy.
+
+## DLC location names in the menus (2026-10-21, laptop session)
+
+- **Problem:** the Challenge Map's Locations list showed `ID_WORLD_MALOOFMONEYCUP_NYC`, `ID_WORLD_DW_MEGACOMPOUND`,
+  `ID_LOCATION_SANITARIUMDLC` and `ID_LOCATION_ARTGALLERYDLC` instead of the names (the user: "the DLC map names are
+  not correct and are usimg their internal names").
+- **Cause [code]:** the menu export (`tools/prepare_menu_movies.py`) added DLC text only from the packs whose menu
+  movies it exports (the Create pack, `dlc_archives`); the map packs carry no menu movie, so their text tables never
+  reached the menus' language. The map lists read them by another path (`map_names.py`), so MAPS was right.
+- **Change:** `dlc_text_archives` reads the text of every pack with front-end language tables; movies still come only
+  from the exported packs, and a disc label keeps its text. The script is part of the hud group's version
+  (`tools/asset_pipeline/versions.py`), so a copy with this build sees its menus as out of date and offers the
+  refresh.
+- **Verification [data]:** the user's 8 packs give 786 labels with all four names ("Maloof Money Cup 2010 NYC",
+  "Danny Way's Hawaiian Dream", "The Sanatorium", "Art Gallery"); test
+  `test_a_map_pack_names_its_location_in_the_menu_text` (data-gated on the Maloof pack). Not play-tested.
