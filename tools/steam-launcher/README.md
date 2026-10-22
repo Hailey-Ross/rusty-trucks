@@ -13,7 +13,7 @@ What it does:
   Every other list page (Play, Choose version, Tools, Recomp, ...) is a grid of buttons two wide (short labels) with a
   large panel beside it for the selected option: its full name, READY or why it is not available, what it does and,
   for the play options, what it records (FILES / GAME LOG rows from launcher.ps1 `entries` columns 8 and 9).
-  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|play|play-traceall|waiting|job|build|failed]` draws one screen at 1920x1080
+  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|play|play-traceall|waiting|fetching|checking|job|build|failed]` draws one screen at 1920x1080
   into a PNG and exits (checking the look without opening the window).
 - **Builds:** while a version builds, the window shows cargo's own step count as a progress bar, the crate being
   built, the warning count and, if it fails, the first error in a fixed-width block. The whole output goes to

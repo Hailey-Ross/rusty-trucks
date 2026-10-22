@@ -171,11 +171,14 @@ function Version-Source($v) {
 function Fetch-Version($v, [string]$Dir) {
     $s = Version-Source $v
     Write-Host "  Checking $($v.branch) on $($s.Fetch)..."
+    if ($env:SKATE_LAUNCHER_UI -eq '2') { Write-Host "LAUNCHER_WAIT`tbegin`tfetch`t$($v.branch)`t$($s.Fetch)" }
     # Full refspec: a release tag with the branch's name (the fork's rolling build) would win otherwise. No prompt and
     # a stall limit, so a credential helper or a dead network fails the fetch instead of hanging the launcher.
     $keep = $env:GIT_TERMINAL_PROMPT; $env:GIT_TERMINAL_PROMPT = '0'
     & git -C $Dir -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch -q $s.Fetch "+refs/heads/$($v.branch):$($s.Ref)" 2>$null | Out-Host
-    if ($LASTEXITCODE -ne 0) { Write-Host "  Could not reach $($s.Fetch) (git fetch failed); using the last fetched $($v.branch)." }
+    $fetched = $LASTEXITCODE
+    if ($env:SKATE_LAUNCHER_UI -eq '2') { Write-Host "LAUNCHER_WAIT`tend`tfetch`t$fetched" }
+    if ($fetched -ne 0) { Write-Host "  Could not reach $($s.Fetch) (git fetch failed); using the last fetched $($v.branch)." }
     $env:GIT_TERMINAL_PROMPT = $keep
     return $s.Ref
 }

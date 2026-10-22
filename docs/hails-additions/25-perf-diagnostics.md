@@ -1175,3 +1175,20 @@ Per-system wall time of the game audio's frame systems, summed per frame and rea
   previous frames). Expected = the median of the previous `HITCH_HISTORY` frames without their physics loop, plus the
   frame's fixed steps x the median cost of one step (`expected_ms`). A frame that runs the ~6 ms fixed step every other
   frame at ~180 fps is a normal frame, not a hitch (2026-10-19 laptop log: 9,912 of 9,918 flagged frames were that).
+
+## Launcher: waits name their cause; the start check runs behind the window (2026-10-22, USER-ASKS 72, research b521 / b522)
+
+- **Fetch before a build:** `Fetch-Version` prints `LAUNCHER_WAIT begin/end fetch` lines for the window
+  (`SKATE_LAUNCHER_UI=2`). After 5 s the job card says WAITING with its own clock, `Waiting m:ss: fetching <branch> from
+  <remote>`, why it ends by itself (git's 30 s stall limit) and B to cancel (B twice kills the job; the old version
+  stays). The build log gets `fetched <branch> from <remote> in m:ss` (or `fetch failed, ...`). A failed fetch now says
+  `Could not reach <remote> (git fetch failed); using the last fetched <branch>.` instead of passing silently.
+- **Refresh Game Files:** while it runs, `REFRESHING.txt` in the state folder names it; the window's "Already running"
+  page and the script's `Not started` line say `Refresh game files (<version>)` instead of the game exe.
+- **Start:** the window shows at once with `Checking for launcher updates...` (a clock after 3 s) while
+  `launcher.ps1 pending` (self update, assets links, the session check) runs in the background; what follows is
+  unchanged (restart after an update first, then the menu or the direct entry). It used to run before the window
+  existed, so a slow self-update fetch looked like a frozen start. Not done: skipping the check with B (b522: needs
+  a kill-safe marker after the fetch and git lock cleanup).
+- **Checks:** snapshots `fetching` and `checking` (new screens) and `job` / `main` unchanged; csc and the PowerShell
+  parser clean. Not tested live (a worktree launcher shares the real state folder and its start check can self-update).
