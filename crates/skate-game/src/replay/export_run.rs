@@ -17,7 +17,9 @@ pub(crate) static DEVICE_MUTED: AtomicBool = AtomicBool::new(false);
 
 /// The Finished menu's rows (ours: retail's Upload / Save Replay need sign-in and storage). Data.
 pub(crate) const FINISHED_POPUP: &str = "engine:replay.finished";
-pub(crate) const SAVE_TO_PC: &str = "Save to PC";
+/// Our own string id (not on the disc): its English text is a default in `apt_text::ENGINE_STRINGS`, so a language
+/// table or mod text that carries the id replaces it.
+pub(crate) const SAVE_TO_PC: &str = "ID_HAILS_REPLAY_SAVE_TO_PC";
 pub(crate) const SAVED_POPUP: &str = "engine:replay.saved";
 
 pub(crate) fn finished_popup() -> skate_core::fe_popup::PopupRequest {

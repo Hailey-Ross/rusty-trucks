@@ -9,6 +9,7 @@ pub mod board_input_output;
 pub mod board_motion_output;
 pub mod board_pose;
 pub mod board_runtime;
+pub mod teleport_ground_fit;
 pub mod board_step;
 pub mod board_toolkit;
 pub mod board_world;

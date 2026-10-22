@@ -77,6 +77,7 @@ pub(super) struct Services<'a, C> {
     pub toolkit: &'a mut Option<BoardToolkit>,
     pub pending_teleport: &'a mut Option<AnimationPartTransform>,
     pub pending_velocity: &'a mut Option<[f32; 3]>,
+    pub pending_ground_fit: &'a mut Option<skate_core::physics::teleport_ground_fit::GroundFit>,
 }
 impl<C: PlayerInputCallbacks> InputPhaseServices for Services<'_, C> {
     type Error = String;
@@ -118,9 +119,24 @@ impl<C: PlayerInputCallbacks> InputPhaseServices for Services<'_, C> {
         // Native handles its state request before its explicit reset bit.
         // Host requests remain owned until the entire reset succeeds.
         if physical.state.flag_61 != 0 {
-            let target = self.host.published_board_transform;
+            let mut target = self.host.published_board_transform;
+            // A travel's arrival fit-up (retail 82598428 in the teleport message, b475): height onto the static world.
+            if let Some(fit) = self.pending_ground_fit.take() {
+                let world = self.world;
+                target = skate_core::physics::teleport_ground_fit::fit_arrival_to_ground(target, fit, |s, e| {
+                    let v = |p: [f32; 3]| skate_core::math::Vector3::new(p[0], p[1], p[2]);
+                    world.query_thin_line(v(s), v(e)).ok().flatten()
+                        .map(|hit| [hit.geometry.position.x, hit.geometry.position.y, hit.geometry.position.z])
+                });
+            }
             self.callbacks
                 .teleport(self.board, self.ground, target, player, physical, output)?;
+            // A mod's arrival velocity (`travel`, ours) after the one reset of the reply path (b471).
+            if self.pending_teleport.is_none() {
+                if let Some(v) = self.pending_velocity.take() {
+                    apply_board_linvel(self.board, v);
+                }
+            }
         }
         if player.flags_1296 & (1 << 19) != 0 {
             let deck = self.board.part_transforms()[6];

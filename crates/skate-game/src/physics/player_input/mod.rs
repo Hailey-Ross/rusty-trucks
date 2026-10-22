@@ -40,6 +40,8 @@ pub(crate) struct PlayerInputRuntime {
     pub grind: grind::GrindInputState,
     pending_teleport: Option<AnimationPartTransform>,
     pending_velocity: Option<[f32; 3]>,
+    /// The next actor-reply teleport fits its arrival to the ground (retail `82598428`, b475): set by `travel_ex`.
+    pending_ground_fit: Option<skate_core::physics::teleport_ground_fit::GroundFit>,
     pub pending_grind: Option<grind::Pending>,
     pub grind_observation: Option<super::grind::ManagerObservation>,
 }
@@ -81,6 +83,23 @@ impl PlayerInputRuntime {
         Ok(())
     }
 
+    /// A mod's arrival velocity for the next actor-reply teleport (ours, no retail counterpart; b471 item 2): applied
+    /// after the single 702 reset, None = at rest as retail.
+    pub fn set_arrival_velocity(&mut self, velocity: Option<[f32; 3]>) -> Result<(), String> {
+        if let Some(v) = velocity {
+            if v.iter().any(|x| !x.is_finite() || x.abs() > 200.0) {
+                return Err("Teleport velocity out of range".into());
+            }
+        }
+        self.pending_velocity = velocity;
+        Ok(())
+    }
+
+    /// The ground fit-up for the next actor-reply teleport (None = the target as given, e.g. checkpoint replies).
+    pub fn set_arrival_ground_fit(&mut self, fit: Option<skate_core::physics::teleport_ground_fit::GroundFit>) {
+        self.pending_ground_fit = fit;
+    }
+
     pub fn load(data: &Collections) -> Result<Self, String> {
         let mut physical = PhysicalPlayerInput::default();
         reset_outputs(&mut physical);
@@ -97,6 +116,7 @@ impl PlayerInputRuntime {
             grind: grind::GrindInputState::load(data)?,
             pending_teleport: None,
             pending_velocity: None,
+            pending_ground_fit: None,
             pending_grind: None,
             grind_observation: None,
         })
@@ -166,6 +186,7 @@ impl PlayerInputRuntime {
             toolkit: &mut self.toolkit,
             pending_teleport: &mut self.pending_teleport,
             pending_velocity: &mut self.pending_velocity,
+            pending_ground_fit: &mut self.pending_ground_fit,
         };
         match stage {
             InputStage::ThroughTeleport => input_phase::start_input(

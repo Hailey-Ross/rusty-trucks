@@ -20,6 +20,9 @@ pub struct TeleportOptions {
     pub heading: Option<f32>,
     #[serde(default)]
     pub velocity: Option<[f32; 3]>,
+    /// Fit the arrival height onto the ground below as retail teleports do (default true; false = exactly here).
+    #[serde(default)]
+    pub ground_fit: Option<bool>,
 }
 
 impl TeleportOptions {
