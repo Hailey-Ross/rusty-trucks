@@ -428,11 +428,12 @@ sdk.replay = { version = 1 }
 function sdk.replay.open() submit{kind="replay_open"} end
 -- A marker at the newest recorded frame (retail keeps up to 50, provider id 10); the mod's markers go on disable.
 function sdk.replay.marker(label) submit{kind="replay_marker",label=label} end
--- Override the recording limits (retail 5400 frames; byte budget ours): opts.max_frames, opts.byte_budget.
+-- Override the recording limits (retail 5400 frames; byte budget ours): opts.max_frames, opts.byte_budget, and
+-- opts.share_max_seconds (the longest edit that can be shared or saved, retail 60 s).
 -- nil restores the defaults; the mod's override goes on disable. Last writer wins.
 function sdk.replay.set_limits(opts)
   opts = opts or {}
-  submit{kind="replay_set_limits",max_frames=opts.max_frames,byte_budget=opts.byte_budget}
+  submit{kind="replay_set_limits",max_frames=opts.max_frames,byte_budget=opts.byte_budget,share_max_seconds=opts.share_max_seconds}
 end
 -- The replay cameras' world collision and leash (retail: collide on, radius 0.1 m, leash 40 m): opts.collide
 -- (false = cameras pass through walls), opts.radius, opts.leash. nil restores retail's; the override goes on disable.
