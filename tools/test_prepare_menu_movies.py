@@ -9,10 +9,14 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
-import prepare_menu_movies as menus
+# The repo root, as the production entry has it (prepare_runtime_huds.py): the DLC readers import `tools.owned_game`.
+sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
+
+import prepare_menu_movies as menus  # noqa: E402
 
 
 def main_checkout():
@@ -148,6 +152,23 @@ class RetailMenuExport(unittest.TestCase):
             self.assertGreater(textured, 0)
             files = menus.runtime_files(runtime)
             self.assertEqual(len(files), len(manifest['files']) + 1)
+
+
+OWNED_MAP_PACK = Path(os.environ.get('SKATE3_TEST_MAP_PACK', r'F:\Libraries\Downloads\Xbox 360 Skate 3 DLCs (World)'
+                                     r'\Skate 3 DLCs\Maloof Money Cup 2010 NYC'))
+
+
+@unittest.skipUnless(OWNED_MAP_PACK.is_dir(), "the player's Maloof Money Cup 2010 NYC package is not here")
+class OwnedMapPackText(unittest.TestCase):
+    def test_a_map_pack_names_its_location_in_the_menu_text(self):
+        # Laptop session 2026-10-21: the Challenge Map showed ID_WORLD_MALOOFMONEYCUP_NYC; a map pack carries no menu
+        # movie, so its text tables were never read into the menus' language.
+        from asset_pipeline import dlc as packages
+        with tempfile.TemporaryDirectory() as work:
+            text = {}
+            for archive in menus.dlc_text_archives(OWNED_MAP_PACK, Path(work)):
+                text.update(packages.language(archive))
+            self.assertEqual(text.get('ID_WORLD_MALOOFMONEYCUP_NYC'), 'Maloof Money Cup 2010 NYC')
 
 
 if __name__ == '__main__':

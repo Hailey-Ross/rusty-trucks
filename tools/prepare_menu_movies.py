@@ -312,6 +312,15 @@ def dlc_archives(dlc, work):
     return [(path, BigArchive(path)) for path in packages.extract_bigs(dlc, work, wanted=menus)]
 
 
+def dlc_text_archives(dlc, work):
+    """Every DLC BIG with front-end language tables, for their text only (the map packs name their locations and
+    worlds there, e.g. ID_WORLD_MALOOFMONEYCUP_NYC; laptop session 2026-10-21: the Challenge Map showed the raw keys)."""
+    from asset_pipeline import dlc as packages
+    from vendor.skate3_ui.big import BigArchive
+    text = lambda paths: any(p.lower().startswith('data/fe/languages/') for p in paths)  # noqa: E731
+    return [BigArchive(path) for path in packages.extract_bigs(dlc, work, wanted=text)]
+
+
 def prepare(game, output, collections, roots=MENU_ROOTS, dlc=None):
     """Builds the runtime set in `output` (a work folder) and returns its manifest. `dlc`: the player's DLC
     package folder (optional); its front-end movies and text join the disc's."""
@@ -363,8 +372,9 @@ def prepare(game, output, collections, roots=MENU_ROOTS, dlc=None):
             fonts[family] = cache.font_asset(fallback)
     language = {row['label'].strip(): row['value'] for row in json.loads(
         (cache_root / 'metadata/languages/english_global.json').read_text(encoding='utf-8'))['entries']}
-    # DLC text (the creator pack's replay editor labels) adds to the disc's; a disc label keeps its text.
-    for _, archive in extras:
+    # DLC text (the creator pack's replay editor labels, the map packs' location and world names) adds to the disc's;
+    # a disc label keeps its text. Text comes from every pack with language tables, movies only from `extras`.
+    for archive in dlc_text_archives(dlc, output / 'dlc') if dlc else []:
         for label, value in packages.language(archive).items():
             language.setdefault(label, value)
     # Script-made text fields name fonts at run time (sk8popup's createTextField body: "Futura Std Heavy"); the
