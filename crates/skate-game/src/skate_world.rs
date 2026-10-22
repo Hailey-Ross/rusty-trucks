@@ -830,7 +830,12 @@ fn append_pieces(
     pieces: &crate::park_layout::Pieces,
     material: RetailContactMaterial,
 ) -> Result<(), String> {
-    let (more, surfaces, piece_meshes) = portable_parts(&pieces.collision, &pieces.materials, material, Some(&pieces.ranges), true)?;
+    // Retail fuses the static pieces into one mesh and rebuilds its edge codes (b478: the SkateParkView fuserJob,
+    // 828728B8 / 82876188), so flush seams between pieces pair up instead of keeping each piece's open borders.
+    let (more, surfaces, piece_meshes) =
+        portable_parts_fused(&pieces.collision, &pieces.materials, material, Some(&pieces.ranges), true, Some(pieces.weld))?;
+    info!("SKATE_PARK_FUSE weld={} m triangles={} kept={} (seams between pieces paired, edge codes rebuilt)",
+        pieces.weld, pieces.collision.len(), more.len());
     let offset = triangles.len();
     triangles.extend(more);
     packed_surfaces.extend(surfaces);
@@ -849,14 +854,42 @@ fn welded_edge_features(
     triangles: &[[[f32; 3]; 3]],
     reconstruct: bool,
 ) -> Result<(Vec<Vec3>, Vec<[usize; 3]>, Vec<u32>, Vec<[f32; 3]>), String> {
+    welded_edge_features_within(triangles, reconstruct, None)
+}
+
+/// [`welded_edge_features`] with `merge` = a distance weld (a vertex joins the first earlier vertex within `merge`
+/// metres, in triangle order, so the result is deterministic): the fused park pieces (b478). A triangle whose corners
+/// merge together has repeated vertex ids; its edges pair with nothing and the caller drops it.
+fn welded_edge_features_within(
+    triangles: &[[[f32; 3]; 3]],
+    reconstruct: bool,
+    merge: Option<f32>,
+) -> Result<(Vec<Vec3>, Vec<[usize; 3]>, Vec<u32>, Vec<[f32; 3]>), String> {
     // Match the reference RW mesh compiler's 1 mm vertex welding and reversed
     // edge pairing. Triangle diagonals are adjacency, never authored ledges.
     let mut welded = HashMap::<[i64; 3], usize>::new();
+    let mut cells = HashMap::<[i64; 3], Vec<usize>>::new();
     let mut positions = Vec::<Vec3>::new();
     let mut vertices = Vec::new();
     let mut normals = Vec::new();
     for points in triangles {
         let ids = points.map(|p| {
+            if let Some(merge) = merge {
+                let cell = p.map(|v| (f64::from(v) / f64::from(merge)).floor() as i64);
+                let point = Vec3::from_array(p);
+                let near = (-1..=1).flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).map(move |z| [x, y, z])))
+                    .filter_map(|d| cells.get(&[cell[0] + d[0], cell[1] + d[1], cell[2] + d[2]]))
+                    .flatten()
+                    .copied()
+                    .filter(|&id| positions[id].distance(point) <= merge)
+                    .min();
+                return near.unwrap_or_else(|| {
+                    let id = positions.len();
+                    positions.push(point);
+                    cells.entry(cell).or_default().push(id);
+                    id
+                });
+            }
             let inverse = 1.0 / f64::from(0.001_f32);
             let key = p.map(|v| (f64::from(v) * inverse).round() as i64);
             *welded.entry(key).or_insert_with(|| {
@@ -883,6 +916,10 @@ fn welded_edge_features(
         for (i, ids) in vertices.iter().enumerate() {
             for edge in 0..3 {
                 let (a, b) = (ids[edge], ids[(edge + 1) % 3]);
+                // A collapsed edge of a fused triangle (dropped by the caller); the 1 mm path keeps its old pairing.
+                if a == b && merge.is_some() {
+                    continue;
+                }
                 if let Some((other, oe)) = open.remove(&(b, a)) {
                     let cosine = normals[i].dot(normals[other]).clamp(-1., 1.);
                     let orientation =
@@ -956,13 +993,44 @@ fn portable_parts(
     splits: Option<&[std::ops::Range<usize>]>,
     native_surfaces: bool,
 ) -> Result<(Vec<WorldTriangle>, Vec<u16>, Vec<QueryMesh>), String> {
+    portable_parts_fused(collision, materials, material, splits, native_surfaces, None)
+}
+
+/// [`portable_parts`]; `fuse` = the distance (m) within which vertices merge across the whole set, with every edge
+/// code rebuilt over the fused set and the native edge codes ignored (surfaces kept): retail's fused park pieces
+/// (b478, `82872D70` copies only the corners, piece and surface of each triangle). Triangles that collapse are dropped
+/// (retail `82AC2010`) and `splits` follow the kept triangles.
+fn portable_parts_fused(
+    collision: &[skate_data::skate_map::Collision],
+    materials: &[skate_data::skate_map::Material],
+    material: RetailContactMaterial,
+    splits: Option<&[std::ops::Range<usize>]>,
+    native_surfaces: bool,
+    fuse: Option<f32>,
+) -> Result<(Vec<WorldTriangle>, Vec<u16>, Vec<QueryMesh>), String> {
     let points: Vec<_> = collision.iter().map(|t| t.points).collect();
-    let (positions, vertices, mut flags, mut cosines) =
-        welded_edge_features(&points, collision.iter().any(|t| t.native_edges.is_none()))?;
+    let reconstruct = fuse.is_some() || collision.iter().any(|t| t.native_edges.is_none());
+    let (positions, vertices, mut flags, mut cosines) = welded_edge_features_within(&points, reconstruct, fuse)?;
+    let kept: Vec<bool> = vertices
+        .iter()
+        .map(|v| {
+            fuse.is_none()
+                || (v[0] != v[1] && v[1] != v[2] && v[0] != v[2]
+                    && (positions[v[1]] - positions[v[0]]).cross(positions[v[2]] - positions[v[0]]).try_normalize().is_some())
+        })
+        .collect();
+    let fused_splits: Option<Vec<std::ops::Range<usize>>> = (fuse.is_some()).then(|| {
+        let before: Vec<usize> = std::iter::once(0).chain(kept.iter().scan(0, |n, &k| { *n += usize::from(k); Some(*n) })).collect();
+        splits.map_or_else(|| vec![0..before[kept.len()]], |s| s.iter().map(|r| before[r.start]..before[r.end]).filter(|r| !r.is_empty()).collect())
+    });
+    let splits = fused_splits.as_deref().or(splits);
     let mut triangles = Vec::with_capacity(vertices.len());
     let mut packed_surfaces = Vec::with_capacity(vertices.len());
     for (i, source) in collision.iter().enumerate() {
-        if let Some(edges) = source.native_edges {
+        if !kept[i] {
+            continue;
+        }
+        if let (Some(edges), None) = (source.native_edges, fuse) {
             (flags[i], cosines[i]) = decode_native_edges(edges)?;
         }
         if native_surfaces && source.native_edges.is_some() {
@@ -1963,5 +2031,59 @@ mod tests {
         let mesh = |entity: Entity| world.get::<Mesh3d>(entity).unwrap().0.id();
         assert_eq!(roots[0].2.len(), 1);
         assert_eq!(mesh(roots[0].2[0]), mesh(roots[1].2[0]));
+    }
+
+    /// Two flat 1 m plates (two triangles each, normal up) meeting at x = 1 with piece B moved by `offset`.
+    fn plates(offset: [f32; 3]) -> Vec<[[f32; 3]; 3]> {
+        let a = |x: f32, z: f32| [x, 0.0, z];
+        let b = |x: f32, z: f32| [x + offset[0], offset[1], z + offset[2]];
+        vec![
+            [a(0., 0.), a(0., 1.), a(1., 0.)],
+            [a(1., 0.), a(0., 1.), a(1., 1.)],
+            [b(1., 0.), b(1., 1.), b(2., 0.)],
+            [b(2., 0.), b(1., 1.), b(2., 1.)],
+        ]
+    }
+
+    /// b477 / b478: flush park pieces (laptop session 2026-10-21: 1 to 2 mm apart) fuse, so the seam edges pair and
+    /// lose their convex bit; the 1 mm map path leaves them open; a real 5 cm gap stays open when fused.
+    #[test]
+    fn fused_park_pieces_pair_their_flush_seams() {
+        let seam = |features: &(Vec<Vec3>, Vec<[usize; 3]>, Vec<u32>, Vec<[f32; 3]>)| {
+            let (_, _, flags, cosines) = features;
+            // Triangle 1 edge 2 (x = 1, z 1 -> 0) and triangle 2 edge 0 (x = 1, z 0 -> 1).
+            [(1, 2), (2, 0)].map(|(t, e)| (flags[t] & (0x20 << e) != 0, cosines[t][e]))
+        };
+        let flush = plates([0.0015, 0.001, 0.0]);
+        let fused = welded_edge_features_within(&flush, true, Some(crate::park_layout::FUSE_WELD)).unwrap();
+        assert_eq!(seam(&fused), [(false, 1.0), (false, 1.0)], "paired: flat, not convex");
+        let mapped = welded_edge_features_within(&flush, true, None).unwrap();
+        assert!(seam(&mapped).iter().all(|&(convex, _)| convex), "the 1 mm grid keeps them open");
+        let gap = welded_edge_features_within(&plates([0.05, 0.0, 0.0]), true, Some(crate::park_layout::FUSE_WELD)).unwrap();
+        assert!(seam(&gap).iter().all(|&(convex, _)| convex), "a real gap still catches");
+        // Deterministic: the same input gives the same features.
+        assert_eq!(fused, welded_edge_features_within(&flush, true, Some(crate::park_layout::FUSE_WELD)).unwrap());
+    }
+
+    /// b478: the fused set ignores the pieces' own edge codes (keeps their surfaces), drops triangles the merge
+    /// collapses (retail 82AC2010) and keeps each piece's range over the kept triangles.
+    #[test]
+    fn fused_pieces_drop_collapsed_triangles_and_keep_their_ranges() {
+        let mut points = plates([0.0015, 0.0, 0.0]);
+        // A 4 mm sliver on piece A's far edge collapses under the 1 cm merge.
+        points.insert(2, [[0.0, 0.0, 0.0], [0.004, 0.0, 0.0], [0.0, 0.0, 0.004]]);
+        let collision: Vec<_> = points
+            .iter()
+            .map(|&points| skate_data::skate_map::Collision { points, surface: 7, material: 1, native_edges: Some([0x60; 3]) })
+            .collect();
+        let ranges = [0..3, 3..5];
+        let (triangles, surfaces, meshes) =
+            portable_parts_fused(&collision, &[], material(), Some(&ranges), true, Some(crate::park_layout::FUSE_WELD)).unwrap();
+        assert_eq!(triangles.len(), 4, "the sliver is dropped");
+        assert_eq!(surfaces, [7; 4], "the pieces keep their surfaces");
+        assert_eq!(meshes.iter().map(|m| m.triangle_range.clone()).collect::<Vec<_>>(), [0..2, 2..4]);
+        // Without fusing, the same pieces keep every triangle and their native codes.
+        let (kept, _, _) = portable_parts(&collision[..2], &[], material(), None, true).unwrap();
+        assert_eq!(kept.len(), 2);
     }
 }

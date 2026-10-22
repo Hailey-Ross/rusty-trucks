@@ -1202,3 +1202,13 @@ Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes 
   basins reflect about 1.5x the pool and without its pattern.
 - **Open:** a mod-chosen donor (load-time key); whether University basins should take the donor's mask too (a look
   choice for the user's eyes, not retail).
+
+## Better Water: fountain basins keep their own colour (2026-10-21, laptop session)
+
+- **Problem:** the user: "the watee fountain near the pcu library looks bad with better water on. it is using a weird
+  texture or something??": the PCU basin read as a flat pale grey-lavender sheet with orange blotches.
+- **Cause [code, reproduced with a verify capture]:** with `fountain_water` on, a flat basin pixel took the donor's
+  diffuse (University's large pool `water.default`: its floor texture with leaves), so the fountain showed a pool floor.
+- **Change (look layer, not retail):** basins keep their own diffuse (University's: black); the donor still gives
+  the waves, the specular and the reflection rows (`retail_world.wgsl`). Capture after: dark blue water with sun glints
+  on the moving waves, no leaves. Not looked at by the user yet.

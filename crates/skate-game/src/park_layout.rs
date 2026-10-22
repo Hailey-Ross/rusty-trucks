@@ -147,6 +147,23 @@ pub(crate) struct Pieces {
     pub ranges: Vec<std::ops::Range<usize>>,
     pub materials: Vec<skate_data::skate_map::Material>,
     pub rails: Vec<PieceRails>,
+    /// The distance (m) within which the fused pieces' vertices merge (b478: the fuse builder's 0.01 default at
+    /// `82872810`; which of its defaults is the vertex merge is inferred). Data: the layout sidecar's `fuse_weld`.
+    pub weld: f32,
+}
+
+/// Retail's fuse builder default (b478), used when a layout sidecar names no `fuse_weld`.
+pub(crate) const FUSE_WELD: f32 = 0.01;
+
+/// The sidecar's `fuse_weld` (a positive distance in metres), else [`FUSE_WELD`].
+fn fuse_weld(sidecar: &Path) -> f32 {
+    std::fs::read(sidecar)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["fuse_weld"].as_f64())
+        .map(|w| w as f32)
+        .filter(|w| w.is_finite() && *w > 0.0)
+        .unwrap_or(FUSE_WELD)
 }
 
 /// One piece's rails, posed once by its matrix (82C1F098).
@@ -177,7 +194,8 @@ pub(crate) fn load_pieces(assets: &Path, map: &SkateMap) -> Option<Pieces> {
         "SKATE_PARK_LAYOUT: {layout} pieces={} shapes={} collision_pieces={} triangles={} railed_pieces={}",
         objects.len(), shapes.len(), instances.len(), collision.len(), rails.len()
     );
-    Some(Pieces { collision, ranges: instances.into_iter().map(|i| i.range).collect(), materials: package.materials, rails })
+    let weld = fuse_weld(&sidecar);
+    Some(Pieces { collision, ranges: instances.into_iter().map(|i| i.range).collect(), materials: package.materials, rails, weld })
 }
 
 /// A piece's template rails through its row-vector affine (v @ basis + translation): chord endpoints and the
