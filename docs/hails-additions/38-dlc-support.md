@@ -440,5 +440,19 @@ Not yet run end to end: the launcher's import followed by its automatic refresh 
   climbing's drop check and the mod attachment dismount use the same predicate and single move.
 - **Tests:** `travel_is_one_placement_and_refuses_a_second_request`, `travel_keeps_the_mods_arrival_velocity`
   (asset-gated, pass on the dev assets); regression: boundary, air timeout, checkpoint reply pass;
-  `marker_reply_restores_on_foot` fails as before (pre-existing, gotchas). The rest of b475 (ground fit-up on
-  arrival) and b476 (45 arrivals too high) are still open. Not play-tested.
+  `marker_reply_restores_on_foot` fails as before (pre-existing, gotchas). Not play-tested.
+
+## Teleport arrivals fit onto the ground (2026-10-21, research b475)
+
+- **Retail [code, b475]:** `82598428` casts one straight ray down from 0.75 m above the arrival point, 500 m long; on a
+  hit only the translation becomes hit + 0.15 m (rotation untouched, a miss keeps the matrix). The reset then adds its
+  0.1 m, so a teleport lands at ground + 0.25 m at rest whatever height the locator had. Ours had no fit-up: a
+  locator h above the ground dropped the skater h (b476: 45 arrivals sit too high).
+- **Change:** `skate_core::physics::teleport_ground_fit` (`GroundFit` with retail's values as defaults, pure
+  function). `travel_ex` marks its move; the single reset fits the target against the static world
+  (`BoardWorld::query_thin_line`). Checkpoint replies, NPC placements and the session marker are unchanged (retail's
+  fit-up is in the teleport message only; whether the marker return also goes through it is open, b473). Mods:
+  `sdk.player.teleport{..., ground_fit = false}` places exactly (default true), carried on the multiplayer teleport
+  wire. Open: retail's query mask 7 (whether props count; ours: static world only).
+- **Tests:** `fit_arrival_to_ground` F1..F7 (skate-core), `travel_fits_the_arrival_onto_the_ground` (asset-gated: a
+  target 3 m up lands near the ground, no fall). Likely fixes most of b476's high arrivals: not play-tested.

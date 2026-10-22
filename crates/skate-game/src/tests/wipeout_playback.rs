@@ -346,3 +346,44 @@ fn travel_once(velocity: Option<[f32; 3]>) {
     let position = physics.board.bodies()[6].rates.position;
     assert!((position.z - target[3][2]).abs() < 0.5, "landed at the target: {position:?}");
 }
+
+/// b475 G1: a teleport target 3 m above the ground lands on it (ground + 0.15, plus the reset's 0.1) instead of
+/// falling; retail `82598428` fits the arrival height with one ray down.
+#[test]
+#[ignore = "requires private stock animation banks and collections"]
+fn travel_fits_the_arrival_onto_the_ground() {
+    let root = std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT");
+    let root = std::path::Path::new(&root);
+    let assets = skate_data::GameAssets::load(root).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(root, &assets).unwrap();
+    let mut physics = GamePhysics::load(root).unwrap();
+    let mut skater = SkaterRuntime::load(root, &graphs, &physics, "normal").unwrap();
+    let mut controls = PlayerControls::default();
+    let mut input = crate::input::ControllerInput::default();
+    let mut camera = crate::camera::CameraRuntime::load(root).unwrap();
+    let mut ground = None;
+    for tick in 0..62 {
+        if tick == 60 {
+            let mut target = skater.animated_skeleton.roots.animation_to_world;
+            let start = skate_core::math::Vector3::new(target[3][0], target[3][1] + 0.75, target[3][2]);
+            let end = skate_core::math::Vector3::new(start.x, start.y - 500.0, start.z);
+            ground = physics.world.query_thin_line(start, end).unwrap().map(|h| h.geometry.position.y);
+            target[3][1] += 3.0;
+            skater.travel(target, None).unwrap();
+        }
+        input.sample_raw_for_test(XboxState { buttons: 0, triggers: [0; 2], left: [0; 2], right: [0; 2] });
+        let mut actions = input.player_actions();
+        controls.update(
+            &mut actions,
+            physics.settings.step.simulation.time_step,
+            physics.settings.input_magnitude_threshold,
+            skater.player_input.physical.scoring.capabilities_204,
+        );
+        frame::advance(&mut physics, &mut skater, &mut controls, &graphs, &mut actions, true, &mut camera)
+            .unwrap_or_else(|error| panic!("Fit tick{tick}: {error}"));
+    }
+    let ground = ground.expect("the test spawn stands on ground");
+    let deck = physics.board.bodies()[6].rates.position.y;
+    assert!(deck - ground < 1.0, "landed near the ground ({ground}), not 3 m up: deck {deck}");
+    assert!(physics.board.bodies()[6].rates.linear_velocity.y.abs() < 0.5, "no fall after the arrival");
+}
