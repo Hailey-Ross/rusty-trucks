@@ -100,7 +100,8 @@ impl ChallengeMapState {
             // A map_category header is never greyed (OnMenuGetItemEnabled `82646D18` defaults to enabled, b454); it is
             // a header clip the cursor skips.
             .map(|n| Row { entry: n.entry.clone(), label: n.label.clone(),
-                count: (n.entry.kind == EntryKind::MapListing).then(|| registry.data().map_children(&n.entry).into_iter()
+                // A spacer folder (empty label) shows nothing, not " (0)" (ours: retail's showCount for it is unread).
+                count: (n.entry.kind == EntryKind::MapListing && !n.label.is_empty()).then(|| registry.data().map_children(&n.entry).into_iter()
                     .filter(|c| c.entry.kind != EntryKind::MapCategory && registry.visible(&c.entry, ctx)).count()),
                 enabled: n.entry.kind == EntryKind::MapCategory || registry.enabled(&n.entry, ctx) })
             .collect()

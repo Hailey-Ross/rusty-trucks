@@ -302,8 +302,14 @@ pub fn load(entries: &[Collection], root: &str, rules: &LocationRules, unlocks: 
         for row in listings.iter().filter(|r| key_hash(&r.parent) == parent_hash) {
             let entry = EntryRef::map(EntryKind::MapListing, &id_of(&row.key));
             let order = text(row, LISTING_ORDER).and_then(|d| d.get(0..4)).and_then(|d| i32::from_str_radix(d, 16).ok()).unwrap_or(0);
-            let filter = ref_spec(row, LISTING_FILTER).filter(|(class, _)| *class == hash("map_filter")).and_then(|(_, key)| filters.get(&key));
-            let label = filter.and_then(|f| text(f, FILTER_TITLE)).unwrap_or(&entry.id).to_owned();
+            let folder = ref_spec(row, LISTING_FILTER);
+            let filter = folder.filter(|(class, _)| *class == hash("map_filter")).and_then(|(_, key)| filters.get(&key));
+            // A folder may point at a map_category instead (the debug tree's `progression_all_team_spacer`): its label
+            // then comes from the category, empty for a spacer row.
+            let category = folder.filter(|(class, _)| *class == hash("map_category")).and_then(|(_, key)| categories.get(&key));
+            let label = filter.and_then(|f| text(f, FILTER_TITLE))
+                .or_else(|| category.map(|c| text(c, CATEGORY_LABEL).unwrap_or("")))
+                .unwrap_or(&entry.id).to_owned();
             nodes.push(MapNode { entry: entry.clone(), parent: Some(parent.clone()), label, order });
             // A folder's leaves: (category order, category, label, leaf).
             let mut leaves: Vec<(i32, Option<&Collection>, String, MapNode)> = Vec::new();
