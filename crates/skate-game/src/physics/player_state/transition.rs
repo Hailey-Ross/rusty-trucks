@@ -89,7 +89,7 @@ pub(super) fn set(
             "NPC_GRIND_ENTRY");
     }
     let p = &mut skater.player_input.processed;
-    info!(current = ?current, requested = ?requested,
+    info!(actor = crate::physics::log_actor(), current = ?current, requested = ?requested,
         board_controller_state = skater.skateboard_controller.fields.state_448,
         board_controller_on = skater.skateboard_controller.fields.system_on_452,
         processed_state = p.state_2508, processed_category = p.category_2512,

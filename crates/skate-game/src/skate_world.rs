@@ -2283,6 +2283,204 @@ mod tests {
         assert_eq!((open, bent), (0, 0), "every seam top edge pairs flat with the other pad's top");
     }
 
+    /// Seam audit of every skate.Park layout (USER-ASKS 231): fuses each layout as the engine does and reports what can
+    /// still catch a wheel on a floor (normal y > 0.7): (1) edges more than two live triangles share, (2) unjoined
+    /// floor edges with another unjoined floor edge alongside within 1 cm (unmerged gaps, T-junctions), (3) joined
+    /// edges between near-flat floors (y > 0.95) that still form a convex ridge over 3 degrees. Report only; the worst
+    /// 1 m cells of each kind are printed with their positions. Needs SKATE3_ASSET_ROOT with private/park-layouts.
+    #[test]
+    #[ignore = "requires private converted assets and the DLC park layouts"]
+    fn park_layout_seam_audit() {
+        use std::collections::HashMap;
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT"));
+        let dir = crate::park_layout::directory(&root);
+        let mut layouts: Vec<String> = std::fs::read_dir(&dir).unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".skate") && !n.contains(".props."))
+            .map(|n| n.trim_end_matches(".skate").to_owned())
+            .collect();
+        layouts.sort();
+        let cell = |p: Vec3| [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32];
+        let top = |hits: &HashMap<[i32; 3], usize>| {
+            let mut v: Vec<_> = hits.iter().map(|(k, n)| (*n, *k)).collect();
+            v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            v.iter().take(6).map(|(n, k)| format!("({}, {}, {}) x{n}", k[0], k[1], k[2])).collect::<Vec<_>>().join("; ")
+        };
+        for layout in layouts {
+            let data = std::fs::read(dir.join(format!("{layout}.skate"))).unwrap();
+            let mut map = SkateMap::parse_render_only(&data).unwrap();
+            map.extensions.push(skate_data::skate_map::Extension {
+                tag: crate::park_layout::EXTENSION_TAG,
+                schema: 1,
+                payload: layout.as_bytes().to_vec(),
+            });
+            let Some(pieces) = crate::park_layout::load_pieces(&root, &map) else {
+                println!("{layout}: no pieces");
+                continue;
+            };
+            let points: Vec<_> = pieces.collision.iter().map(|t| t.points).collect();
+            let mut piece_of = vec![0; points.len()];
+            for (piece, range) in pieces.ranges.iter().enumerate() {
+                piece_of[range.clone()].fill(piece);
+            }
+            let (positions, vertices, flags, cosines, dropped) = fused_edge_features(&points, pieces.weld, &piece_of).unwrap();
+            let live: Vec<usize> = (0..points.len()).filter(|&i| !dropped[i]).collect();
+            let normal = |i: usize| {
+                let [a, b, c] = vertices[i].map(|v| positions[v]);
+                (b - a).cross(c - a).normalize_or_zero()
+            };
+            let mut users = HashMap::<(usize, usize), Vec<(usize, usize)>>::new();
+            for &t in &live {
+                for e in 0..3 {
+                    let (a, b) = (vertices[t][e], vertices[t][(e + 1) % 3]);
+                    users.entry((a.min(b), a.max(b))).or_default().push((t, e));
+                }
+            }
+            // (1) Edges with more than two live users.
+            let mut multi = HashMap::new();
+            for ((a, _), list) in &users {
+                if list.len() > 2 {
+                    *multi.entry(cell(positions[*a])).or_insert(0) += 1;
+                }
+            }
+            // (2) Unjoined floor edges beside another unjoined floor edge.
+            let open: Vec<(usize, Vec3, Vec3)> = users
+                .values()
+                .filter(|l| l.len() == 1 && normal(l[0].0).y > 0.7)
+                .map(|l| {
+                    let (t, e) = l[0];
+                    (t, positions[vertices[t][e]], positions[vertices[t][(e + 1) % 3]])
+                })
+                .collect();
+            let mut grid = HashMap::<[i32; 3], Vec<usize>>::new();
+            let fine = |p: Vec3| [(p.x / 0.05).floor() as i32, (p.y / 0.05).floor() as i32, (p.z / 0.05).floor() as i32];
+            for (k, (_, a, b)) in open.iter().enumerate() {
+                let steps = ((*b - *a).length() / 0.05).ceil().max(1.0) as usize;
+                for s in 0..=steps {
+                    grid.entry(fine(a.lerp(*b, s as f32 / steps as f32))).or_default().push(k);
+                }
+            }
+            let seg_dist = |p: Vec3, a: Vec3, b: Vec3| {
+                let d = b - a;
+                let t = ((p - a).dot(d) / d.length_squared().max(1e-12)).clamp(0.0, 1.0);
+                (a + d * t).distance(p)
+            };
+            let mut gaps = HashMap::new();
+            let mut gap_edges = 0;
+            for (k, (t, a, b)) in open.iter().enumerate() {
+                let dir = (*b - *a).normalize_or_zero();
+                let near = [0.25f32, 0.5, 0.75].iter().any(|&f| {
+                    let p = a.lerp(*b, f);
+                    let c = fine(p);
+                    (-1..=1).flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).map(move |z| [c[0] + x, c[1] + y, c[2] + z])))
+                        .filter_map(|c| grid.get(&c))
+                        .flatten()
+                        .any(|&j| {
+                            let (u, ua, ub) = open[j];
+                            j != k && u != *t && dir.dot((ub - ua).normalize_or_zero()).abs() > 0.99 && seg_dist(p, ua, ub) < 0.01
+                        })
+                });
+                if near {
+                    gap_edges += 1;
+                    *gaps.entry(cell(a.lerp(*b, 0.5))).or_insert(0) += 1;
+                }
+            }
+            // (3) Convex ridges over 3 degrees between near-flat floors.
+            let mut ridges = HashMap::new();
+            for list in users.values().filter(|l| l.len() == 2) {
+                let ((t, e), (u, _)) = (list[0], list[1]);
+                if normal(t).y > 0.95 && normal(u).y > 0.95 && flags[t] & (0x20 << e) != 0 && cosines[t][e] < 0.99863 {
+                    *ridges.entry(cell(positions[vertices[t][e]])).or_insert(0) += 1;
+                }
+            }
+            let count = |h: &HashMap<[i32; 3], usize>| h.values().sum::<usize>();
+            println!(
+                "{layout}: pieces {} triangles {} dropped {} | multi-user edges {} | unjoined floor edges beside another {} | flat-floor ridges {}",
+                pieces.ranges.len(), points.len(), dropped.iter().filter(|&&d| d).count(), count(&multi), gap_edges, count(&ridges)
+            );
+            if !multi.is_empty() { println!("  multi: {}", top(&multi)); }
+            if !gaps.is_empty() { println!("  gaps: {}", top(&gaps)); }
+            if !ridges.is_empty() { println!("  ridges: {}", top(&ridges)); }
+        }
+    }
+
+    /// Invisible collision audit (USER-ASKS 232: dead stops where nothing was drawn): per placed piece of every layout,
+    /// the drawn mesh bounds (MOBJ index range, its transform) against its posed collision bounds. Lists the templates
+    /// whose collision reaches more than 0.25 m past what is drawn, or that collide with nothing drawn. Report only.
+    #[test]
+    #[ignore = "requires private converted assets and the DLC park layouts"]
+    fn park_layout_render_vs_collision() {
+        use std::collections::BTreeMap;
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT"));
+        let dir = crate::park_layout::directory(&root);
+        let mut layouts: Vec<String> = std::fs::read_dir(&dir).unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".skate") && !n.contains(".props."))
+            .map(|n| n.trim_end_matches(".skate").to_owned())
+            .collect();
+        layouts.sort();
+        let bounds = |points: &mut dyn Iterator<Item = [f32; 3]>| {
+            let mut lo = [f32::MAX; 3];
+            let mut hi = [f32::MIN; 3];
+            for p in points {
+                for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); }
+            }
+            (lo[0] <= hi[0]).then_some((lo, hi))
+        };
+        for layout in layouts {
+            let data = std::fs::read(dir.join(format!("{layout}.skate"))).unwrap();
+            let mut map = SkateMap::parse_render_only(&data).unwrap();
+            map.extensions.push(skate_data::skate_map::Extension {
+                tag: crate::park_layout::EXTENSION_TAG,
+                schema: 1,
+                payload: layout.as_bytes().to_vec(),
+            });
+            let Some((package, objects)) = crate::park_layout::load_package(&root, &map) else { continue };
+            let shapes = load_collision_shapes(&dir.join(format!("{layout}.json")));
+            let (collision, instances) = posed_collision(&package, &objects, &shapes);
+            // template -> (placements, flagged, worst overhang m, an example)
+            let mut by_template = BTreeMap::<String, (usize, usize, f32, String)>::new();
+            for inst in &instances {
+                let object = &objects[inst.object];
+                let t = &object.transform;
+                let pose = |p: [f32; 3]| [
+                    p[0] * t[0] + p[1] * t[3] + p[2] * t[6] + t[9],
+                    p[0] * t[1] + p[1] * t[4] + p[2] * t[7] + t[10],
+                    p[0] * t[2] + p[1] * t[5] + p[2] * t[8] + t[11],
+                ];
+                let range = object.first_index as usize..(object.first_index + object.index_count) as usize;
+                let drawn = bounds(&mut package.geometry.indices[range].iter().map(|&i| pose(package.geometry.vertices[i as usize].position)));
+                let solid = bounds(&mut collision[inst.range.clone()].iter().flat_map(|c| c.points));
+                let template = object.name.split('/').next().unwrap_or_default().to_owned();
+                let entry = by_template.entry(template).or_insert((0, 0, 0.0, String::new()));
+                entry.0 += 1;
+                let Some((clo, chi)) = solid else { continue };
+                let over = match drawn {
+                    None => f32::INFINITY,
+                    Some((dlo, dhi)) => (0..3).map(|k| (dlo[k] - clo[k]).max(chi[k] - dhi[k])).fold(0.0, f32::max),
+                };
+                if over > 0.25 {
+                    entry.1 += 1;
+                    if over > entry.2 {
+                        entry.2 = over;
+                        entry.3 = match drawn {
+                            None => format!("at ({:.2}, {:.2}, {:.2}): nothing drawn", t[9], t[10], t[11]),
+                            Some((dlo, dhi)) => format!(
+                                "at ({:.2}, {:.2}, {:.2}): drawn ({:.2}, {:.2}, {:.2})..({:.2}, {:.2}, {:.2}) collision ({:.2}, {:.2}, {:.2})..({:.2}, {:.2}, {:.2})",
+                                t[9], t[10], t[11], dlo[0], dlo[1], dlo[2], dhi[0], dhi[1], dhi[2], clo[0], clo[1], clo[2], chi[0], chi[1], chi[2]
+                            ),
+                        };
+                    }
+                }
+            }
+            let flagged: Vec<_> = by_template.iter().filter(|(_, v)| v.1 > 0).collect();
+            println!("{layout}: {} pieces with collision, {} templates, {} templates overhang > 0.25 m", instances.len(), by_template.len(), flagged.len());
+            for (template, (n, bad, worst, example)) in flagged {
+                println!("  {template}: {bad} of {n} placements, worst {worst:.2} m, {example}");
+            }
+        }
+    }
+
     /// Two raised pads side by side (laptop session 2026-10-21 21:38, BackLot's aa_PlazaPad seams at x -151.77 and
     /// -139.77: the board popped crossing them). Each pad's side wall at the shared face lies back to back on the
     /// other's, so the top seam edge had four triangles. Retail `828755B8` removes such faces between different

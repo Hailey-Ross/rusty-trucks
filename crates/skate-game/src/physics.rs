@@ -926,8 +926,26 @@ impl GamePhysics {
 
     /// One tick of a simulated NPC skater in its own context: its controls with a neutral pad
     /// (retail's AI presses no pad buttons for riding; its record steers), then the same frame
-    /// advance as the player. The context is swapped back on error too.
+    /// advance as the player. While it runs, [`log_actor`] says "npc" on this thread.
     pub(crate) fn advance_npc_skater(
+        &mut self,
+        context: &mut SkaterPhysicsContext,
+        skater: &mut SkaterRuntime,
+        controls: &mut PlayerControls,
+        graphs: &crate::graph_runtime::StockGraphs,
+        camera: &mut crate::camera::CameraRuntime,
+        ai_intents: &[(String, f32)],
+    ) -> Result<(), String> {
+        STEPPING_NPC.with(|c| c.set(true));
+        let result = self.advance_npc_skater_inner(context, skater, controls, graphs, camera, ai_intents);
+        STEPPING_NPC.with(|c| c.set(false));
+        result
+    }
+
+    /// [`Self::advance_npc_skater`]'s step: its controls with a neutral pad
+    /// (retail's AI presses no pad buttons for riding; its record steers), then the same frame
+    /// advance as the player. The context is swapped back on error too.
+    fn advance_npc_skater_inner(
         &mut self,
         context: &mut SkaterPhysicsContext,
         skater: &mut SkaterRuntime,
@@ -1329,3 +1347,15 @@ mod gameplay_gesture_tests;
 #[cfg(test)]
 #[path = "tests/difficulty.rs"]
 mod difficulty_tests;
+
+// Which body a shared log line belongs to: NPC skaters step through the same physics as the player, so their
+// `player teleport spawn` / `physical state transition` lines read like the player's (laptop notes 2026-10-21 23:07).
+// Set per thread by GamePhysics::advance_npc_skater (NPC steps run on worker threads).
+thread_local! {
+    static STEPPING_NPC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `npc` while an NPC skater steps on this thread, else `player`: the `actor` field of shared physics log lines.
+pub(crate) fn log_actor() -> &'static str {
+    if STEPPING_NPC.with(|c| c.get()) { "npc" } else { "player" }
+}
