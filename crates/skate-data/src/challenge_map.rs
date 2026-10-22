@@ -99,6 +99,21 @@ const KNOWN_LISTINGS: [&str; 10] = [
     "online", "online_competitive", "online_team", "freeskate", "location",
 ];
 
+/// `map_listing` field `IsDebug` (research b479: retail's tab and folder filter 82D0C0E0 skips a row with it set).
+const LISTING_IS_DEBUG: &str = "Hash_755772463A459824";
+
+/// The `map_listing` ids flagged `IsDebug` (TU3: only `progression_all`, the "debug_list_all" tab), named as `load`
+/// names them.
+pub fn debug_listings(entries: &[Collection]) -> std::collections::BTreeSet<String> {
+    let names: BTreeMap<u64, &str> = KNOWN_LISTINGS.iter().map(|n| (hash(n), *n)).collect();
+    entries
+        .iter()
+        .filter(|e| class_is(e, "map_listing"))
+        .filter(|e| text(e, LISTING_IS_DEBUG).is_some_and(|d| d.trim_start_matches('0').len() > 0))
+        .map(|e| names.get(&key_hash(&e.key)).map_or_else(|| e.key.clone(), |n| (*n).to_owned()))
+        .collect()
+}
+
 fn class_is(entry: &Collection, class: &str) -> bool {
     numeric_name(&entry.class_name) == numeric_name(class)
 }

@@ -30,6 +30,17 @@ pub(crate) const SCREEN: &str = "screen:";
 /// Settings screen; TU3 id 56's sibling, screen id = its info record key).
 pub(crate) const SCREEN_ITEMS: [(&str, &str); 1] = [("GameSettings", crate::fe_backdrop::SETTINGS_SCREEN)];
 
+/// The PC overlay's Debug Menus switch (not retail) as the `debug_menus` menu fact, so retail's debug-only entries
+/// show while it is on; a mod's own visibility hooks still stack on top.
+fn sync_debug_menus(menu: Option<Res<crate::graphics_menu::Menu>>, menus: Option<ResMut<RetailMenus>>) {
+    let (Some(menu), Some(mut menus)) = (menu, menus) else { return };
+    let want = if menu.debug_menus() { 1.0 } else { 0.0 };
+    let key = skate_core::menus::facts::DEBUG_MENUS;
+    if menus.context.facts.get(key).copied().unwrap_or(0.0) != want {
+        menus.context.facts.insert(key.into(), want);
+    }
+}
+
 #[derive(Resource)]
 pub(crate) struct RetailMenus {
     pub registry: MenuRegistry,
@@ -176,6 +187,8 @@ pub(crate) struct ChallengeMapData {
     pub markers: std::collections::BTreeMap<String, skate_core::menus::MapMarker>,
     /// (node kind, node id, destination key) of every node with a teleport.
     pub teleports: Vec<(EntryKind, String, String)>,
+    /// Listings flagged IsDebug (shown only with Debug Menus).
+    pub debug: std::collections::BTreeSet<String>,
 }
 
 fn challenge_map(asset_root: &std::path::Path, world_maps: &std::collections::BTreeMap<String, String>) -> ChallengeMapData {
@@ -186,8 +199,11 @@ fn challenge_map(asset_root: &std::path::Path, world_maps: &std::collections::BT
     let texts: std::collections::BTreeMap<&str, &str> =
         rows.iter().filter_map(|d| Some((d.label_key.as_deref()?, d.name.as_str()))).collect();
     let label_text = |label: &str| texts.get(label).map(|t| (*t).to_owned());
+    let mut debug = std::collections::BTreeSet::new();
     let (nodes, pictures, markers) = match skate_data::collections::Collections::load(asset_root) {
-        Ok(c) => (
+        Ok(c) => {
+            debug = skate_data::challenge_map::debug_listings(c.entries());
+            (
             skate_data::challenge_map::load(c.entries(), "progression", &skate_data::challenge_map::LocationRules::default(),
                 &skate_data::challenge_map::LocationUnlocks::load(asset_root), &label_text),
             skate_data::challenge_map::location_maps(c.entries(), world_maps),
@@ -199,7 +215,8 @@ fn challenge_map(asset_root: &std::path::Path, world_maps: &std::collections::BT
                     Some((key, skate_core::menus::MapMarker { icon: m.icon, point, bounds: m.bounds }))
                 })
                 .collect(),
-        ),
+            )
+        }
         Err(error) => {
             warn!("RETAIL_MENUS challenge map: {error}");
             Default::default()
@@ -216,7 +233,7 @@ fn challenge_map(asset_root: &std::path::Path, world_maps: &std::collections::BT
             }
         }
     }
-    ChallengeMapData { nodes, pictures, markers, teleports }
+    ChallengeMapData { nodes, pictures, markers, teleports, debug }
 }
 
 impl RetailMenus {
@@ -248,6 +265,7 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>) {
     let map = challenge_map(&config.asset_root, &world_maps);
     let teleports = map.teleports;
     data.map_nodes = map.nodes;
+    data.map_debug = map.debug;
     data.map_pictures = map.pictures;
     data.map_markers = map.markers;
     if loaded {
@@ -270,7 +288,7 @@ pub(crate) struct RetailMenusPlugin;
 impl Plugin for RetailMenusPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (load, crate::retail_menu_movies::load, load_stored))
-            .add_systems(Update, (sync_engine_values, sync_stored_values));
+            .add_systems(Update, (sync_engine_values, sync_stored_values, sync_debug_menus));
     }
 }
 
@@ -807,7 +825,7 @@ mod tests {
     use skate_core::menus::{Category, Mode, Tab};
 
     fn data() -> MenuData {
-        MenuData { map_nodes: Vec::new(), map_pictures: Default::default(), map_markers: Default::default(),
+        MenuData { map_nodes: Vec::new(), map_pictures: Default::default(), map_markers: Default::default(), map_debug: Default::default(),
             categories: vec![Category { id: "SinglePlayer".into(), label: "L".into(), icon: Icon::Retail("singleplayer".into()) }],
             items: vec![skate_core::menus::Item { id: "ChallengeMap".into(), label: "L".into(), icon: Icon::Retail("map".into()), help: String::new(), sub_option_kind: -1 }],
             settings: Vec::new(),

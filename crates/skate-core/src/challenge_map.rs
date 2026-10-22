@@ -27,6 +27,9 @@ pub struct Row {
     pub label: String,
     /// Greyed unless something handles it (ours: the registry's rule; retail's `!vt+0x28` is "not a header").
     pub enabled: bool,
+    /// A folder row's count, shown as "label (n)" (`sub_8264ACF8` "%s (%d)" when the child's showCount is set,
+    /// b255): its real rows, headers left out. None for leaves.
+    pub count: Option<usize>,
 }
 
 /// What a select or back press asks the host to do.
@@ -97,6 +100,8 @@ impl ChallengeMapState {
             // A map_category header is never greyed (OnMenuGetItemEnabled `82646D18` defaults to enabled, b454); it is
             // a header clip the cursor skips.
             .map(|n| Row { entry: n.entry.clone(), label: n.label.clone(),
+                count: (n.entry.kind == EntryKind::MapListing).then(|| registry.data().map_children(&n.entry).into_iter()
+                    .filter(|c| c.entry.kind != EntryKind::MapCategory && registry.visible(&c.entry, ctx)).count()),
                 enabled: n.entry.kind == EntryKind::MapCategory || registry.enabled(&n.entry, ctx) })
             .collect()
     }
@@ -273,13 +278,18 @@ mod tests {
     #[test]
     fn the_map_opens_on_locations_pushes_folders_and_selects_a_teleport() {
         let r = registry();
-        let ctx = MenuContext::new("Career");
+        let ctx = MenuContext::new("Career").with(crate::menus::facts::GAME_MODE, 1.0);
         let (mut s, open) = ChallengeMapState::open(&r, &ctx, "progression");
         assert_eq!(open, [10, 90, 21, 33, 41]);
         assert_eq!(s.tabs(&r, &ctx).iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["progression_active", "progression_locations"]);
+        // The tab Lua (map_listing Hash_3E294F92C056A144): in free skate (game mode 0) Challenges is hidden.
+        let free = MenuContext::new("FreePlay");
+        assert_eq!(s.tabs(&r, &free).iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["progression_locations"]);
         assert_eq!(s.tab, 1, "opens on the locations tab");
         let rows = s.rows(&r, &ctx);
         assert_eq!(rows.iter().map(|r| (r.entry.id.as_str(), r.enabled)).collect::<Vec<_>>(), [("downtown", true), ("empty", false), ("uptown", false)]);
+        // Folder rows carry their row count ("Downtown District (14)" in retail).
+        assert_eq!(rows.iter().map(|r| r.count).collect::<Vec<_>>(), [Some(1), Some(0), Some(1)]);
         assert_eq!(s.title(&r, &ctx), "L_progression_locations");
         assert_eq!(s.select(&r, &ctx, 1), Action::None, "an empty, greyed folder does nothing");
         assert_eq!(s.select(&r, &ctx, 0), Action::Refresh(vec![10, 80, 100, 110]));
