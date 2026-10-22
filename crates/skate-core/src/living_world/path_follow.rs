@@ -179,10 +179,11 @@ pub fn lost(line: &ReplayLine, n: u32, pos: Vec3, r: f32) -> bool {
     if !far(c) {
         return false;
     }
+    // Node n's own step, normalised in 3D (`sub_82454648`, b527); the next node's only when n has none.
     let next = line.nodes.get(n as usize + 1).unwrap_or(node);
-    let dir = if next.step != [0.0; 3] { next.step } else { node.step };
-    let len = dir[0].hypot(dir[2]);
-    if len <= 1e-6 {
+    let dir = if node.step != [0.0; 3] { node.step } else { next.step };
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+    if dir[0].hypot(dir[2]) <= 1e-6 {
         return true;
     }
     let right = [dir[2] / len, 0.0, -dir[0] / len];
@@ -425,6 +426,17 @@ mod tests {
         assert!(!lost(&l, 4, [7.0, 0.0, 4.0], 6.0));
         assert!(!lost(&l, 4, [-7.0, 0.0, 4.0], 6.0));
         assert!(lost(&l, 4, [8.5, 0.0, 4.0], 6.0));
+    }
+
+    /// b527 (`sub_82468DD8` / `sub_82454648`): the lane edges come from node n's own step, and its +0x25 edge lies on
+    /// d x up (heading +z: at -x), whatever the next node does.
+    #[test]
+    fn the_lost_test_uses_the_nodes_own_direction() {
+        let mut l = line(10);
+        l.nodes[4].width = [100, 0];
+        l.nodes[5].step = [0.1, 0.0, 0.0];
+        assert!(!lost(&l, 4, [-7.5, 0.0, 4.0], 6.0), "within 6 m of the 2 m left edge at -x");
+        assert!(lost(&l, 4, [7.5, 0.0, 4.0], 6.0), "no right width: lost at +x");
     }
 
     #[test]

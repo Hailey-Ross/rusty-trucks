@@ -469,6 +469,12 @@ pub(crate) fn props_table(p: &PropsPatch) -> PropTuningTable {
             bail_blend: v.bail_blend.unwrap_or(d.bail_blend),
             walkable_mass: v.walkable_mass.unwrap_or(d.walkable_mass),
             skater_push_box: v.skater_push_box.unwrap_or(d.skater_push_box),
+            ground_reduction: skate_core::physics::contact_reduction::ReductionRules {
+                enabled: v.ground_reduction.unwrap_or(d.ground_reduction.enabled),
+                normal_dot: v.reduction_normal_dot.map_or(d.ground_reduction.normal_dot, |x| x.clamp(-1.0, 1.0)),
+                plane_distance: v.reduction_plane_distance.map_or(d.ground_reduction.plane_distance, |x| x.max(0.0)),
+                chunk: v.reduction_chunk.map_or(d.ground_reduction.chunk, |n| n.clamp(1, 4096) as usize),
+            },
         };
     }
     if let Some(v) = &p.upright {
@@ -642,6 +648,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "sleep_frames": v.sleep_frames, "max_sleeps_per_step": v.max_sleeps_per_step, "rest_snap": v.rest_snap,
                 "bail_clamp": v.bail_clamp, "bail_linear_factor": v.bail_linear_factor, "bail_angular_factor": v.bail_angular_factor,
                 "bail_heavy_mass": v.bail_heavy_mass, "bail_blend": v.bail_blend, "walkable_mass": v.walkable_mass, "skater_push_box": v.skater_push_box,
+                "ground_reduction": v.ground_reduction.enabled, "reduction_normal_dot": v.ground_reduction.normal_dot,
+                "reduction_plane_distance": v.ground_reduction.plane_distance, "reduction_chunk": v.ground_reduction.chunk,
             }, "upright": {
                 "window_seconds": u.window_seconds, "tick_seconds": u.tick_seconds, "stop_angle_deg": u.stop_angle_deg,
                 "max_angle_deg": u.max_angle_deg, "dead_band_deg": u.dead_band_deg, "gain_min": u.gain_min, "gain_max": u.gain_max,

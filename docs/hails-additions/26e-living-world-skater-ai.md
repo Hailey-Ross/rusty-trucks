@@ -1518,3 +1518,15 @@ nodes back) are in `.local/research/b523-npc-skater-stalls.md`; the retail check
   OTHER side (A + n * width, n = d x U): retail is inconsistent between the two, and ours keeps each as retail (the
   lost test was already right).
 - Not play-tested; whether the lateral fix reduces the University drift (b523) needs a session.
+## The avoider's side and the lost test's direction as retail (2026-10-22, research b527)
+
+- **Avoider side (`sub_82454798`, asm-checked by main; `sub_82464E30` / `sub_82462448` per b527):** retail's lateral axis
+  is d x up; a negative lateral uses the left width (+0x25) and moves to that side (heading +z: +x). Ours used the
+  mirrored axis in both copies (`avoid.rs` `right_of` and `npc_avoid.rs` `right_of`, which maps the avoider's offset to
+  the world for the steered sample, the rendered skater and its root), so steering put each width on the other side.
+  Both flipped together. Tests: `steer_point_puts_each_width_on_its_own_side`, the gap test now expects the left gap
+  at +x. Not ported: b527's finer box-corner rules in `sub_82462448` and the zero-width case of the steer point.
+- **Lost test direction (`sub_82468DD8` / `sub_82454648`):** the lane edge points come from node n's own step,
+  normalised in 3D (ours took the next node's step, normalised flat). The side was already retail's. Test
+  `the_lost_test_uses_the_nodes_own_direction`.
+- Not play-tested.

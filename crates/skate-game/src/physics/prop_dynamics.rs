@@ -217,6 +217,8 @@ pub(crate) struct PropSolverSettings {
     /// true = the skater pushes props through their box (the older model, NOT RETAIL, mod option); false = through
     /// their mesh: docs/hails-additions/27-dynamic-props.md#skater-vs-prop-mesh
     pub skater_push_box: bool,
+    /// Retail's ground contact reduction for the row solver (`82779EB0`): docs/hails-additions/27-dynamic-props.md#ground-contact-reduction
+    pub ground_reduction: skate_core::physics::contact_reduction::ReductionRules,
 }
 
 impl Default for PropSolverSettings {
@@ -235,6 +237,7 @@ impl Default for PropSolverSettings {
             bail_blend: 0.5,
             walkable_mass: 5.5,
             skater_push_box: false,
+            ground_reduction: Default::default(),
         }
     }
 }
@@ -2413,28 +2416,38 @@ impl PropDynamics {
         for &index in awake {
             self.bodies[index].contacts = 0;
         }
+        let push_point = |rows: &mut Vec<RetailContactJacobian>,
+                              on_a: Vector3,
+                              on_b: Vector3,
+                              normal: Vector3,
+                              material: RetailContactMaterial,
+                              a: RetailContactBodyState,
+                              b: RetailContactBodyState| {
+            let contact = generate_contact(
+                RetailContactInput {
+                    position_on_a: on_a,
+                    position_on_b: on_b,
+                    normal,
+                    restitution: material.restitution,
+                    static_friction: material.static_friction,
+                    dynamic_friction: material.dynamic_friction,
+                    tag: 0,
+                },
+                a,
+                b,
+            );
+            rows.push(build_contact_jacobian(contact, dt));
+        };
         let push_rows = |rows: &mut Vec<RetailContactJacobian>,
                              manifold: &PrimitiveContactManifold,
                              material: RetailContactMaterial,
                              a: RetailContactBodyState,
                              b: RetailContactBodyState| {
             for pair in &manifold.points[..manifold.count] {
-                let contact = generate_contact(
-                    RetailContactInput {
-                        position_on_a: pair.a,
-                        position_on_b: pair.b,
-                        normal: manifold.normal,
-                        restitution: material.restitution,
-                        static_friction: material.static_friction,
-                        dynamic_friction: material.dynamic_friction,
-                        tag: 0,
-                    },
-                    a,
-                    b,
-                );
-                rows.push(build_contact_jacobian(contact, dt));
+                push_point(rows, pair.a, pair.b, manifold.normal, material, a, b);
             }
         };
+        let reduction = self.tuning.solver.ground_reduction;
         for &index in awake {
             let tuning = self.bodies[index].tuning;
             let box_primitive = self.bodies[index].box_primitive();
@@ -2443,21 +2456,39 @@ impl PropDynamics {
             let bounds = self.bodies[index].bounds().expanded(tuning.contact_padding + 0.05);
             let a = self.row_body(index);
             let support = self.row_support(world_reaction, Vector3::ZERO);
-            for (world, range) in worlds.iter().flat_map(|w| w.candidate_ranges(Some(bounds)).into_iter().map(move |r| (*w, r))) {
-                for triangle in &world.triangles()[range] {
-                    let Some(manifold) = primitive_triangle_world_contacts(
-                        box_primitive,
-                        triangle.triangle,
-                        Vector3::ZERO,
-                        world_query,
-                    ) else {
-                        continue;
-                    };
-                    self.bodies[index].contacts += 1;
-                    let material = self.contact_material(index, triangle.material);
-                    push_rows(&mut rows, &manifold, material, a, support);
+            // The step's world (map + fused park) is retail's ground set: its contacts are reduced per body (`82779EB0`);
+            // the props-only pieces are the terrain set, kept raw: docs/hails-additions/27-dynamic-props.md#ground-contact-reduction
+            let mut ground: Vec<(skate_core::physics::contact_reduction::ContactRecord, RetailContactMaterial)> = Vec::new();
+            let mut terrain = Vec::new();
+            for (set, world) in worlds.iter().enumerate() {
+                for range in world.candidate_ranges(Some(bounds)) {
+                    for triangle in &world.triangles()[range] {
+                        let Some(manifold) = primitive_triangle_world_contacts(
+                            box_primitive,
+                            triangle.triangle,
+                            Vector3::ZERO,
+                            world_query,
+                        ) else {
+                            continue;
+                        };
+                        self.bodies[index].contacts += 1;
+                        let material = self.contact_material(index, triangle.material);
+                        if set == 0 {
+                            ground.extend(manifold.points[..manifold.count].iter().map(|pair| {
+                                (skate_core::physics::contact_reduction::ContactRecord { p0: pair.a, p1: pair.b, normal: manifold.normal }, material)
+                            }));
+                        } else {
+                            push_rows(&mut terrain, &manifold, material, a, support);
+                        }
+                    }
                 }
             }
+            let records: Vec<_> = ground.iter().map(|g| g.0).collect();
+            for k in skate_core::physics::contact_reduction::reduce(&records, &reduction) {
+                let (r, material) = ground[k];
+                push_point(&mut rows, r.p0, r.p1, r.normal, material, a, support);
+            }
+            rows.append(&mut terrain);
             for other in 0..count {
                 let other_awake = !self.bodies[other].asleep;
                 // Each awake pair once, from its lower index.

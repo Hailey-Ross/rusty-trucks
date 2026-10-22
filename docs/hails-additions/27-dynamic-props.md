@@ -1396,3 +1396,30 @@ Detail moved out of the fork-added code comments of `crates/skate-core/src/playe
 - `contacts` counts the prop's static triangle manifolds plus prop pairs this tick (not contact points).
 - The recomp counterpart is the `DMOROWS` line (b509): compare time to sleep, final pose, slide distance and peak
   speed after a wake.
+
+## Ground contact reduction
+
+(2026-10-22, research b508 to b510, b512, b517 to b520)
+
+- **Retail [code; a recomp trace settled which sets a prop gets]:** a prop's contacts with the ground set (the map's
+  static collision and the fused skate.Park pieces) go through `82779EB0` before the rigid body sim solves them: records
+  of one body pair are grouped by normal (dot at least 0.999, `820ED800`) and plane (the nearer of the two point pairs
+  within 0.01 m of the head's plane, `820D71E8`), tested against the group's first record; a group of more than four
+  keeps four points chosen by `827798F8` (the deepest point, the farthest from it, the widest triangle, the point
+  farthest outside it; ties keep the lowest index); kept records keep their order. The job buffer holds 50 records; a
+  full buffer is reduced and emitted and the next record starts a new one (nothing is dropped, b520). The terrain set
+  (our props-only IgnoreFuser pieces) is not reduced. Trace (b509 run 4, the Stadium - Full construction barrier on a
+  fused piece): 4 to 6 ground rows per step, none from the terrain set.
+- **Ours before:** every triangle's contact points became solver rows.
+- **Change:** `skate_core::physics::contact_reduction` (`reduce`, `reduce_chunk`), used by the row solver
+  (`prop_dynamics.rs` `row_corrections`): per prop body, the contacts with the step's world in our fixed candidate order
+  (mesh index, then triangle, then point), in chunks of 50, then the props-only pieces' rows unreduced (rows keep the
+  old ground-then-terrain order). The older impulse pass (`row_solver = false`, not retail) is unchanged.
+- **Differences kept:** retail's record order follows the collision KD tree's leaves (b519), ours the mesh / triangle
+  order: identical on flat ground apart from equal ties, can differ on nearly coplanar curved surfaces; retail can share
+  a 50-record chunk between up to five props of one job, ours chunks per prop; float order is plain, not fused.
+- **Moddable:** `props.solver.ground_reduction` (on), `reduction_normal_dot` (0.999), `reduction_plane_distance` (0.01),
+  `reduction_chunk` (50).
+- **Tests:** `contact_reduction` unit tests (a coplanar grid keeps four with the deepest point, small groups and other
+  planes stay whole, chunks, determinism); the prop suites and the asset-gated Downtown prop tests pass with it on.
+  Not play-tested.

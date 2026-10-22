@@ -521,6 +521,10 @@ pub struct PropSolverPatch {
     pub bail_blend: Option<f32>,
     pub walkable_mass: Option<f32>,
     pub skater_push_box: Option<bool>,
+    pub ground_reduction: Option<bool>,
+    pub reduction_normal_dot: Option<f32>,
+    pub reduction_plane_distance: Option<f32>,
+    pub reduction_chunk: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -854,7 +858,8 @@ impl Merge for PropTuningPatch {
 impl Merge for PropSolverPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; row_solver, iterations, sleep_energy, sleep_frames, max_sleeps_per_step, rest_snap, bail_clamp,
-            bail_linear_factor, bail_angular_factor, bail_heavy_mass, bail_blend, walkable_mass, skater_push_box);
+            bail_linear_factor, bail_angular_factor, bail_heavy_mass, bail_blend, walkable_mass, skater_push_box,
+            ground_reduction, reduction_normal_dot, reduction_plane_distance, reduction_chunk);
     }
 }
 impl Merge for PropUprightPatch {

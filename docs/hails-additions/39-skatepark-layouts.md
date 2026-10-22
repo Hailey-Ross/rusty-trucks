@@ -172,7 +172,7 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
   "Recipe precedence across packs" above).
 - Do-not-fuse pieces (see "IgnoreFuser pieces leave the fused set"): a second source of flag 2 (a template map at
   mgr+0x3B2C, b482) is open; retail's second read of fused pieces for props: settled, none (run 4, see "Props and
-  IgnoreFuser pieces"); the ground set's reduction is not ported yet (b510).
+  IgnoreFuser pieces"); the ground set's reduction is ported (doc 27 "Ground contact reduction").
 - The two dead stops of the laptop session 2026-10-21 21:38 where the user saw nothing (see "Seam audit of every
   layout"): verify captures (2026-10-22) show both pieces drawn (Back Lot `ab_stairs_sm_Downtown` bottom riser,
   DownTown `aa_padStreet_md_Downtown` raised edge). The trace shows head-on hits at 8.2 and 5.7 m/s with the speed
@@ -282,8 +282,8 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
   checked `82DC2840` and the head of `82AE10C8`), and a recomp trace settled which sets a prop gets (2026-10-22,
   research b509 / b512 / b517, hook `DMOROWS`, run 4): the Stadium - Full construction barrier (one rigid body)
   resting on a fused piece got 4 to 6 ground-set rows per step, all against the static world, and no terrain-set row
-  on any step. So retail solves fused pieces once for props, as ours does. Not ported yet: the ground set's reduction
-  `82779EB0` (at most 4 points per coplanar group, research b510); ours uses every triangle contact.
+  on any step. So retail solves fused pieces once for props, as ours does. The ground set's reduction
+  `82779EB0` (at most 4 points per coplanar group, research b510) is ported: doc 27 "Ground contact reduction".
 - **Moddability:** a piece's set follows its sidecar `caps.IgnoreFuser` (a mod clears or sets it per instance); the
   world is rebuilt with the rest at every map load.
 - **Tests:** `props_rest_on_props_only_pieces` (a crate rests on a props-only plate, falls through without it),

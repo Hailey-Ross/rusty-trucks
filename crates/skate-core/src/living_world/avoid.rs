@@ -265,9 +265,9 @@ fn dot(a: Vec3, b: Vec3) -> f32 {
 fn len(a: Vec3) -> f32 {
     dot(a, a).sqrt()
 }
-/// Right of a direction (y up): the path's lateral axis.
+/// Right of a direction (y up): the path's lateral axis, d x up (`sub_82454798`, b527: +0x25 on the negative side).
 fn right_of(d: Vec3) -> Vec3 {
-    let r = [d[2], 0.0, -d[0]];
+    let r = [-d[2], 0.0, d[0]];
     let l = len(r);
     if l > 1e-6 {
         scale(r, 1.0 / l)
