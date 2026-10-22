@@ -832,10 +832,16 @@ fn append_pieces(
 ) -> Result<(), String> {
     // Retail fuses the static pieces into one mesh and rebuilds its edge codes (b478: the SkateParkView fuserJob,
     // 828728B8 / 82876188), so flush seams between pieces pair up instead of keeping each piece's open borders.
+    // Pieces with flag 2 (IgnoreFuser, b482: hedges, bushes, shrubs) stay out of the fuse (827765C0). Their own
+    // collision lives only in the TerrainPool (b483), which the skater's ground query never reads: it runs against
+    // island+0x5590 = the container's GroundPool, the fused object (827632A8 / 8275DCC8, b484). So they do not touch
+    // the skater (this world). A mod that wants one solid clears its `IgnoreFuser` cap in its layout sidecar.
+    // Open: retail props (DMOs) do collide with them (the DmoGround task on the TerrainPool).
+    let (fused, unfused) = split_unfused(pieces);
     let (more, surfaces, piece_meshes) =
-        portable_parts_fused(&pieces.collision, &pieces.materials, material, Some(&pieces.ranges), true, Some(pieces.weld))?;
-    info!("SKATE_PARK_FUSE weld={} m triangles={} kept={} (collapsed and back-to-back faces dropped, seams paired, edge codes rebuilt)",
-        pieces.weld, pieces.collision.len(), more.len());
+        portable_parts_fused(&fused.0, &pieces.materials, material, Some(&fused.1), true, Some(pieces.weld))?;
+    info!("SKATE_PARK_FUSE weld={} m triangles={} kept={} unfused_pieces={} (collapsed and back-to-back faces dropped, seams paired, edge codes rebuilt)",
+        pieces.weld, fused.0.len(), more.len(), unfused.1.len());
     let offset = triangles.len();
     triangles.extend(more);
     packed_surfaces.extend(surfaces);
@@ -844,6 +850,21 @@ fn append_pieces(
         mesh
     }));
     Ok(())
+}
+
+type PieceSet = (Vec<skate_data::skate_map::Collision>, Vec<std::ops::Range<usize>>);
+
+/// The layout's pieces split into the fused set and the IgnoreFuser pieces, each with its own triangles and one range
+/// per piece (layout order kept, so both are deterministic).
+fn split_unfused(pieces: &crate::park_layout::Pieces) -> (PieceSet, PieceSet) {
+    let (mut fused, mut unfused): (PieceSet, PieceSet) = Default::default();
+    for (index, range) in pieces.ranges.iter().enumerate() {
+        let set = if pieces.unfused.get(index).copied().unwrap_or(false) { &mut unfused } else { &mut fused };
+        let start = set.0.len();
+        set.0.extend_from_slice(&pieces.collision[range.clone()]);
+        set.1.push(start..set.0.len());
+    }
+    (fused, unfused)
 }
 
 /// Welded vertices and reconstructed edge features (flags, cosines) of a
@@ -2240,6 +2261,59 @@ mod tests {
         assert!(seam(&gap).iter().all(|&(convex, _)| convex), "a real gap still catches");
         // Deterministic: the same input gives the same features.
         assert_eq!(fused, fuse(&flush));
+    }
+
+    /// An IgnoreFuser piece (retail flag 2, b482 / b483) stays out of the fused set, and so out of the skater's world
+    /// (the skater's ground query reads only the fused GroundPool object, b484).
+    #[test]
+    fn ignore_fuser_pieces_stay_out_of_the_fused_set() {
+        let flush = plates([0.0015, 0.001, 0.0]);
+        let collision: Vec<_> = flush.iter().map(|&points| skate_data::skate_map::Collision {
+            // Template pieces carry native codes; 0x60 is a retail open border (convex, b477).
+            points, surface: 0, material: 1, native_edges: Some([0x60; 3]),
+        }).collect();
+        let pieces = |unfused: Vec<bool>| crate::park_layout::Pieces {
+            collision: collision.clone(), ranges: vec![0..2, 2..4], materials: vec![], rails: vec![],
+            weld: crate::park_layout::FUSE_WELD, unfused,
+        };
+        let flagged = pieces(vec![false, true]);
+        let ((fused, fused_ranges), (unfused, unfused_ranges)) = split_unfused(&flagged);
+        assert_eq!((fused.len(), fused_ranges, unfused.len(), unfused_ranges), (2, vec![0..2], 2, vec![0..2]));
+        assert_eq!(fused[..], collision[..2]);
+        assert_eq!(unfused[..], collision[2..]);
+        let none = pieces(vec![false, false]);
+        let ((all, ranges), (rest, _)) = split_unfused(&none);
+        assert_eq!((all.len(), ranges, rest.len()), (4, vec![0..2, 2..4], 0));
+        // Fewer flags than ranges (an older sidecar): the rest fuse.
+        let ((all, _), _) = split_unfused(&pieces(vec![]));
+        assert_eq!(all.len(), 4);
+        // Only the fused set reaches the skater's world, one query range per piece.
+        let build = |p: &crate::park_layout::Pieces| {
+            let (mut triangles, mut surfaces, mut meshes) = (vec![], vec![], vec![]);
+            append_pieces(&mut triangles, &mut surfaces, &mut meshes, p, material()).unwrap();
+            (triangles.len(), meshes.iter().map(|m| m.triangle_range.clone()).collect::<Vec<_>>())
+        };
+        assert_eq!(build(&flagged), (2, vec![0..2]));
+        assert_eq!(build(&none), (4, vec![0..2, 2..4]));
+        assert_eq!(build(&flagged), build(&flagged), "deterministic");
+    }
+
+    /// Every disc and DLC layout: the pieces whose sidecar `caps.IgnoreFuser` is set (hedges, bushes, shrubs; b482
+    /// counted 16 / 8 / 9 / 13 instances in backlot_full / Downtown_Fullpark / ZenPlaza_Full / Nightpark) leave the fuse.
+    #[test]
+    #[ignore = "requires private converted assets and the DLC park layouts"]
+    fn ignore_fuser_counts_per_layout() {
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT"));
+        for (layout, expected) in [("backlot_full", 16), ("Downtown_Fullpark", 8), ("ZenPlaza_Full", 9),
+            ("Downtown_Nightpark_Fullpark", 13), ("MegaPark_Fullpark", 0), ("Starter_Fullpark", 0)] {
+            let data = std::fs::read(crate::park_layout::directory(&root).join(format!("{layout}.skate"))).unwrap();
+            let mut map = SkateMap::parse_render_only(&data).unwrap();
+            map.extensions.push(skate_data::skate_map::Extension {
+                tag: crate::park_layout::EXTENSION_TAG, schema: 1, payload: layout.as_bytes().to_vec(),
+            });
+            let pieces = crate::park_layout::load_pieces(&root, &map).expect(layout);
+            assert_eq!(pieces.unfused.iter().filter(|&&u| u).count(), expected, "{layout}");
+        }
     }
 
     /// The real "Back Lot Park - Full" layout (laptop session 2026-10-21 21:38: pops crossing the aa_PlazaPad seam at
