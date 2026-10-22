@@ -2,7 +2,7 @@
 
 The fork's changes will be offered to SK8-ENGINE/skate-3-rust-engine as separate
 pull requests, one per type of change, so each can be reviewed and merged on its
-own. Status 2026-10-19: the one open upstream PR is #52 (living world, retail menus, world shading); the earlier ones merged or were folded into it (see each row). Each PR description is drawn from the linked
+own. Status 2026-10-21: the one open upstream PR is #52 (living world, retail menus, world shading, instant replay and DLC support); the earlier ones merged or were folded into it (see each row). #52 also carries three commits of JohnUzoka's upstream PR #66 (map block decode, his authorship); #66 is approved and #52's description asks for it to merge first. Each PR description is drawn from the linked
 document(s), which hold the full context (problem, root cause, evidence,
 verification, open questions).
 

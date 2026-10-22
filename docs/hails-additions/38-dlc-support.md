@@ -149,9 +149,12 @@ data. Open: no recomp trace confirms retail plays the SkateSchool bed there.
 
 ## Open questions
 
-- Whether DLC maps stay or go when the DLC folder is removed (user decision).
-- The DLC maps' display names (the DLC language tables), trigger volumes and `.ems` audio.
-- The movie's own constants for kUpdateMode / kRefreshTint / kReplayMode_* (from our export of replay_editor3).
+- Answered 2026-10-20 (user): converted DLC maps stay when the DLC folder is removed, until a refresh sees the packs
+  again.
+- Answered since: display names ("DLC maps in the map lists", "DLC location names in the menus"), teleport volumes
+  ("Teleporters (disc and DLC maps)") and `.ems` audio ("DLC map audio"); see those sections.
+- Still open: the movie's own constants for kUpdateMode / kRefreshTint / kReplayMode_* (from our export of
+  replay_editor3).
 
 ## DLC maps, part 1: conversion, starts, skies, audio (2026-10-20)
 
@@ -344,7 +347,7 @@ Change:
   IsSessionMarkerTeleport}), the same event as a same-world teleport; no velocity anywhere on the path. Ours already
   matches (`challenge_map.rs` `travel_ex(request.transform, None, request.on_board)` after the map load). Open: who
   turns cMsgTeleport into the skater move (likely retail Lua); whether our placement can run before the exit area's
-  collision exists; whether our `travel_ex` resets twice (`skater.rs:219-228`).
+  collision exists. (Answered 2026-10-21: `travel_ex` did reset twice; it moves once now, "One move per teleport".)
   Moddable next: per exit `on_board` / arrival velocity on `sdk.triggers.teleporter` (`TeleporterOptions`, vm.rs:77).
 - D-pad Up glyph (research b452, 2026-10-21): the Teleport state sets no button type; the movie's own data does.
   [data] `mSignup.mButtonItem` (a `button_item2`) has a Construct clip action setting `mButtonImage = "DPad_Up"`, and
