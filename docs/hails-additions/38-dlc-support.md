@@ -456,3 +456,11 @@ Not yet run end to end: the launcher's import followed by its automatic refresh 
   wire. Open: retail's query mask 7 (whether props count; ours: static world only).
 - **Tests:** `fit_arrival_to_ground` F1..F7 (skate-core), `travel_fits_the_arrival_onto_the_ground` (asset-gated: a
   target 3 m up lands near the ground, no fall). Likely fixes most of b476's high arrivals: not play-tested.
+- **Automated check (2026-10-21 night):** `SKATE_VERIFY_TELEPORTER=teleport_dwmc_01` on DLC_DW_MegaCompund: the exit
+  asked y 40.30 and landed at 39.52 (b476's ground 39.372 + 0.15), riding on the road in the capture. Log line
+  `TELEPORT_ARRIVAL asked=[x, y, z] fitted_y=... ground_fit=...` per fitted arrival.
+- **skate.School "Back to the top" exits (tele_sksc_01..04) [recomp, 2026-10-21]:** retail sits under the world there
+  too. A scripted recomp run teleported to each exit 3 m above its locator (`SKATE3_TP_OVERRIDE` on the skate.School
+  Locations entry, row 3) and the skater fell through empty space to y -1000 at all four (screenshots). So our data
+  and collision match retail; the exits only make sense while their challenge runs (their volumes sit at the same
+  depth, unreachable in free skate). Nothing to fix.

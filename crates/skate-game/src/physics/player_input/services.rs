@@ -123,11 +123,17 @@ impl<C: PlayerInputCallbacks> InputPhaseServices for Services<'_, C> {
             // A travel's arrival fit-up (retail 82598428 in the teleport message, b475): height onto the static world.
             if let Some(fit) = self.pending_ground_fit.take() {
                 let world = self.world;
+                let asked = target[3];
                 target = skate_core::physics::teleport_ground_fit::fit_arrival_to_ground(target, fit, |s, e| {
                     let v = |p: [f32; 3]| skate_core::math::Vector3::new(p[0], p[1], p[2]);
                     world.query_thin_line(v(s), v(e)).ok().flatten()
                         .map(|hit| [hit.geometry.position.x, hit.geometry.position.y, hit.geometry.position.z])
                 });
+                // Logs must diagnose arrival reports: where the teleport asked to land and where the fit put it.
+                bevy::log::info!(
+                    "TELEPORT_ARRIVAL asked=[{:.2}, {:.2}, {:.2}] fitted_y={:.2} ground_fit={}",
+                    asked[0], asked[1], asked[2], target[3][1], fit.enabled
+                );
             }
             self.callbacks
                 .teleport(self.board, self.ground, target, player, physical, output)?;
