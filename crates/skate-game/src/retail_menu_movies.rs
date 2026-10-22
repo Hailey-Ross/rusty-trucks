@@ -30,9 +30,11 @@ pub const MAX_MOD_MOVIE_BYTES: u64 = 16 << 20;
 /// Manifest version setup writes (3: textured units carry their bitmap id, Milestone 4; 4: screens/main; 5: main.apt's
 /// layer movies; 6: the challenge map; 7: named runtime images, the challenge map pictures; 8: the Skate Profile, FE 61;
 /// 9: Extras, FE 18; 10: the text viewer, FE 3; 11: the replay editor and help, FE 12 / 13;
-/// 12: every DLC pack's text tables, so the Challenge Map names the DLC locations).
-pub const VERSION: u64 = 12;
-/// The oldest version this engine still reads: 6, 8, 9, 10 and 11 only add a movie, 7 an optional image table and 12 DLC text, so a 5 set
+/// 12: every DLC pack's text tables, so the Challenge Map names the DLC locations; 13: the credits, FE 25, and their
+/// lines file).
+pub const VERSION: u64 = 13;
+/// The oldest version this engine still reads: 6, 8, 9, 10, 11 and 13 only add a movie (a 12 set keeps Credits greyed),
+/// 7 an optional image table and 12 DLC text, so a 5 set
 /// works without the challenge map (its pause item keeps the PC overlay's MAPS until Refresh Game Files), a 6 set draws
 /// no map pictures and a 7 / 8 set keeps the SKATER / EXTRAS overlays for Skate Profile / Extras.
 pub const OLDEST_VERSION: u64 = 5;
@@ -342,6 +344,11 @@ impl RetailMenuMovies {
     }
 
     /// Whether a runtime image exists (a mod's or the set's).
+    /// A movie by key is in the set (retail or a mod's).
+    pub fn has_movie(&self, key: &str) -> bool {
+        self.base.contains_key(key) || self.mods.values().any(|m| m.contains_key(key))
+    }
+
     pub fn has_named_image(&self, name: &str) -> bool {
         let key = image_key(name);
         self.mod_images.iter().any(|(_, k, _)| *k == key) || self.named_images.contains_key(&key)
@@ -363,6 +370,13 @@ impl RetailMenuMovies {
     }
 
     /// The image behind a texture key from `MenuScene`.
+    /// The set's shared fonts and language without a movie (engine-drawn panels such as the on-screen keyboard).
+    pub fn shared_text_assets(&self) -> Option<crate::apt_text::TextAssets> {
+        let mut json = Value::Object(self.shared.clone());
+        json["characters"] = Value::Array(Vec::new());
+        crate::apt_text::TextAssets::load(&json).ok()
+    }
+
     pub fn image(&self, texture: &str) -> Option<MenuImage<'_>> {
         if let Some(key) = texture.strip_prefix(NAMED_IMAGE_PREFIX) {
             if let Some((.., image)) = self.mod_images.iter().rev().find(|(_, k, _)| k == key) {

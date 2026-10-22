@@ -216,6 +216,8 @@ pub struct FrontEnd<'a> {
     pub extras: crate::extras_host::ExtrasHost,
     /// The text viewer FE 3's `tos` object (extras_host).
     pub tos: crate::extras_host::TosHost,
+    /// The credits FE 25's `FECredits` object (extras_host).
+    pub credits: crate::extras_host::CreditsHost,
     /// The image slots (`Game.ImageRenderer_*`, one global manager across screens).
     pub image_slots: crate::image_renderer_host::ImageSlots,
     /// The popup host (FE screen 29): the shown popup and the choices made.
@@ -249,6 +251,7 @@ impl<'a> FrontEnd<'a> {
             offline_profile: Default::default(),
             extras: Default::default(),
             tos: Default::default(),
+            credits: Default::default(),
             image_slots: Default::default(),
             popup: Default::default(),
             signup_title: None,
@@ -258,7 +261,7 @@ impl<'a> FrontEnd<'a> {
 
 impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     fn objects(&self) -> Vec<String> {
-        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos"]
+        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos", "FECredits"]
             .map(String::from)
             .to_vec()
     }
@@ -298,6 +301,11 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
         }
         if object == "tos" {
             if let Some(value) = self.tos.call(vm, method, &args)? {
+                return Ok(value);
+            }
+        }
+        if object == "FECredits" {
+            if let Some(value) = self.credits.call(self.language, method, &args) {
                 return Ok(value);
             }
         }

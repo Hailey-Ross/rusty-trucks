@@ -826,7 +826,7 @@ mod tests {
     fn speed_watch_logs_catches_not_pushes_or_slowdowns() {
         let frame = 1000.0 / 60.0;
         let mut watch = SpeedWatch::default();
-        let mut feed = |watch: &mut SpeedWatch, speeds: &[f32], start: f64, rolling: bool, push_at: Option<usize>| {
+        let feed = |watch: &mut SpeedWatch, speeds: &[f32], start: f64, rolling: bool, push_at: Option<usize>| {
             speeds.iter().enumerate().filter_map(|(i, &v)| {
                 watch.observe(start + i as f64 * frame, v, rolling, push_at == Some(i))
             }).collect::<Vec<_>>()

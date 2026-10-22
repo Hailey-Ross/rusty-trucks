@@ -8,7 +8,7 @@
 //!   Credits FE 25, row 5 shows the licenses in the text viewer FE 3, row 6 opens the Skate Reel sub-list.
 //!
 //! What the console-only rows do on PC is ours (user 2026-10-19): rows 1-3 unlock their content directly, Licenses shows
-//! this project's licenses, Credits stays greyed until FE 25 is ported. Rows are data (`ExtrasRules`), retail's the
+//! this project's licenses, Credits (retail FE 25, b489) is WIP and greyed. Rows are data (`ExtrasRules`), retail's the
 //! defaults; a mod adds or hides rows.
 
 /// One entry of the profile unlock list (retail `sub_82503C30(list, kind, fnv1(name), ..)`, research b321; the hash
@@ -89,7 +89,9 @@ impl Default for ExtrasRules {
                     grant("BLACKBOX_SKATE_PARK", &[("location", "dist_blackboxpark"), ("challenge", "Hash_E464A929BC793D07"), ("challenge", "Hash_EB6B03C256ACDD4B")]),
                     false,
                 ),
-                // FE 25 (template 30 `extras/credits.swf`) is not ported: greyed (user 2026-10-19).
+                // FE 25 (template 30 `extras/credits.swf`, b489): the retail credits plus mods' sections. WIP 2026-10-22,
+                // greyed: the screen opens and its 979 lines load, but the movie's text fields do not draw yet and the
+                // Back label's inline button tag is not laid out (b491).
                 row("extras.credits", "ID_EXTRA_CREDITS", ExtrasAction::PushScreen("credits".into()), true),
                 // Ours: this project's licenses in the text viewer FE 3 (b322). WIP, greyed for now (user 2026-10-19:
                 // "skip it and grey it out for now"; "mark it as WIP and we can come back to it"). Left to check: the

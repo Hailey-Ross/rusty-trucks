@@ -116,6 +116,12 @@ const KEYS_RIGHT: [u32; 3] = [15, 19, 27];
 /// The text viewer template (record 28) and its path; FE screen 3's init opens it (0x8263A190, b322).
 const TEXT_VIEWER: &str = "ToSScreen";
 const TEXT_VIEWER_PATH: &str = "nucleus/nucleus_tos.swf";
+/// The credits template (record 30) and its path; FE screen 25's init opens it (0x82608C00, b489). The lines file
+/// sits in the menu set (setup copies `data\credits\credits.txt` out of miscload.big).
+const CREDITS: &str = "Credits";
+const CREDITS_PATH: &str = "extras/credits.swf";
+const CREDITS_MOVIE: &str = "source/screens/extras/credits";
+const CREDITS_FILE: &str = "credits.txt";
 /// The cheat dialog's popup callback (its choice changes nothing).
 const CHEAT_POPUP: &str = "cheat_code.dialog";
 /// The Video Calibration template (record 91) and its path; FE screen 51's init opens it (0x8260E868).
@@ -197,6 +203,9 @@ struct MenuStage {
     /// The text viewer FE 3's AS id and its `tos` host.
     viewer_id: i32,
     tos: crate::extras_host::TosHost,
+    /// The credits FE 25's AS id and its `FECredits` host.
+    credits_id: i32,
+    credits: crate::extras_host::CreditsHost,
     /// The image slots the movies draw named images through (image_renderer_host).
     image_slots: crate::image_renderer_host::ImageSlots,
     /// The retail guide (mod layers apply over it) and the mod generation it was built for.
@@ -249,6 +258,7 @@ impl Plugin for RetailMenuStagePlugin {
         app.init_resource::<RetailPause>()
             .init_resource::<crate::trick_guide_host::TrickGuideMods>()
             .init_resource::<crate::offline_profile_host::ProfileMods>()
+            .init_resource::<crate::extras_host::CreditsMods>()
             .init_resource::<crate::popup_host::PopupMods>()
             .add_message::<crate::extras_host::CheatChanged>()
             .add_message::<crate::extras_host::UnlockGranted>()
@@ -620,6 +630,8 @@ fn setup(
                 pending_entry: None,
                 viewer_id: as_id(TEXT_VIEWER),
                 tos: Default::default(),
+                credits_id: as_id(CREDITS),
+                credits: Default::default(),
                 image_slots: Default::default(),
                 video_cal_id: as_id(VIDEO_CALIBRATION),
                 video_cal: Default::default(),
@@ -673,7 +685,12 @@ fn update(
     mut warned: Local<bool>,
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     // Mods' Trick Guide and Skate Profile layers (one parameter: the system is at Bevy's 16).
-    (guide_mods, profile_mods): (Res<crate::trick_guide_host::TrickGuideMods>, Res<crate::offline_profile_host::ProfileMods>),
+    (guide_mods, profile_mods, credits_mods, config): (
+        Res<crate::trick_guide_host::TrickGuideMods>,
+        Res<crate::offline_profile_host::ProfileMods>,
+        Res<crate::extras_host::CreditsMods>,
+        Res<crate::config::Config>,
+    ),
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>),
     // Popups; the instant replay feed and whether the retail replay screen shows (one parameter: Bevy's 16).
@@ -706,6 +723,7 @@ fn update(
     let extras = backdrop.index(crate::fe_backdrop::EXTRAS_SCREEN);
     let entry = backdrop.index(crate::fe_backdrop::TEXT_ENTRY_SCREEN);
     let viewer = backdrop.index(crate::fe_backdrop::TEXT_VIEWER_SCREEN);
+    let credits = backdrop.index(crate::fe_backdrop::CREDITS_SCREEN);
     available.set_if_neq(RetailPause(ready && pause.is_some()));
     if ready && pause.is_none() && !std::mem::replace(&mut *warned, true) {
         warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup); Start opens the PC overlay until then");
@@ -763,6 +781,7 @@ fn update(
     fe.popup = std::mem::take(&mut ms.popup);
     fe.extras = std::mem::take(&mut ms.extras);
     fe.tos = std::mem::take(&mut ms.tos);
+    fe.credits = std::mem::take(&mut ms.credits);
     fe.extras.open = extras.is_some() && ms.stack.top(Layer::Main) == extras;
     // The on-screen keyboard (FE 46 on top): typed text and Escape (ours), once per frame; the pad keys go through the
     // key loop below.
@@ -887,7 +906,7 @@ fn update(
                 continue;
             }
             let target = ms.stack.input_target();
-            let Some(screen) = target.filter(|t| [pause, options, trick, cal, map, profile, extras, viewer].contains(&Some(*t))) else { continue };
+            let Some(screen) = target.filter(|t| [pause, options, trick, cal, map, profile, extras, viewer, credits].contains(&Some(*t))) else { continue };
             // sub_825EC0E8: the screen's C++ handler first, then the movie's UpdateInput when the handler did not
             // consume the key and the screen's record says so (+12).
             let mut consumed = false;
@@ -905,6 +924,8 @@ fn update(
                 ms.extras_id
             } else if Some(screen) == viewer {
                 ms.viewer_id
+            } else if Some(screen) == credits {
+                ms.credits_id
             } else {
                 trick_id
             };
@@ -917,7 +938,13 @@ fn update(
                 // the close fades out (S+52).
                 continue;
             }
-            if Some(screen) == viewer {
+            if Some(screen) == credits {
+                // Screen 25 input 0x82608DC8 (b489): Back pops the screen, no sound, at any time; the movie takes no
+                // keys (its record's input flag is off).
+                if key == APT_PREVIOUS {
+                    ms.stack.request(Layer::Main, Request::Close { screen });
+                }
+            } else if Some(screen) == viewer {
                 // Screen 3 input 0x8263A5A8 (b322), view mode: Back plays core_b_button and closes; the movie scrolls
                 // with the left stick (not consumed).
                 if key == APT_PREVIOUS {
@@ -1128,6 +1155,11 @@ fn update(
                 }
                 Effect::Open(i) if Some(i) == extras => {
                     info!("RETAIL_MENUS open Extras (FE {i})");
+                    // A set from before the credits movie (version 12) keeps the Credits row greyed.
+                    let credits_ready = credits.is_some() && movies.has_movie(CREDITS_MOVIE);
+                    if let Some(row) = fe.extras.rules.rows.iter_mut().find(|r| r.id == "extras.credits").filter(|_| !credits_ready) {
+                        row.greyed = true;
+                    }
                     fe.extras.screen = skate_core::extras::Extras::open();
                     fe.extras.states.clear();
                     fe.extras.open = true;
@@ -1146,6 +1178,23 @@ fn update(
                     info!("RETAIL_MENUS close text viewer (FE {i})");
                     close(&mut ms.stage, ms.viewer_id, &mut fe)?;
                     fe.tos.viewer = None;
+                }
+                // FE 25 (b489): the screen reads the lines file, then posts Rolling once it is parsed (below).
+                Effect::Open(i) if Some(i) == credits => {
+                    let path = crate::retail_menu_movies::set_root(&config).join(CREDITS_FILE);
+                    let retail = std::fs::read(&path).map(|b| skate_core::credits::parse(&skate_core::credits::decode(&b))).unwrap_or_else(|e| {
+                        warn!("RETAIL_MENUS credits: {}: {e}", path.display());
+                        Vec::new()
+                    });
+                    let mods = credits_mods.sections();
+                    info!("RETAIL_MENUS open credits (FE {i}): {} retail lines, {} mod sections", retail.len(), mods.len());
+                    fe.credits = crate::extras_host::CreditsHost { credits: Some(skate_core::credits::Credits::new(retail, &mods)), exit: false };
+                    open_screen(&mut ms.stage, CREDITS_PATH, CREDITS, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == credits => {
+                    info!("RETAIL_MENUS close credits (FE {i})");
+                    close(&mut ms.stage, ms.credits_id, &mut fe)?;
+                    fe.credits = Default::default();
                 }
                 // FE 46 (b305): no movie; ours shows the on-screen keyboard while it is on top.
                 Effect::Open(i) if Some(i) == entry => {
@@ -1443,6 +1492,20 @@ fn update(
                 ms.stack.ready(v);
             }
         }
+        // Credits (82608CE8 per update): once the movie is loaded and the lines are parsed, SetState(1) Rolling, once;
+        // ExitCredits (the last line scrolled off) pops the screen on the next update.
+        if let Some(c) = credits.filter(|c| ms.stack.top(Layer::Main) == Some(*c)) {
+            if take_call(&mut fe, &format!("Game.OnScreenLoaded({})", ms.credits_id)) && fe.credits.credits.is_some() {
+                set_state(&mut ms.stage, ms.credits_id, skate_core::credits::STATE_ROLLING, &mut fe)?;
+            }
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({})", ms.credits_id)) {
+                ms.stack.ready(c);
+            }
+            if std::mem::take(&mut fe.credits.exit) {
+                info!("RETAIL_MENUS credits ended");
+                ms.stack.request(Layer::Main, Request::Close { screen: c });
+            }
+        }
         for state in std::mem::take(&mut fe.extras.states) {
             set_state(&mut ms.stage, ms.extras_id, state, &mut fe)?;
         }
@@ -1486,6 +1549,10 @@ fn update(
                         fe.tos.viewer = Some(skate_core::text_viewer::TextViewer::open(&title, &text, &Default::default()));
                         ms.stack.request(Layer::Main, Request::push(v));
                     }
+                }
+                // Row 4: the credits FE 25 (b489).
+                ExtrasAction::PushScreen(name) if name == "credits" && credits.is_some() => {
+                    ms.stack.request(Layer::Main, Request::push(credits.unwrap()));
                 }
                 // Greyed by default until their screens are ported (doc 31).
                 other => warn!("RETAIL_MENUS extras: {other:?} has no handler yet"),
@@ -1590,6 +1657,7 @@ fn update(
     ms.offline_profile = std::mem::take(&mut fe.offline_profile);
     ms.extras = std::mem::take(&mut fe.extras);
     ms.tos = std::mem::take(&mut fe.tos);
+    ms.credits = std::mem::take(&mut fe.credits);
     ms.image_slots = std::mem::take(&mut fe.image_slots);
     ms.popup = std::mem::take(&mut fe.popup);
     // A Challenge Map leaf the player picked goes through the registry: the engine's teleport handler queues the
@@ -1960,6 +2028,7 @@ fn render(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<HudMaterial>>,
     controllers: Option<Res<crate::input::ControllerInput>>,
+    (text_entry, mut keyboard_fonts): (Option<Res<crate::extras_host::TextEntryView>>, Local<Option<crate::text_entry_ui::KeyboardFonts>>),
 ) {
     let (Some(mut ms), Some(movies)) = (stage, movies) else { return };
     let ms = &mut *ms;
@@ -1975,6 +2044,14 @@ fn render(
             }
         }
     };
+    // The on-screen keyboard over FE 46, on the menu layer in the menus' fonts (text_entry_ui).
+    if let Some(view) = text_entry.as_deref().filter(|v| v.keyboard.is_some()) {
+        let fonts = keyboard_fonts.get_or_insert_with(|| {
+            let mut assets = movies.shared_text_assets().unwrap_or_default();
+            crate::text_entry_ui::KeyboardFonts::from(&mut assets)
+        });
+        draws.extend(crate::text_entry_ui::draws(view, fonts, &ms.language));
+    }
     // Button prompts (CustomButton components, `prompt/<retail button>`): the first connected pad's printed labels
     // (SDL), Xbox naming without a pad; each label's glyph is generated once (prompt_glyphs).
     let pad = controllers.as_ref().and_then(|c| c.kinds.iter().flatten().next().cloned());
