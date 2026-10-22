@@ -150,6 +150,32 @@ pub(crate) struct Pieces {
     /// The distance (m) within which the fused pieces' vertices merge (b478: the fuse builder's 0.01 default at
     /// `82872810`; which of its defaults is the vertex merge is inferred). Data: the layout sidecar's `fuse_weld`.
     pub weld: f32,
+    /// Per range: the piece stays out of the fused set (retail piece flag 2 from the recipe's `IgnoreFuser` cap,
+    /// 828662B8 record +0x10; research b482). Data: the sidecar instance's `caps.IgnoreFuser`.
+    pub unfused: Vec<bool>,
+}
+
+/// A recipe cap counts as set as retail reads its byte (neither 0 nor 0xFF): `True` (or a number other than 0 / 255);
+/// `False` and an empty value do not.
+fn cap_set(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(s) => s.eq_ignore_ascii_case("true") || s.parse::<u8>().is_ok_and(|b| b != 0 && b != 0xFF),
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::Number(n) => n.as_u64().is_some_and(|b| b != 0 && b != 0xFF),
+        _ => false,
+    }
+}
+
+/// The MOBJ ids (`instance_id` low 32 bits) of the sidecar's instances whose `IgnoreFuser` cap is set.
+fn ignore_fuser_ids(sidecar: &Path) -> std::collections::HashSet<u32> {
+    let Some(value) = std::fs::read(sidecar).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
+        return Default::default();
+    };
+    value["instances"].as_array().into_iter().flatten()
+        .filter(|instance| cap_set(&instance["caps"]["IgnoreFuser"]))
+        .filter_map(|instance| instance["instance_id"].as_str().and_then(|s| u64::from_str_radix(s, 16).ok()))
+        .map(|id| (id & 0xFFFF_FFFF) as u32)
+        .collect()
 }
 
 /// Retail's fuse builder default (b478), used when a layout sidecar names no `fuse_weld`.
@@ -195,7 +221,9 @@ pub(crate) fn load_pieces(assets: &Path, map: &SkateMap) -> Option<Pieces> {
         objects.len(), shapes.len(), instances.len(), collision.len(), rails.len()
     );
     let weld = fuse_weld(&sidecar);
-    Some(Pieces { collision, ranges: instances.into_iter().map(|i| i.range).collect(), materials: package.materials, rails, weld })
+    let ignore = ignore_fuser_ids(&sidecar);
+    let unfused = instances.iter().map(|i| ignore.contains(&i.id)).collect();
+    Some(Pieces { collision, ranges: instances.into_iter().map(|i| i.range).collect(), materials: package.materials, rails, weld, unfused })
 }
 
 /// A piece's template rails through its row-vector affine (v @ basis + translation): chord endpoints and the

@@ -170,11 +170,13 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
 - The tint path on the CPU and the `environmentpark` families (b433 change list).
 - Movable pieces (b435), the Monster Park challenge locator, `cap.AllowCollision` (the DLC recipe precedence is moot, see
   "Recipe precedence across packs" above).
-- Do-not-fuse pieces: retail leaves static entries with flag bit 2 out of the fused mesh (`827765C0`, checked); the
-  recipe column that sets it is inferred as `IgnoreFuser` (research b481, record +0x10), not proven. Our fuse takes
-  every piece.
+- Do-not-fuse pieces (see "IgnoreFuser pieces leave the fused set"): a second source of flag 2 (a template map at
+  mgr+0x3B2C, b482) is open; whether retail props touch the unfused pieces only, or the fused ones twice (research
+  b485).
 - The two dead stops of the laptop session 2026-10-21 21:38 where the user saw nothing (see "Seam audit of every
-  layout"): whether the stair / bench / ramp pieces there draw in game.
+  layout"): verify captures (2026-10-22) show both pieces drawn (Back Lot `ab_stairs_sm_Downtown` bottom riser,
+  DownTown `aa_padStreet_md_Downtown` raised edge). The trace shows head-on hits at 8.2 and 5.7 m/s with the speed
+  gone in one frame and no bail; what the user saw is being asked.
 - The seam audit's leftovers: 8 floor gaps in Back Lot, 4 in Zen Plaza; edges with more than two triangles and flat
   floor ridges not yet classified.
 
@@ -231,6 +233,33 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
   checked; research b480): those keep their own per-piece collision. Which recipe column sets the bit (b480: record
   +0x10, likely `IgnoreFuser`, not proven) is open; our fuse takes every piece. The editor flow (b480,
   `.local/research/b480-park-editor.md`) is partial.
+
+## IgnoreFuser pieces leave the fused set and the skater's world (2026-10-22, USER-ASKS 233)
+
+- **Problem:** our fuse took every placed piece. Retail leaves some out (open item of the back-to-back section).
+- **Retail [code / data, research b482, b483, b484]:**
+  - The fused build `827765C0` skips static entries with flag bit 2 (`entry+0xB8 & 2`).
+  - Spawn `828662B8` sets that bit from recipe record +0x10, read as a byte that is neither 0 nor 0xFF (checked by
+    main in the recomp).
+  - The column is `IgnoreFuser`: the disc recipe rows (parkassets.big static_db, 0x20-byte rows) match the XML
+    `cap.*` values for all 542 static and 119 dynamic rows (b482).
+  - It is set on hedges, bushes and shrubs only (`hc_Hedge`, `hd_Shrub`, `he_Bush`).
+  - Every spawned piece also gets a TerrainPool entry with its template's own collision (`82776238` -> `8276CB18`, b483).
+  - The skater's ground query reads only island+0x5590. The island ctor `827632A8` stores it from r7, and `8275DCC8`
+    passes the container's GroundPool (+0x2C, the fused object) there for both islands (checked by main).
+  - So IgnoreFuser pieces never touch the skater. Props (DMOs) do: a DmoGround task reads the TerrainPool (b484).
+- **Change:**
+  - `park_layout.rs` `Pieces::unfused`: per piece, from the sidecar instance's `caps.IgnoreFuser` (setup already writes
+    `caps`).
+  - `skate_world.rs` `append_pieces` / `split_unfused`: only the other pieces are fused into the skater's world.
+  - Log: `SKATE_PARK_FUSE ... unfused_pieces=N`.
+  - Moddable: a mod's layout sidecar sets or clears `IgnoreFuser` per instance.
+- **Tests:**
+  - `ignore_fuser_pieces_stay_out_of_the_fused_set`: the split, an older sidecar with no flags, determinism, only the
+    fused set reaches the world.
+  - Asset-gated `ignore_fuser_counts_per_layout`: 16 / 8 / 9 / 13 in backlot_full / Downtown_Fullpark / ZenPlaza_Full
+    / Nightpark, 0 in MegaPark and Starter.
+- **Not play-tested.** Skating through a hedge or bush in these layouts is now retail behaviour.
 
 ## Seam audit of every layout (2026-10-22, USER-ASKS 231 / 232)
 
