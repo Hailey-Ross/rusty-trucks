@@ -11,6 +11,29 @@ fn a_pending_request_cannot_be_replaced_by_another_menu_action() {
 }
 
 #[test]
+fn a_failed_change_reloads_the_live_map_once() {
+    let live = || Some(Entry { label: "DownTown".into(), path: Some("maps/DownTown.skate".into()) });
+    let mut restoring = None;
+    let reload = after_failure(&mut restoring, live(), "University", "bad block".into()).unwrap();
+    assert_eq!(reload.label, "DownTown");
+    assert_eq!(reload.path.as_deref(), Some(std::path::Path::new("maps/DownTown.skate")));
+    assert_eq!(restoring.as_deref(), Some("Could not load University: bad block"));
+    // Reloading the live map failed as well: nothing is left to go back to.
+    let message = after_failure(&mut restoring, live(), "DownTown", "also bad".into()).unwrap_err();
+    assert_eq!(message, "Could not load University: bad block\nReloading DownTown failed too: also bad");
+    assert!(restoring.is_none());
+}
+
+#[test]
+fn a_failed_start_map_with_nothing_to_go_back_to_leaves_the_error() {
+    // The Switch's empty start scene: no live map, and no test world to reload instead.
+    let mut restoring = None;
+    let message = after_failure(&mut restoring, None, "DownTown", "bad block".into()).unwrap_err();
+    assert_eq!(message, "Could not load DownTown: bad block");
+    assert!(restoring.is_none());
+}
+
+#[test]
 #[ignore = "requires private installed assets; CPU lifecycle only, no gameplay"]
 fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     let root = PathBuf::from(std::env::var("SKATE_TRANSITION_TEST_ASSETS").unwrap()).canonicalize().unwrap();
@@ -27,7 +50,7 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     };
     let mut world = World::new();
     world.insert_resource(Config { asset_root: root.clone(), verification_capture: None,
-        map: None, map_path: None, difficulty, check_assets: false, validate_maps: false, start_paused: false, teleport: None, mute: false, multiplayer: Default::default(), map_fingerprint: crate::config::map_fingerprint(None).unwrap() });
+        map: None, map_path: None, boot_map: None, difficulty, check_assets: false, validate_maps: false, start_paused: false, teleport: None, mute: false, multiplayer: Default::default(), map_fingerprint: crate::config::map_fingerprint(None).unwrap() });
     world.insert_resource(CurrentMap::from_package(None, None));
     world.insert_resource(graphs);
     world.insert_resource(physics);
@@ -47,6 +70,7 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     initial.publish(&mut world);
     let procedural_meshes = world.resource::<Assets<Mesh>>().len();
     let procedural_entities = world.query_filtered::<Entity, With<crate::map_render::MapEntity>>().iter(&world).count();
+    let course_triangles = world.resource::<GamePhysics>().world_triangles().len();
 
     for (iteration, file) in [Some("BlackBoxPark.skate"), None, Some("University.skate"), None,
         Some("BlackBoxPark.skate"), None].into_iter().enumerate() {
@@ -63,6 +87,10 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
         // world: it stages against reserved handles and only inserts on publish.
         assert!(old.iter().all(|&id| world.get_entity(id).is_err()), "the transition should have retired the live world's visuals before loading");
         assert_eq!(world.resource::<Assets<Mesh>>().len(), 0, "preparation inserted into the live world's assets");
+        // The live map's collision goes too, for the test course's, while its
+        // simulation state stays as it was.
+        assert_eq!(world.resource::<GamePhysics>().world_triangles().len(), course_triangles,
+            "the transition should have released the live map's collision before loading");
         assert_eq!(world.resource::<GamePhysics>().contact_count, 123);
         let triangles = prepared.physics.world_triangles().len();
         let spawn = prepared.metadata.spawn;
@@ -102,11 +130,11 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     let Phase::Loading { job, .. } = start(&mut world, missing).unwrap() else { panic!("expected worker"); };
     assert!(job.join().unwrap().is_err());
     assert_eq!(world.resource::<CurrentMap>().generation, 6);
-    // The old world's visuals were already released to make room for the map that
-    // failed. What the contract still guarantees is that the simulation state and
-    // the character survive, so the game stays playable and the menu can offer
-    // another map; an allocation failure in the loader would have aborted the run.
+    // The old world's visuals and collision were already released to make room
+    // for the map that failed; `poll` then reloads the map that was live. Driven
+    // directly like this, the character and the generation are what's left.
     assert_eq!(world.resource::<Assets<Mesh>>().len(), 0);
+    assert_eq!(world.resource::<GamePhysics>().world_triangles().len(), course_triangles);
     assert!(world.get_entity(character).is_ok());
 }
 
@@ -125,7 +153,7 @@ fn measure_university_to_downtown_peak() {
     let mut controls = PlayerControls::load(&root).unwrap();
     let mut world = World::new();
     world.insert_resource(Config { asset_root: root.clone(), verification_capture: None,
-        map: None, map_path: None, difficulty, check_assets: false, validate_maps: false, start_paused: false, teleport: None, mute: false, multiplayer: Default::default(), map_fingerprint: crate::config::map_fingerprint(None).unwrap() });
+        map: None, map_path: None, boot_map: None, difficulty, check_assets: false, validate_maps: false, start_paused: false, teleport: None, mute: false, multiplayer: Default::default(), map_fingerprint: crate::config::map_fingerprint(None).unwrap() });
     world.insert_resource(CurrentMap::from_package(None, None));
     world.insert_resource(graphs);
     world.insert_resource(physics);

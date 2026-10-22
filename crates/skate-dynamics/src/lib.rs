@@ -408,8 +408,11 @@ impl DynamicsWorld {
         &mut self,
         triangles: impl Iterator<Item = [[f32; 3]; 3]>,
     ) -> Result<(), String> {
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
+        // Reserved up front: pushing a city's 4.6 million vertices doubles the list
+        // to 96 MiB while the 48 MiB copy is still alive.
+        let count = triangles.size_hint().0;
+        let mut vertices = Vec::with_capacity(count * 3);
+        let mut indices = Vec::with_capacity(count);
         for triangle in triangles {
             let n = vertices.len() as u32;
             vertices.extend(triangle.map(|p| Vector::new(p[0], p[1], p[2])));
@@ -444,6 +447,12 @@ impl DynamicsWorld {
         }
         self.ground = true;
         Ok(())
+    }
+
+    /// Removes the map ground `set_ground` added, and its trimesh with it.
+    pub fn clear_ground(&mut self) {
+        self.remove(GROUND_BODY_ID);
+        self.ground = false;
     }
 
     pub fn spawn(&mut self, desc: BodyDesc) -> Result<u64, String> {
@@ -1911,6 +1920,20 @@ mod tests {
             "rest height should be ~half-extent, y={}",
             snap.position[1]
         );
+    }
+
+    #[test]
+    fn the_ground_can_be_cleared_and_set_again() {
+        let mut world = DynamicsWorld::default();
+        flat_ground(&mut world);
+        assert!(world.has_ground());
+        assert!(world.raycast_ground([1., 5., 1.], [0., -1., 0.], 10.).is_some());
+        world.clear_ground();
+        assert!(!world.has_ground());
+        assert!(world.raycast_ground([1., 5., 1.], [0., -1., 0.], 10.).is_none());
+        world.step(1. / 60.);
+        flat_ground(&mut world);
+        assert!(world.raycast_ground([1., 5., 1.], [0., -1., 0.], 10.).is_some());
     }
 
     #[test]

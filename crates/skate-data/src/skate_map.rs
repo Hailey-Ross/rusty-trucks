@@ -332,16 +332,26 @@ impl StoredBlock<'_> {
         Ok(())
     }
 }
-/// An empty buffer with room for exactly `len` bytes. Growing one from a
-/// smaller start doubles past the final size while the old buffer is still
-/// alive: a 140.3 MiB vertex block asked for 256 MiB and failed on a 3 GiB heap
-/// (findings 58 §3.6).
-fn exact_buffer(len: usize) -> Result<Vec<u8>, String> {
+/// An empty vector with room for exactly `len` items. Growing one from a
+/// smaller start doubles past the final size while the old block is still
+/// alive: Downtown's 140.3 MiB vertex block, and then its 160.3 MiB of parsed
+/// vertices, each asked for 256 MiB that way on a 3 GiB heap (findings 58 §3.6).
+fn exact_buffer<T>(len: usize) -> Result<Vec<T>, String> {
     let mut buffer = Vec::new();
     buffer
         .try_reserve_exact(len)
-        .map_err(|_| format!("SKATE decoded block of {len} bytes cannot be reserved"))?;
+        .map_err(|_| format!("SKATE map data of {len} items cannot be reserved"))?;
     Ok(buffer)
+}
+/// Reads `count` items into a vector reserved once at that length; collecting
+/// into a `Result` can't see the length and doubles instead. Callers check the
+/// count against the bytes it needs first.
+fn read_counted<T>(count: u32, mut read: impl FnMut() -> Result<T, String>) -> Result<Vec<T>, String> {
+    let mut items = exact_buffer(count as usize)?;
+    for _ in 0..count {
+        items.push(read()?);
+    }
+    Ok(items)
 }
 /// Reads at most `expected` bytes into `out`, then reports whether the stream
 /// ends there, so a block that decodes longer never grows `out`.
@@ -361,55 +371,51 @@ fn parse_geometry(
     let [(nv, vertices), (ni, indices), (nc, collision)] = sections;
     let mut r = Reader { bytes: vertices, at: 0 };
     r.check_count(nv, if version >= 12 { 56 } else { 44 })?;
-    let vertices: Vec<Vertex> = (0..nv)
-        .map(|_| {
-            Ok(Vertex {
-                position: r.floats()?,
-                normal: r.floats()?,
-                uv: r.floats()?,
-                lightmap_uv: r.floats()?,
-                material: r.u()?,
-                decal_uv: if version >= 12 {
-                    Some(r.floats()?)
-                } else {
-                    None
-                },
-                tangent_frame: if version >= 12 {
-                    Some(r.take(4)?.try_into().unwrap())
-                } else {
-                    None
-                },
-            })
-        })
-        .collect::<Result<_, String>>()?;
-    let mut r = Reader { bytes: indices, at: 0 };
-    r.check_count(ni, 4)?;
-    let indices: Vec<u32> = (0..ni).map(|_| r.u()).collect::<Result<_, _>>()?;
-    let mut r = Reader { bytes: collision, at: 0 };
-    r.check_count(nc, if version >= 11 { 48 } else { 44 })?;
-    let collision: Vec<Collision> = (0..nc)
-        .map(|_| {
-            let points = [r.floats()?, r.floats()?, r.floats()?];
-            let surface = r.u()?;
-            let material = r.u()?;
-            let native_edges = if version >= 11 {
-                let bytes = r.take(4)?;
-                if bytes[3] != 0 {
-                    Some(bytes[..3].try_into().unwrap())
-                } else {
-                    None
-                }
+    let vertices = read_counted(nv, || {
+        Ok(Vertex {
+            position: r.floats()?,
+            normal: r.floats()?,
+            uv: r.floats()?,
+            lightmap_uv: r.floats()?,
+            material: r.u()?,
+            decal_uv: if version >= 12 {
+                Some(r.floats()?)
             } else {
                 None
-            };
-            Ok(Collision {
-                points,
-                surface,
-                material,
-                native_edges,
-            })
+            },
+            tangent_frame: if version >= 12 {
+                Some(r.take(4)?.try_into().unwrap())
+            } else {
+                None
+            },
         })
-        .collect::<Result<_, String>>()?;
+    })?;
+    let mut r = Reader { bytes: indices, at: 0 };
+    r.check_count(ni, 4)?;
+    let indices = read_counted(ni, || r.u())?;
+    let mut r = Reader { bytes: collision, at: 0 };
+    r.check_count(nc, if version >= 11 { 48 } else { 44 })?;
+    let collision = read_counted(nc, || {
+        let points = [r.floats()?, r.floats()?, r.floats()?];
+        let surface = r.u()?;
+        let material = r.u()?;
+        let native_edges = if version >= 11 {
+            let bytes = r.take(4)?;
+            if bytes[3] != 0 {
+                Some(bytes[..3].try_into().unwrap())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        Ok(Collision {
+            points,
+            surface,
+            material,
+            native_edges,
+        })
+    })?;
     let valid_material = |id: u32| id > 0 && id as usize <= materials;
     if vertices.iter().any(|v| !valid_material(v.material))
         || collision

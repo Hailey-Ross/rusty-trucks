@@ -145,6 +145,7 @@ pub(crate) fn build(
     app.add_plugins((crate::session_marker::SessionMarkerPlugin, crate::customiser::CustomiserPlugin));
     app.add_plugins(crate::custom_models::CustomModelsPlugin);
     app.add_plugins(crate::trigger_volumes::TriggerVolumesPlugin);
+    app.add_plugins(crate::loading_screen::LoadingScreenPlugin);
     app.add_plugins(crate::retail_menus::RetailMenusPlugin);
     app.add_plugins(crate::render_options::RenderOptionsPlugin);
     app.add_plugins(crate::world_diag::WorldDiagPlugin);

@@ -236,6 +236,12 @@ pub(crate) fn reads_player_physics(mods: &Mods) -> bool {
 }
 
 impl Mods {
+    /// Whether anything can use the dynamics world's map ground: a running mod,
+    /// or bodies or joints a mod left behind.
+    fn needs_ground(&self) -> bool {
+        self.manager.packages.values().any(|p| p.running()) || !self.bodies.is_empty() || !self.joints.is_empty()
+    }
+
     fn runtime_busy(&self) -> bool {
         self.manager.packages.values().any(|p| p.running())
             || !self.manager.commands.is_empty()
@@ -375,7 +381,10 @@ fn net_wire_key(owner: &str, key: &str) -> String {
 }
 
 fn ensure_ground(world: &World, mods: &mut Mods) -> Result<(), String> {
-    if mods.ground_ready {
+    // Rapier's copy of the map collision serves only mods. Downtown's keeps 220 MiB and
+    // peaks at 362 MiB while it builds, which ran the Switch out of memory right after a
+    // map change (findings 58 §3.9), so it waits for something that can use it.
+    if mods.ground_ready || !mods.needs_ground() {
         return Ok(());
     }
     mods.world.set_ground(
@@ -387,6 +396,16 @@ fn ensure_ground(world: &World, mods: &mut Mods) -> Result<(), String> {
     )?;
     mods.ground_ready = true;
     Ok(())
+}
+
+/// Drops rapier's copy of the live map's collision when a map change starts, as
+/// `start` does the map's own. Nothing steps it while the change loads, and the
+/// commit's `clear_runtime` rebuilds it from the new map once something needs it.
+pub(crate) fn release_ground(world: &mut World) {
+    if let Some(mut mods) = world.get_resource_mut::<Mods>() {
+        mods.world.clear_ground();
+        mods.ground_ready = false;
+    }
 }
 
 fn maintenance(world: &mut World) {
@@ -1884,5 +1903,43 @@ fn dispatch_profiled(manager: &mut skate_mods::Manager, callback: &str, payload:
     for id in ids {
         let _span = bevy::log::tracing::info_span!("mods.callback", mod_id = %id, callback).entered();
         manager.call(&id, callback, payload.clone());
+    }
+}
+
+#[cfg(test)]
+mod ground_tests {
+    use super::*;
+
+    fn mods() -> Mods {
+        let dir = std::env::temp_dir().join(format!("skate-mods-ground-{}", std::process::id()));
+        Mods::new(Manager::new(dir.clone(), dir))
+    }
+
+    #[test]
+    fn the_dynamics_ground_waits_for_something_that_can_use_it() {
+        let mut mods = mods();
+        assert!(!mods.needs_ground());
+        // This world has no physics: building the ground would panic on the missing resource.
+        ensure_ground(&World::new(), &mut mods).unwrap();
+        assert!(!mods.ground_ready && !mods.world.has_ground());
+        mods.bodies.insert(("crates".into(), "box".into()), 7);
+        assert!(mods.needs_ground());
+        mods.bodies.clear();
+        mods.joints.insert(("crates".into(), "hinge".into()), 3);
+        assert!(mods.needs_ground());
+    }
+
+    #[test]
+    fn a_map_change_releases_the_dynamics_ground() {
+        let mut mods = mods();
+        mods.world.set_ground([[[-1., 0., -1.], [1., 0., -1.], [1., 0., 1.]]].into_iter()).unwrap();
+        mods.ground_ready = true;
+        let mut world = World::new();
+        world.insert_resource(mods);
+        release_ground(&mut world);
+        let mods = world.resource::<Mods>();
+        assert!(!mods.ground_ready && !mods.world.has_ground());
+        // The bare-world map-change tests have no mod runtime: nothing to release.
+        release_ground(&mut World::new());
     }
 }

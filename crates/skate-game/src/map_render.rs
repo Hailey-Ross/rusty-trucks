@@ -239,6 +239,12 @@ impl PreparedScene {
         self.sky.publish(world);
         self.params.publish(world);
         std::mem::take(&mut self.commands.queue).apply(world);
+        crate::loading_screen::await_world(
+            world,
+            self.meshes.owned.clone(),
+            self.images.owned.clone(),
+            self.params.owned.clone(),
+        );
         world.insert_resource(MapAssets {
             groups: vec![
                 Box::new(std::mem::replace(&mut self.meshes, StagedAssets::new(world))),

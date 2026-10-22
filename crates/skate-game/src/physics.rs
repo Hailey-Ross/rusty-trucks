@@ -347,6 +347,18 @@ impl GamePhysics {
         })
     }
 
+    /// Releases the map's collision and grind geometry when a map change starts,
+    /// leaving the test course's small collision world in its place: the board
+    /// isn't stepped while the new map loads, but the camera, audio and mods still
+    /// query the world. For Downtown this is 243 MiB (University 181), which would
+    /// otherwise sit beside the new map's own collision for the whole load.
+    pub(crate) fn release_map_geometry(&mut self) -> Result<(), String> {
+        self.world = ground::Terrain::Course.world(self.settings.floor_material);
+        self.grind_world = std::sync::Arc::new(crate::grind_world::StaticProvider::new(None)?);
+        self.offboard_grab_scene = offboard::grab_scene::Registry::new(&self.world, Vec::new(), Vec::new())?;
+        Ok(())
+    }
+
     #[cfg(test)]
     fn advance_board(&mut self) -> Result<(), String> {
         self.board.clear_forces();

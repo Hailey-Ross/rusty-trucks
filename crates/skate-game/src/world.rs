@@ -18,6 +18,10 @@ impl Plugin for WorldPlugin {
     }
 }
 /// The scene build (Startup). Audio `setup` runs before it, so the start-up banks load meanwhile.
+///
+/// With a `Config::boot_map` the scene starts empty and the map loader reads the map behind the
+/// loading screen, as a map change does. Empty, not the scene for no map: that is the test world,
+/// which hangs the Switch's GPU (map_library.rs).
 pub(crate) fn spawn(world: &mut World) {
     let scene = {
         let server = world.resource::<AssetServer>();
@@ -27,10 +31,18 @@ pub(crate) fn spawn(world: &mut World) {
     world.spawn((PlayerRoot, Transform::default(), Visibility::default()))
         .with_children(|parent| { parent.spawn(SceneRoot(scene)); });
     let mut prepared = crate::map_render::PreparedScene::new(world);
-    let (map, root) = {
+    let (map, root, boot) = {
         let mut config = world.resource_mut::<crate::config::Config>();
-        (config.map.take(), config.asset_root.clone())
+        (config.map.take(), config.asset_root.clone(), config.boot_map.clone())
     };
+    if let Some(path) = boot {
+        prepared.publish(world);
+        let label = path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().replace('_', " "));
+        info!("[Skate] start map {} loads behind the loading screen", path.display());
+        world.resource_mut::<crate::map_transition::MapTransition>()
+            .request(crate::map_library::Entry { label, path: Some(path) });
+        return;
+    }
     crate::log_memory("scene preparation starting");
     prepared.prepare(map.as_ref(), &root);
     crate::log_memory("scene prepared");

@@ -18,6 +18,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The Switch scales the window to a 16:9 screen, handheld or docked, so anything else is
+/// stretched onto it: a 1280x800 setting carried over from a PC squashed every frame by a tenth.
+#[cfg(target_os = "horizon")]
+const RESOLUTIONS: &[(u32, u32)] = &[(1280, 720)];
+#[cfg(not(target_os = "horizon"))]
 const RESOLUTIONS: &[(u32, u32)] = &[
     (1280, 720),
     (1280, 800),
@@ -360,7 +365,9 @@ fn setup(
         });
     });
     commands.insert_resource(SceneTarget(target));
-    let selected_map = maps.iter().position(|m| m.path.as_ref() == config.map_path.as_ref()).unwrap_or(0);
+    // The start map, also while it loads behind the loading screen (`Config::boot_map`).
+    let current = config.map_path.as_ref().or(config.boot_map.as_ref());
+    let selected_map = maps.iter().position(|m| m.path.as_ref() == current).unwrap_or(0);
     if config.start_paused { time.pause(); }
     commands.insert_resource(Menu {
         open: config.start_paused,
@@ -786,6 +793,10 @@ fn choose_presentation(
         return;
     };
     let enabled = options.map_or(crate::render_options::RenderOptions::default().present_direct, |options| options.present_direct);
+    // While bevy_horizon's splash holds the screen there is no window to draw into: the world
+    // renders into the scene image instead, so its pipelines compile behind the splash.
+    #[cfg(target_os = "horizon")]
+    let enabled = enabled && !bevy_horizon::splash::held();
     let direct = enabled && menu.settings.scale == 100 && active && !overlaid;
     let (from, to) = if direct { (presenter.output, gameplay) } else { (gameplay, presenter.output) };
     if direct != presenter.direct {
