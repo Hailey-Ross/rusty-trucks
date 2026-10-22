@@ -1,10 +1,5 @@
-//! Water body sizes for the water shader. Maps split one body of water into
-//! several render materials along a 100 m grid (DownTown's Aletown canal is six
-//! chunks, some a few metres wide), so a material's own extent says little.
-//! Triangles of the water materials that share a vertex position are grouped
-//! into bodies; each material gets the surface area of the largest body it
-//! belongs to. The shader calms small bodies (fountains) — a project choice,
-//! see docs/hails-additions/09-water.md.
+//! Water body sizes for the water shader: materials grouped into connected bodies, each gets its largest body's area.
+//! Details: docs/hails-additions/09-water.md#water-body-sizes
 use skate_data::skate_map::Vertex;
 use std::collections::HashMap;
 

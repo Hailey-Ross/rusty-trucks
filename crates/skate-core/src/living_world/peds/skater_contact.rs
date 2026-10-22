@@ -1,24 +1,5 @@
-//! The skater touching a ped (doc 26, "Skater hits peds"): knock-down or standing stumble, the hit
-//! direction and the reaction animation.
-//!
-//! Retail [code, TU3; evidence only, `.local/research/peds/skater-ped-contact.md`]: the ped contact
-//! callback `sub_82E38FB8`, kind 5 (an `IActor` owner, e.g. the skater):
-//! - inputs: the length of the ped body's linear (f29) and angular (f28) velocity after the contact
-//!   solve, gated by entity `C04236FB548697D0` / `797AA1D5F828819B` (0 for every stock entity);
-//! - kind: knock-down when the ped's animation set allows it (byte 17, field `5B92564B352A9FAA`;
-//!   off for the marquee sets) and either speed is above `541FFA2E9D81C947` / `7C5E39ECE5A5572E`
-//!   (3.0 / 3.0); otherwise a standing stumble, unless the ped's brain says immune (`+3277` bit 0x10).
-//!   The 6.0 thresholds (`081F978F8706D77B` / `5E566360FDC5FDD1`) and the "no reaction" cases are for
-//!   a ped touching a ped (the toucher casts to `IPedestrian`, `sub_826C2C70`);
-//! - direction: the contact normal (y dropped) against the ped's forward: `a = acos(dot)`, negated when
-//!   `cross(forward, normal).y > 0`, in degrees: 1 FromBack (|a| < 35), 2 FromLeft (35..145),
-//!   3 FromRight (-145..-35), 0 FromFront (beyond 145) (constants `0x8206D148`, `0x822F9428..30`;
-//!   names from the table `0x830218B0`: FromFront, FromBack, FromLeft, FromRight, Knockdown, Standing).
-//! - reaction (`MotionGraph_Pedestrian` `motiongraph_collision.xml` / `template/knockdown.xml` [data]):
-//!   see [`reaction_steps`]. The ped lies on the ground until the AI's `Recover` intent; the ground time
-//!   is animation-set field `AD3C483F0C9DAD67` (1.5 s, security 0.5 s; read by `sub_8269A990` in
-//!   `PedestrianColliding`'s update). Where retail starts counting it is not pinned [inferred: on the
-//!   ground].
+//! The skater touching a ped: knock-down or standing stumble, hit direction and reaction (82E38FB8 kind 5).
+//! Retail mechanism and data: docs/hails-additions/26g-living-world-ped-interactions.md#skater-touching-a-ped
 
 /// Retail reaction kind (`ped+2496`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,10 +136,7 @@ impl CollisionRules {
     }
 }
 
-/// A re-hit of a ped getting up (`template/knockdown.xml` `Falling` from `RecoveryCollision`) [data]: LyingDown
-/// plays the fall from the set's ground restart time, Crouched the crouch clip, Standing the whole fall (all blend
-/// 0.4); then the ground cycle and the get-up as for a knock-down. Returns the steps and the first step's start time.
-/// The direction is the stored one for LyingDown and the new hit's otherwise (the caller picks it, b372).
+/// Re-hit of a ped getting up (`knockdown.xml` RecoveryCollision, b372): docs/hails-additions/26g-living-world-ped-interactions.md#ped-re-hit
 pub fn rehit_steps(posture: Posture, direction: ReactionDirection, rules: &CollisionRules) -> (Vec<ReactionStep>, f32) {
     let mut steps = reaction_steps(ReactionKind::Knockdown, direction);
     let side = match direction {
@@ -216,10 +194,7 @@ pub fn skater_reaction(body_speed: [f32; 2], gate: [f32; 2], rules: &CollisionRu
     (!immune).then_some(ReactionKind::Standing)
 }
 
-/// [code] `sub_82E38FB8` kind 5 with a ped as toucher (`sub_826C2C70`): the ped thresholds; under the zombie cheat
-/// (`0x83085494` vfn156) a ped's touch never knocks down and gives no stumble either; `forced` = the toucher's chaser
-/// component answers vfn92 (`82E3D968`, its `brain+3276` bit 0x02), a knock-down whenever the set allows one.
-/// NOT RETAIL YET: what sets that bit (chaser vfn88 `82E3D920`) is not found, so callers pass false.
+/// 82E38FB8 kind 5 with a ped toucher: ped thresholds, zombie cheat, forced knock-down (NOT RETAIL YET source): docs/hails-additions/26g-living-world-ped-interactions.md#ped-touching-ped
 pub fn ped_reaction(body_speed: [f32; 2], gate: [f32; 2], rules: &CollisionRules, immune: bool, zombie: bool, forced: bool) -> Option<ReactionKind> {
     if !(body_speed[0] > gate[0] || body_speed[1] > gate[1]) {
         return None;

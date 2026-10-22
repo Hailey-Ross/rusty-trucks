@@ -1,14 +1,5 @@
-//! Dev view of the retail pause menu on the front-end stage (doc 31, Milestone 6).
-//!
-//! On unless `SKATE3_RETAIL_MENUS=0` (`SKATE3_RETAIL_MENUS_OPEN=1` also opens it after 4 s). Start and F8 open / close the retail pause menu (core_menu through the retail
-//! screen manager, retail CrossBar arguments); while it is open the arrow keys, Enter and Backspace drive the
-//! ported crossbar handler (skate_core::crossbar), whose sounds play as fe records and whose SetState goes to the
-//! movie through `_global.ScreenManager.SetScreenState` like retail's C++. The PC overlay (`graphics_menu`) stays on
-//! Guide / F1 / Escape, and takes Start too while the retail pause menu cannot open (`RetailPause`).
-//!
-//! Input: the pad (all four controllers) and the keyboard (arrows = d-pad, Enter = A, Backspace = B, F8 = Start)
-//! feed retail's Apt actions (`skate_core::fe_input`); `SKATE3_RETAIL_MENUS_KEYS=13,13,2` injects key indices
-//! once the menu is ready (screenshot checks). Repeat: retail's tick rule (fe_input; tick rate assumed).
+//! Dev view of the retail pause menu on the front-end stage (on unless `SKATE3_RETAIL_MENUS=0`).
+//! Controls, input and env switches: docs/hails-additions/31-retail-menus.md#retail-menu-stage-dev-view
 use crate::{
     apt_stage::Stage,
     apt_vm::Value,
@@ -46,11 +37,7 @@ const OPTIONS_PATH: &str = "options/options.swf";
 /// The Trick Guide template (record 29) and its path; FE screen 14's init opens it (0x82618A40).
 const TRICK_GUIDE: &str = "TrickTutorial";
 const TRICK_GUIDE_PATH: &str = "tricks/trickguide.swf";
-/// The instant replay screen and its help (FE 12 / FE 13; b391): FE 12's init (826102A8) opens the Create pack's
-/// editor (TU3 template 71 Replay3, `replay2/replay_editor3.swf`, help 74 ReplayHelp2) when product CCF0007 is owned,
-/// else template 72 Replay2 with help 73 ReplayHelp (b410 / b411). On PC the pack counts as owned (user: look rows
-/// always on): the first screen whose movies were exported wins. Opened by the engine with the replay, not by a menu
-/// push. `channels`: the screen shows the edit channels (look rows). Data: a mod may add its own screen first.
+/// Instant replay screen and help (FE 12 / FE 13, 826102A8; b391, b410 / b411): docs/hails-additions/31-retail-menus.md#replay-screen-choice
 struct ReplayScreen {
     template: &'static str,
     path: &'static str,
@@ -270,11 +257,7 @@ impl Plugin for RetailMenuStagePlugin {
     }
 }
 
-/// One stack batch can open a screen and close it again: op 5 closing a screen below the top unwinds to it and
-/// reopens it first, so the Challenge Map teleport's close of [map, pause] reopens the pause menu and closes it. The
-/// pair is dropped (the screen ends closed either way): its movie would load after the script's CloseScreen, which
-/// ignores a screen still loading, and stay loaded for good (laptop session 2026-10-18: four teleports filled the
-/// VM's object budget). NOT RETAIL (mechanism): same outcome; the other effects keep their order.
+/// Drop an open-then-close pair in one stack batch (NOT RETAIL mechanism, same outcome): docs/hails-additions/31-retail-menus.md#reopen-and-close-pair
 fn drop_reopen_and_close(effects: Vec<Effect>) -> Vec<Effect> {
     let mut keep = vec![true; effects.len()];
     for (i, effect) in effects.iter().enumerate() {
@@ -322,11 +305,7 @@ fn restart_failed_stage(mut commands: Commands, stage: Option<Res<MenuStage>>, m
     commands.run_system_cached(setup);
 }
 
-/// Retail ScreenManagerReady handler (825D9450), in its order, with values as "%d" strings like retail:
-/// templates (only CrossBar so far: NOT RETAIL YET, retail registers all 133 in table order), the 56 Apt keys
-/// (value = key index, the same index UpdateInput passes), FE_SOUND_<NAME> = "<name>" per fe record, then
-/// platform "0", screen size 1280 x 720, edge offset "136", PAL mode "false". The 191 challenge enums
-/// (eChallengeTypes ..) and RefreshSubtitle are not registered yet (no menu reads them so far).
+/// Retail ScreenManagerReady handler (825D9450) registrations, in order (partial: NOT RETAIL YET): docs/hails-additions/31-retail-menus.md#screenmanagerready-registrations
 fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::Path) -> Result<Vec<String>, String> {
     let text = |s: &str| Value::Text(s.into());
     let tables = std::fs::read_to_string(assets.join(crate::retail_menus::TABLES))
@@ -895,6 +874,10 @@ fn update(
                 warn!("TEXT_ENTRY key {key} reached FE 46 but the keyboard is not taking input (top={:?}, keyboard={})", ms.stack.top(Layer::Main), text_entry.keyboard.is_some());
             }
             if key == APT_START {
+                // 825EB998 pushes no pause menu over the replay screen; there Start opens the replay help (b500).
+                if fe.replay_menu.open {
+                    continue;
+                }
                 // Retail Start (sub_825EB998, mode 0) pushes FE 56 with the plain push. NOT RETAIL YET (unverified):
                 // Start while it is open closes it.
                 match pause {
@@ -1650,7 +1633,8 @@ fn update(
         look.set_if_neq(crate::replay::ReplayLookScreen(channels));
     }
     if let Some(ui) = replay_ui.as_mut() {
-        ui.set_if_neq(crate::replay::RetailReplayUi(ms.replay_shown));
+        let loading = !ms.replay_shown && ms.replay_id.is_some() && ms.replay_menu.open;
+        ui.set_if_neq(crate::replay::RetailReplayUi(ms.replay_shown, loading));
     }
     fe.challenge_map.markers = if fe.challenge_map.open { fe.challenge_map.state.markers(fe.registry, fe.context) } else { Vec::new() };
     ms.challenge_map = std::mem::take(&mut fe.challenge_map);
@@ -1854,11 +1838,7 @@ fn open_screen(stage: &mut Stage, path: &str, template: &str, fe: &mut FrontEnd)
     open_screen_on(stage, path, "screen", template, fe)
 }
 
-/// The replay editor's timeline strip (retail 82509B80 -> 82508E08 bands, 82509298 keys; b403), in the strip clip's
-/// space (x = fraction x 817): one band from y 3 to 30 (the band bottom is the clip height, [guess]) coloured by the
-/// clip's camera type, brighter while "selected" (no key under the playhead, not instant mode); one 13 x 51 key quad
-/// per key after the first, `key_glow` under the playhead (within 0.00889), `key_default` else; in the camera edit
-/// modes the key under the playhead is not drawn. Values are retail's (data, `TimelineLook`).
+/// Replay editor timeline strip (82509B80 -> 82508E08 bands, 82509298 keys; b403): docs/hails-additions/31-retail-menus.md#replay-timeline-strip
 fn timeline_draws(placeholder: &crate::apt_scene::Draw, feed: &crate::replay_menu_host::ReplayScreenFeed) -> Vec<crate::apt_scene::Draw> {
     let look = TimelineLook::default();
     let [o, px, py] = [0, 1, 2].map(|i| placeholder.vertices[i].position);
@@ -2074,10 +2054,7 @@ fn render(
     }
     // An unresolved prompt draws nothing (an empty key would draw solid white).
     draws.retain(|d| !d.texture.starts_with("prompt/"));
-    // Map markers (MapRenderComponent): a 32 x 32 screen-pixel quad per marker (`8268D960`, size 32 x scale 1.0) centred
-    // on the map clip's translation plus its map point, highlighted last: retail's drawer (`825E2618`) takes only the
-    // translation of the clip's matrix (`0x830B8600`), not its scale (b282). Nothing while the Challenge Map is closed
-    // (the gate byte, b263).
+    // Map markers: 32 x 32 px quads at the clip translation only (8268D960, 825E2618; b282, b263).
     let mut expanded = Vec::with_capacity(draws.len());
     for draw in draws.drain(..) {
         if draw.texture == crate::apt_scene::REPLAY_TIMELINE {

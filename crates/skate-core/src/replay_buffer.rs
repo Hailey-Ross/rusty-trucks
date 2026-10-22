@@ -1,12 +1,5 @@
-//! Instant replay recording of every drawn actor (NPC skaters, peds, cars, props, mod bodies).
-//!
-//! Retail records presentation data, never a re-simulation: one tracker frame per sim step (60 / s), at most 5400
-//! frames in a byte ring that evicts the oldest (DataTracker `82726170` / `82DBBAF8`, b345 / b346). Skater poses are
-//! LOCAL joint rotations as 4 x i16 quaternions (scale 32767), interpolated per joint between frames with nlerp
-//! (b365 to b367, decoder `8278ABE0`). This buffer keeps one track of keys per actor, keyed by a stable u64 id, and
-//! writes a key only when the quantised pose changed, so a resting prop costs one key for the whole window.
-//!
-//! Engine independent: the caller supplies frame times and poses as plain arrays.
+//! Instant replay recording of every drawn actor: per-actor key tracks, keys only on change.
+//! Retail DataTracker reference (82726170 / 82DBBAF8, b345 / b346, b365 to b367): docs/hails-additions/37-instant-replay.md#replay-buffer
 use std::collections::{BTreeMap, VecDeque};
 
 /// Retail frame cap: 90 s at one frame per 60 Hz sim step (`li 5400`, b345).

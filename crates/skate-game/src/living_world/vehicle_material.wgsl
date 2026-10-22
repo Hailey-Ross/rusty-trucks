@@ -1,7 +1,5 @@
-// Retail car shaders (TU3 shaders_final.big): vehicle_defaultPS (material kind vehicle_chassis)
-// and vehicle_glass_defaultPS (vehicle_glass), read from the shader microcode. Port notes and the
-// register map are in vehicle_material.rs. Like the character shader, the retail exposure / tone
-// tail and the vertex fog are left to the engine's frame passes.
+// Retail car shaders vehicle_defaultPS / vehicle_glass_defaultPS (TU3 shaders_final.big), from the microcode.
+// Port notes: docs/hails-additions/26h-living-world-traffic.md#car-materials
 #import bevy_pbr::{forward_io::VertexOutput, mesh_view_bindings as frame}
 #import bevy_pbr::shadows::fetch_directional_shadow
 #import skate_character_lighting::{character_normal, character_albedo}

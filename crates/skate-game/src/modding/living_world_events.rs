@@ -1,25 +1,5 @@
-//! Living-world events for mods (doc 26, "Modding"): `on_event {name = "living_world", event = ...}`.
-//!
-//! - `spawn` / `despawn`: every NPC skater, ped and vehicle the population creates or removes, with
-//!   the same serialisable fields a future host sends (`WireRecord`: kind, stable id, tick,
-//!   position, heading, seed, the choice; for a despawn the reason);
-//! - `npc_trick`: an NPC skater's trick choice (`id`, `line`, `node`, `recorded`, `chosen` as
-//!   catalog names);
-//! - `npc_line_end`: an NPC skater ran out of line;
-//! - `vehicle_contact`: a car pushed a ped (`VehicleContactEvent`);
-//! - `ped_hit`: a skater knocked a ped down or made it stumble (`id`, `kind` Knockdown / Standing,
-//!   `direction` FromFront / FromBack / FromLeft / FromRight, `closing` m/s);
-//! - `ped_chase`: a ped's chase group changed or it told the player its chase state (`id`, `chasee`,
-//!   `kind` join / join_refused / leave / primary / group_end / state_warn / state_chase / state_tired /
-//!   state_giveup / state_other, `reason` for group_end: 0 default, 1 aggressivecapture, 2
-//!   returntopatrolzone, 3 lostinterest);
-//! - `ped_taze`: a ped's tazer hit `target` (`id`, `target`);
-//! - `ped_takedown`: a ped's takedown attempt ended (`id`, `target`, `success`);
-//! - `ped_speech`: a ped's AI graph changed its speech value (`id`, `value`, `state`: the graph state;
-//!   `variant` / `list_value`: a conversation turn's, else null).
-//!
-//! Engine-facing first: the same messages drive the engine systems; this only forwards them. Extends
-//! engine modding; there is no retail to match.
+//! Living-world events for mods: `on_event {name = "living_world", event = ...}` (engine modding, no retail).
+//! Event list and fields: docs/hails-additions/26a-living-world-overview.md#living-world-mod-events
 
 use super::Mods;
 use crate::living_world::npc_skaters::{trick_name, NpcSkaterEvent};

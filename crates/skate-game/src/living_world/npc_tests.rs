@@ -327,10 +327,7 @@ fn living_world_npc_puppet_clips_exist_in_the_stock_banks() {
 
 #[test]
 fn living_world_npc_skaters_chain_lines_and_fade_only_at_a_dead_end() {
-    // Retail (fix 9): at a line end the skater continues on an unused line starting within 4 m
-    // (`sub_8246C7F8`); the fixture's line i ends on line i + 6's start, so NPCs keep riding and
-    // nothing fades out while a next line exists. They leave by the 120 m cull instead (after
-    // 40 s alongside them the player speeds up to 30 m/s and leaves them behind).
+    // Retail (fix 9): at a line end the skater chains on (8246C7F8); NPCs leave by the 120 m cull instead.
     let mut a = app(5);
     for frame in 0..(60 * 60) {
         if frame == 40 * 60 {
@@ -369,19 +366,7 @@ fn living_world_npc_skaters_chain_lines_and_fade_only_at_a_dead_end() {
     assert!(seen.iter().any(|e| matches!(e, NpcSkaterEvent::Despawned { reason: DespawnReason::External, .. })));
 }
 
-/// Fix 23 (NPC skaters riding backwards, user test 6), headless: every line chains onto the line
-/// starting at its end (line i -> i + 6), and lines 6..11, 18..23, ... were recorded fakie for their
-/// first 50 nodes (skater and board frame facing -x while travelling +x), so every chain joins a
-/// line the other way round from the one it left; the other lines hold a switch-stance stretch
-/// (nodes 150..250: skater frame turned round, board forward). Retail rule (fix 23 corrected,
-/// `FacingRule::RidingEntry`, mod option until the stance mirror lands): the recorded skater frame, turned only while the flip latched at a
-/// riding entry is set (clear here: every spawn node's skater frame agrees with its path frame), held
-/// across switches. With it no NPC is drawn against its travel outside a recorded fakie or
-/// switch-stance stretch once the switch blend is over; the switch-stance stretch is drawn as
-/// recorded, body against travel (the puppet has no stance mirror: NOT RETAIL YET), and
-/// `NPC_SKATER_BACKWARDS` reports the recorded fakie stretches as such. The fix 23 rule (`per_node`,
-/// the default, NOT RETAIL YET) draws the switch stance forward; the fix 16 mod option (`keep_facing`) reproduces the
-/// reported bug: forward-recorded lines ridden backwards.
+/// Fix 23 facing rules on chained fakie / switch lines, headless: docs/hails-additions/26c-living-world-npc-skaters.md#test-fix-23-facing-rules
 #[test]
 fn living_world_npc_skaters_never_ride_backwards_across_line_switches() {
     const FAKIE: [u8; 4] = [128, 38, 128, 218]; // -90 deg about +y: +Z onto -x.
@@ -592,10 +577,7 @@ fn living_world_npc_puppet_clips_play_past_their_first_loop() {
     }
 }
 
-/// Fix 12: a phase change crossfades instead of snapping. The weight is the player's transition
-/// curve over the stock default 0.2 s, starts at 0 on the change frame (the outgoing clip alone,
-/// so the first frame cannot jump), the outgoing clip keeps its own time, a mod's time applies
-/// per phase or as `default`, and the same clip on both sides needs no blend.
+/// Fix 12: a phase change crossfades over the stock 0.2 s with the player's curve; mod times apply.
 #[test]
 fn living_world_npc_puppet_blend_follows_the_transition_curve() {
     let s = RETAIL_BLEND_SECONDS;
@@ -620,10 +602,7 @@ fn living_world_npc_puppet_blend_follows_the_transition_curve() {
     assert!(settings.skater_blend_seconds.is_empty());
 }
 
-/// Data-gated: no pose discontinuity at a clip change. For every pair of puppet clips the
-/// biggest per-frame (60 Hz) joint move across the change stays within what the clips move by
-/// themselves plus one curve step of the gap between the two poses, while the old snap moved by
-/// the whole gap.
+/// Data-gated: no pose discontinuity at a clip change (within clip motion plus one curve step).
 #[test]
 fn living_world_npc_puppet_clip_change_has_no_pose_jump() {
     let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from).filter(|r| r.join("private/stock/data/anim/OnBoard.abin").exists()) else {
@@ -665,10 +644,7 @@ fn living_world_npc_puppet_clip_change_has_no_pose_jump() {
     assert!(worst_snap > 0.05, "the clips differ enough for the test to mean something ({worst_snap})");
 }
 
-/// Fix 14 (jitter): drawn like `present_pose` at a 144 Hz render rate (the cursor one tick back,
-/// interpolated by the world clock's fraction with the recorded branches), the NPC root moves
-/// by the line speed per render frame, also across the line chains (0.5 m off the end here, blended
-/// over `skater_line_chain.blend_seconds`), and the clip time grows with the render clock.
+/// Fix 14 (jitter): drawn at 144 Hz, the root moves by the line speed per frame, also across chains.
 #[test]
 fn living_world_npc_skaters_render_smoothly_between_ticks_and_across_chains() {
     let mut a = app(5);
@@ -828,11 +804,7 @@ fn living_world_npc_trick_clips_exist_and_flip_the_board() {
     assert!(most.to_degrees() > 90.0, "the kickflip turns the board over ({} deg)", most.to_degrees());
 }
 
-/// Data-gated (fix 21): the recorded jump pattern of the shipped lines (rolling, a trick span
-/// opening on the ground, airborne, the span closing in the air, landing; phases shorter than the
-/// 0.2 s blend, as half of all changes on the lines are) is drawn without a pose jump: at every
-/// phase change the drawn pose continues the one showing (the new clip enters at weight 0 over
-/// the running blend), where restarting the blend from one previous clip (fix 12) jumped.
+/// Data-gated (fix 21): the shipped jump pattern draws without a pose jump (nested blends): docs/hails-additions/26c-living-world-npc-skaters.md#test-nested-blends
 #[test]
 fn living_world_npc_trick_jump_has_no_pose_pop() {
     use skate_core::living_world::replay::PhaseEntry;
@@ -1032,10 +1004,7 @@ fn living_world_npc_regular_puppet_is_mirrored() {
     assert_eq!(puppet_pose_in_stance(&evaluator, &base, Some((&tree, 0.0)), true).unwrap(), regular, "weight 0 = no overlay");
 }
 
-/// Trick-clip stance toggles (retail `82593230` -> `82B98980` per actor): the newest layer's clip
-/// events toggle the NPC's bits once (point events, collected over each step's window, across
-/// `+` sequence parts); a layer keeps the bits it began with, newer layers get the toggled ones;
-/// a mod's rename turns a toggle off; the start list stays bounded.
+/// Trick-clip stance toggles (82593230 -> 82B98980): per-layer bits, mod renames, bounded start list.
 #[test]
 fn living_world_npc_stance_track_follows_trick_clip_events() {
     use skate_core::living_world::stance::{NaturalStance, StanceEvents, StanceFlags};
@@ -1087,10 +1056,7 @@ fn living_world_npc_stance_track_follows_trick_clip_events() {
     assert!(t.starts.len() <= 8 && t.starts.last().unwrap().0 == 19);
 }
 
-/// The fakie rule after a shove-it: the NPC's board-flipped state is retail's bit 31 xor bit 30
-/// (`82B985E8`), and the board axis retail's fakie rule reads (`GetEffectiveRoot82BE3650`: the
-/// root's Z, negated iff mirrored) of the puppet root (drawn frame * [`flags_root_turn`]) is the
-/// drawn frame the cursor's fakie rule uses, for the natural bits and after the shove-it alike.
+/// Fakie rule after a shove-it: board-flipped = bit 31 xor bit 30 (82B985E8); same fakie board axis.
 #[test]
 fn living_world_npc_fakie_axis_after_a_shove_it_is_retails() {
     use skate_core::living_world::stance::{NaturalStance, StanceEvents, StanceFlags};
@@ -1113,11 +1079,7 @@ fn living_world_npc_fakie_axis_after_a_shove_it_is_retails() {
     }
 }
 
-/// Data-gated: in the stock banks the trick clips an NPC plays toggle only the board bit
-/// (`ANIMBOARDBACKWARD` point events: shove-it, varial, hardflip, inward heelflip families);
-/// `MIRRORED` / `SWITCH` sit on switch riding and bail dismount clips, which the puppet does not
-/// play. Layers with mixed bits pose differently from uniform ones, uniform bits are the stance
-/// pose unchanged.
+/// Data-gated: stock trick clips toggle only the board bit (ANIMBOARDBACKWARD); mixed bits pose differently.
 #[test]
 fn living_world_npc_trick_clips_toggle_the_board_bit() {
     use skate_core::living_world::stance::StanceFlags;
@@ -1162,11 +1124,7 @@ fn living_world_npc_trick_clips_toggle_the_board_bit() {
     assert_eq!(flags_root_turn(turned), Quat::IDENTITY, "the board bit alone does not turn the body");
 }
 
-/// Trick choice (M5, `skate_core::living_world::npc_tricks`): every line gets an ollie slot with
-/// 80 frames of air. The host re-picks it from the character's profile table (retail mode), sends
-/// a `Trick` event per slot and keeps the record; a client cursor mirroring the branch and trick
-/// records shows the same trick. A mod's `recorded` mode keeps the line's ollie; the reset
-/// restores the profile pick.
+/// Trick choice (M5): host re-picks ollie slots from the profile table, a mirroring client agrees: docs/hails-additions/26c-living-world-npc-skaters.md#test-trick-choice
 #[test]
 fn living_world_npc_skaters_pick_tricks_from_their_profile_and_clients_mirror_them() {
     use skate_core::living_world::npc_tricks::TrickProfile;

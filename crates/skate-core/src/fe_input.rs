@@ -1,13 +1,5 @@
-//! Front-end pad input (doc 31, "Pad input"): retail's `input.cfg` Apt actions (`AptUp = LStickU.repeat ||
-//! DPadU.repeat;` ...) evaluated over the 24 native pad slots (`input::xbox::convert`), giving the key indices the
-//! FE poll (sub_825DFDC8) passes to the screen stack's input handler, in the order of the Apt key table
-//! (0x83027BF0, extracted at setup). Research `.local/research/fe-input.md`.
-//!
-//! The edges are retail's channel update sub_82966F30 (research `.local/research/input-repeat.md` pass 2; constants
-//! main-checked): held when the value is above 0.5; after each change the next 3 ticks keep it frozen and report no
-//! press or release; repeat fires with the press, 24 ticks later, then every 12. Suffixes (parser sub_829674F0):
-//! held, pressed, released, repeat. NOT RETAIL YET: the tick rate is not proven; the console's 30 Hz cadence is
-//! assumed (0.8 s to the first repeat, then every 0.4 s), normalised so any frame rate gives the same timing.
+//! Front-end pad input: retail `input.cfg` Apt actions over the 24 pad slots, edges as 82966F30.
+//! Details and the assumed tick rate: docs/hails-additions/31-retail-menus.md#fe-pad-input
 
 /// The 24 native pad slots in `input.cfg` / `xbox::convert` order (Button0..Button23).
 pub const SLOTS: [&str; 24] = [

@@ -1,13 +1,5 @@
-//! Game Settings > Video > Video Calibration (doc 31 "Video Calibration"): retail FE screen 51 (vtable 0x82303548,
-//! template 91 VideoCalibration, `options/videocal`). A guide for setting up the TV in pages (settings, contrast,
-//! brightness); it changes no game value and saves nothing. The screen keeps one counter, the next page to show
-//! (screen +60):
-//! - init 0x8260E868: counter 0; loaded 0x8260E888 and A run the advance 0x8260E950: below the page count it posts
-//!   SetState(counter) and counts up, else it asks the "finished" popup (title / description / Yes / No);
-//! - B (input 0x8260E890): below 2 the screen closes, else SetState(counter - 2) and counts down;
-//! - popup callback 0x8260EA48: choice 0 closes, any other starts over at page 0.
-//!
-//! Values are data (`CalibrationRules`), retail's the defaults, so a mod can add or drop pages.
+//! Video Calibration: retail FE 51 (template 91, `options/videocal`), a paged TV guide; values are data.
+//! Retail handlers: docs/hails-additions/31-retail-menus.md#video-calibration
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CalibrationRules {

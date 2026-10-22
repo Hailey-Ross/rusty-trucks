@@ -1,18 +1,5 @@
-//! Ambient NPC skaters: the rules of the retail manager `sub_8245BA28` [code].
-//!
-//! - Kill switch `sub_8245C4A8`: zombie cheat, a scripted (kind 3) AI skater, or the manager
-//!   disabled → every ambient NPC despawns and the tick ends.
-//! - Desired count: 3 offline, 0 online (mgr+608); a challenge can override it.
-//! - Phases of `tick mod 60`: 0 cull (`sub_8245D520`), 15 character pool (`sub_8245B400`), 30
-//!   spawn (`sub_8245C548`), 3-12 / 18-27 / 33-57 per-skater checks (`sub_8245A9B8`).
-//! - Cull: 3-D distance to the reference > 120 m, or height difference > 1000 m, or while the
-//!   ambient count exceeds the desired count.
-//! - Spawn: at most one per call; AI cap 5; ambient count below desired; candidate characters =
-//!   ready, unused pool entries; candidate lines = unused valid lines whose start node lies 60 to
-//!   90 m (3-D) from the reference, first 32; score per (character, line) (`sub_8245C018`, lowest
-//!   wins); first free skater slot 1..6.
-//! - Free Play "A.I. Skaters" off (mode 3, `+340`): no spawns, and the per-skater checks
-//!   despawn every ambient NPC.
+//! Ambient NPC skaters: the rules of the retail manager 8245BA28.
+//! Kill switch, phases, cull and spawn: docs/hails-additions/26b-living-world-population.md#ambient-skater-manager
 
 use super::config::{retail, SkaterConfig};
 use super::population::{pick_highest, pick_lowest, KindState, Scorer};
@@ -205,10 +192,7 @@ pub(crate) fn tick(cfg: &SkaterConfig, st: &mut KindState, pool: &mut Vec<String
     }
 }
 
-/// Character pool (`sub_8245B400` with the scorer `sub_8245B068`): load one character per call
-/// into a free entry; when full, release the oldest unused entry that fits no nearby line.
-/// Retail streams the character assets (entry state 4 = loaded); our characters are ready at
-/// once, so an entry is usable the cycle it is chosen.
+/// Character pool (8245B400, scorer 8245B068): one load per call; characters are ready at once here.
 fn pool_update(cfg: &SkaterConfig, st: &mut KindState, pool: &mut Vec<String>, world: &dyn SkaterWorld, online: bool, reference: Vec3) {
     let lines = candidate_lines(cfg, world, st, reference);
     let in_use: Vec<String> = st.live.values().filter_map(|l| line_of(&l.choice).map(|x| x.1.to_string())).collect();

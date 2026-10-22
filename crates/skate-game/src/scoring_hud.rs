@@ -544,10 +544,7 @@ fn render_hud(
     let Some(mut hud) = hud else {
         return;
     };
-    // An FE screen whose record hides the HUD (the pause menu: mode 1) is on top, or the PC overlay (the recomp's
-    // blurs the HUD into its backdrop; ours sits above the blur pass, so it goes), or Game Settings > Video > HUD is
-    // Off (settings +164). NOT RETAIL YET: retail's appliers (sub_824AD2F0 / sub_825DA2A0) are not decoded, so Off
-    // hides the whole gameplay HUD here.
+    // HUD hidden under an FE screen that hides it, the PC overlay, or HUD Off (+164); appliers NOT RETAIL YET.
     let hud_off = menus
         .as_deref()
         .and_then(|m| crate::retail_menus::setting(m, "ID_GAMESETTINGS_HUD_TOGGLE"))
@@ -668,11 +665,7 @@ fn material_matches(old: &HudMaterial, new: &HudMaterial) -> bool {
         && bits(old.color.mode.to_array(), new.color.mode.to_array())
         && old.atlas == new.atlas
 }
-/// Write this frame's draws into the retained slots. A slot's mesh, material and visibility are
-/// written only when they differ from what it already holds: `Assets::get_mut` marks the asset
-/// modified even without a write, which re-extracts the mesh, re-uploads its vertices and rebuilds
-/// the material's bind group in the render world, every frame, for every glyph on screen. The
-/// resulting assets and components are bit-identical to replacing them every frame.
+/// Write draws into retained slots only when they differ (no asset churn); bit-identical to replacing them.
 fn apply_draws(
     commands: &mut Commands,
     slots: &mut Vec<Slot>,
@@ -1012,10 +1005,7 @@ mod draw_tests {
         sorted[((sorted.len() - 1) as f64 * p).round() as usize]
     }
 
-    /// Scripted large airs with three flips each, a multiplier and a bail, the HUD movie driven
-    /// by the real scoring runtime. Asserts that the new writer leaves every slot (entity
-    /// components, mesh bytes, material bits) identical to the old writer after every frame, and
-    /// prints the asset churn and writer cost of both.
+    /// Scripted airs: the new HUD writer leaves every slot identical to the old one; prints churn and cost.
     /// `SKATE3_ASSET_ROOT=<assets> cargo test --release --bin skate3rust -- --ignored --nocapture hud_writer`
     #[test]
     #[ignore = "requires private authored scoring and HUD data via SKATE3_ASSET_ROOT"]

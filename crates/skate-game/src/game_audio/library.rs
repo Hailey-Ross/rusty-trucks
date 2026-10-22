@@ -962,11 +962,7 @@ pub(crate) struct Library {
     warm: Warm,
 }
 
-/// Sample files read ahead on a worker thread: a location set's bank is read when the scheduler
-/// picks it (retail loads a set entry's bank at the pick and plays it later), so its first play
-/// does not read the disk on the game thread (2026-10-16: 150 to 870 ms stalls from an HDD
-/// install). Only the bytes move: `clip` builds the same clip from them, and a file that is not
-/// read yet is read on the game thread as before.
+/// Sample files read ahead on a worker thread when the scheduler picks a set (retail loads at the pick).
 #[derive(Default)]
 struct Warm {
     jobs: Option<std::sync::mpsc::Sender<(String, PathBuf)>>,

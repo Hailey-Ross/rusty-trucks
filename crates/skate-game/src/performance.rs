@@ -1,12 +1,7 @@
 //! Frame timing harness. Active only when `SKATE_PERF_REPORT` names an output
 //! path: warms up, samples a fixed window, writes JSON, then exits.
 //!
-//! With trace-all (`SKATE_TRACE_ALL=1`) it never exits: it rolls for the whole
-//! session in windows of [`ROLLING_WINDOW`] seconds and a writer thread rewrites
-//! the JSON after every window (every window's summary, plus the newest window's
-//! render diagnostics; per-frame samples are in the frame log). The game thread
-//! only pushes one sample per frame into a preallocated buffer and hands the full
-//! buffer over once per window.
+//! Trace-all: docs/hails-additions/25-perf-diagnostics.md#code-reference-apprs-performancers-frame_timingstatsrs
 //!
 //! The `Performance` resource is absent in normal play, which is why callers
 //! take it as `Option<ResMut<_>>` — instrumentation must never cost anything in
@@ -345,10 +340,7 @@ struct GpuSampleGate<R: Resource> {
     parked: Option<R>,
 }
 
-/// Bevy's render system records GPU queries only while the recorder resource is in the render
-/// world (it removes it, runs the graph, and puts it back). On frames that are not sampled the
-/// gate moves it aside, so those frames carry no timestamp or pipeline statistics queries.
-/// Readbacks still in flight complete on the GPU and are collected on the next sampled frame.
+/// GPU queries only on sampled frames: the gate moves the recorder resource aside on the others.
 fn install_gpu_sampling<R: Resource>(app: &mut App, every: u32, _recorder: std::marker::PhantomData<R>) {
     use bevy::render::{Render, RenderApp, RenderSystems};
     let Some(render) = app.get_sub_app_mut(RenderApp) else {

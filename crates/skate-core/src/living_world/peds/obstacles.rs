@@ -1,47 +1,5 @@
-//! Dynamic objects as navigation obstacles for peds (doc 26, fix 11): props (DMOs) and mod bodies
-//! cut out of the walkable area while they rest, so peds plan their paths round them.
-//!
-//! What retail does [code, TU3; addresses are evidence only]:
-//! - Every world object has an obstacle interface on its vtable: register `sub_82595140` (via the
-//!   base slot `sub_82595010`, vtable + 4) and update `sub_82595298`. Slot +68 says whether the
-//!   object is an obstacle at all. It returns 1 for the DynamicObject class (vtable `0x82322D50`,
-//!   the string `dynamicobject` sits at `0x82322D2C`), the player skater (`0x82300910`) and one
-//!   more class (`0x823220E0`); peds (`0x8232BE80`) and the other actor classes return 0.
-//! - A DynamicObject gets its obstacle record from the pool `DynamicObject Obstacle MemStore`
-//!   (slot +76 `sub_82C57268`, record ctor `sub_82C46778`, record vtable `0x82322D10`). The box
-//!   comes from its collision body (slot +96 `sub_82C486F8` -> body vfunc 160 = half extents;
-//!   slot +92 `sub_82C48688` = orientation from the collision shape). Slot +88 `sub_82C48648`
-//!   switches the obstacle off while the object's state word `+144+4252` equals 1. That word is set
-//!   to 1 only by the component's slot 32 (`sub_82C56B00`, which also moves every collision element
-//!   of the object to collision group 13; slots 33/34 set it back to 0 with group 12 or 14). It means
-//!   "attached to a ped's hand" (b349: slot 32 is the hand attach, slot 34 `82C56C70` the release that
-//!   `82E3EBE0` calls for a drop or throw), so a ped's hand prop is no obstacle while held and a normal cut
-//!   from its release on. It is NOT the Move Object hold: the hold's keep-alive (interface slot
-//!   10 -> DMO handler slot 6 `sub_82C4C450` -> component slot 30 `sub_82C485D0`) only sets the
-//!   held bit `DMO+4464 & 0x20`, which the obstacle code never reads. So a held prop stays an
-//!   obstacle: cut while slower than 0.4 m/s, a moving avoider while faster (2026-10-08).
-//! - Placement `sub_82C477B0`, called on every update: half extents below 0.2 m are raised to
-//!   0.2 (`0x82099280`); while the object moves faster than 0.4 m/s (`0x82181B90`, slot +24 =
-//!   velocity) its cut is removed and NavPower's moving avoider (`+64`, `sub_82E99998`) takes
-//!   over; at rest the box is cut into the NavPower mesh (`sub_8293EF28` with the record
-//!   `{-1, 15.0, type 4}`, then `sub_8293F340`), and re-cut only after the object moved more than
-//!   0.25 (`0x820C6D98`) x its smallest half extent from where it was cut.
-//! - NavPower then plans every bot's path on the cut mesh (`dynAreas` in its planner), so a
-//!   resting prop is walked round, a prop the player moved counts where it lies now, and
-//!   a rolling prop (or a held one being moved faster than 0.4 m/s) is not part of the mesh but a
-//!   NavPower moving avoider.
-//!
-//! Ours (stated): NavPower's polygon cutting and its moving avoider are not decoded. A cut is an
-//! oriented rectangle in xz (the box projected onto the ground); a path leg that crosses a cut
-//! (grown by the agent radius plus [`ObstacleParams::detour_margin`]) gets a detour corner at the
-//! cheapest free rectangle corner on the mesh; a target inside a cut does not fit (retail: its
-//! end point no longer snaps to the cut mesh). Whether the record's `-1` / 15.0 mean "blocks
-//! every mover" / "penalty x15" is not decoded; cuts block here. Bodies (cut or moving) are also
-//! solid for a ped's step ([`NavObstacles::step_ok`]), standing in for the physical contact.
-//!
-//! Deterministic: obstacles are kept by stable id in a `BTreeMap`, the grid is a `BTreeMap`, ties
-//! are broken by id; [`NavObstacles::version`] changes only when a cut changes, so nothing is
-//! rebuilt per tick while props rest.
+//! Dynamic objects (props, mod bodies) as ped navigation obstacles (fix 11): cut out while at rest.
+//! Retail mechanism and our stand-ins: docs/hails-additions/26f-living-world-peds.md#ped-navigation-obstacles
 
 use std::collections::BTreeMap;
 
@@ -76,12 +34,7 @@ pub struct ObstacleParams {
     /// does not set the obstacle-off word, see the module docs). `false` = the earlier port's rule
     /// (held objects are ignored), kept as a mod option.
     pub held_is_obstacle: bool,
-    /// A moving (uncut) object is solid for a ped's step ([`NavObstacles::step_ok`]). NOT RETAIL
-    /// YET: retail hands a moving object to NavPower's moving avoider instead (`sub_82E99998`:
-    /// an 88-byte record in the planner's obstacle database, position and velocity refreshed every
-    /// tick by `sub_82E998C8`, radius = 0.35 x a planner-wide value, independent of the box); how
-    /// NavPower's bots steer round it is middleware internals, not decoded. `false` = moving
-    /// objects do not block a ped's step (the switch a decoded avoider port would replace).
+    /// A moving object is solid for a ped's step (NOT RETAIL YET: NavPower moving avoider 82E99998): docs/hails-additions/26f-living-world-peds.md#moving-obstacle-solid
     pub moving_solid: bool,
     /// Player skaters are obstacles for peds (research b135: the skater's obstacle interface `0x82300910` slot
     /// +104 returns 1, so `sub_82C477B0` always takes the moving-avoider branch, at any speed, standing included).
@@ -422,10 +375,7 @@ impl NavObstacles {
         best
     }
 
-    /// Bend a corner list (the path after `start`) round the cuts: every leg that enters a cut
-    /// grown by `radius + detour_margin` gets the cheapest corner of that rectangle (grown a little
-    /// more) that is on the mesh, outside every other cut and not itself blocked from the leg start.
-    /// Legs with no such corner stay (the step check then holds the ped and it re-plans).
+    /// Bend a corner list round the cuts (cheapest free grown corner); legs without one stay.
     pub fn detour(&self, mesh: &NavMesh, start: Vec3, corners: &[Vec3], radius: f32) -> Vec<Vec3> {
         if self.grid.is_empty() || corners.is_empty() {
             return corners.to_vec();
@@ -487,10 +437,7 @@ impl NavObstacles {
         out
     }
 
-    /// The step a ped body of `radius` takes from `from` toward `to`: `to` when free
-    /// ([`Self::step_ok`]); else slid along the face of the obstacle it would enter (the move into
-    /// the face removed), when that slide is free; else `None` (the ped stays). Ours: stands in
-    /// for the physical contact that keeps a retail ped out of a prop.
+    /// A ped body's step: `to` when free, else slid along the obstacle face, else `None` (ours).
     pub fn resolve_step(&self, from: Vec3, to: Vec3, radius: f32) -> Option<Vec3> {
         self.resolve_step_ignoring(from, to, radius, Ignore::default())
     }

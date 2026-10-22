@@ -1,50 +1,5 @@
-//! The simple lane follower of milestone V3: census cars drive their lanes, take connectors by
-//! retail's least-loaded rule, stop at the stop line when the V1 junction query says so and keep
-//! a gap to the car ahead. The full retail driver (look-ahead `sub_82C412D8`, speed planner
-//! `sub_82C3FA08` with its lead / obstacle cases, horn and manoeuvre deciders, the state graph)
-//! is milestone V4; this module is the part of it V3 needs to put moving, light-obeying traffic on
-//! screen, with every simplification named below.
-//!
-//! Retail [code, TU3; addresses are evidence only, behaviour re-implemented, not copied]:
-//! - integrator `sub_82C3FF38`: `speed (+3412) += accel (+3408) x dt`; the accel is forced to 0
-//!   while the speed is above the cap `+3688` (= (1.0 + `+3680` (+ `+3684` while held)) x f2, b57); speed
-//!   and accel are zeroed when both are tiny. [`integrate`] is that step.
-//! - the cap: the lane's speed limit (14.167 / 13.889 m/s [data]); the recomp shows `+3688` =
-//!   14.167 on a 51 km/h road and 17.0 while skitched (`+3684` = 0.2) [trace, `npc-livingworld-re`
-//!   §7d]. V3 uses the segment's limit on a lane and the exit segment's limit (at most the
-//!   junction speed) on a connector.
-//! - stop line (`sub_82C3FA08`): `accel = -v^2 / (2 (d - f2) + 0.001)` with `d` the distance to
-//!   the line and `f2` the stop distance [code]. [`stop_accel`].
-//! - a skater coming up behind (`sub_82C3FA08`, `+4403` bit 0x10 from the skater scan, limiter
-//!   kind free): the car brakes toward the skater's speed minus 20 km/h and never accelerates
-//!   ([`super::skater_scan`], b63; this was misread as a lead-following rule before).
-//! - the junction query (`sub_82E11E90`, V1 [`junction_entry`]) runs once the stop line is within
-//!   `speed + standoff` (`+3660` = length x spec `2ACE3FEE`, `82C376E8`); Go enters, every other
-//!   answer (Approach included) is a stop target at the line with that standoff, so Approach slows
-//!   the car until the query answers Go [code, b163].
-//! - the car ahead (`82C38390` -> `82C41120`): a stop target at the bumper-to-bumper gap with half of
-//!   `+3664` (length x `73A1989B`) as the standoff, inside `speed + standoff` [code, b162 M1].
-//! - connector choice: least loaded exit lane per metre on every car (`sub_82C376E8`, V1
-//!   [`choose_connector`]) [code]; the load is the number of cars on the exit lane (the retail
-//!   per-lane vec4 is not read yet, V1 open item).
-//! - acceleration ramps 0.2 m/s^2 per ~0.25 s up to 2.3-3.4 m/s^2 from a stop [trace 47CAEDA0,
-//!   proof1]; hard stops reach about -7.3 m/s^2 [trace 47CAEDA0, 164620].
-//!
-//! Not retail yet: a car at a dead end stops there (the engine despawns it); the obstacle
-//! look-ahead and the query's exit-room check use the engine `min_gap`; two engine-side safeguards:
-//! the step never moves a car into its lead's bumper, and [`lead`] treats a car inside the junction
-//! on another connector into the same exit lane, nearer the exit, as the car ahead (two lanes of
-//! one approach merging into one; retail's junction query does not cover that case, its
-//! look-ahead does).
-//!
-//! Multiplayer seams: [`step`] is a pure function of the road network, the signal clock, the cars
-//! (sorted by key) and `dt`; cars update in key order and see the cars before them already moved
-//! (deterministic). A client that runs the same spawn records from the same tick with the same
-//! signal tick count gets the same motion; see doc 26 V3.
-//!
-//! Moddability: every number is a field of [`FollowParams`] (defaults from the vehicle spec
-//! records or the trace values named on each field; a mod overrides per car); the connector
-//! choice is the V1 [`ConnectorChoice`].
+//! Lane follower of milestone V3: lanes, least-loaded connectors, stop lines, gap to the car ahead.
+//! Retail mechanism and simplifications: docs/hails-additions/26h-living-world-traffic.md#lane-follower
 
 use std::collections::BTreeMap;
 
@@ -417,13 +372,7 @@ pub fn lead(net: &RoadNetwork, cars: &[Car], i: usize, range: f32) -> Option<(us
             scan(Place::Lane { segment: exit, lane: net.connectors[connector].to_lane }, span, false)
         }
     });
-    // Merging: a car inside the junction on another connector into the same exit lane that is
-    // closer to the exit point goes first. ENGINE SAFEGUARD, NOT RETAIL: retail's junction query
-    // never scans the car's own approach (`sub_82E11E90` passes only the ends from_end + 1, + 2
-    // and + 3 (r28 / [r1+80] / r16) to the merge scan `sub_82E11C78` and the crossing scan
-    // `sub_82E11980`; its sibling check covers connectors of the same lane only) [code], so two
-    // lanes of one approach merging into one exit lane are spaced by the look-ahead / planner
-    // (`sub_82C412D8`, `sub_82C3FA08`), which is V4. Replace this with the ported look-ahead then.
+    // Merging: ENGINE SAFEGUARD, NOT RETAIL (82E11E90 never scans the own approach); replace with the V4 look-ahead: docs/hails-additions/26h-living-world-traffic.md#merge-safeguard
     let mine = match me.cursor.place {
         Place::Lane { .. } => me.cursor.next.map(|c| (c, span - me.cursor.distance + net.connectors[c].length())),
         Place::Connector { connector } => Some((connector, net.connectors[connector].length() - me.cursor.distance)),
@@ -468,10 +417,7 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let mut decider = me.decider;
         let mut manoeuvre = me.manoeuvre;
         let approach = me.length * 0.5 * p.approach_factor;
-        // Parked (`82C39138`): standing, the parked time runs; `IsRequiredToPullOut` (`82C3A3A8`) after the parked
-        // time when the end of the approach is still on this road: the passage back to the outer lane
-        // (`82C3AFB8`: d1 = d + approach, from the kerb slot to lane n - 1; the spot is released).
-        // A sounding alarm holds the parked time at 0 and blocks the pull-out (`82C39138`, `82C3A3A8`).
+        // Parked (82C39138): pull-out after the parked time (82C3A3A8, 82C3AFB8); an alarm holds it: docs/hails-additions/26h-living-world-traffic.md#parked-pull-out
         if let (Manoeuvre::Parked { spot, time }, Place::Lane { segment, lane }) = (manoeuvre, me.cursor.place) {
             let time = if me.alarming { 0.0 } else { time + dt };
             let d = me.cursor.distance;
@@ -557,14 +503,7 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
                     events.push(FollowEvent::Junction { key: me.key, connector: c, entry: info.entry });
                 }
                 entry = Some(info.entry);
-                // FollowingLane stores the answer in the same field as the limiter kind (`+4392`: 1 signal,
-                // 2 approach, 3 yield, 4 blocked, 5 a yield to a flagged car); a car behind one waiting at a light
-                // (1) or a flagged yield (5) counts as waiting itself and does not get the blocked horn.
-                // Any answer but Go (`cmpwi r3,0`) is a stop target at the line: best = d, standoff = `+3660`; the
-                // planner (`82C3FA08`) brakes `-v^2 / (2 (d - standoff) + 0.001)` and stops the car dead inside the
-                // standoff. Approach slows the car this way until it is at the entry speed and the query answers Go.
-                // There is no go-through for a car that can no longer stop (no dilemma zone in `82C376E8` /
-                // `82C41120`; `+4402` bit 0x04 only feeds the horn timer `+3704`) [code].
+                // Junction answer other than Go is a stop target at the line (82C3FA08 braking; no dilemma zone): docs/hails-additions/26h-living-world-traffic.md#junction-stop-target
                 if info.entry != Entry::Go {
                     kind = if info.blocker_flagged { super::horn::limiter::JUNCTION_WAIT } else { info.entry as u8 };
                     best = to_line;
@@ -574,10 +513,7 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
                 }
             }
         }
-        // The car ahead (`82C38390` -> `82C41120`): gap = bumper to bumper (`0.5 x (s_me + s_lead)` off the centres),
-        // standoff = half of `+3664`; inside `speed + standoff` the lead is the stop target (kind 1 / 3), braking
-        // `-v^2 / (2 (gap - standoff))`, dead stop inside the standoff. No lead-speed matching [code]. Ours: the lead
-        // search reaches the window only (retail's lead finder `82E14F50` range is not read).
+        // The car ahead (82C38390 -> 82C41120): stop target at bumper gap, half of +3664 standoff: docs/hails-additions/26h-living-world-traffic.md#car-ahead
         let lead_standoff = me.lead_standoff();
         let range = me.speed + lead_standoff;
         let mut limit: Option<f32> = None; // max distance the centre may reach along the current place

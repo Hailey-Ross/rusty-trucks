@@ -369,10 +369,7 @@ pub struct TrickGuideOptions {
     pub hidden: bool,
 }
 
-/// A Trick Guide key: 16 hex digits (a retail record) or a menu id (the mod's own entry).
-/// A retail popup a mod raises (`sdk.menus.popup`): the retail Sk8Popup / Sk8SmallPopup movie shows it over the
-/// menus, and the player's choice comes back as a `menu_popup` event. Text fields are string ids (FELanguage) or
-/// `#literal text`.
+/// A retail popup a mod raises (`sdk.menus.popup`, Sk8Popup / Sk8SmallPopup); choice as a `menu_popup` event.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PopupOptions {

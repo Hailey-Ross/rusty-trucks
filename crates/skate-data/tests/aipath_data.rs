@@ -1,9 +1,5 @@
-//! Data-gated checks of the AIPATH decoder on the user's own disc data. Skips
-//! (passes with a note) when no data is configured:
-//! - `SKATE3_ASSET_ROOT`: converted assets; reads
-//!   `private/living_world/skater_paths/*.bin` (setup group `livingworld`).
-//! - `SKATE3_AIPATH_BLOBS`: a folder of raw AIPATHDATA objects
-//!   (`*_00eb0014_*.bin`, e.g. from the recomp-research tool `sim_dump.py`).
+//! Data-gated AIPATH decoder checks: `SKATE3_ASSET_ROOT` skater paths, or `SKATE3_AIPATH_BLOBS` raw
+//! `*_00eb0014_*.bin` objects (e.g. from `sim_dump.py`). Skips without data.
 use skate_data::aipath::{self, AiPath, AiPathId, distance};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

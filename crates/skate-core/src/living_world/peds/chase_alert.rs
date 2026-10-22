@@ -1,11 +1,5 @@
-//! The alert over a ped that warns or chases the player: retail's "ChaseArrow" HUD (b191).
-//!
-//! The graph op `SendChaseStateMessage` (`826A77A8`) posts {ped, state} for a player target; the HUD's handler
-//! (`825E35F0`) keeps at most 10 entries: a new ped is added (not for "end"), a known ped's state is replaced and its
-//! timer restarts, "end" removes it. The update (`825E2738`) ages them (warn 6 s, giveup 3 s, chase and tired stay),
-//! drops a ped that is gone, projects the ped and scales the sprite by camera distance. The render (`825E2B80`)
-//! draws a 64 px sprite per state over the ped when it is inside the centred 0.85 box, else an edge arrow on a ring
-//! round the screen centre. Engine-independent: the host feeds states and positions and draws [`Placement`]s.
+//! The ChaseArrow HUD logic (b191): handler 825E35F0, update 825E2738, render 825E2B80; engine-independent.
+//! Retail rules: docs/hails-additions/26g-living-world-ped-interactions.md#chasearrow-logic
 
 /// Retail's chase states (`SendChaseStateMessage stateName`, `826A76B8`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

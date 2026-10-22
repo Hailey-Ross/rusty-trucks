@@ -1,8 +1,5 @@
-//! Replay export ("Save to PC", ours on PC; the user's ask 115 / 140): frames and sound into a video file. Windows' own
-//! encoder (Media Foundation: H.264 + AAC in an .mp4, research b383) when it is there; else the frames as PNG files and
-//! the sound as a WAV in a folder of the same name, so an N edition without the Media Feature Pack still exports.
-//! Media Foundation's functions are loaded at run time (`LoadLibraryW` / `GetProcAddress`): linking them would stop the
-//! game from starting where the DLLs are missing. Settings are data ([`ExportSettings`]).
+//! Replay export ("Save to PC", ours): Media Foundation .mp4 when present (b383), else PNG frames + WAV.
+//! Details: docs/hails-additions/37-instant-replay.md#replay-export-encoder
 use std::path::{Path, PathBuf};
 
 /// What an export writes (defaults ours: the game's 30 fps console cadence for the frames, 48 kHz stereo sound).

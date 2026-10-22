@@ -1,13 +1,5 @@
-//! Pedestrian navmesh data (doc 26, peds milestone M3): `private/living_world/navmesh.bin`, the
-//! retail NavPower nav graphs (`0x00EB0027`) that setup decodes and joins across tiles
-//! (`tools/asset_pipeline/living_world_navmesh.py` documents both formats), read into
-//! `skate_core::living_world::peds::NavMeshInput`.
-//!
-//! `navmesh.bin` (little-endian): `LWNAVMSH`, u32 version 1, u32 district count; per district:
-//! u8 name length + ASCII, f32 x4 agent parameters, u32 vertex count + f32 x3 each, u32 polygon
-//! count, per polygon: u32 first vertex, u16 vertex count, u8 area, u8 tile-stitched edge count,
-//! u32 flags, then i32 neighbour per edge (-1 none). A mod map writes the same file with
-//! [`write`] (or fills `NavMeshInput` directly).
+//! Pedestrian navmesh data: `private/living_world/navmesh.bin` (retail NavPower graphs 0x00EB0027, joined).
+//! File format: docs/hails-additions/26f-living-world-peds.md#navmesh-file
 
 use skate_core::living_world::peds::{NavMeshInput, NavPolyInput};
 

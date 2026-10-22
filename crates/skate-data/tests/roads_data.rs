@@ -1,9 +1,5 @@
-//! Data-gated checks of the road graph (`roads.bin` v2) on the user's own export. Skips (passes with
-//! a note) when no data is configured. `SKATE3_ASSET_ROOT`: converted assets (one root, or several
-//! joined like PATH); reads `private/living_world/roads.bin`.
-//!
-//! The expected counts are the shipped Skate 3 road networks as decoded for milestone V0
-//! (`docs/hails-additions/living-world/vehicles-data.md`); they are asserted, not embedded in the engine.
+//! Data-gated (skips without `SKATE3_ASSET_ROOT` data): road graph `roads.bin` v2; expected counts from
+//! docs/hails-additions/living-world/vehicles-data.md (asserted, not embedded).
 
 use skate_data::roads::RoadGraph;
 use std::path::PathBuf;

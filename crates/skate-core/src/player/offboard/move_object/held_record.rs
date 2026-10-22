@@ -1,21 +1,5 @@
-//! The held grab record of Move Object (state +720) and the grip along it
-//! (+1128), research b62 [code, TU3 recomp]:
-//! - 82D444A0(state, full): `full` (enter 82D442D0 and the path B re-grab)
-//!   copies the record's reversed bit (rec+200 bit 0x20) into +1200 bit 0x04
-//!   and places the grip at the nearest arc distance (82D2CFE8) of the skater
-//!   reference (+272, bone 23), clamped to [h, length - h] with
-//!   h = min(GrabSplineEndExclusion, length / 2). Always: the side test
-//!   c = cross(rec+80 - ref, rec+64 - ref).y; c < 0 swaps the ends, negates
-//!   the edge direction (+112) and toggles the reversed bit; when the record's
-//!   bit then differs from +1200 bit 0x04 the grip is mirrored
-//!   (length - grip) and the bit copied, so it stays on the same physical
-//!   point of the edge.
-//! - Path A of the held update 82D44A10 refreshes the record from the
-//!   object's current pose every tick and runs 82D444A0 without `full`.
-//! - 82D45D30 evaluates the record at the grip (82D2D2B0, arc distance).
-//!
-//! Multiplayer: [`HeldGrip`] is the whole per-skater state (plain `Copy`
-//! data); the record itself is rebuilt from the object every tick.
+//! The held grab record of Move Object (state +720) and the grip along it (+1128), research b62.
+//! Details (82D444A0, 82D44A10 path A, 82D45D30): docs/hails-additions/27-dynamic-props.md#held-record-and-grip
 use crate::player::offboard::grab_scene::{Record, at_distance, nearest_distance};
 
 type Vector = [f32; 4];

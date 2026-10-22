@@ -177,10 +177,7 @@ pub(crate) fn read(root: &Path) -> (MenuData, bool) {
 /// Owner prefix of the engine handlers that teleport to a Challenge Map location (`teleport:<fe_locations key>`).
 pub(crate) const TELEPORT: &str = "teleport:";
 
-/// The Challenge Map data from the collections and the teleports: the tree (vault `map_listing` under `progression`,
-/// the root career and free skate open; b244d), each location's picture, its marker (research b265: the locator's
-/// x / z plus its world's offset; the locator is the teleport matrix) and the keys of the locations that have a
-/// teleport matrix (`private/teleports.json`, any map).
+/// The Challenge Map data: tree (b244d), pictures, markers (b265) and the teleport keys.
 pub(crate) struct ChallengeMapData {
     pub nodes: Vec<skate_core::menus::MapNode>,
     pub pictures: std::collections::BTreeMap<String, String>,
@@ -313,11 +310,7 @@ const NO_EFFECT_YET: [&str; 10] = [
     "ID_GAMESETTINGS_SKATEFEED_OUTGOING_MESSAGE",
 ];
 
-/// Settings rows with a retail rule, no engine binding (`BINDINGS`) and an engine effect (not `NO_EFFECT_YET`): HUD,
-/// Vibration, the offboard axes. Their values live in
-/// `settings/game-settings.json` (string id -> number), retail's value (`menu_values::retail_default`) until the
-/// player changes one. Each row is an Engine-owned value layer, so it is enabled and steps through retail's rule;
-/// a mod's value stacks on top and is never saved. Features read the value in force with [`setting`].
+/// Settings rows with a retail rule and an engine effect but no binding, stored in `settings/game-settings.json`.
 #[derive(Resource)]
 pub(crate) struct StoredSettings {
     path: std::path::PathBuf,

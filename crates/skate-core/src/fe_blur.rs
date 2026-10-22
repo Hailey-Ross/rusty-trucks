@@ -1,12 +1,5 @@
-//! Front-end backdrop blur and tint: the world behind a menu screen blurs and darkens while that screen is on top
-//! of the FE screen stack (doc 31, "Pause blur").
-//!
-//! Retail (TU3 recomp addresses): every FE screen has a record in the screen stack's info table (0x83026088,
-//! 72 records of 24 bytes, byte +4 = blur). The stack applies the flag of the screen on top on every push / pop
-//! through vt+28 = sub_825EBED8, which stores it at FE manager +461 and, on an off -> on change only, restarts the
-//! ramp (tint 255, blur 0.0). An empty stack switches it off. The FE manager tick sub_825D8E68 then ramps the blur
-//! strength (+468 / +472) and the RGB tint (+476 / +480 / +484) one step per tick, up when on and back when off.
-//! The values here are the retail defaults; mods override them per screen (menu_backdrop).
+//! Front-end backdrop blur and tint while a blur screen is on top (825EBED8, tick 825D8E68); per-screen mod overrides.
+//! Retail mechanism: docs/hails-additions/31-retail-menus.md#fe-backdrop-blur
 
 /// Ramp parameters (retail defaults in `RETAIL`).
 #[derive(Clone, Copy, Debug, PartialEq)]

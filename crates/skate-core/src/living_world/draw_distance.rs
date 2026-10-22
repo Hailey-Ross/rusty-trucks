@@ -1,28 +1,5 @@
-//! NPC draw distance (QoL, not retail): one multiplier on every distance of the population chain,
-//! with the population caps scaled by the covered area so the density stays retail.
-//!
-//! Retail has no such option: the census ranges (`livingworld_census_ranges` [data]), the ped draw
-//! fade (model pair 45 / 55 m [data]) and the ambient skater ranges (60 / 90 / 120 m [code]) are
-//! fixed. This module never changes those values; it builds a scaled copy of the config on top of
-//! them, and only when the multiplier is not 1 (`DrawDistance::RETAIL`), so the retail setting
-//! runs the unchanged config and gives the same decisions bit for bit.
-//!
-//! What scales (`m` = multiplier):
-//! - distances x m: census circles (spawn ring inner / outer, cull radius, forward offset; the
-//!   speed keys stay), the initial populate ring, skater spawn ring and cull distance. The ped
-//!   draw fade pair is scaled by the engine with [`DrawDistance::distance`].
-//! - counts x m^2 (the covered area): census caps (through the density, so the cap at a point is
-//!   `max_population x density x m^2`), the entity pools (peds 31, vehicles 15), the attempts and
-//!   spawns per pass and of the initial populate, and the ambient skater desired count, AI cap,
-//!   skater slots, character pool and candidate line count.
-//!
-//! What does not scale: speed keys, the 5 m / 10 m skater spacing, the skater height cull, fades
-//! in time (seconds), the rotation and the cycle phases.
-//!
-//! Multiplayer: the population authority (standalone or host) owns the multiplier; it decides
-//! what exists for everyone. A per-client draw distance would only be a render-side choice (a
-//! client hides or fades what it was sent beyond its own range) and never feeds the authority's
-//! simulation.
+//! NPC draw distance (QoL, not retail): one multiplier on population distances, caps scaled by area.
+//! What scales and what does not: docs/hails-additions/26b-living-world-population.md#npc-draw-distance
 
 use super::census::{CensusCircle, CensusRange};
 use super::config::{CensusKindConfig, PopulationConfig, SkaterConfig};

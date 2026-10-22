@@ -224,3 +224,31 @@ are unchanged; the label now says setup checks the installed files first.
 `tools/test_setup_assets.py` (the progress message per group).
 
 **Verification.** Setup unit tests (37) pass. The window itself has not been opened yet (the user was playing).
+
+## Code reference: asset_check.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/asset_check.rs`; each comment there links its section here.
+
+### Asset staleness check
+
+Launch-time asset staleness check. It reads the converted files themselves on every start, not a stamp: every output setup recorded must still be there at its recorded size, and each group's files must hold what this build reads (format versions and content). A failing group is logged (`ASSET_CHECK <group>: <reason>`) and marked stale (`setup::mark_stale`), so the PC overlay offers Extras > Refresh Game Files, which makes setup rebuild exactly those groups. Runs on a background thread once the startup loading screen is gone, so its thousands of file reads do not compete with the start's own loading on an HDD.
+
+## Code reference: splash.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/splash.rs`; each comment there links its section here.
+
+### Startup splash
+
+Startup splash (Windows): a small window of its own, up from the first moment of the process, with a skateboard (no skater) rolling across it and exactly what is loading written under it, the last finished steps dimmed below (like RPCS3's progress lines). It runs on its own thread with its own message loop, so it keeps animating while the game thread is busy (config, skater, physics, world, menus, the audio runtime). The game window is created hidden and shown when the start is done (`startup_loading`), and then the splash closes.
+
+Steps are reported from any thread with [`stage`] (a step: "Loading physics") and [`detail`] (the item being read: "sound bank grind_concrete"). Not retail: retail boots into its own movies; this only covers our engine's start. `SKATE_NO_SPLASH=1` turns it off (scripted runs that want no extra window).
+
+## Code reference: startup_loading.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/startup_loading.rs`; each comment there links its section here.
+
+### Startup loading phase
+
+The start's loading phase behind the splash (`splash.rs`): the game window is created hidden and stays hidden until every hold is released, gameplay waits meanwhile (virtual time paused, as the menu pauses it, so the game starts in the same order as before), then the window is shown and brought forward and the splash closes.
+
+The slowest hold is the native audio runtime's first start (~40 s on an HDD with a cold file cache; `game_audio::native::begin_launch` builds it on its own thread). Engine systems and mods hold the phase with [`StartupLoading::hold`] / [`StartupLoading::release`] (a label each, shown as the splash's step) and report the item being read with [`detail`].

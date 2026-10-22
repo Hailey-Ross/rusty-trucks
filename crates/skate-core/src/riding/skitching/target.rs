@@ -1,16 +1,5 @@
-//! The skitch hold target (`sub_82D4B8C0` / `82D4BAC0` / `82D4BC58` / `82D4BCF8`) and the release impulses
-//! (`82D4B1D0` / `82D4B378`). Retail (TU3, evidence only; re-implemented; `.local/research/npc/b52-skitch-target-impulses.md`
-//! sections 1-2; main checked the impulse vault keys):
-//! - the hold target point `736 = 576 + 864 * 528.row0` (the side-shifted previous frame at the hand's along
-//!   coordinate 864); `784` = the horizontal unit direction skater -> 736; `952` = the yaw from the direction to the
-//!   current grab point (836) to 784;
-//! - `at` = yaw from the skater's facing to 784, `as` = yaw from the facing to the side direction 624;
-//!   `940 = tows fast ? wrap(at - as) : -as`;
-//! - the yaw correction `V = up' * sin(clamp(at, +-180 deg/s * dt)) * max(g1(992), g3 * g2(832))` (`up'` = up
-//!   flipped to y >= 0), applied by `82C07328` only while towing fast and not releasing;
-//! - release impulses (tag 6, one frame): pull in `624 * min(max(-832, 856 - 2.0), 0) * m / dt` or push off
-//!   `624 * (856 + 2.5) * m / dt`.
-//! The signed angle `8286CD88` is read as the angle a -> b about the axis (internals not decoded [inferred]).
+//! The skitch hold target (82D4B8C0 / 82D4BAC0 / 82D4BC58 / 82D4BCF8) and release impulses (82D4B1D0 / 82D4B378).
+//! Details (b52): docs/hails-additions/26h-living-world-traffic.md#skitch-target-and-impulses
 
 use super::super::super::living_world::Vec3;
 use crate::point_graph::PointGraph;

@@ -1,50 +1,5 @@
-//! Traffic cars (doc 26, milestone V3): turns the population's vehicle spawn / despawn records
-//! into visible cars that drive their lanes.
-//!
-//! - **Entity** per spawn record: [`TrafficCar`] (stable `LivingWorldId`, entity / model keys,
-//!   palette ids and colours, engine record) + `Transform` + #32's
-//!   [`TrafficAudio`](crate::world_audio::TrafficAudio). [`TrafficState`] keeps the follower cars
-//!   (`skate_core::living_world::traffic::follow`) and the id -> entity map.
-//! - **Motion** (`FixedUpdate`, after the population step): one follower step per 60 Hz world
-//!   tick, the signal clock ticked once per world tick (retail ticks its 4 controllers by 1/60 s
-//!   per world tick, `sub_826B2C18`); a car spawned at tick `s` steps from tick `s + 1`. Lane state
-//!   goes back to the population (`LivingWorld::update_lane`, `update_position`) so the census
-//!   cull and the placement test see the real cars. A car at a dead end leaves (despawn, reason
-//!   External).
-//! - **Look** (`Update`): the car's GLB (`private/living_world/vehicles/<recipe>.glb`, or a mod's
-//!   path from [`VehicleOverrides`]) as a scene, drawn with the glTF materials on render layers 0
-//!   and 28 like mod graphics; the `vehicle_chassis` and `vehicle_glass` materials run the
-//!   retail car programs ([`super::vehicle_material`]: paint rule below, lighting, glass) with the
-//!   material rows of `vehicles.json` `materials`; the six wheel bones spin with the distance driven over the
-//!   model's wheel radius (`wheel_hint`, `Hash_FD7A66142F16B9CC`, equal to the wheel bone height
-//!   [data, V0]). Drivers are part of the body mesh [data, V0]; no vehicle lights exist [data].
-//! - **Collision**: one kinematic box per car from the GLB bounds (`mesh_bounds`), infinite mass,
-//!   the car's velocity, joined to the skater solve through `physics::network::Proxies` like the
-//!   NPC skaters. Solid contact only; bails and roof behaviour are V5.
-//! - **Audio**: `TrafficAudio { engine: <spec engine_audio record>, speed: +3412, load: +3408 }`
-//!   and `AudioVelocity`, so #32's traffic engine host (nearest 4 within 40 m, Doppler) plays it.
-//! - **Events** ([`TrafficEvent`]): spawned, despawned, junction answer changed, entered a
-//!   junction, entered a lane; the planned `sdk.living_world` events read these.
-//!
-//! Paint rule (retail `vehicle_defaultPS`, the program of the `vehicle_chassis` material, TU3
-//! `shaders_final.big`) [code, shader microcode]: the same rule as the ped shaders
-//! (`skate_core::living_world::peds::colorize`): `lin = diffuse^2`; a texel with `G^2 < 0.001225`
-//! becomes `R^2 x i_colorize_red + B^2 x i_colorize_blue` (constant table: `i_colorize_red` c21,
-//! `i_colorize_blue` c22, `i_diffuse` sampler 3), any other keeps `lin`; the shader writes `sqrt`
-//! at the end. The body atlases paint the car body pure blue `(0, 0, b)` and the base palettes are
-//! chassis `(0, 0, 1)` / secondary `(1, 0, 0)` [data, V0], so chassis -> `i_colorize_blue` and
-//! secondary -> `i_colorize_red` (the pair that makes the base palette the identity, as for peds).
-//! No gain in retail; [`VehicleOverrides::paint_gain`] scales both colours for mods (default
-//! [`PAINT_GAIN`] = 1, retail).
-//!
-//! Multiplayer (no networking): a car's motion is a function of its spawn record, the world tick,
-//! the signal clock's tick count (= world ticks since the world loaded) and the other cars (which
-//! are themselves spawn records); the connector choice reads the occupancy, so a client must run
-//! the whole set of cars, not one. See doc 26 V3.
-//!
-//! Moddability: [`VehicleOverrides`] (model per entity, GLB per model, colour per palette id,
-//! follower numbers per entity, connector choice); restoring `VehicleOverrides::default()` undoes
-//! a mod; the spec / palette defaults come from the export (`tables.json`, `vehicles.json`).
+//! Traffic cars: vehicle spawn records -> visible cars driving their lanes (motion, look, paint, collision, audio).
+//! Details: docs/hails-additions/26h-living-world-traffic.md#traffic-cars-engine-side
 
 use super::{LivingWorldDespawn, LivingWorldSettings, LivingWorldSpawn, NetRole, PopulationState};
 use crate::world_audio::{AudioVelocity, HornState, TrafficAudio};
@@ -819,11 +774,7 @@ pub(crate) fn proxy_with(car: &TrafficCar, pose: &Transform, velocity: Vec3, col
     }
 }
 
-/// The skater's body hit a car (`sub_82C3C150`, actor branch): a contact ahead of the car (ours:
-/// along its velocity; retail's axis is the car's vtable +24, inferred forward) latches the hit
-/// brake on the follower car. Logs `VEHICLE_HIT`. Every contact also goes to the car alarm rule as a
-/// [`VehicleImpact`](crate::world_audio::VehicleImpact) (relative speed at the contact; the rule sets a
-/// parked car's alarm off).
+/// The skater's body hit a car (82C3C150): latches the hit brake, logs `VEHICLE_HIT`, feeds the alarm rule: docs/hails-additions/26h-living-world-traffic.md#vehicle-hits
 pub(crate) fn apply_vehicle_hits(
     mut skater: Option<ResMut<crate::physics::SkaterRuntime>>,
     cars: Query<(Entity, &TrafficCar, &CarMotion)>,
@@ -853,12 +804,7 @@ pub(crate) fn apply_vehicle_hits(
     }
 }
 
-/// V4 look-ahead (`skate_core::living_world::traffic::obstacles`): the obstacle lists (`sub_826B2EE0`: skaters
-/// radius 0 and peds, soft; movable props (DMOs) radius half their smallest extent, hard; traffic cars add nothing,
-/// `b42`) against each car's look-ahead quad from last frame's pose; the nearest free distance goes to the follower
-/// car. Ours: the ped radius is the fallback ped radius (retail 0.5 x the body extents' z, the per-ped value is
-/// collision data), props carry no corner points, a bailing skater's four extra points are not added, and the
-/// turn widening is off (the turn side `+3748` is open; threshold 0.025).
+/// V4 look-ahead: obstacle lists (826B2EE0, b42) against each car's look-ahead quad: docs/hails-additions/26h-living-world-traffic.md#car-look-ahead
 fn look_ahead(
     traffic: &mut TrafficState,
     cars_q: &Query<(&TrafficCar, &mut CarMotion, &mut TrafficAudio, &mut AudioVelocity)>,
@@ -951,10 +897,7 @@ pub(crate) fn push_vehicle_proxies(
 /// (ours: stable per car; retail numbers splines from a global counter, b34).
 pub(crate) const CAR_GRAB_TAG: u32 = 0x8000_0000;
 
-/// The cars' authored grab splines into the grab scene each tick (retail: the vehicle provider `82C35B98`, scene
-/// slot `+4088`, answering the riding skitch query's mode 255; b49). The car's world transform is the record frame,
-/// its velocity the record vector. NOT RETAIL YET: the assembly is a stand-in with the car's id (retail reads it
-/// from the car's `+172` interface, object open).
+/// Cars' grab splines into the grab scene each tick (82C35B98, slot +4088, b49; assembly NOT RETAIL YET): docs/hails-additions/26h-living-world-traffic.md#car-grab-splines
 pub(crate) fn push_vehicle_grab_splines(
     cars: Query<(&TrafficCar, &CarMotion)>,
     traffic: Res<TrafficState>,

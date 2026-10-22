@@ -1,14 +1,5 @@
-//! Cheat codes (doc 31 "Extras and cheat codes", research b304): the text from the Extras cheat row's entry goes to
-//! the matcher `sub_82656080`, which walks the cheat table (0x83025F00, `{code, id, title, enabled text, disabled
-//! text}`) with a plain case-sensitive strcmp (`sub_82AE89B0`) over the first 32 characters (callback 0x82655F98).
-//! - no match: dialog ID_VALIDATE_CODE_TITLE / ID_UNLOCK_CODE_FAILED / ID_COMMON_CONTINUE;
-//! - a mode-gated code (zombie, id 5) outside its modes: ID_INVALID_CODE_TITLE / the row's refusal text / ID_COMMON_OK,
-//!   nothing changes;
-//! - else the cheat TOGGLES (entering it again turns it off) and the dialog is the row's title with its enabled or
-//!   disabled text / ID_COMMON_OK.
-//!
-//! The table is data (`CheatRules`), retail's rows as defaults, so a mod can add codes (its own ids) and the engine
-//! keeps the on / off state ([`CheatState`]) as host state the cheat event changes.
+//! Cheat codes (b304): matcher 82656080 over the cheat table 0x83025F00; rules are data (`CheatRules`).
+//! Retail dialogs and toggling: docs/hails-additions/31-retail-menus.md#cheat-codes
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheatRow {
@@ -45,10 +36,7 @@ impl Default for CheatRules {
     fn default() -> Self {
         Self {
             rows: vec![CheatRow {
-                // Table entry 3 (0x821F9438 / 0x821F9440 / 0x821F9454 / 0x821F9474). NOT RETAIL YET: retail allows it
-                // when the mode word 0x830B7AE8 is 0, 3 or 4 (values not decoded); our menus' only mode is Free Play.
-                // The other retail rows (streetsweeper id 4, ids 0-3 and 6-9) change things the engine does not have
-                // yet; they are not listed.
+                // Table entry 3 (zombie); mode gate 0x830B7AE8 NOT RETAIL YET; other retail rows not listed yet.
                 code: "zombie".into(),
                 id: "zombie".into(),
                 title: "ID_VALID_CODE_TITLE".into(),

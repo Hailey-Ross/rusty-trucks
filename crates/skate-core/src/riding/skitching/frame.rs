@@ -1,20 +1,5 @@
-//! The skitch frame step (`sub_82D48148`, state 104). Retail (TU3, evidence only; re-implemented;
-//! `.local/research/npc/b32-skitch-frame.md` section 1, `b47-skitch-frame-transforms.md` section 1; main checked the
-//! constants in b32 and the query side of b47):
-//! - re-orient: when the board points against the spline direction the endpoints swap and the direction flips;
-//! - frame history 64 <- 128 <- 192 <- new (row0 spline direction, row1 up, row2 `normalize(d x n)`, row3 the
-//!   endpoints' midpoint; all three = new on the first frame after a reset);
-//! - the skater's along-axis coordinate `836` in the previous frame (128) and its rate `840`; the axis point
-//!   `A = prev.row3 + 836 prev.row0` (b47 corrects b32: the previous frame directly);
-//! - the grab point (`82D2D550`, current world pose) mapped by `320 = inv(current) * previous` into the previous
-//!   pose, `672 = g' - A` (zero outside the half range `928`);
-//! - the car velocity at the grab location `752` (finite difference of frames 128 and 64), the horizontal
-//!   direction and distance to the axis point (`656`, `852`, rate `856`), the signed sideways offset `848` / `688`,
-//!   the tow speed `832`, the side target (`624`, `860`, origin pushed 0.5 m along row2) and the "tows fast"
-//!   gate (state+1345 bit 0x40, `832 >= 1F85F500908C5E17`).
-//! Frames are rigid, row-vector style: `p = row3 + x row0 + y row1 + z row2`. The relative transforms 256 / 448
-//! (car motion over the last frame) are kept for the hand targets (`82D4A378`, not ported); 384 is identity in
-//! retail and left out.
+//! The skitch frame step (82D48148, state 104; b32, b47).
+//! Steps and frame conventions: docs/hails-additions/26h-living-world-traffic.md#skitch-frame-step
 
 use super::super::super::living_world::Vec3;
 

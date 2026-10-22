@@ -25,10 +25,7 @@ pub enum EntryKind {
     Category,
     Item,
     Setting,
-    /// Challenge Map nodes (FE screen 17), named after their vault classes (skatercollections): the tree's tabs and
-    /// folders (`map_listing`, `map_filter`), labels (`map_category`) and leaves. An entry's id is its vault key, so
-    /// the hook ids read `fe_locations:<key>` and so on; every node exists in the data, so each has its hooks and stays
-    /// greyed until a handler is registered (b244, b253).
+    /// Challenge Map nodes (FE 17) by vault class; ids are vault keys, greyed until a handler exists (b244, b253).
     MapListing,
     MapFilter,
     MapCategory,

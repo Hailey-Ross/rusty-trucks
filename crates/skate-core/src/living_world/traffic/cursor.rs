@@ -1,21 +1,5 @@
-//! The lane cursor: where a car is on the road graph (a lane of a segment or a turn connector)
-//! and how far along, advanced by distance across pieces, connectors and segments.
-//!
-//! Retail [code]: the mover interface (vehicle `+144`, vtable `0x82322240`) keeps the segment id
-//! (`+72`, `ld +3992`), the distance along it (`+68`, `+3496`), the lane (`+84`), the chosen
-//! connector index (`+76`, stored at vehicle `+4388`), the distance along the connector (`+60`,
-//! `+3492`) and whether the car is on a lane (1) or inside the junction (0) (`+52`). FollowingLane
-//! (`sub_82C376E8`) picks the next connector when it has none or the segment changed (mover
-//! `+76 < 0` or `+72` != the lane's segment) and stores it at `+4388` before it looks at the
-//! junction; the choice:
-//! - with vehicle flag `+4401` bit 0x02 (set by the constructor `sub_82C3B7C8`, 0xCE, on every
-//!   car and never cleared): the connector of the lane's list whose exit lane has the smallest
-//!   `load / exit segment length` (exit segment `+136`, one vec4 per lane, x used; strict `<` so
-//!   the first wins a tie) [code];
-//! - without it (unused in retail): list entry `trunc(u32 x 100 / 2^32) mod n` from the world RNG
-//!   (`sub_82970628`, `0x822F94B0` = 100 x 2^-32) [code].
-//! What the per-lane load holds is a runtime value not read yet (open); the engine passes the
-//! number of cars on the exit lane by default, a mod or the V4 driver may pass another measure.
+//! The lane cursor: where a car is on the road graph and how far along (mover +144, FollowingLane 82C376E8).
+//! Retail fields and connector choice: docs/hails-additions/26h-living-world-traffic.md#lane-cursor
 
 use super::graph::{Frame, RoadNetwork};
 use crate::living_world::rng::Rng;
@@ -133,10 +117,7 @@ impl LaneCursor {
         true
     }
 
-    /// Move `ds` metres forward (negative moves are ignored), crossing pieces, onto the chosen
-    /// connector at the end of a lane and onto the connector's exit lane at its end (where the
-    /// next connector is chosen). The overshoot carries across every boundary, so the path is
-    /// continuous; at a dead end the cursor stops on the lane end.
+    /// Move `ds` m forward across pieces, connectors and segments; overshoot carries; stops at a dead end.
     pub fn advance(&mut self, net: &RoadNetwork, ds: f32, choose: &mut dyn FnMut(&RoadNetwork, usize, u8) -> Option<usize>) -> Advance {
         let mut out = Advance::default();
         if !(ds > 0.0) {

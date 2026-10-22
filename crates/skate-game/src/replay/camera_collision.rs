@@ -1,10 +1,5 @@
-//! The replay cameras' world constraint (research b449): retail runs it on every evaluated replay camera
-//! (`82C8B698` -> `82683680`): first the 40 m leash to the player (`82682CB0`), then a swept sphere from the last
-//! accepted camera position to the new one with a slide along the hit plane, plus a line-of-sight sweep from the
-//! player to the camera (`82682D80`). No smoothing and no minimum height: corrections land in full on the same frame.
-//! Every value is data ([`CameraCollision`], `sdk.replay.set_camera`). NOT RETAIL YET: the 0.8 m / world radius
-//! triggers, the sweep's collision layers (ours: the map and its external queries, no actors) and who raises retail's
-//! snap request (+0x183; ours: a camera cut, see [`Constrained`]).
+//! The replay cameras' world constraint (b449; 82C8B698 -> 82683680): leash, swept sphere, line of sight; data.
+//! Details and gaps: docs/hails-additions/37-instant-replay.md#replay-camera-collision
 use bevy::prelude::*;
 
 /// The constraint's data; defaults are retail's.

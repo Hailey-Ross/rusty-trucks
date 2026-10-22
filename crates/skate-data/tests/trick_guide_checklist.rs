@@ -1,7 +1,5 @@
-//! Writes the Trick Guide demo checklist: every row in menu order with the clip it plays
-//! (`scene/trickguide/<animation>1.abin`) and whether the clip file exists. Owned data only:
-//! `SKATE3_ASSETS` (default: the repo's assets), `SKATE3_MENU_LANGUAGE` (the menu export's shared.json),
-//! `SKATE3_SCENE_CLIPS` (clip folder), output `SKATE3_CHECKLIST_OUT`.
+//! Writes the Trick Guide demo checklist (row, clip, clip exists). Env: `SKATE3_ASSETS`, `SKATE3_MENU_LANGUAGE`,
+//! `SKATE3_SCENE_CLIPS`, output `SKATE3_CHECKLIST_OUT`.
 use skate_data::{collections::Collections, menu_tables::MenuTables};
 use std::{collections::BTreeMap, fmt::Write, path::PathBuf};
 

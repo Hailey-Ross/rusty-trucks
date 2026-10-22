@@ -247,10 +247,7 @@ fn finalize_principal_mass(
     }
 }
 
-/// Per-type body values a dynamic world object (DMO) builds its Inertia from
-/// (TU3 82C4E568, once per body build): the type record's mass (data +304),
-/// velocity caps (+292 linear, +296 angular), drag (+308 / +336) and the box
-/// inertia shape (+16 scale and +32 offset on the AABB half extents).
+/// Per-type body values a DMO builds its Inertia from (82C4E568): mass, caps, drag, box inertia shape.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DmoBodyData {
     pub mass: f32,
@@ -262,14 +259,7 @@ pub struct DmoBodyData {
     pub inertia_offset: Vector3,
 }
 
-/// TU3 82C4E568 Inertia fill for a DMO body from its local AABB half extents:
-/// inverse mass = 1 / mass (+16), caps and drag copied as is (+24 / +28 /
-/// +32 / +36), and the box inertia of 82C47FC8 on
-/// `h = half_extents * inertia_scale + inertia_offset` (vmaddfp, fused). When
-/// any of h.x, h.y, h.z is not > 0 (NaN included) retail uses (1000, 1000,
-/// 1000) instead (0x82256FE8). 82C47FC8: k = (1/3) / inverse mass, inverse
-/// tensor = 1 / (k (h.y^2 + h.z^2), k (h.x^2 + h.z^2), k (h.x^2 + h.y^2)) with
-/// two Newton steps on the estimate, +20 = 1 / the smallest inverse moment.
+/// 82C4E568 Inertia fill for a DMO body (box inertia 82C47FC8, fallback 1000 at 0x82256FE8): docs/hails-additions/27-dynamic-props.md#dmo-body-inertia-fill
 pub fn dmo_body_inertia(half_extents: Vector3, data: DmoBodyData) -> RetailInertiaDynamics {
     let inverse_mass = 1.0 / data.mass;
     let h = Vector3::new(

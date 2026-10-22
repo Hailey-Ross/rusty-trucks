@@ -1,22 +1,5 @@
-//! NPC skater natural stance (regular / goofy), set once at spawn from the character record.
-//!
-//! Retail [code] (doc 26, "NPC skater natural stance"): every NPC skater spawn refills its CAS
-//! slot from the skater's character record (`GetCACSettings` `82590B50`, 168-byte entries at
-//! `[0x83067060 + 8]`); the actor ctor (`82590DC0`) reads `goofy = (byte +120 == 0)` and passes it
-//! to `Initialize82B97E38`, which stores it at character +228 (read back by virtual +128
-//! `82B97168` and the Lua bindings `GetIfSkaterIsRegularStance` `8284B910` / `IsRegular`). For a
-//! regular skater the same initialiser selects the orientation and mirror bits (`0xC000_0000` of the
-//! animation flags), so every bind pose adds `BOARD_BACKWARDS` and mirrors (mode 2); a goofy skater
-//! draws the stock rig as authored. The player's `SkaterAnimation::set_customisation` does the same.
-//!
-//! [data]: the record class (91BCA6693EFC9AA7) is not in our setup export, so the values come from
-//! our own measurement table [`RETAIL_TABLE`] (`npc_natural_stance.tsv`: record name, record id,
-//! stance, measured / inferred / unseen). A record the table does not know keeps the engine default,
-//! goofy (the stock rig, what every NPC drew before this port).
-//!
-//! Mods: [`resolve`] takes overrides keyed by record id (16 hex digits) or record name; a mod's
-//! value wins over the table. Deterministic: the stance is a pure function of the spawn record's
-//! character and the overrides, so a client derives the host's value from the spawn record.
+//! NPC skater natural stance (regular / goofy), set once at spawn from the character record (82590DC0).
+//! Retail mechanism, data and mod overrides: docs/hails-additions/26d-living-world-skater-stance.md#natural-stance
 
 use std::collections::BTreeMap;
 
@@ -151,19 +134,7 @@ pub fn resolve(table: &[StanceRow], overrides: &BTreeMap<String, NaturalStance>,
         .unwrap_or(NaturalStance::DEFAULT)
 }
 
-/// The stance bits a skater's trick clips toggle (retail SkaterAnim flags `+15180` bit 31
-/// "orientation" / board backwards, bit 30 mirror, and the relative stance `+15196`, 1 = switch).
-///
-/// Retail [code]: every actor's animation step (`82593230`, NPC skaters and the player alike, the
-/// actor's SkaterAnim at actor `+1804 - 14960`) runs the tree, then `82B98980`, which queries the
-/// current tree's attributes for `animboardbackward`, `mirrored` and `switch` (virtual +96, names
-/// at `0x830BFAB4` / `0x830C0694` / `0x830C02A4`) and toggles bit 31, bit 30 and the relative stance
-/// once per frame each is present. The natural stance sets the start value (`Initialize82B97E38`:
-/// regular = bits 31 and 30 set). The bits bake into every tree built afterwards (the bind pose
-/// tail, `MotionAnimation::add_bind_pose`): a tree keeps the bits it was built with.
-///
-/// Plain data (three bools; [`Self::to_bits`] / [`Self::from_bits`] for a snapshot): a pure
-/// function of the natural stance and the trick clips played, so a client derives the host's value.
+/// Stance bits trick clips toggle (SkaterAnim +15180 bits 31 / 30, +15196; 82593230 -> 82B98980): docs/hails-additions/26d-living-world-skater-stance.md#stance-flags
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StanceFlags {
     /// Bit 31: `BOARD_BACKWARDS` / `BOARD_BACKWARDS_IK` in the bind pose.
@@ -194,20 +165,12 @@ impl StanceFlags {
         }
     }
 
-    /// The board-flipped byte the actor publishes to physics: [code] `GetPhysUpdateData`
-    /// `82B985E8` writes packet `+10368` = bit 31 xor bit 30 (the player's
-    /// `physics_packet::publish_evaluated`). False for both natural stances; a shove-it (bit 31
-    /// alone) sets it. Retail physics reads it as Processed `+2468` bit 20 (the deck's effective
-    /// frame `82C01BF8`, push foot frame, deck angles), never in the riding-fakie rule.
+    /// Board-flipped byte published to physics (82B985E8: bit 31 xor bit 30): docs/hails-additions/26d-living-world-skater-stance.md#board-flipped-byte
     pub fn board_flipped(self) -> bool {
         self.board_backward ^ self.mirrored
     }
 
-    /// The board axis retail's riding-fakie rule (`UpdateRidingFakie82BB2330`) reads, from the
-    /// actor's root Z `axis`: [code] `Fill82BE1AE8` stores row 2 of `GetEffectiveRoot82BE3650`
-    /// to PhysOutSkeleton `+0`, which copies Skeleton `+11920` and negates rows 0 and 2 iff
-    /// Processed `+2476` bit 2 (= packet `+10370`, the mirror bit 30). Bit 31 is not read: a
-    /// shove-it does not change the fakie rule's input.
+    /// Board axis of the riding-fakie rule (82BB2330 via GetEffectiveRoot82BE3650; mirror bit only): docs/hails-additions/26d-living-world-skater-stance.md#fakie-board-axis
     pub fn fakie_board_axis(self, axis: [f32; 4]) -> [f32; 4] {
         if self.mirrored { axis.map(|v| -v) } else { axis }
     }
@@ -255,11 +218,7 @@ impl StanceEvents {
     }
 }
 
-/// Whether a clip attribute (`begin` / `end` normalised to the clip, `-1` = untimed) is in the
-/// collected list of a clip that advanced from `previous_time` to `time` s without wrapping
-/// (`GetAttributes82D25E30` with the full mask, as the player's `refresh_tree_attributes`):
-/// untimed records always, timed ones when their span meets the advanced window (`end >
-/// previous_time && begin <= time`, [`crate::animation::clip_clock::ClipClock::attribute_status`]).
+/// Whether a clip attribute is in the window `previous_time..time` (GetAttributes82D25E30, untimed always).
 pub fn attribute_in_window(begin: f32, end: f32, length: f32, previous_time: f32, time: f32) -> bool {
     begin == -1.0 || (end * length > previous_time && begin * length <= time)
 }
@@ -297,10 +256,7 @@ mod tests {
         assert_eq!(h, StanceFlags::default(), "the retail name no longer toggles");
     }
 
-    /// Player reference: the board-flipped byte equals the player's publication
-    /// (`physics_packet::publish_evaluated`, `82B985E8`) for every bit combination, and the
-    /// riding-fakie rule (`riding_fakie::State`, `82BB2330`) on [`StanceFlags::fakie_board_axis`]
-    /// gives the same answer before and after a shove-it (bit 31 toggled).
+    /// Player reference: board-flipped byte and riding-fakie rule match the player (82B985E8, 82BB2330).
     #[test]
     fn board_flipped_and_fakie_axis_match_the_player_reference() {
         use crate::animation::output::physics_packet::{PhysicsPosePacket, SkaterPublicationState, publish_evaluated};

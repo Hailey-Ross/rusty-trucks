@@ -325,10 +325,7 @@ pub enum Command {
     /// Upright one dynamic prop (stable map id): retail cMsgUprightDMO, the 2 s self-righting
     /// window (doc 27, Upright).
     WorldUprightProp { id: u32 },
-    /// Create a dynamic prop mid-game (the engine path behind released hand props, doc 27
-    /// "Props created mid-game"): a copy of map prop `from` (its model, collision and physics
-    /// block) at `position`, turned `yaw` radians about world up, moving at `velocity` (m/s) and
-    /// spinning at `spin` (rad/s). Keyed per mod (`key` again replaces it); removed on disable.
+    /// Create a dynamic prop mid-game: a copy of map prop `from` at a pose and velocity; per mod key, removed on disable.
     WorldSpawnProp {
         key: String,
         from: u32,

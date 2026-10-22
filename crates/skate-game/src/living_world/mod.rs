@@ -1,21 +1,5 @@
-//! Living world, engine side (doc `docs/hails-additions/26b-living-world-population.md`, milestone 2: the
-//! population core). Runs `skate_core::living_world` around the local player at the console
-//! cadence and publishes spawn / despawn decisions as messages. Consumers: the replay-tier NPC
-//! skaters ([`npc_skaters`], milestone 3); peds and cars come with their milestones.
-//!
-//! Data: the setup group `livingworld` export (`private/living_world/`): `tables.json`
-//! (census caps, ranges), `<District>.census.bin`, `skater_profiles.json`,
-//! `skater_paths/<District>.bin`. Without it the world stays empty.
-//!
-//! Multiplayer seams (no networking here): [`NetRole`] decides who runs the population.
-//! Standalone and Host run the rules; a Client never does and only mirrors records it is given
-//! ([`PopulationState::apply_records`]). Records serialise ([`WireRecord`]). Retail default:
-//! nothing ambient spawns in an online session (culling still runs).
-//!
-//! Mod surface (doc 26 "Modding"): [`LivingWorldSettings`] is the one place settings and mods
-//! change the living world; mods patch it through `sdk.world.set_tuning('living_world', ...)`
-//! (`modding::world_tuning`), and a mod that stops is undone with
-//! [`LivingWorldSettings::reset_mod_overrides`].
+//! Living world, engine side: runs the population core around the local player and publishes spawn / despawn.
+//! Details: docs/hails-additions/26b-living-world-population.md#living-world-engine-side
 // Messages and records for consumers the engine does not have yet.
 #![allow(dead_code)]
 
@@ -103,10 +87,7 @@ pub(crate) struct LivingWorldSettings {
     /// Ped draw fade by camera distance and spawn fade in (retail: the model's 45 / 55 m pair,
     /// 1 s in; `skate_core::living_world::peds::fade`). A mod may change or disable it.
     pub ped_fade: skate_core::living_world::peds::PedFadeConfig,
-    /// Props and mod bodies as ped navigation obstacles (fix 11; retail DynamicObject NavPower
-    /// obstacles: 0.2 m minimum half extent, no cut above 0.4 m/s, re-cut after 0.25 x the
-    /// smallest half extent; `skate_core::living_world::peds::obstacles`). A mod may change or
-    /// disable it; `LivingWorldSettings::default()` restores retail.
+    /// Props and mod bodies as ped navigation obstacles (fix 11; retail NavPower obstacle values); mod-changeable.
     pub ped_obstacles: skate_core::living_world::peds::ObstacleParams,
     /// Traffic cars touching peds (retail: on, the ped is pushed out of the car and walks on; no
     /// knock-down: `skate_core::living_world::peds::vehicle_contact`). A mod may switch the
@@ -120,12 +101,7 @@ pub(crate) struct LivingWorldSettings {
     pub ped_body: ped_body::PedBodySettings,
     /// Ped navigation (mod `ped_nav`); copied into [`peds::PedNavSettings`] when it changes.
     pub ped_nav: peds::PedNavSettings,
-    /// NPC draw distance (QoL, not retail; `skate_core::living_world::draw_distance`): every
-    /// population range (census circles, ped draw fade, NPC skater ranges, cars) x this, caps x
-    /// its square. 1.0 = retail. The value in effect: the settings menu writes the player's choice
-    /// here and into [`Self::user_npc_draw_distance`]; a mod may set it, and
-    /// [`Self::reset_mod_overrides`] puts the player's choice back. Owned by the population
-    /// authority (it decides what exists); a client never feeds its own value into the rules.
+    /// NPC draw distance multiplier (QoL, not retail; 1.0 = retail): docs/hails-additions/26b-living-world-population.md#npc-draw-distance-setting
     pub npc_draw_distance: f32,
     /// Mod overrides of the NPC skater puppet clip, keyed by the stable phase id
     /// (`ReplayPhase::name`) or `<phase>.<style>`; empty = the shipped picks
@@ -139,15 +115,9 @@ pub(crate) struct LivingWorldSettings {
     /// digits) or record name; empty = the retail table (`skate_core::living_world::stance`). Read
     /// at spawn (retail sets it once from the record). Cleared by [`Self::reset_mod_overrides`].
     pub skater_stance: std::collections::BTreeMap<String, skate_core::living_world::stance::NaturalStance>,
-    /// Mod renames of the clip attributes that toggle an NPC skater's stance bits, keyed by
-    /// `board_backward` / `mirrored` / `switch` (`skate_core::living_world::stance::StanceEvents`);
-    /// empty value = that toggle off; empty map = retail (`animboardbackward` / `mirrored` /
-    /// `switch`). Cleared by [`Self::reset_mod_overrides`].
+    /// Mod renames of the stance-toggling clip attributes; empty value = toggle off; empty map = retail.
     pub skater_stance_events: std::collections::BTreeMap<String, String>,
-    /// The trick an NPC skater does at a recorded ollie / flip slot (retail: re-picked from the
-    /// character's profile table when the recorded air is long enough;
-    /// `skate_core::living_world::npc_tricks`). A mod may change the mode and the gate windows;
-    /// `LivingWorldSettings::default()` restores retail.
+    /// Trick at a recorded ollie / flip slot (retail re-pick from the profile table); mod-changeable.
     pub npc_tricks: npc_skaters::NpcTrickSettings,
     /// Mod trick tables per character key or `ai_skater_profiles` name (a key wins over a profile
     /// name; an absent table keeps the disc's); empty = the disc's tables. Read at each slot.
@@ -596,12 +566,7 @@ pub(crate) struct LivingWorldObservers {
 /// compares |v|^2 against `0x8209BE90` = 1e-4 [code]).
 const FOCUS_STILL_SPEED2: f32 = 1e-4;
 
-/// The census focus of one player: the player's character, not the board (retail
-/// `sub_826BDB50` -> `sub_826BE7D0` / `sub_826BE870` read the focused skater's `+52` component
-/// position and its velocity [code], `.local/research/npc/fix3-pedcull.md`). `position` /
-/// `velocity` are the skater's physical centre of mass and its velocity, valid on board, walking,
-/// in the air and in a bail; the deck stays wherever the board was left. Non-finite values pass
-/// through: the census skips such a focus (`population.rs` guard).
+/// Census focus of one player: the character's centre of mass, not the board (826BDB50): docs/hails-additions/26b-living-world-population.md#census-focus
 pub(crate) fn player_focus(position: [f32; 3], velocity: [f32; 3]) -> Observer {
     let still = velocity.iter().map(|v| v * v).sum::<f32>() <= FOCUS_STILL_SPEED2;
     Observer { position, velocity: if still { [0.0; 3] } else { velocity } }

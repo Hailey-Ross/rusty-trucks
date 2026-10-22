@@ -1,17 +1,5 @@
-//! Ped takedowns (doc 26 "Ped takedowns"): which takedown a chasing ped can try on its target.
-//! Retail (TU3, evidence only; re-implemented; `.local/research/peds/b16-takedown-choice-contact.md`,
-//! main checked the setup data): the ped type's `livingworld_entity_takedown` record lists
-//! takedowns in priority order. Each tick (`82E3C000`, from TakeDownTargetablePredictions):
-//! - the approach side: `n = normalize(ped - target)`, `dot = n . target velocity`; side 1 when
-//!   the target comes towards the ped (`dot > 0`), else 2; `speed = |dot|`;
-//! - an entry with a side needs that side and a speed above its minimum;
-//! - per entry (`82E3B548`): the target `lead + 0.06` s ahead (`pos + vel t`); more than 1.25 m
-//!   above or below fails, else flattened to the ped's height; the distance from the ped's
-//!   reach point (`ped + 0.2 x forward`) must lie in `(min + 0.2 + 0.06 s, reach + 0.2 + 0.06 s]`
-//!   (`s` = the ped's speed); the signed bearing (about up, positive when
-//!   `(forward x to_target) . up > 0`) in `[angle_min, angle_max]` degrees, or, for an entry that
-//!   allows it, in `[-angle_max, -angle_min]` (mirrored, the `anim_b` clip);
-//! - the first entry that fits wins.
+//! Ped takedowns: which takedown a chasing ped can try (82E3C000, 82E3B548; b16).
+//! Retail choice rules: docs/hails-additions/26g-living-world-ped-interactions.md#ped-takedown-choice
 
 use super::super::Vec3;
 

@@ -1,9 +1,5 @@
-//! The living world's models, loaded behind the startup loading screen and kept for the map (research b226 item 3,
-//! plan b229): every ped recipe a census spawn can get, every car GLB of the vehicle catalog, every NPC skater look and
-//! every hand prop, from the same functions the spawners call (`peds::glb_path`, `vehicles::car_glb`,
-//! `npc_skaters::look_path`, the hand prop record). A spawner's own `server.load` of the same `#Scene0` path then gets
-//! the loaded asset at once instead of loading it in the first seconds of play; anything not in the set still loads
-//! lazily as before. The set follows mod looks and overrides (rebuilt when they change) and the map.
+//! The living world's models preloaded behind the startup loading screen (b226, b229), following mods.
+//! Details: docs/hails-additions/26b-living-world-population.md#living-world-preload
 use super::{npc_skaters, peds, vehicles, PopulationState};
 use bevy::asset::RecursiveDependencyLoadState;
 use bevy::prelude::*;

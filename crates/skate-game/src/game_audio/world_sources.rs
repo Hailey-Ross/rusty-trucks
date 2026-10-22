@@ -596,10 +596,7 @@ pub(crate) fn register(app: &mut App) {
         .add_systems(Update, release_banks_hold.after(frame));
 }
 
-/// The startup hold for the world banks: the native runtime only exists once the audio's first start is done, so
-/// [`frame`]'s prefetch asks for the banks then, and the first owners came one frame later and took them still
-/// queued, decoding nearly all of them on the game thread (cold disk 2026-10-18: one 4028 ms frame, 3.8 s of it in
-/// this system). The loading screen now stays up until the prefetch has them.
+/// Startup hold for the world banks: the loading screen stays until the prefetch has them (no game-thread decode).
 const BANKS_HOLD: &str = "world_audio_banks";
 const BANKS_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 

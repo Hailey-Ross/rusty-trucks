@@ -1,12 +1,5 @@
-//! DMO streaming in the game (doc 27 "DMO streaming"): the map's placed props run through the retail DMO census
-//! (`skate_core::living_world::dmo`, census slot 2 of 4) and a culled or evicted prop goes dormant
-//! (`GamePhysics::stream_prop`: body asleep and still, collision parked, model hidden); a spawn brings it back at its
-//! authored pose, as retail respawns a culled DMO from its placement record (research b98: nothing writes the live pose
-//! into the record; the moved-pose map only rebuilds records at a chunk reload, not modelled). Props in the player's
-//! saved placement layouts (#15, not retail) are never streamed, so layouts survive.
-//!
-//! On by default, as retail streams its DMOs; `SKATE_DMO_STREAM=0` (or a mod) turns it off, and then every placed
-//! prop exists all the time. Logs `DMO_STREAM` (counts per change) and `DMO_STREAM_CHANGE` per decision.
+//! DMO streaming in the game: placed props run through the retail DMO census; culled props go dormant (b98).
+//! Details and switches (`SKATE_DMO_STREAM=0`): docs/hails-additions/27-dynamic-props.md#dmo-streaming-game-side
 
 use bevy::prelude::*;
 use skate_core::living_world::dmo::{DmoDecision, DmoStream, DmoStreamSettings, DmoView, DmoWeights};
@@ -125,11 +118,7 @@ pub(crate) fn stream_dmos(
     let held = physics.prop_carry.held();
     let layout: std::collections::BTreeSet<u32> = physics.prop_carry.layout().keys().copied().collect();
     let Some(stream) = st.stream.as_mut() else { return };
-    // Kept (never the eviction front): a prop moved off its authored spawn pose. NOT RETAIL YET: retail's keep comes
-    // from the object's own state (`sub_82C485C0` DMO+0x1170 bit 0x20, `sub_82C56AE8` state word DMO+0x112C == 1;
-    // research b184); "moved" is our reading of it until a trace settles it. Before 2026-10-17 any prop could be the
-    // front, so a prop the player had knocked was evicted and came back at its authored pose about 27 times a second
-    // in DownTown (laptop session 14:36: 21,037 evictions vs 353 culls).
+    // Kept: a prop moved off its authored pose (NOT RETAIL YET: retail keep from 82C485C0 / 82C56AE8, b184).
     let moved: std::collections::BTreeSet<u32> = physics.prop_dynamics().map(|d| d.moved_ids().into_iter().collect()).unwrap_or_default();
     let decisions = stream.step_kept(&views, &core, fill, &|id| held == Some(id) || layout.contains(&id), &|id| moved.contains(&id));
     if decisions.is_empty() && !fill {

@@ -305,10 +305,7 @@ impl Editor {
         if channels { LANES[self.channel % 7] } else { &[] }
     }
 
-    /// D-pad Down released (b461 / b462): a hard key at the cursor that keeps the values in effect. Without the pack a
-    /// camera key holding the camera in effect plus hard keys on speed and shake (`82C7F610`: channels 0, 5, 4
-    /// together); with the pack a key on the active channel only (`82835F08(take, 1)`). Refused at a key, at the clip's
-    /// ends (the marker spacing) or at the cap (retail's error sound / popup, `82613500` / `82613598`).
+    /// D-pad Down released (b461 / b462): a hard key at the cursor (82C7F610, 82835F08): docs/hails-additions/37-instant-replay.md#drop-marker
     pub fn drop_marker(&mut self, time: f64, channels: bool) -> Result<(), EditError> {
         let frame = self.frame(time);
         let lanes = self.channel_lanes(channels);
@@ -362,14 +359,7 @@ impl Editor {
         }
     }
 
-    /// D-pad Up released, answered Yes (b407, `82613910` -> `82C7FD60`): remove the key at the cursor on the active
-    /// channel. A clip marker also takes every soft key in the clips on both sides, up to the next hard key each way
-    /// (`82C7FB08`; retail's own text, ID_REPLAY_EDITOR_POPUP_CLIPMARKER). On the camera channel a clip marker delete
-    /// also resets the merged clip (research b460, `825086F0`): the surviving key before it gets the default lens
-    /// (clamped to the lens range), and speed / shake take their lane defaults: over the whole merged span without the
-    /// film pack (retail removes the marker on channels 0 / 5 / 4 / 1 together), only the value in effect at the cursor
-    /// with it (`channels`). Look lanes and soft key deletes are untouched. Retail's near clip (channel 1 element 0xE,
-    /// 0.1) has no counterpart here. Values are data (`CameraRules`, the lanes' `LaneSpec::default`).
+    /// D-pad Up released, Yes (b407, 82613910 -> 82C7FD60): remove the key at the cursor: docs/hails-additions/37-instant-replay.md#remove-marker
     pub fn remove_marker(&mut self, time: f64, channels: bool) -> bool {
         let lanes = self.channel_lanes(channels);
         if !lanes.is_empty() {

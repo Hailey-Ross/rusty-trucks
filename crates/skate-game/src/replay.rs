@@ -277,10 +277,7 @@ impl Replay {
         }
     }
 
-    /// The recorded audio steps the cursor crossed going forward since the last call, oldest first; a jump back
-    /// gives the step at the cursor without its one-step pulses (a reverse scrub replays no push). Nothing while the
-    /// cursor stands still: then [`Replay::audible`] is false and the game sound is muted (retail mutes a paused
-    /// replay).
+    /// Recorded audio steps crossed going forward since the last call; nothing while paused (retail mutes it).
     pub(crate) fn audio_steps(&mut self) -> Vec<crate::game_audio::skate_events::Riding> {
         if !self.active {
             self.fed = None;
@@ -583,10 +580,7 @@ fn live(replay: Res<Replay>) -> bool {
     !replay.active
 }
 
-/// Run condition for the living world's fixed steps: frozen during a replay, as retail plays recorded data. Without
-/// it the population kept stepping: peds walked away from the frozen skater and despawned by distance while the
-/// replay was open (desktop session 2026-10-20: 26 PED_DESPAWN lines during one replay, the hit ped among them).
-/// Apps without a replay (unit tests) always run.
+/// Run condition: the living world's fixed steps freeze during a replay, as retail plays recorded data.
 impl Replay {
     /// The playback cursor (s on the recording's clock).
     pub(crate) fn cursor(&self) -> f64 {
@@ -601,10 +595,7 @@ fn apply_user_length(menu: Option<Res<crate::graphics_menu::Menu>>, mut replay: 
     }
 }
 
-/// The editor's own keys (research b386, modes 6 / 2 / 0xB); true = the frame's input is used up. RB plays from the
-/// cursor (from the in point when at the out point), LB held trims with the sticks, the D-pad released drops /
-/// removes markers and jumps to the in / out points, A opens the effects menu (Up / Down row, Left / Right value, B
-/// back to the timeline).
+/// The editor's own keys (b386, modes 6 / 2 / 0xB); true = input used up: docs/hails-additions/37-instant-replay.md#editor-keys
 fn editor_controls(
     replay: &mut Replay,
     channels: bool,
@@ -625,6 +616,7 @@ fn editor_controls(
     let mut play: Option<bool> = None;
     let mut ask: Option<MarkerAsk> = None;
     let Some(editor) = replay.editor.as_mut() else { return false };
+    let (mode_before, channel_before) = (editor.session.mode, editor.channel);
     let used = match editor.session.mode {
         EditorMode::Effects => {
             if pressed & DPAD_UP != 0 || keys.just_pressed(KeyCode::ArrowUp) {
@@ -788,6 +780,9 @@ fn editor_controls(
             }
         }
     };
+    if editor.session.mode != mode_before || editor.channel != channel_before {
+        info!("REPLAY_EDITOR mode {:?} -> {:?} channel {} -> {}", mode_before, editor.session.mode, channel_before, editor.channel);
+    }
     if ask.is_some() {
         replay.marker_ask = ask;
         replay.playing = false;
@@ -834,10 +829,7 @@ fn load_shake(config: Option<Res<crate::config::Config>>, mut replay: ResMut<Rep
 }
 
 impl Replay {
-    /// The editor's camera shake at the cursor (the shake lane's level, timed from the in point), in camera space.
-    /// OURS: the quaternion is normalised (retail's is not, `82C8AF50`).
-    /// The editor's camera at the cursor: the clip's camera key posed on the skater root, and its lens (vertical FOV,
-    /// radians); None = the recorded camera at its own lens.
+    /// The editor's camera at the cursor (key on the skater root, lens as vertical FOV); None = recorded camera.
     pub(crate) fn editor_camera(&self, root: &Transform) -> (Option<Transform>, Option<f32>) {
         let Some(editor) = self.editor.as_ref() else { return (None, None) };
         editor.pose(self.cursor, root)
@@ -969,14 +961,16 @@ pub(crate) fn controls(
             replay.photo = if choice == 1 { Photo::Capture } else { Photo::Idle };
         }
     }
-    // Retail help (FE 13 over the replay screen): A turns the page, B or Start closes it; nothing else reaches the
-    // replay meanwhile. Needs the retail screen (no help without it).
+    // Retail help (FE 13 over the replay screen, handler 82616B40, b500): A turns the page, B closes it; nothing else
+    // reaches the replay meanwhile. Needs the retail screen (no help without it).
     if replay.active && replay.help_open && !menu_open {
         if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
             replay.help_turns += 1;
+            info!("REPLAY_HELP page {}", replay.help_turns);
         }
-        if pressed & (B | START) != 0 || keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace) {
+        if pressed & B != 0 || keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace) {
             replay.help_open = false;
+            info!("REPLAY_HELP close");
         }
         input.discard_gameplay();
         return;
@@ -1001,10 +995,7 @@ pub(crate) fn controls(
         } else if (back || pressed & B != 0) && !effects {
             replay.quit_on_release = true;
         }
-        // Retail: B (Finished) or Back opens the Finished menu; with nothing to save or upload that is the quit
-        // warning (ID_REPLAY_EDITOR_QUIT, No / Yes; research b387 / b389). Raised once the button is up: the press
-        // that asked for it otherwise reached the popup the next frame and cancelled it at once (desktop session
-        // 2026-10-20, log: popup 0 shown, choice -1 48 ms later). Without the retail menu stage: leave.
+        // Retail: B / Back opens the Finished menu or the quit warning (b387 / b389), raised once the button is up.
         if replay.quit_on_release && pad.buttons & (B | SELECT) == 0 && !keys.pressed(KeyCode::F6) {
             replay.quit_on_release = false;
             if popups.stage_ready {
@@ -1059,6 +1050,7 @@ pub(crate) fn controls(
     // Retail: Start opens the help (FE 13, research b389 / b391), only with the retail screen (`retail_ui`).
     if (pressed & START != 0) && retail_ui.as_ref().is_some_and(|r| r.0) {
         replay.help_open = true;
+        info!("REPLAY_HELP open");
         return;
     }
     // Retail: L3 hides / shows the panel (kHideEditor / kShowEditor; the movie's Hide / Show prompt follows). H on
@@ -1204,9 +1196,13 @@ fn setup_ui(mut commands: Commands) {
 #[derive(Resource, Default)]
 pub(crate) struct ReplayFeed(pub crate::replay_menu_host::ReplayScreenFeed);
 
-/// The retail replay screen is shown (set by `retail_menu_stage`); our Bevy panel is the fallback without it.
+/// The retail replay screen is shown / still loading (set by `retail_menu_stage`); our Bevy panel is the fallback
+/// without it (research b500).
 #[derive(Resource, Default, PartialEq)]
-pub(crate) struct RetailReplayUi(pub bool);
+pub(crate) struct RetailReplayUi(pub bool, pub bool);
+
+/// How long the Bevy panel waits for a loading retail screen before it shows anyway.
+const RETAIL_UI_WAIT_S: f32 = 3.0;
 
 /// The retail screen shown is the Create pack's replay editor (replay_editor3, product CCF0007; research b410 /
 /// b411): the editor's edit channels and look rows are on. Set by the menu stage.
@@ -1254,12 +1250,16 @@ fn publish_feed(replay: Res<Replay>, mut feed: ResMut<ReplayFeed>) {
 fn update_ui(
     replay: Res<Replay>,
     retail: Res<RetailReplayUi>,
+    time: Res<Time>,
+    mut waited: Local<f32>,
     mut roots: Query<&mut Node, With<ReplayUi>>,
     mut labels: Query<&mut Text, With<ReplayLabel>>,
     mut bars: Query<&mut Node, (With<Playhead>, Without<ReplayUi>)>,
 ) {
+    *waited = if replay.active && retail.1 { *waited + time.delta_secs() } else { 0.0 };
+    let loading = retail.1 && *waited < RETAIL_UI_WAIT_S;
     for mut node in &mut roots {
-        node.display = if replay.active && !retail.0 && !replay.panel_hidden {
+        node.display = if replay.active && !retail.0 && !loading && !replay.panel_hidden {
             Display::Flex
         } else {
             Display::None

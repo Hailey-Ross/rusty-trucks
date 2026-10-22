@@ -1,12 +1,5 @@
-//! Startup splash (Windows): a small window of its own, up from the first moment of the process, with a skateboard
-//! (no skater) rolling across it and exactly what is loading written under it, the last finished steps dimmed below
-//! (like RPCS3's progress lines). It runs on its own thread with its own message loop, so it keeps animating while
-//! the game thread is busy (config, skater, physics, world, menus, the audio runtime). The game window is created
-//! hidden and shown when the start is done (`startup_loading`), and then the splash closes.
-//!
-//! Steps are reported from any thread with [`stage`] (a step: "Loading physics") and [`detail`] (the item being
-//! read: "sound bank grind_concrete"). Not retail: retail boots into its own movies; this only covers our engine's
-//! start. `SKATE_NO_SPLASH=1` turns it off (scripted runs that want no extra window).
+//! Startup splash (Windows, own thread and window) with the loading steps; not retail; `SKATE_NO_SPLASH=1` off.
+//! Details: docs/hails-additions/08-setup-performance.md#startup-splash
 use std::ffi::c_void;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -315,10 +308,7 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: 
     }
 }
 
-/// One frame, drawn into a memory bitmap and copied over (no flicker).
-/// The board, side view, `len` px long with its left end at `x` and its top at `y`: kicked nose and tail, griptape
-/// over a maple edge, two trucks, solid urethane wheels, and a
-/// shadow on the ground. Drawn at 4x and scaled down with HALFTONE, so the edges are smooth.
+/// One frame drawn into a memory bitmap: the side-view board at 4x, scaled down with HALFTONE.
 unsafe fn draw_board(dc: Hdc, x: i32, y: i32, len: i32) {
     const S: f32 = 4.0;
     const H: i32 = 40;

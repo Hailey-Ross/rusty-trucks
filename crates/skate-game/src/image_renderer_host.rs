@@ -1,7 +1,5 @@
-//! The front end's image slot manager (`*(FUN_824AD2F0() + 0x120)`, research b258): 40 global slots the movies
-//! reserve, load a named runtime image into and draw through an `ImageRenderComponent` clip (the Challenge Map
-//! pictures). The `Game.ImageRenderer_*` natives live here; the draw resolves `slot/<n>` texture keys through
-//! [`ImageSlots::texture`]. Mods reach the pictures through the image names (`RetailMenuMovies::set_named_image`).
+//! The front end's image slot manager (b258): 40 slots, `Game.ImageRenderer_*` natives, `slot/<n>` textures.
+//! Details: docs/hails-additions/31-retail-menus.md#image-slots
 
 use crate::apt_vm::{to_integer, Value};
 use crate::retail_menu_movies::{image_key, NAMED_IMAGE_PREFIX};

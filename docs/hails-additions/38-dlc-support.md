@@ -469,7 +469,7 @@ Not yet run end to end: the launcher's import followed by its automatic refresh 
   (`BoardWorld::query_thin_line`). Checkpoint replies, NPC placements and the session marker are unchanged (retail's
   fit-up is in the teleport message only; whether the marker return also goes through it is open, b473). Mods:
   `sdk.player.teleport{..., ground_fit = false}` places exactly (default true), carried on the multiplayer teleport
-  wire. Open: retail's query mask 7 (whether props count; ours: static world only).
+  wire. Retail's query mask 7: see "What the fit-up ray hits" below.
 - **Tests:** `fit_arrival_to_ground` F1..F7 (skate-core), `travel_fits_the_arrival_onto_the_ground` (asset-gated: a
   target 3 m up lands near the ground, no fall). Likely fixes most of b476's high arrivals: not play-tested.
 - **Automated check (2026-10-21 night):** `SKATE_VERIFY_TELEPORTER=teleport_dwmc_01` on DLC_DW_MegaCompund: the exit
@@ -480,3 +480,58 @@ Not yet run end to end: the launcher's import followed by its automatic refresh 
   Locations entry, row 3) and the skater fell through empty space to y -1000 at all four (screenshots). So our data
   and collision match retail; the exits only make sense while their challenge runs (their volumes sit at the same
   depth, unreachable in free skate). Nothing to fix.
+
+## What the fit-up ray hits
+
+(2026-10-22, research b493 / b494)
+
+- **Retail [code, b493; main checked `82764AB0`]:** the fit-up ray's mask 7 reads bit 1 = the GroundPool (map and
+  fused park, container +0x2C), bit 2 = the DMOs (dynamic props, +0x5580), bit 4 = the vehicles (+0x5584, only when
+  the island mode is 3: offline normal skating; Ghost / online have none). Bit 8 (the TerrainPool, so IgnoreFuser park
+  pieces) is not in it; peds and the skater are never hit. Faces [code, b494]: one-sided winding test, no surface
+  filter; ours matches.
+- **Before:** ours cast against the static world only (plus mod moving solids, which share its external query), so an
+  arrival over a prop or a parked car landed inside it.
+- **Change:** `player_input::services::arrival_hit` takes the nearest hit of the static world, the props' collision
+  layer and this tick's solve proxies in `VEHICLE_GROUP` (traffic cars only; peds, NPC skaters and other proxies stay
+  out). Data: `GroundFit.props` / `GroundFit.vehicles` (default on, retail). Our traffic only exists in offline
+  play, which matches retail's mode 3 gate. Mod solids still count (ours, no retail equivalent).
+- **Tests:** `the_fit_up_ray_hits_props_and_cars` (prop, car, floor; both switches off; a ped proxy ignored). Not
+  play-tested.
+
+## Code reference: teleporters.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/teleporters.rs`; each comment there links its section here.
+
+### Teleporters code
+
+Retail teleporters (doc 38 "Teleporters"; research b420 / b421 / b423): the disc's and the DLC maps' teleport challenges, from setup's `private/teleporters.json` (tools/asset_pipeline/teleporters.py).
+
+Retail (stategraph `challenge_stategraph/teleport`, b421): every teleporter of the loaded district is armed; the local skater entering its volume shows the on-screen prompt (the action overlay's Teleport state with the challenge's title, D-pad Up), leaving hides it; D-pad Up asks `Popup.ShowYesNoPopup(Title, "ID_PAUSEMENU_CONFIRM")` (options No / Yes, `828556D8`) for one exit, or a list of the exits for several; Yes takes exit 0 (a list option takes its exit), No goes back to waiting. Returning to waiting resets the volume, so a skater still inside is asked again: no cooldown. The move: an exit on the loaded map is placed at once (`82864038` -> skater `825926F8`, the actor-reset chain `request_manual` ports, b423); another map goes through the map transition first (`828646E0`: far when the target world differs), as Challenge Map teleports do.
+
+The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, state 2 with the title; research b426) on the menu stage; our own text line stands in when the stage or the movie is missing (sets exported before the movie), and then the confirm is skipped too. Mods add or replace teleporters with `sdk.triggers.teleporter` (modding/triggers.rs).
+
+## Kept DLC maps keep their side data
+
+(2026-10-22, USER-ASKS 164 / 259)
+
+- **Problem:** a refresh without the DLC folder keeps a DLC map that still loads (`install.py`, the retained-map
+  loop), but the steps that rebuild an aggregate file from the sources rebuilt it without that map: its teleporters
+  (`teleporters.json`), Challenge Map locations (`teleports.json`), skate.Park worlds and layouts (`park-layouts/`,
+  deleted and rebuilt), the packs' collection rows (`stock/dlc`, skipped when the core group re-extracts stock), the
+  unlock lines (`dlc-unlocks.json`, empty without packages, so hidden-flag locations stay hidden) and the audio
+  manifest (`audio/` is cleared and rebuilt, so the `*_dlc_ambience` beds and the map's regions went). Per-map files
+  (sky, props, backdrop) already survived: the new installation starts as a copy of the previous one.
+- **User choice (2026-10-22):** "Carry old side data (Recommended)".
+- **Change:** `tools/asset_pipeline/retained.py`. When the run has no DLC folder, the kept DLC maps are the previous
+  installation's maps without a disc `worldDIST_*.big` that are still in `maps/` (`kept_dlc_maps`); `carry` adds
+  their rows to `teleporters.json`, `teleports.json`, `park-layouts/worlds.json` and `park-layouts/teleporters.json`
+  (by `map`, or the world's stream `DIST_<map>`), copies their layout files, and copies the previous `stock/dlc`
+  files, unlock lines and audio manifest entries (dict sections, with their files) the new run lacks. Nothing the
+  new run wrote is replaced, so a refresh with the folder back rebuilds everything from the packs. It runs on every
+  refresh without the folder, so the data survives repeated refreshes. Report line: `Kept DLC maps (...): side data
+  kept from the previous installation: ...`.
+- **Limits:** the audio manifest's list sections (`crossfades`) are not merged; a pack removed while other packs stay
+  (folder still present) is not handled; carried collection rows and unlocks are per pack, not per map.
+- **Tests:** `tools/asset_pipeline/test_retained.py` (kept maps, every file kind, the new run wins, idempotent).
+  Python asset tests 274 pass. Not refresh-tested with the folder hidden.

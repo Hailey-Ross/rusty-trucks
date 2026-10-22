@@ -1,10 +1,5 @@
-//! The on-screen keyboard (ours; doc 31 "Extras and cheat codes"): drawn while retail FE 46 (text entry) is on top,
-//! where retail showed the Xbox system keyboard. The state is `extras_host::TextEntryView` (the stage owns the input);
-//! this only builds its draws for the menu stage's layer, in the retail menus' own look (user 2026-10-22: "Skate 3
-//! popup style"): the frame of the Extras popup rebuilt at the keyboard's size from the same `controls/panel` pieces
-//! (corners, edges, fills, paper grain, with their UV turns and colours as the Extras movie draws them), the title in
-//! Futura Overprint, the selected-row blue (0x37A5FF) for the highlighted key and the connected pad's button prompts
-//! (`prompt/<button>`, resolved like the movies' CustomButtons) on the paper footer.
+//! The on-screen keyboard (ours) drawn while retail FE 46 is on top, in the retail menus' popup style.
+//! Look and pieces: docs/hails-additions/31-retail-menus.md#on-screen-keyboard-look
 use crate::apt_scene::{Draw, Fill, Vertex};
 use crate::apt_text::{Font, TextAssets};
 use crate::extras_host::TextEntryView;

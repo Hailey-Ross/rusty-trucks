@@ -242,19 +242,12 @@ impl Mods {
         self.busy_reason().is_some()
     }
 
-    /// Whether the per-frame snapshot has a reader: a running mod, or runtime state mods left behind (bodies,
-    /// graphics, commands, ...). The skater proxies alone (the living world's NPC skaters, peds and cars mirrored
-    /// into the mods' world for mod bodies to hit) have none, yet they kept the runtime busy, so with no mod at all
-    /// the game built the snapshot every frame and tick (about 0.6 ms of main thread a frame in DownTown, 2026-10-18).
+    /// Whether the per-frame snapshot has a reader (a running mod or state mods left); proxies alone do not count.
     fn snapshot_has_reader(&self) -> bool {
         self.busy_reason_except_proxies().is_some()
     }
 
-    /// Whether the mods' Rapier world steps this tick: the same rule as [`Self::snapshot_has_reader`]. With no mod and
-    /// nothing a mod left behind the world holds only the static ground and the skater proxies (re-posed every tick),
-    /// and nothing reads its step: skipping it saved ~0.4 ms per fixed step in DownTown (profile 2026-10-19, ask 79).
-    /// Rapier's carried-over contact state of the proxies then differs for a mod's first ticks; the user accepted
-    /// that (2026-10-19, "Allow it").
+    /// Whether the mods' Rapier world steps this tick: same rule as [`Self::snapshot_has_reader`].
     fn needs_dynamics_step(&self) -> bool {
         self.snapshot_has_reader()
     }
@@ -831,10 +824,7 @@ fn update(world: &mut World) {
         if !mods.runtime_busy() {
             return;
         }
-        // Proxies only: nothing below has work (no mod to call, no commands, graphics, attach or canvases). The
-        // snapshot is still built while the overlay is open (the mods menu can start a mod there) and around the next
-        // folder scan (`maintenance`, which can start one too), so a starting mod gets the same fresh snapshot as
-        // before.
+        // Proxies only: no work below, except building the snapshot while the overlay is open or around a folder scan.
         let frame = world.resource::<Time<Real>>().delta();
         if !mods.snapshot_has_reader()
             && !world.resource::<crate::graphics_menu::Menu>().open

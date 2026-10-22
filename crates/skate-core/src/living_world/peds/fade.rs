@@ -1,22 +1,5 @@
-//! Ped draw fade: retail never shows a ped pop at the census cull because the ped is already
-//! drawn fully transparent by then.
-//!
-//! Retail reference (TU3, addresses are evidence only):
-//! - `sub_827C1188` (per living-world render instance, every frame) [code]: the model record's
-//!   pair `Hash_73B6874C7B46C7C6` (near, far) (peds 45 / 55 m [data]) against the distance from
-//!   the camera: opacity `1 - clamp((d - near) / (far - near), 0, 1)` beyond `near`, 1 inside.
-//!   The pair `Hash_9FCFDBEA56BA4733` (65 / 75) replaces it only when its third float is larger
-//!   (`sub_827C1870` lerp); both are 0 for every ped model [data], so 45 / 55 applies.
-//! - The same function keeps a spawn fade in at `+576`: `+= 1/30` per console frame
-//!   (`0x8232BA4C`), clamped to 1, so about 1 s at the console's 30 fps; the drawn opacity is the
-//!   smaller of the two, and below 1 the instance draws blended (`+580`).
-//! - The census cull (`sub_826BA8B0`, 70 m slow / 90 m fast around the focused skater) is a pure
-//!   3-D distance test with no camera or visibility rule; only security guards hand the
-//!   "beyond" flag to their `ISecurityGuard` component (vfunc +4). So the fade above is what hides
-//!   the cull from the player.
-//!
-//! Moddable: the distance pair comes from the model record (a mod model sets its own), the
-//! defaults and the fade in time are plain data in [`PedFadeConfig`].
+//! Ped draw fade: the ped is fully transparent before the census cull (827C1188, 45 / 55 m).
+//! Retail reference: docs/hails-additions/26f-living-world-peds.md#ped-draw-fade
 
 /// Fade defaults (retail values; mods and settings may override them).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -79,10 +62,7 @@ mod tests {
 
     #[test]
     fn peds_are_invisible_before_the_census_cull_can_remove_them() {
-        // Exported `livingworld_census_ranges` pedestrians [data]: slow circle cull 70 m with no
-        // forward offset, fast circle cull 90 m with 20 m offset. The behind-the-player edge of
-        // either circle is 70 m from the skater; the camera sits near the skater, so a ped is
-        // fully faded long before the cull (the old drawing kept it solid to 70 m and popped it).
+        // Census ranges for peds: cull 70 m (slow) / 90 m with 20 m offset (fast); faded long before.
         let cfg = PedFadeConfig::default();
         for cull_edge in [70.0f32, 90.0 - 20.0] {
             for camera_slack in [0.0f32, 5.0, 10.0] {

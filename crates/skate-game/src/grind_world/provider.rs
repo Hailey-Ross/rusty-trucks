@@ -144,10 +144,7 @@ impl StaticProvider {
         Ok(Self { #[cfg(test)] source_for_primitive: vec![0; primitives.len()], primitives, metadata, #[cfg(test)] rail_guids, assets, #[cfg(test)] source_rail_indices })
     }
 
-    /// The placed skate.Park pieces' rails (crate::park_layout::pose_rails), one asset per piece after the map's
-    /// own. Retail queries them through the static piece manager, its second pluggable provider after the DMO one
-    /// (b431: 82858290 -> 82868860 -> 82C1F098, piece AABB first, then each segment's posed bounds); here they join
-    /// the static pass, so under the 40-record cap they come before the props (NOT RETAIL order; parks have few props).
+    /// Placed skate.Park pieces' rails (b431: 82858290 -> 82868860 -> 82C1F098), in the static pass (NOT RETAIL order).
     pub fn with_pieces(mut self, pieces: &[crate::park_layout::PieceRails]) -> Result<Self, String> {
         for piece in pieces.iter().filter(|p| !p.segments.is_empty()) {
             let first = self.primitives.len();

@@ -1,10 +1,5 @@
-//! Stock RAW ("DR", codec word 0x00004452) SQT decoding: the uncompressed packed
-//! frames the scene clips use (`scene/trickguide/*.abin`, the Trick Guide demo).
-//! TU3 sampler sub_82D1E658 (VMX job after the VBR job 82D1DE08). The frame layout matches the pinned
-//! skate3_anim importer (tools/vendor/skate3_anim); its packed rotation does not (see `unpack_rotation`).
-//! Compression header: six channel-mask words (scale, rotation, translation;
-//! two words each), u16 frame size, u8 bone count - 1, u8 packed translation,
-//! u8 packed rotation. Every frame is `frame size` bytes from the data start.
+//! Stock RAW ("DR") SQT decoding for scene clips (Trick Guide), TU3 sampler 82D1E658.
+//! Header and frame layout: docs/hails-additions/31-retail-menus.md#raw-clip-codec
 
 pub struct RawDecoder<'a> {
     bytes: &'a [u8],
@@ -118,11 +113,7 @@ impl<'a> RawDecoder<'a> {
     }
 }
 
-///32-bit packed rotation, TU3 RAW sampler sub_82D1E658: an axis in spherical angles times the vector length,
-///w = sqrt(1 - r^2) (never negative). Azimuth A = bits 21..31 * 2pi/2047 - pi, latitude M = bits 11..20 *
-///pi/1023 - pi/2, r = bits 0..10 / 2047. Main-checked: the header reads, the pi constant 0x82060C44 and the
-///reciprocal square root; the cos/sin order of A and the signs come from the data (a symmetric T-pose,
-///`.local/research/menus-m6/raw-codec.md`). No normalisation here (the engine normalises after nlerp).
+/// 32-bit packed rotation (82D1E658): spherical axis x length, w = sqrt(1 - r^2): docs/hails-additions/31-retail-menus.md#raw-packed-rotation
 fn unpack_rotation(word: u32) -> [f32; 4] {
     use std::f32::consts::{FRAC_PI_2, PI};
     let a = ((word >> 21) & 0x7ff) as f32 * (2.0 * PI / 2047.0) - PI;

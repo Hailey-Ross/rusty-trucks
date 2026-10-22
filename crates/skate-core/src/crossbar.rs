@@ -1,12 +1,5 @@
-//! Pause menu ("crossbar") navigation, ported from the retail C++ screen (doc 31, Milestone 6).
-//!
-//! Retail keeps all navigation state in C++ (crossbar screen fields +368 tab, +372 row, +376 sub-option, +384 level);
-//! the core_menu movie only mirrors it through the CoreMenu getters and redraws when the C++ posts `SetState(n)`.
-//! The handler is sub_8261B560 (TU3): per input event it moves the indices, plays an fe sound and posts a state.
-//! This module is that handler over a `CrossbarView` (the current mode's tabs and rows, from the menu registry), so
-//! the rows, their enabled rules and the sounds / state numbers stay data that mods can change.
-//!
-//! Engine-independent: no rendering, I/O or ECS.
+//! Pause menu ("crossbar") navigation, ported from retail handler 8261B560 over a data `CrossbarView`.
+//! Details: docs/hails-additions/31-retail-menus.md#crossbar-navigation
 
 /// The menu content the handler reads (retail: the mode object at screen+480 and IsItemEnabled).
 pub trait CrossbarView {

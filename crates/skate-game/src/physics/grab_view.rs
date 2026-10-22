@@ -1,15 +1,5 @@
-//! The grab visualizer (opt-in "Visualize Grabs", `SKATE_VISUALIZE_GRABS=1`): what the player can grab, drawn in
-//! the world from the same records the game decides with, and logged.
-//! - Every record in grab range (the grab owner's validated set: the props near you on foot, the car spots near you
-//!   on board) is an amber line along its spline chord, with a dot at each end.
-//! - The one a grab would take now is green: a thick line, a ring pulsing around its middle and an arrow pointing
-//!   down at it. On foot that is the record the Ground grab decision qualified (82D324B0); on board the car spot
-//!   the skitch latch holds (82D39D98).
-//! - `GRAB_VIEW` (when the state, the ready record or the records in range change): each record with its owner
-//!   (prop id and template, or car spot), distance and height, and the nearest prop with grab splines when nothing
-//!   is in range.
-//!
-//! A viewer aid only: it reads the decision, never feeds it, so play is the same with it on or off.
+//! Grab visualizer (`SKATE_VISUALIZE_GRABS=1`): records in range and the one a grab would take; viewer aid only.
+//! What it draws and logs: docs/hails-additions/27-dynamic-props.md#grab-visualizer
 use bevy::prelude::*;
 use skate_core::player::offboard::grab_scene::{Descriptor, Record};
 use skate_core::player::state::PhysicalStateId;
@@ -42,11 +32,7 @@ fn mode(state: PhysicalStateId) -> &'static str {
     }
 }
 
-/// The records shown while the grab input is held (laptop 2026-10-18, b251). Skitching: the live car spot the skitch
-/// state reads every tick (Processed `grab_records_1888_2176[0]` with `grab_geometry[0]`, while 2480 bit 22 is set),
-/// so the cue follows the car; the owner's list stays frozen at the latch. Otherwise the owner's validated list only
-/// while it is ready (`flags_12836` 0x40, the bit the game's own readers check): between a grab press and the new
-/// query's results it still holds records from long ago (a dumpster 175 m away).
+/// Records shown while grab is held (b251): the live car spot while skitching, else the ready validated list.
 fn held_records(
     state: PhysicalStateId,
     owner: &super::biped_ground::grab_runtime::Owner,

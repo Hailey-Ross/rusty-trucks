@@ -1,9 +1,5 @@
-//! Driving a replay export (M4; research b383): the Finished menu's "Save to PC" row asks where to save (the Windows
-//! save dialog on its own thread), then renders the clip lock-step: each output frame sets the replay cursor, reads the
-//! world image back from `SceneTarget` (`Readback`, rows padded to 256 bytes), pulls exactly one frame of sound from
-//! the audio runtime (48000 / fps samples; the device output is muted meanwhile so the two never race for blocks) and
-//! hands both to the encoder thread (`export::open_sink`) over a bounded channel. Ours on PC; retail's Finished menu
-//! offers Upload / Save Replay only when signed in (b387).
+//! Driving a replay export (M4, b383): Save to PC, lock-step video and audio frames to the encoder thread.
+//! Details: docs/hails-additions/37-instant-replay.md#replay-export-run
 use super::{export, Replay};
 use bevy::prelude::*;
 use std::{

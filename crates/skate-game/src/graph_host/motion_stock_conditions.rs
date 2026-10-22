@@ -16,11 +16,7 @@ pub enum Condition {
     TrucksOrDeckInContact,
     PhysicsWantsManualExit,
     ApexReached,
-    /// MovingObjectNew push<->pull transitions pick Immediate vs DelayedCycle
-    /// on the retail moving-object angle-adjust projection at animation end.
-    /// That producer is not recovered; resolving true selects the Immediate
-    /// branch, whose WillExpire transitions still leave the state — a benign
-    /// authored path that can never wedge the sub-tree on a missing producer.
+    /// MovingObjectNew push / pull: producer not recovered; true selects Immediate (WillExpire still leaves).
     AngleAdjustByAnimationEndLessThan,
 }
 impl Condition {

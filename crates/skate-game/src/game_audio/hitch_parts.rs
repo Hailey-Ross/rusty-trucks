@@ -1,7 +1,5 @@
-//! Per-system wall time of the game audio's frame systems, summed per frame and read (and reset) by the
-//! `FRAME_HITCH` line (`frame_timing/hitch.rs`), so a hitch names the audio system that took the time
-//! (2026-10-16: 150 to 870 ms "audio" stage hitches while towed fast, two with no log event to explain them).
-//! `bank_load` is the game-thread part of `Native::ensure_bank` (inside `emitters` and the other callers).
+//! Per-system wall time of the game audio's frame systems, read and reset by `FRAME_HITCH`.
+//! Details: docs/hails-additions/25-perf-diagnostics.md#audio-hitch-parts
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 

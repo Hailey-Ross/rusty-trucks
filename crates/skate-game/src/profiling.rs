@@ -229,10 +229,7 @@ fn drain_log_queue(limit: std::time::Duration) {
     }
 }
 
-/// The log subscriber's writer. Direct stderr normally; with trace-all every formatted line is
-/// handed to a bounded queue and written by its own thread, so a slow pipe (the crash supervisor
-/// relays stderr) or a burst of trace lines never stalls a frame. A panic or a clean exit waits
-/// for the queue to drain first, so the last lines before a crash are kept.
+/// Log writer: stderr, or with trace-all a bounded queue on its own thread, drained on panic or exit.
 #[derive(Clone, Copy)]
 enum LogWriter {
     Stderr,

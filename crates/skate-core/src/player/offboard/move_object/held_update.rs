@@ -1,18 +1,5 @@
-//! The rebind block of Move Object's held update 82D44A10, the hand points of 82D45D30 and the frame blend
-//! 82D46218 / 82D463D8 (research b64 [code, TU3 recomp]; main checked the 0.5 hand factor and 82D43B20):
-//! - every tick: the push latch (+1200 bit 0x02, set once |Player+736|^2 > 0.04) and the collision timer +1176
-//!   (+1/60 while Player+2484 bit 26 is set, else 0);
-//! - the block runs only with the hand flag (Player+2476 bit 21), the timer at most 0.4 s and the latch clear;
-//!   path A (a published best record and CanGrabSpline 82E08EE8 on the held record at the grip) refreshes the
-//!   record (grip kept, no blend); path B (owner flag 0x40, 82D4D150 mode 1 without the held descriptor, 82E08DB8,
-//!   the held record's +196 / +216 non-zero) re-grabs with a new grip, zeroes the anchor velocity and starts a
-//!   frame blend only when it already held last tick; anything else loses the hold (+1200 bit 0x20 clears);
-//! - 82D45D30: the hand points sit at grip +/- 0.5 x |hand bone 3 - hand bone 7| along the record, clamped to
-//!   [0, length];
-//! - 82D46218: the blend runs only when the jump D = |target - current| reaches T = threshold x 60, at rate
-//!   -T / D per tick; else the frame snaps.
-//!
-//! Multiplayer: [`RebindState`] and [`FrameBlend`] are plain per-skater data.
+//! Rebind block of the held update 82D44A10, hand points 82D45D30 and frame blend 82D46218 / 82D463D8 (b64).
+//! Details: docs/hails-additions/27-dynamic-props.md#held-update-rebind
 use crate::player::offboard::grab_scene::{Record, at_distance};
 
 /// Retail numbers (image constants and collection values); every field is data a mod can override.
@@ -112,10 +99,7 @@ pub fn hand_points(record: &Record, grip: f32, a: [f32; 3], b: [f32; 3], t: &Reb
     (e > t.edge_epsilon_sq).then_some([p, m])
 }
 
-/// The hand IK of the held update: +1200 bit 0x40 (`enabled`) and the weight +1132. 82D46610 (82D469C8..82D46C9C)
-/// sets the bit during the grab's enter window ([`super::MoveObjectTuning`] `hand_ik_*`); only 82D444A0 full (a grab
-/// or a path B re-grab) clears it, so a re-grab after the window leaves the hands without IK, as in retail. 82D45008
-/// moves the weight toward 1 while on, toward 0 while off. Plain per-skater data.
+/// Hand IK of the held update (+1200 bit 0x40, weight +1132; 82D46610, 82D444A0, 82D45008): docs/hails-additions/27-dynamic-props.md#held-hand-ik
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HandIk {
     pub enabled: bool,

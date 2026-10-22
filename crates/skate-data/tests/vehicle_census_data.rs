@@ -1,13 +1,5 @@
-//! Data-gated checks of the vehicle census (milestone V2) on the user's own export: a seeded run
-//! over the DownTown road network with the shipped census, ranges and vehicles. Skips (passes
-//! with a note) when no data is configured. `SKATE3_ASSET_ROOT`: converted assets (one root, or
-//! several joined like PATH); reads `private/living_world/{tables.json, DownTown.census.bin,
-//! roads.bin, vehicles.json}`.
-//!
-//! Asserted (shipped data and code rules, nothing embedded in the engine): the DownTown cap 30
-//! and the vehicle limit 15 hold, every car sits on a real lane at least 15 m from the segment
-//! ends facing its lane's direction, cars on one lane keep the factory gaps, and the same inputs
-//! give the same decision stream.
+//! Data-gated (skips without `SKATE3_ASSET_ROOT` data): vehicle census V2 on DownTown: caps, limit 15, lane placement, gaps,
+//! determinism. Reads `private/living_world/{tables.json, DownTown.census.bin, roads.bin, vehicles.json}`.
 
 use skate_core::living_world::traffic::{PlacementRules, RoadNetwork, SegmentId};
 use skate_core::living_world::{Decision, Kind, LivingWorld, Observer, PopulationConfig, SpawnChoice, TickInputs, VehicleCatalog};

@@ -455,11 +455,7 @@ struct Voices<'a> {
     echo_delay: &'a mut [Option<f32>; skate_audio::bus::speech_echo::SLOTS],
 }
 
-/// Speech takes read and decoded on a worker thread (`Voices::prepare`), so a line's first take is
-/// not read on the game thread while the native runtime lock is held (2026-10-16: 181 to 723 ms
-/// stalls from an HDD install, the audio render waiting on the lock). Keyed by the take's path
-/// (shared by the channels); a take nobody collects (its line was cut while it loaded) is dropped
-/// after [`TAKES_KEPT`] newer ones.
+/// Speech takes read and decoded on a worker thread, keyed by path; uncollected takes drop after [`TAKES_KEPT`].
 #[derive(Default)]
 struct TakeLoader {
     jobs: std::sync::Mutex<Option<std::sync::mpsc::Sender<PathBuf>>>,

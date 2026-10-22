@@ -1,31 +1,5 @@
-//! How an ambient NPC skater appears and leaves: it fades in over its first second, and at the end
-//! it fades out and the skater manager removes it once the fade is far enough along, instead of
-//! popping in or vanishing on the spot.
-//!
-//! Retail [code, TU3]:
-//! - The skater's render object (`skater+1804`, a sub-object at `+14960` of the 15328-byte object
-//!   built by `sub_82B973C8`, vtable `0x8231E170`) keeps an opacity at `+244`: vfunc 68 sets it,
-//!   vfunc 76 (`sub_82B97190`) returns it. Default 1.0.
-//! - `sub_82594488(skater, dt)` drives it from two timers: `skater+1868` (fade in, opacity =
-//!   clamp(t, 0, 1)) and `skater+1872` (fade out, opacity = 1 - clamp(t, 0, 1)); both grow by dt
-//!   every tick, so a fade takes 1 s. `+1872` = FLT_MAX means "not fading out" (`sub_8246EF78`).
-//! - `sub_8246EA90` (ambient skater controller) starts the fade out (`+1872 = 0`, controller byte
-//!   `+29 = 1`) once the time in its timed state is more than `duration - 1 s`: the fade ends
-//!   exactly when the state does.
-//! - The manager's per-skater check `sub_8245A9B8` removes a skater whose controller is fading
-//!   (`+29`) once the opacity (vfunc 76) is below 0.2 (constant at `0x82099280`), 0.8 s into the
-//!   fade.
-//! - `sub_825926F8` (skater spawn setup) sets `+1868 = 0`, so every spawned skater fades in from
-//!   opacity 0 to 1 over 1 s. `sub_82594488` checks the fade in first: while `+1868 < 1` the opacity
-//!   is the fade-in value even if a fade out was started (held at 0.5 while a component byte `+71`
-//!   is set; not ported, the replay tier has no such component).
-//!
-//! That timed state is entered on a skater component flag (`sub_8246EF78`, byte `+59`), not at a
-//! line end: at a line end retail chains to the next line (`replay::choose_next_line`, fix 9), so
-//! an ambient skater keeps riding until the 120 m population cull. The replay tier fades only at a
-//! dead end (no line starts within the chain radius): the fade starts there with the last pose
-//! held, the NPC is removed below `despawn_alpha`.
-//! Pure and deterministic (a function of the cursor frame), so a client derives the same value.
+//! How an ambient NPC skater appears and leaves: 1 s fade in, fade out and removal below opacity 0.2.
+//! Retail mechanism (82594488, 8246EA90, 8245A9B8, 825926F8): docs/hails-additions/26c-living-world-npc-skaters.md#leave-fade
 
 use super::replay::{LineCursor, LineSource};
 
@@ -97,14 +71,7 @@ pub fn frames_to_line_end(cursor: &LineCursor, lines: &dyn LineSource) -> Option
 }
 
 impl LeaveFade {
-    /// Start the fade when the cursor has ended: its line is over and no other line starts
-    /// within the chain radius (`replay::choose_next_line`). Returns true on the frame it starts.
-    ///
-    /// Retail (fix 9): the 1 s fade and the removal at opacity 0.2 belong to a timed state the
-    /// controller enters on a skater component flag (`sub_8246EF78`, byte `+59`; leaving it
-    /// cancels the fade), not to the line end: at a line end retail chains to the next line
-    /// (`sub_8246C7F8`). The replay tier has no such state; its only stand-in is a dead end the
-    /// replay cannot ride past, where the fade starts with the last pose held.
+    /// Start the fade when the cursor has ended at a dead end (stand-in for retail's timed state, fix 9): docs/hails-additions/26c-living-world-npc-skaters.md#leave-fade-start
     pub fn update(&mut self, cursor: &LineCursor, _lines: &dyn LineSource, _config: &LeaveFadeConfig) -> bool {
         if self.started.is_some() || !cursor.finished {
             return false;
@@ -132,10 +99,7 @@ impl LeaveFade {
         }
     }
 
-    /// The manager removes a fading skater below the threshold (`sub_8245A9B8`). Checked once the
-    /// fade in is over: retail's timed state lasts at least 1.5 s (`sub_8246EE30`), so its fade out
-    /// never starts while the fade in is still below 0.5, and a skater is never removed mid fade
-    /// in; our lines can be shorter, so the rule is stated explicitly.
+    /// Remove a fading skater below the threshold (8245A9B8), only once the fade in is over: docs/hails-additions/26c-living-world-npc-skaters.md#leave-fade-despawn
     pub fn should_despawn(&self, frames: u64, config: &LeaveFadeConfig) -> bool {
         self.started.is_some() && frames >= config.fade_in_frames() && self.alpha(frames, config) < config.despawn_alpha
     }

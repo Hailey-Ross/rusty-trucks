@@ -1,24 +1,5 @@
-//! Ped clothing colours: retail's ped pixel shaders recolour the mask texels of the diffuse
-//! atlas with the model's tint pair (doc 26, "Ped clothes drawn in mask colours").
-//!
-//! Retail (TU3 `shaders_final.big`, `livingworld_stamp_defaultPS` for material type
-//! `pedestrian_high_stamp`, `defaultlivingworld_defaultPS` for `pedestrian_low`; both read the
-//! same way) [code, shader microcode]:
-//! - `lin = diffuse.rgb^2` (the shaders light in squared space and write `sqrt` at the end);
-//! - a texel is a mask texel when `G^2 < 0.001225` (a shader literal, green under 0.035);
-//! - a mask texel becomes `R^2 x i_colorize_red + B^2 x i_colorize_blue`, any other keeps `lin`.
-//!
-//! `sub_827B4170` picks the pair from one rand: first `secondary_colours[r % n]` (stored at
-//! +80 of the ped's presentation slot), then `chassis_colours[r % m]` (+96) [code]. Which
-//! constant each feeds is from the data, not from a traced upload: the base model record holds
-//! secondary `(1, 0, 0)` and chassis `(0, 0, 1)`, the pair that turns the rule into the identity
-//! only as secondary -> `i_colorize_red`, chassis -> `i_colorize_blue` [data]. The constants
-//! are taken as the table values (the CPU upload path is not traced).
-//!
-//! Our renderer has no ped shader of its own: the game bakes the rule into a copy of the
-//! diffuse texture per tint pair ([`colorize_rgba8`]); `sqrt(lin)` is stored back in the sRGB
-//! texture, which the GPU's sRGB decode turns into about `lin` again (retail's squared space
-//! approximates the same curve).
+//! Ped clothing colours: the ped shaders recolour mask texels with the model's tint pair; baked per pair here.
+//! Shader rule and data: docs/hails-additions/26f-living-world-peds.md#ped-colorize
 
 /// The mask test literal of both ped pixel shaders: `G^2 < 0.001225` [code, shader].
 pub const MASK_GREEN_SQ_MAX: f32 = 0.001_225;

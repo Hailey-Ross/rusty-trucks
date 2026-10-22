@@ -172,12 +172,7 @@ pub fn retail_rule(id: &str) -> Option<ValueRule> {
     })
 }
 
-/// Retail's value of a settings row before any save changes it: the settings object
-/// (`[[0x83067060] + 28]`) read in the recomp after a boot without a signed-in profile [trace,
-/// `.local/recomp/defaults/`]: volumes +128 / +132 / +136 = 1.0, Subtitles +157 = 0, Minimap +158 = 1,
-/// Vibration +163 = 1, HUD +164 = 1, Camera manual +165 = 0, Units +168 = 0, Play Mode +180 = 1,
-/// HOM mode +184 = 0, Camera Angle +188 = 0, axes +192 / +193 = 0, Transparency +195 = 0, Skate Feed
-/// +196..+200 = 1. Rows show it until an engine setting or a mod binds a value (the value hooks).
+/// Retail settings row defaults before any save (recomp-read settings object): docs/hails-additions/31-retail-menus.md#settings-defaults
 pub fn retail_default(id: &str) -> Option<SettingValue> {
     Some(match id {
         "ID_GAMESETTINGS_SFXVOLUME" | "ID_GAMESETTINGS_DIALOGVOLUME" | "ID_GAMESETTINGS_MUSICVOLUME" => SettingValue::Float(1.0),

@@ -1,7 +1,5 @@
-//! The instant replay screen's natives (FE 12, template Replay2, `replay2/replay_editor2`; research b385 / b390 /
-//! b391): `FEReplayMenu.*` answered from a per-frame snapshot of the replay ([`ReplayScreenFeed`], published by
-//! `replay.rs`), and the screen states the C++ posts back (the facade's SetScreenState, applied by
-//! `retail_menu_stage` after the call returns), as the Trick Guide host does.
+//! The instant replay screen's natives (FE 12; b385 / b390 / b391) from a per-frame replay snapshot.
+//! Details: docs/hails-additions/37-instant-replay.md#replay-screen-natives
 use crate::apt_vm::{Value, Vm};
 
 /// Movie states the C++ posts (b386 / b390; names from the movie's SetState): cursor moved (kMovePlayHead), play

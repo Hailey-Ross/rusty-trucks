@@ -1,11 +1,5 @@
-//! The stock pedestrian AI graph (`Pedestrian.stategraph`) loaded on the shared graph runtime,
-//! with each operation parsed into the ped brain's `PedOp` (doc 26 "Ped behaviour runtime").
-//! Retail runs this graph on the same dynamic controller as the skater's graphs, and the shipped
-//! file is already compiled (includes and templates expanded), so the existing decoder, binder
-//! and compiler load it unchanged (`.local/research/peds/b2-ped-aigraph-interpreter.md`).
-//!
-//! Moddability: the graph path is data (`PedGraphPaths`); operation values come from the graph's
-//! attributes. Not-yet-ported operations are listed by [`PedGraph::pending`] and logged once.
+//! The stock ped AI graph (`Pedestrian.stategraph`) on the shared graph runtime, ops parsed into `PedOp`.
+//! Details: docs/hails-additions/26g-living-world-ped-interactions.md#ped-ai-graph-loading
 
 use crate::graph_runtime::{load_graph, LoadedGraph};
 use skate_core::living_world::peds::brain::PedOp;

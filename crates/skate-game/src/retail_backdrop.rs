@@ -1,27 +1,5 @@
-//! The district's global presentation model: retail's world record points each
-//! district at one extra model outside its world stream (world fields
-//! `951898F6C0FA6856` model / `CA5A157A65E75934` textures, for example
-//! `DIST_Water_Industrial`). It holds Industrial's sea (`ocean.reflection`
-//! around the docks and harbour), the far sea planes of DownTown and University
-//! (`environment.reflective_simple`) and the distant tree walls. Setup exports
-//! it to `private/native-backdrops/<map>.skate` (`tools/asset_pipeline/backdrop.py`).
-//!
-//! Without it Industrial's harbour shows the clear colour: a black void.
-//!
-//! Far-proxy terrain: retail also streams `proxy<District>_100_Proxy.big`
-//! (`proxyworld.default` hills plus their trees) and swaps it per grid cell:
-//! while the full-detail cell `cPres_X_Z_high` is active its partner
-//! `cPres_X_Z_high_proxy` is deactivated (TU3 proxy world manager
-//! sub_8247EF40, streamer sub_8247BB50 -> sub_82C985A8). The engine keeps every
-//! district cell loaded, so setup exports only the unpaired proxy cells to
-//! `private/native-backdrops/<map>.proxy.skate` (Industrial's south hills under
-//! the tree wall; DownTown and University have none). Its draws carry
-//! [`ProxyTerrain`] and follow `BackdropSettings::proxy_terrain`.
-//!
-//! Moddability: `BackdropSettings` is the one authority; mods reach it through
-//! `sdk.world.set_tuning('backdrop', {visible = false})` (world tuning domain
-//! `backdrop`), and a disabled mod gives it back (retail: visible). The package
-//! itself is a content file a mod can replace.
+//! The district's global presentation model (sea, far planes, tree walls) and far-proxy terrain.
+//! Details and mod reach (`set_tuning('backdrop')`): docs/hails-additions/35-world-shading-parity.md#district-backdrop
 use bevy::prelude::*;
 use skate_data::skate_map::SkateMap;
 

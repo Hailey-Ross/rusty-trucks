@@ -67,10 +67,7 @@ pub(crate) fn append(
 /// Last-mile constraint for animation-driven walking. Native walking may write
 /// its root without integrating a Rapier body; a full-height capsule sweep keeps
 /// that displacement from bypassing the same solid obstacle used by BoardStep.
-/// The solids are the network proxies (mod solids) except the ped parts (group 11): retail's walker queries never
-/// include the PedestrianPool (b266), only the skeleton meets a ped (laptop recomp sessions b271: the on-foot player
-/// passes a ped at up to ~6 m/s). Stock floor and movement algorithms are intact. `blocked` gets each solid that
-/// pushed the capsule out or stopped the sweep, with the contact normal (toward the walker).
+/// Solids and `blocked`: docs/hails-additions/26g-living-world-ped-interactions.md#code-reference-physicssolid_contactsrs
 fn constrained_position(solids:&[(usize,SolidBody)],start:Vec3,target:Vec3,blocked:&mut Vec<(u64,Vec3)>) -> Vec3 {
     use skate_dynamics::rapier3d::parry::query::{self,ShapeCastOptions};
     if solids.is_empty() || !start.is_finite() || !target.is_finite() { return target; }

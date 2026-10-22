@@ -1,10 +1,5 @@
-//! The Game Settings screen's natives (options.apt, template 90, FE screen 45; doc 31 "Game Settings screen"):
-//! `Game.GameSettings_*` and the `Game.OnMenu*` calls, answered from the menu registry like CoreMenu, so mods'
-//! rows, labels, rules and values show up. Research `.local/research/settings-host-map.md`.
-//!
-//! The movie only knows row indices; retail indexes its raw table by the screen index (+68) and row (+72). Ours
-//! indexes a snapshot of the visible row ids taken at GetNumOptions (the start of CreateOptions) and kept until
-//! the next rebuild, so SetState(50) refreshes the same rows.
+//! The Game Settings screen's natives (options.apt, template 90, FE 45) answered from the menu registry.
+//! Row indexing: docs/hails-additions/31-retail-menus.md#game-settings-natives
 use crate::apt_vm::{to_integer, Value};
 use skate_core::menu_values::Display;
 use skate_core::menus::{EntryRef, MenuContext, MenuRegistry, Widget};

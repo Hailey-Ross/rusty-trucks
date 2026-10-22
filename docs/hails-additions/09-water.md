@@ -1244,3 +1244,33 @@ Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes 
   barely changed the basin (100, 122, 128), so the colour, not the sky, made it blue.
 - **Verification:** `basins_take_their_colour_and_reflection_from_the_look`, `fountains_only_with_better_water_and_mods_can_set_them`
   (`water_look`), the frame-state encoder test. Not looked at by the user yet.
+
+## Code reference: water_look.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/water_look.rs`; each comment there links its section here.
+
+### Water look code
+
+Water look layer on top of the retail `water_defaultPS` port (family 33: DownTown fountains, the Aletown canal). Project choices, not retail; see docs/hails-additions/09-water.md "Water look layer". With `enabled = false` the shader output is the plain retail program.
+
+Engine-facing: [`WaterLookSettings::active`] feeds `retail_render`'s frame state. Player-facing: `settings/water-look.json`. Mod-facing: `sdk.graphics.water_look(patch)` (one mod at a time, released on disable).
+
+### Fountain water
+
+Fountains (family 30) look like the large water, scaled down, in Better Water mode: flat basins take the map's largest family 33 body's waves and textures (`retail_render::bind_fountain_donor`) in world space; steep cascades keep their own flow.
+
+## Code reference: camera/water.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/camera/water.rs`; each comment there links its section here.
+
+### Water camera
+
+Water camera. Retail footage (PS3 version in RPCS3: Aletown canal and the University fountain channel) shows the same shot whenever the skater bails into water: the camera rises high above and behind the skater, looks down about 60 degrees and slowly drifts toward overhead, with a dark rounded vignette. This blends the normal camera into that shot during a water bail (the physics water state, not mere proximity: water surfaces reach under nearby walkways) and back out afterwards; the weight also drives the vignette (`retail_exposure`, tone pass). Separately, a camera under a water surface is lifted just above it. Distances and timings are project choices matched by eye (docs/hails-additions/09-water.md).
+
+## Code reference: water_bodies.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/water_bodies.rs`; each comment there links its section here.
+
+### Water body sizes
+
+Water body sizes for the water shader. Maps split one body of water into several render materials along a 100 m grid (DownTown's Aletown canal is six chunks, some a few metres wide), so a material's own extent says little. Triangles of the water materials that share a vertex position are grouped into bodies; each material gets the surface area of the largest body it belongs to. The shader calms small bodies (fountains): a project choice.

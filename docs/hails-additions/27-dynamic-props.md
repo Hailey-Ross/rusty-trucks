@@ -1016,3 +1016,383 @@ when the pushing actor bails, apply the clamp and wake the prop, values data-dri
   (GrabWorld, the gate of retail 82D324B0), release drops. Placement (B) is still #15's choice. See doc 26.
 - Move Object speeds (push / pull / side / turn) are engine values until retail state 502 is decoded; see
   "Grabbing spins the player" above.
+
+## Code reference: prop_dynamics.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/physics/prop_dynamics.rs`; each comment there links its section here.
+
+### Prop body model
+
+Dynamic rigid bodies for DMO prop instances (Phase 2a).  Every spawned prop gets a box body built on the TU3 rigid-body integrator (`integrate_body_rates`): gravity and cool-down/sleep come from the retail simulation step; the mass properties are the retail rounded-box finalize path (`primitive_mass_properties`) with the instance's scaled template AABB. Density is the authored MOBJ per-object value (`ObjectPhysics`, schema 3+); friction, restitution and linear / angular drag come from the prop type's retail DMO data ([`PropDynamics::set_type_data`]), with the authored MOBJ values (project defaults friction 0.55, restitution 0.05, damping 0.05/0.15) only for props whose type data is missing.  Narrowphase uses the recovered GP pair query (`primitive_pair_contacts`): box vs static-world triangles, box vs box for other props, and box vs the skater's board/skeleton volumes for pushes. Contact response is the retail row solver the board uses (ContactBatchBuild 82AE10C8 rows, 25 iterations of 82AE27D0, `PropSolverSettings`); the engine's older impulse pass stays selectable as a mod option. Sleep is the retail counter (integrator 82AE6590, sleep pass 82DC3130) with the DMO island values.  Props start asleep and cost one AABB test per skater volume per tick. A skater contact or a moving prop wakes them. Moved instances re-bake their triangle range in the prop collision layer so skater queries stay exact. The held (carried) prop is exempt from both skater pushes and the rebake: while carried it is velocity-driven and its layer triangles are parked far below the world so they cannot push the carrier.
+
+### Prop tuning
+
+One value set is the default for all props; `PropTuningTable` can replace it per prop type (the MOBJ template name, the stable id a mod uses). The defaults are #15's constants plus the caps from doc 26 "Board stuck inside a prop"; no retail values for DMO contact response are recovered yet.
+
+### Upright window
+
+Retail DMO self-righting ("Upright", doc 27 "Upright"). The phone's per-object Upright posts cMsgUprightDMO; the DMO manager slot +40 82C4B8C0 sets DMO+4464 bit 0x40 and zeroes the timer DMO+4376. While the bit is set the DMO update 82C56780 adds `tick_seconds` to the timer and clears the bit once it exceeds `window_seconds`, then (same update) 82C573D0 measures the angle between the body's up row and world up: below `stop_angle_deg` the bit and timer are cleared; otherwise it builds an angular command that the DMO's own angular slot 37 (82C52EE0 -> 82D9CCF0) writes into the body's angular accumulator (+160), waking the body and marking it commanded. External yaw commands (82C52E68) are refused while the bit is set; the linear Move Object command (82C52DC0) is not gated. The defaults are the retail constants; every field is a mod knob (`sdk.world.set_tuning('props', {upright = {...}})`), reset on mod disable.
+
+### DMO island settings
+
+Island settings of the DMO simulation. Retail 8275DCC8 passes a 52-byte block to the simulation ctor 82DC2840, which copies +16 -> island +176 (solver iterations), +32 -> island +172 (sleep energy) and +36 -> island +168 (sleep counter cap; also the sleep pass threshold sim +204). The defaults are those retail values; every field is a mod knob (`sdk.world.set_tuning('props', {solver = {...}})`), reset on mod disable.
+
+### Bail clamp 82C530F0
+
+Retail's bail clamp `82C530F0` on one prop: `w` = inverse mass (motion record +0x7C, b209), `d` = the prop's own velocity as its transform tracker measures it (`[dmo+0xA4]+0x90`, last tick's displacement / dt, written by `82E0C578` from the DMO update, b210); ours: the prop's velocity before this tick's skater pushes. The linear velocity is pulled into the ball of radius `mag` around `n * mag` (n = d / |d|, mag = blend x (max(cap, |d|) + cap), cap = factor x w); the spin is capped at the angular factor x w, or zeroed for a heavy prop (and the linear cap is 0). Returns (linear, angular); `None` for a static body (w = 0).
+
+### Contact material block
+
+Friction pair `[static, dynamic]` of a retail body contact material block. The block is three floats at physics component +48 / +52 / +56 = {static friction, dynamic friction, restitution (DMO data +272)}, written by 82C550A8 and pointed at by every body's +80; the collision-object builders 82DC3A68 / 82DC4158 / 82DC4588 copy it to CO +116..+124 and aaCollision 8277A508 combines two objects' blocks with 82763078 (static max, dynamic max, restitution min = [`combine_contact_materials`]).
+
+### Per type material data
+
+Per prop type material data. Retail reads these from the DMO type data (DMO+4380 -> +4, ctor 82C51E28): the layout of the type's vault record of class `livingworld_dynamicobject_characteristics` (see [`dmo_type_blocks`]). Each body carries the retail values of its type (resolved at map load from the installation's stock vault); a mod's `carry.by_template` entry overrides them field by field. A `None` left after both falls back to the authored MOBJ material (only props whose type record is missing, e.g. an older setup without the type map: NOT RETAIL YET there).
+
+### Box inertia shape
+
+Box inertia shape (DMO data +16 scale, +32 offset): 82C4E568 takes the body's AABB half extents x scale + offset as the box 82C47FC8 fills the inverse tensor from. `None` = the class default record's [`DMO_DEFAULT_INERTIA_SCALE`] / zero when another body field is set, else the authored box inertia.
+
+### DMO type record layout
+
+Retail values of one DMO type, read from its record of [`DMO_TYPE_CLASS`] (parents included). The DMO constructor 82C51E28 keeps the record's layout at DMO+4380 -> +4; schema layout offsets (skaterschema): +272 restitution (`Hash_5CCD5998E03C299B`), +312 upright flag (`Hash_C4D8A03586A31915`, -> DMO+4465 bit 0x10 and 82C4B960's record+272), +316 / +324 upright pair (`Hash_E0101A9DFD63DEE9` / `Hash_CDA7A31C5EDBEB6E`), +320 / +328 default pair (`Hash_6E0BB4F5881A4841` / `Hash_086956BCA2187458`), read by 82C53EF8 / 82C550A8; +308 `LinearDrag` and +336 `AngularDrag`, read by 82C4E568 into the body's Inertia (+32 / +36), with +304 mass (`Hash_E5778CDD4576D890`), +292 / +296 velocity caps (`Hash_4890392C91829954` / `Hash_BAA01E2BA1237455`) and the +16 / +32 inertia box scale / offset vectors (`Hash_F4D1C84C36A854AC` / `Hash_D3CDE380DBB3ADC0`). The held pair is the retail constant (`commanded_material`), not type data.
+
+### Body material choice
+
+The body's own contact material block (82C53EF8 / 82C54BF0 -> 82C550A8): while commanded {held pair, restitution}; otherwise the free pair, which for a type with the upright flag (data +312 bit 0) is the upright pair while `up_y > upright_cos` (82C54B00) and the default pair when tipped. Pure function of the commanded bit and the up axis.
+
+### Body inertia 82C4E568
+
+Body `index`'s Inertia (82C4E568, filled once when retail builds the body and never switched by the commanded block): with type data, mass (data +304), velocity caps (+292 / +296), drag (+308 / +336) and the box inertia of the AABB half extents x +16 + +32 ([`dmo_body_inertia`]); a mod's `carry.by_template` fields over it. Fields neither sets keep the authored MOBJ values (density mass, box inertia, damping, no caps: NOT RETAIL YET, only without type data). Pure function of the type data, the mod rules and the authored box, so every peer gets the same.
+
+### Prop grab objects
+
+Every prop with grab splines as a grab-scene object of the world-object provider (scene `+4084`, query mode bit 0x04; single-player worlds use it, not the DMO provider, b54): template origin and basis as the frame, points scaled like the body, linear velocity as the record vector, type-2 records. Ids: object `PROP_GRAB_TAG | grab slot`, spline / geometry `PROP_GRAB_TAG | grab slot << 6 | index` ([`Self::prop_of_grab_key`] maps a key back to the prop id). NOT RETAIL YET: the assembly is a stand-in with the object id (the `+172` object is not identified).
+
+### Prop grab assembly 82585F58
+
+82585F58 (b227): the part (assembly+8) is the prop's one body, its rates (part+0x4C) the body's rigid body: words 56..65 = its Inertia (inverse tensor, inverse mass, spherical, max linear / angular velocity, drags; the tensor's w lane is not read), +144 = angular velocity, +160 = centre of mass. Move Object reads +216 only as a null gate (82D442D0 / 82D44A10), so the stable prop id serves as part and rates identity.
+
+### Prop world query
+
+Prop volume against static world triangles: the physics/world query (TU3 8277B720 via triangle dispatch 8277BC58), NOT the GP volume-pair query 82AD43A8. The world query forwards the query context's object byte (+61) into triangle fixup (82AD3130), which for objects accepts a contact across a welded flat edge (cosine 1, no convex bit) while the normal stays within convexity_epsilon of the face (acos(1 - 0.01) = 8.1 deg) and does not reject disabled vertices. The pair query passes false and drops every such contact: a box lying a few degrees tilted on a tiled floor lost all floor manifolds and fell through (docs 26, "contact gap"). Limit = the body's own padding, the same gap the static resolver accepts (`gap > contact_padding` is skipped there); no velocity prediction, as the prop solver has no speculative rows.
+
+### Move Object command slot 9
+
+Move Object command for the held prop, as retail interface slot 9 applies it (spec section 7: 8275FF00 queue -> flush 827601F0 -> DMO handler 82C4C370 / 82C4C3E0 -> sinks 82D9CC78 / 82D9CCF0), once per 60 Hz physics step, before this step's contact solve: - skipped for an unknown, locked or non-dynamic body (retail gates DMO+4464 bit 0x08 and component+36; props have no lock state yet); - wakes the body and clears its sleep counter on EVERY command (82ADF7B8), zero or not; - linear: an acceleration with no mass factor at the centre of mass (`v += L dt`, no torque; the accumulator +144 already holds gravity, which our integrator adds for every prop); the vertical argument is dropped (82C4C370 forwards only &linear); - angular: the yaw command replaces the angular accumulator (+160 = (0, Y, 0), no inertia factor): any torque queued on the body is discarded and `w += (0, Y, 0) dt`; contacts still change pitch and roll in the solve; - marks the body commanded, so its parameter block switches to the commanded block on its next step (82C53EF8).  The command lasts one step: the carry re-sends it every tick and our prop step runs once per tick (no substeps). `grip` is used only when a mod turns `apply_at_com` off. Returns false if the id is unknown.
+
+### Upright start
+
+Start the self-righting window of one body (retail cMsgUprightDMO -> DMO manager slot +40 82C4B8C0: DMO+4464 |= 0x40, timer DMO+4376 = 0). Retail sets it only when the DMO's slot 28 test (82C564D8, physics body field +28) returns 0, the same test that offers Upright on the phone (82666748 -> 82C4B578); that field is not decoded, so ours refuses only an unknown id or a body without dynamics (NOT RETAIL YET). Restarting an open window zeroes the timer, as retail does. Returns false if refused.
+
+### Upright pass 82C56780
+
+The DMO update's righting pass (82C56780), once per step before the contact solve, for every body with an open window (asleep or not): the timer advances and closes the window past `window_seconds` (that update still sends its command); a tilt under `stop_angle_deg` closes it and zeroes the timer; otherwise the command goes through the DMO's angular slot 37 (82C52EE0): skipped for a body without dynamics, else wake, mark commanded (DMO+4465 0x02) and replace the angular accumulator (82D9CCF0 writes +160), integrated like the Move Object yaw command (`w += C dt`).
+
+### Prop contact rows
+
+Retail contact solve for every awake prop at once: one row per manifold point (A = the prop, B = the triangle or the other prop, normal from B toward A as the pair queries return it), built by the retail ContactBatchBuild (82AE10C8: targets in displacement units, predicted separation v dt + separation + a dt^2, restitution -v dt e) and iterated `iterations` times by 82AE27D0 (contacts only). Returns the per-body correction buffers, indexed by body (the integrator turns the +0 / +32 pair into velocity, +16 / +48 into position only). No slop, no correction fraction, no per-tick cap (retail has none).
+
+### Move Object yaw rate PID
+
+A held right stick turns the prop at the retail yaw-rate target and no faster. 82D45318 [code, 0x82D45BC8..0x82D45CD0]: yaw error = w - 60 x (facing change since the previous tick, +384), PID 20 / 0 / 40 with the output accumulating (integral action) and clamped to 6 rad/s^2. The retail math on a free yaw body (`yaw_rate_feedback_settles_at_the_target_rate` in skate-core) spins up at 0.1 rad/s per tick, peaks 0.6 % over |w| and settles at |w| with zero steady error; the expectation here is |w| from the command itself (curve BFB3BEF0BB2661C0(|lever|) x rot x gain +1160).
+
+### Upright command values 82C573D0
+
+82C573D0 values: stop under 10 deg, axis up x world-up, speed 3 x (min(tilt, 70 deg) - 5 deg) for |A| <= 1.1, command (target - w_axis - 0.1 w_perp) x 60, fallback to the body's X / Z axis above 120 deg.
+
+### Held prop as ped obstacle
+
+Retail [code]: the hold sets only DMO+4464 bit 0x20; the obstacle-off gate is a different word (+144+4252), so a held prop stays a NavPower obstacle (cut when slower than 0.4 m/s, moving avoider when faster). Ours: cut, or solid for the ped's step while moving. The test's control is the rule "held = ignored": the ped then walks into the prop.
+
+## Code reference: prop_carry.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/physics/prop_carry.rs`; each comment there links its section here.
+
+### Prop carry model
+
+Buttons (raw controller flag bits, see `CarryButtons`): holding the retail GrabWorld button (RB) grabs the nearest prop in reach and keeps it while held; releasing drops it. B toggles placement mode while carrying, and releasing the grab button in placement mode confirms the ghost pose.
+
+A is the retail sprint button: the derived controller's held timer for action 80 (slot 20) publishes `OB_Sprint` (8259AA8C, `offboard_intentions.rs`), so it must never grab. Retail gates the offboard grab-object decision (82D324B0, `biped_ground/grab.rs`) on Processed2476 bit 22, GrabWorld, which the input listener emits while raw flag bit 28 (action 73, RB) is held (8259AF68): a held button, not a toggle.
+
+Carry is retail Move Object (state 502, research note move-object-retail.md): the held prop stays a normal dynamic body (gravity, contacts, tipping) and every fixed tick receives one bounded command, a horizontal linear term plus a yaw term from two velocity-tracking controllers (82D45318, `skate_core::player::offboard::move_object`), through `PropDynamics::apply_move_command`. The prop leads and the skater follows its grab edge (82D45D30): `PropCarry::skater_target` is read by `biped_ground`. The held prop neither receives skater pushes nor pushes the skater back: `PropDynamics::set_held` exempts it from volume pushes and its collision-layer triangles stay parked at `HELD_PARK` until the drop rebakes them.
+
+Placement mode (Phase 4): the prop keeps following a target pose relative to the carrier, frozen mid-air by the per-tick velocity overwrite, while the right stick adjusts distance (Y) and yaw (X) and DPad up/down adjusts height. Releasing the grab button confirms: the prop is dropped at the ghost pose and the layout sidecar is rewritten. B cancels back to plain carry. Yaw applies a direct orientation snap; position still moves by velocity so contacts and the rebaked triangle layer keep working.
+
+Layout persistence (`prop_layout.rs`): confirming a placement records `id -> (origin, basis)` and saves `settings/prop-layouts/<map>.json` next to the asset root (same convention as `settings/gameplay.json`). Loading a map teleports saved bodies to their stored poses before the first sync.
+
+Restrictions: grabbing requires `BipedGround`; a single prop at a time; the grab is kept while the held grab record qualifies (retail 82D44A10 -> CanGrabSpline 82E08EE8 at the grip, see `still_holds`), and dropped when it stops qualifying or when leaving the on-foot states (`BipedGround` / `OffBoardPushing`; never saves). While held, the retail grab-object byte (`OffBoard304`, published in `player_state/publication.rs`) keeps the selector in `OffBoardPushing` and the MotionGraph in MovingObjectNew, so carrying must not treat state 502 as leaving the ground. Drop keeps the current velocity, so releasing while moving throws gently; re-sleep is the natural cool-down.
+
+Locomotion while holding: retail's producer 8259C4B0 turns the raw left stick into OB_ObjectMvX/Z and the right stick X into OB_ObjectMvRot. The command reads them in the prop's latched grab-edge frame: Z pushes / pulls along the edge normal, X slides along the edge, an off-centre push turns the prop through the lever-arm curves, the right stick turns it.
+
+Multiplayer: a `PropCarry` is one player slot's state; its Move Object controller is plain data (`controller_snapshot`), the command is a pure function per fixed tick. Prop bodies and layouts are host-local; a host would replicate held id, body poses / velocities and layout writes. No transport is implemented.
+
+### Interim grab record
+
+The interim grab record of a held prop: which vertical box face is held (local axis index and side) and the grip position along its edge, both in the prop's own frame so the grip turns with the prop. NOT RETAIL YET: the stand-in for props without authored grab splines (and for every prop while `SKATE_PROP_GRAB` is off); props with splines carry by their authored record ([`PropCarry::frame_for`]). The face toward the skater at grab time is the grab edge.
+
+### Carry buttons
+
+Which raw controller flag bits drive carrying. The bits index the packed button word of `DerivedControllerInput` (word 6 previous, word 13 current; bit = 101 - action for actions 74..81, bits 28..31 for actions 73..66). Defaults are the retail buttons; a host setting or mod may rebind them.
+
+### Ground grab decision
+
+The Ground grab decision this tick (82D324B0, `biped_ground::grab`): `Some(Some(descriptor))` when a validated record qualified (state +144, descriptor +152 / +156), `Some(None)` when none did or in another state. The game always passes one: a carry then starts only from the Move Object enter's bind of the published record (`bind_published`, b233). `None` (host tests, the HUD) has no decision and keeps the interim pick (nearest prop within `grab_range`, its nearest record).
+
+### Grab frame per tick
+
+The grab frame and record of prop `id` this tick. Props with authored grab splines (with `SKATE_PROP_GRAB=1`): the records are rebuilt from the body's current pose (82D44A10 path A); without a binding (`bound` `None`) the best record from the skater position (82D4D150 mode 0) is bound with a new grip (82D444A0 full), with one the record of the same descriptor keeps its grip (82D444A0 continue); the frame is the record at the grip (82D45D30). Other props: the interim box edge `edge` (the face toward the skater when `None`). Bindings are updated in place.
+
+### Regrab path B
+
+Path B of 82D44A10: the prop's best other record from the skater reference (82D4D150 mode 1 without the held descriptor) that passes 82E08DB8, bound with a new grip (82D444A0 full). NOT RETAIL YET: the candidates are the held prop's own records (retail asks the owner's validated records), owner flag 0x40 and the held record's +196 / +216 are taken as set.
+
+### Carry weight and orbit logs
+
+CARRY_WEIGHT once per grab (b284: a held prop's weight is only these two curve outputs, set at the grab; a light dumpster means a light mass or yaw inertia here). CARRY_ORBIT while turning: retail turns the prop about its centre and the skater walks round it, so the skater's angle round the centre should follow the prop's heading.
+
+### Follow step
+
+Follow step after the command (this tick's latch): +416 steps toward the edge and that step is the displacement handed to the character move (82D44A10 -> 82BDF268). NOT RETAIL YET: 82BDF268 itself (sweep, step-up, weight +1124); here the skater root is moved by the same step (the walking job's velocity override in biped_ground), so the live body offset never feeds back.
+
+## Code reference: skate-core move_object.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/player/offboard/move_object.rs`; each comment there links its section here.
+
+### Move Object mechanism
+
+Move Object (off-board grab and push, physics state 502): the per-tick command retail 82D45318 sends to the held dynamic object, as a pure function over plain data (no ECS, no I/O).
+
+Retail mechanism [code, TU3 recomp]: every 60 Hz tick the held object gets a bounded command, a horizontal linear term plus a yaw term only, from two velocity-tracking controllers (PhysicsControllerData, update 82D4E118). It is never position- or velocity-forced, and there is no pitch, roll or vertical term (lift gain FDE807D9B85A6AC2 = 0), so gravity, contacts and tipping stay with the normal rigid-body simulation. The skater follows the object's grab edge (82D45D30), not the other way round.
+
+Every tuning value is data: attribute collection class `3EDA5B140604613D`, key `default` (loaded by skate-game); the [`MoveObjectTuning::default`] values are the stock values for tests and a missing collection. Image constants (slew 4.0 per tick 0x82257308, filter 0.9 / 0.1, blocked decay 0.95 and gain 0.5, lever coupling -0.25 0x8208ED00) are fields too, so a mod can reach every number.
+
+Multiplayer: [`MoveObjectController`] is the whole per-carrier state, plain `Copy` data with a flat `to_array` / `from_array` form; the command is a deterministic function of (tuning, state, input), run once per fixed tick.
+
+### PhysicsControllerData
+
+`Sk8::Physics::PhysicsControllerData`: four floats. 82D4E118 [code]: `filtered = (1 - filter) * filtered + filter * error`; `output += proportional * error + filtered_gain * filtered + derivative * (error - previous)`. The output accumulates; the clamp is not inside the controller, but the caller writes the bounded command back into the output (anti-windup, see [`command`] steps 8 and 10).
+
+### Hold qualification
+
+Hold qualification while grabbing (82D44A10 -> 82E08EE8 at the grip distance +1128), from physics_state_offboard `default` [data]: grab box half extents GrabBoxSizeGrabbing (+0), its offset GrabBoxOffset (+32), GrabSplineAngleLimitGrabbing (+452, degrees, approach angle) and GrabSplineMaxAngleToHorizontalGrabbing (+436, degrees, edge slope).
+
+### Skater follow
+
+Skater follow (82D44A10 before 82BDF268) [code]: the follow point (+416) steps toward the target frame's edge point (+192) moved `follow_reach` (0.65, image 0x820BB0EC) along the latched frame toward the skater, at the skater root height plus `follow_height` (0.72, 0x8220E144). The step is the anchor velocity (+624) x `tick` plus the rest clamped to `follow_step` m (0.1, 0x820641A8; 82BD41B0).
+
+### Anchor velocity
+
+Anchor velocity (+624, 82D46610) [code + data]: the anchor is the grip point moved `anchor_reach` toward the skater (96ECC98838ECCC11 = 0.7, this collection), y dropped; v = keep x v + new x (anchor change / tick) with keep 0.85 (0x822250F8) and new 0.15 (0x820994B4).
+
+### Hand IK while holding
+
+Hand IK of the held update (82D46610 sets +1200 bit 0x40, 82D45008 steps the weight +1132) [code + data]: on once `hand_ik_enter` (+1180, 5E35DB02BE697A58 = 0.7216) > 0, the state time is at most `hand_ik_window` (the larger x end of curves 1348E9A1F213B42D / 702F25BA3A5AAA56, 1.0) and 1 - `hand_ik_curve` (702F25BA3A5AAA56) at the state time exceeds `hand_ik_threshold` (0.1, 0x820641A8). The weight moves `hand_ik_rate` (0.2, 0x82099280) per tick; the targets are clamped to `hand_ik_reach` (0.65, 0x820BB0EC) around the animated hands (82BD9728 / 82BD97D0).
+
+### Command 82D45318
+
+Port of 82D45318 steps 1 to 10, signs as in the code: lever = dot(-edge, centre - grip), rot = min(1, sign(lever) curve(|lever|) MvZ + MvRot), w = -(curve(|lever|) rot gain), fwd += 0.25 lever w, yaw command sent as (0, out, 0) about +Y (slot 9 angular sink, right-handed like our world). The yaw error is the target minus the measured yaw rate (the facing change since the previous tick x 60, same rotation sense: +Y turns +Z toward +X), so the feedback is negative. Edge direction: retail builds +320 from the hand points (82D45D30, sense not traced); taking it as `side_of(forward)` is the only choice for which an off-centre push turns the object the way the push torque does (r x F about +Y). With it a positive OB_ObjectMvRot gives a negative yaw rate (clockwise seen from above, a right turn for the skater). NOT RETAIL YET: the edge sense.
+
+### Heading latch
+
+Heading latch [code, 0x82D455E0..0x82D4573C]: turning (|w| >= 0.1, 0x820641A8) stores the latch every tick (0x82D45714). Otherwise the wrapped angle between the facing and +368 (8296EBB0) is the drift; above the re-latch threshold (557FA142008FD7CE) the latch is stored, below it the store is skipped (0x82D4570C). The drift does not enter the yaw error. The latched side row is +400 = -(+144) [code, b240 / b241]: +144 = Y x forward = `side`, so the stick's x moves the pair to the skater's right, (-f.z, 0, f.x).
+
+### Yaw controller
+
+9. Vertical: lift gain x height error; stock 0 and not applied. 10. Yaw controller [code, 0x82D45BC8..0x82D45CD0]: 8296EC98(+384, now, axis (0, 1, 0) at 0x82139A20) = acos(dot) of the normalised facings, 2 pi - acos when cross(+384, now) . axis < 0 (2 pi at 0x821647F0), 0 for a vector shorter than 1e-2 (|v|^2 vs 1e-4 at 0x8209BE90); wrapped to [-pi, pi) with 1 / 2 pi (0x82139A60) and 2 pi (0x82139A50); then +384 = now (every tick, both latch branches). Rate = wrapped x 60 (0x822F860C); error = w - rate. For an upright object the signed angle about +Y is the heading change, which is what the port measures.
+
+### Board on grab
+
+Board part of the Move Object enter 82D442D0 (0x82D44304..0x82D44364) [code, TU3 recomp]: a switch on SkateboardController+448 (`cmplwi 5`, above 5 skips). 0 (stopped), 1 (held) and 5 (on the ground at the feet) let go and become 2; 4 (being retrieved) hides and becomes 3; 2 (free) and 3 (hidden) are kept. +444 is zeroed before either call, the new state is written after it. So grabbing an object drops a carried board where it is.
+
+### Still holds
+
+Held re-qualification of 82D44A10 [code]: CanGrabSpline 82E08EE8 on the held record (state+720) at the grip distance (+1128) along it, from the skater reference point (+272, bone 23), with the grab box placed on the skater frame (Player+192) by 82D2E250 from GrabBoxSizeGrabbing / GrabBoxOffset and the *Grabbing angle limits in degrees (x 0x3C8EFA35). False = retail stops holding (flag 0x20 clears, no command is sent). `skater_frame` rows: right, up, forward, position.
+
+## Code reference: living_world/dmo.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/dmo.rs`; each comment there links its section here.
+
+### DMO streaming core
+
+Dynamic objects (DMOs: benches, bins, cones, ...) streamed by the living-world census, as retail does (research b97; doc 27 "DMO streaming").
+
+Per census pass (`sub_826B7980`) [code]: 1. the circle from the `dynamicobjects` range record (same lerp as peds; retail data has no speed keys and no forward offset for DMOs); 2. cull (`sub_826BAD98`): a live, cullable DMO whose HORIZONTAL distance to the centre exceeds the cull radius goes, with its whole linked group (`sub_82C52600`); then, once per pass, when the pool holds `cap` (49) or more live objects, the front of the eviction queue goes; 3. spawn (`sub_826B9D58`): placements within the outer radius, expanded by touching neighbours within 20 m so clusters come together, up to `budget` (49, 100 in fill mode) per pass; with the pool full a placement spawns only when its score beats the eviction front's, which is evicted for it.
+
+The score (`sub_82C4A130` placements / `sub_82C55160` live) weighs priority, a count and the distance, with the five `livingworld.dynamicobjects` values (2.5 in front of the camera, 2.0 for the keep flag, 250, 300, 450).
+
+NOT RETAIL YET: the score's count `n` (`sub_82C503F0`, meaning open) is 1; the overlap blocker (a live DMO in the placement's volume) is not modelled; touching (`factor 0.5`) is bounding spheres; the eviction queue is ordered by the live score (its insert point is not read); multiple observers are ours (retail runs this for one player).
+
+### DMO keep state
+
+[`Self::step`] with the live objects' keep state: a live object for which `kept` is true is scored as kept (retail's live score `sub_82C55160` sets the keep flag from the object's own state, research b184), so it is never the eviction queue's front while unkept objects are live. Retail still evicts the front every pass; only untouched props go, and they come back where they already were.
+
+## Code reference: player/offboard/move_object/held_update.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/player/offboard/move_object/held_update.rs`; each comment there links its section here.
+
+### Held update rebind
+
+The rebind block of Move Object's held update 82D44A10, the hand points of 82D45D30 and the frame blend 82D46218 / 82D463D8 (research b64 [code, TU3 recomp]; main checked the 0.5 hand factor and 82D43B20):
+- every tick: the push latch (+1200 bit 0x02, set once |Player+736|^2 > 0.04) and the collision timer +1176 (+1/60 while Player+2484 bit 26 is set, else 0);
+- the block runs only with the hand flag (Player+2476 bit 21), the timer at most 0.4 s and the latch clear; path A (a published best record and CanGrabSpline 82E08EE8 on the held record at the grip) refreshes the record (grip kept, no blend); path B (owner flag 0x40, 82D4D150 mode 1 without the held descriptor, 82E08DB8, the held record's +196 / +216 non-zero) re-grabs with a new grip, zeroes the anchor velocity and starts a frame blend only when it already held last tick; anything else loses the hold (+1200 bit 0x20 clears);
+- 82D45D30: the hand points sit at grip +/- 0.5 x |hand bone 3 - hand bone 7| along the record, clamped to [0, length];
+- 82D46218: the blend runs only when the jump D = |target - current| reaches T = threshold x 60, at rate -T / D per tick; else the frame snaps.
+
+Multiplayer: [`RebindState`] and [`FrameBlend`] are plain per-skater data.
+
+### Held hand IK
+
+The hand IK of the held update: +1200 bit 0x40 (`enabled`) and the weight +1132. 82D46610 (82D469C8..82D46C9C) sets the bit during the grab's enter window ([`super::MoveObjectTuning`] `hand_ik_*`); only 82D444A0 full (a grab or a path B re-grab) clears it, so a re-grab after the window leaves the hands without IK, as in retail. 82D45008 moves the weight toward 1 while on, toward 0 while off. Plain per-skater data.
+
+## Code reference: player/offboard/move_object/held_record.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/player/offboard/move_object/held_record.rs`; each comment there links its section here.
+
+### Held record and grip
+
+The held grab record of Move Object (state +720) and the grip along it (+1128), research b62 [code, TU3 recomp]:
+- 82D444A0(state, full): `full` (enter 82D442D0 and the path B re-grab) copies the record's reversed bit (rec+200 bit 0x20) into +1200 bit 0x04 and places the grip at the nearest arc distance (82D2CFE8) of the skater reference (+272, bone 23), clamped to [h, length - h] with h = min(GrabSplineEndExclusion, length / 2). Always: the side test c = cross(rec+80 - ref, rec+64 - ref).y; c < 0 swaps the ends, negates the edge direction (+112) and toggles the reversed bit; when the record's bit then differs from +1200 bit 0x04 the grip is mirrored (length - grip) and the bit copied, so it stays on the same physical point of the edge.
+- Path A of the held update 82D44A10 refreshes the record from the object's current pose every tick and runs 82D444A0 without `full`.
+- 82D45D30 evaluates the record at the grip (82D2D2B0, arc distance).
+
+Multiplayer: [`HeldGrip`] is the whole per-skater state (plain `Copy` data); the record itself is rebuilt from the object every tick.
+
+## Code reference: physics/grab_view.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/physics/grab_view.rs`; each comment there links its section here.
+
+### Grab visualizer
+
+The grab visualizer (opt-in "Visualize Grabs", `SKATE_VISUALIZE_GRABS=1`): what the player can grab, drawn in the world from the same records the game decides with, and logged.
+- Every record in grab range (the grab owner's validated set: the props near you on foot, the car spots near you on board) is an amber line along its spline chord, with a dot at each end.
+- The one a grab would take now is green: a thick line, a ring pulsing around its middle and an arrow pointing down at it. On foot that is the record the Ground grab decision qualified (82D324B0); on board the car spot the skitch latch holds (82D39D98).
+- `GRAB_VIEW` (when the state, the ready record or the records in range change): each record with its owner (prop id and template, or car spot), distance and height, and the nearest prop with grab splines when nothing is in range.
+
+A viewer aid only: it reads the decision, never feeds it, so play is the same with it on or off.
+
+## Code reference: living_world/dmo_stream.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/living_world/dmo_stream.rs`; each comment there links its section here.
+
+### DMO streaming game side
+
+DMO streaming in the game (doc 27 "DMO streaming"): the map's placed props run through the retail DMO census (`skate_core::living_world::dmo`, census slot 2 of 4) and a culled or evicted prop goes dormant (`GamePhysics::stream_prop`: body asleep and still, collision parked, model hidden); a spawn brings it back at its authored pose, as retail respawns a culled DMO from its placement record (research b98: nothing writes the live pose into the record; the moved-pose map only rebuilds records at a chunk reload, not modelled). Props in the player's saved placement layouts (#15, not retail) are never streamed, so layouts survive.
+
+On by default, as retail streams its DMOs; `SKATE_DMO_STREAM=0` (or a mod) turns it off, and then every placed prop exists all the time. Logs `DMO_STREAM` (counts per change) and `DMO_STREAM_CHANGE` per decision.
+
+## Code reference: physics/prop_layout.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/physics/prop_layout.rs`; each comment there links its section here.
+
+### Prop layout sidecar
+
+Sidecar persistence for placed prop layouts (Phase 4).
+
+One versioned JSON file per map at `settings/prop-layouts/<map>.json` beside the asset root, the same user-data convention as `settings/gameplay.json`. Only confirmed placements are recorded; the map package itself is never modified. A missing, corrupt or foreign-map file leaves the authored poses untouched rather than failing the load.
+
+## Code reference: grind_world/props.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/grind_world/props.rs`; each comment there links its section here.
+
+### Prop grind rails
+
+Grind rails carried by dynamic props (DMOs), retail provider 82C4C4E0. Each DMO part keeps its rails in its own model space (setup 82C535C0 fills the rail map at DMO+1796 from the part's EB001B list); every query re-places them with the prop's current matrix, so a moved or knocked prop takes its rails along and no grind state is attached to the prop.
+
+## Code reference: modding/world_props.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/modding/world_props.rs`; each comment there links its section here.
+
+### Mod world props
+
+Mod-created dynamic props (doc 27 "Props created mid-game"): `sdk.world.spawn_prop` copies a map prop (model, collision, physics block, type data) through the engine's runtime prop path (`GamePhysics::spawn_runtime_prop`, the same path a released hand prop takes) and `sdk.world.remove_prop` / mod disable remove it again.
+
+## Code reference: physics/biped_ground.rs (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-game/src/physics/biped_ground.rs`; each comment there links its section here.
+
+### Prop walk-over log
+
+Diagnostics for walking onto props (bench walk-over bumps): which prop the walker's contact target or edge is on, the step height above the feet, and whether the step was taken or why not. Written when the prop or the outcome changes. Outcomes: `step` (target contact on the prop, rise over 5 cm: the contact classifier's step threshold 82D837C8), `flat` (target on the prop, no rise), `no-candidate` (packet flag 1024: no candidate before the forward limit), `obstacle` (contact correction pushes the walker back), `no-target`.
+
+### Move Object skater follow
+
+Move Object (502): the stock graph swaps OBGround's locomotion AttachIntents for MovingObjectNew's OB_ObjectMv set, and retail moves the OBJECT from them (82D45318, prop_carry) while the skater follows the object's grab edge: 82D45D30 builds the skater's target frame from the grab record, 82D46218 / 82D463D8 blend toward it, 82BDF268 moves the character there. The frame blend is a snap at retail data (it only blends when the frame jumps >= 60 m per tick: physics_state_offboard +448 = 1.0 x 60, 82D46218). The root yaw is NOT that frame: 82D46610 writes +1124 = wrapped angle to the edge frame x curve 023D73966B8669A5 at the time held, and 82BE1058 (from 82BDF268) turns the character by it, so the facing eases in over the first 0.5 s of a grab (0.18 of the angle at the grab) and turns the whole angle from then on (b243 / b245). The skater target is the root moved by the step of the retail follow point +416 published by prop_carry (the step is bounded there, 82BD41B0), one tick behind the prop. NOT RETAIL YET: 82BDF268's translation (the +288 hands step, then a pull toward +416 of at most 0.3 m); the walking job's velocity override moves the root onto the target each tick. The walking stick stays idle.
+
+### Follow move contact bit
+
+NOT RETAIL YET (part of the follow move above): the walking controller's approach (82D7F458..FDD0) steps toward the contact target projected onto the FACING line, so following a prop that slides along its edge would come out as a forward step. Retail 502 never runs that job (82D4E2F8 is only submitted from BipedGround 82D30D30); it moves the character with 82BDF268, not decoded. Until it is, the follow move drops the target-contact bit (2) for this job only (support contact bit 1 still keeps the feet on the ground; no 0.3 m step-up).
+
+## Code reference: physics.rs (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-game/src/physics.rs`; each comment there links its section here.
+
+### Reset one prop
+
+Reset ONE object (retail cMsgResetDMO, doc 27 "Object Dropper and reset"): the phone's per-object Reset posts it, PlayerUI's handler 8289A048 calls the DMO manager's reset (vtable 0x82323254 slot +36, 82C4B5F0), whose worker 82C4B780 looks up the object's spawn record and puts the object back on the record's transform in one step (no fade or tween in that path). Ours: the authored pose, at rest and asleep, collision rebaked, the saved layout entry dropped. Refused (false) for an unknown id and for the held object (NOT RETAIL YET: retail's held case is undecoded). The single authority for resets.
+
+### Spawn push acceleration
+
+An AI spawn push: [`Self::set_context_velocity`], and the acceleration sampler's previous velocities take the pushed value, so the push itself reads as no acceleration. Outcome-matched: retail's spawn-placed skaters ride off and do their recorded tricks; with the one-step velocity jump read as acceleration, every placed NPC played the non-interruptable `RidingIdle.Bumped` clip for ~0.6 s and a recorded trick inside it never played (b194).
+
+## Code reference: physics/mass.rs (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-core/src/physics/mass.rs`; each comment there links its section here.
+
+### DMO body inertia fill
+
+TU3 82C4E568 Inertia fill for a DMO body from its local AABB half extents: inverse mass = 1 / mass (+16), caps and drag copied as is (+24 / +28 / +32 / +36), and the box inertia of 82C47FC8 on `h = half_extents * inertia_scale + inertia_offset` (vmaddfp, fused). When any of h.x, h.y, h.z is not > 0 (NaN included) retail uses (1000, 1000, 1000) instead (0x82256FE8). 82C47FC8: k = (1/3) / inverse mass, inverse tensor = 1 / (k (h.y^2 + h.z^2), k (h.x^2 + h.z^2), k (h.x^2 + h.y^2)) with two Newton steps on the estimate, +20 = 1 / the smallest inverse moment.
+
+## Code reference: input/offboard_intentions.rs (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-core/src/input/offboard_intentions.rs`; each comment there links its section here.
+
+### Object move inputs
+
+Object-move inputs while carrying a prop (retail Move Object mode), 8259C4B0 called from Fill825999F0 with the current RawControllerInput (derived words 7..13). The stock OffBoard AG forwards all three to the MG, where MovingObjectNew attaches them to the same-named skeleton-input channels:
+- OB_ObjectMvX = raw left X * x_gain(|a|/pi);
+- OB_ObjectMvZ = raw left Y * z_gain(|a|/pi);
+- OB_ObjectMvRot = clamp(raw right X + sign(a) * rotation(|a|/pi) * s, -1, 1).
+
+`a` is atan2(x, -y) wrapped to (-pi, pi]. The scale `s` (caller f21) is not resolved; it only multiplies the rotation curve, which is all zero in the shipped data, so the left-stick term is left out.
+
+## Code reference: player/offboard/grab_scene/qualify/polyline.rs (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-core/src/player/offboard/grab_scene/qualify/polyline.rs`; each comment there links its section here.
+
+### Spline point at along
+
+82D2D550: the spline point at a signed position `t` along the record, from the middle of its ends (the skitch frame step 82D48148 and hand targets 82D4A378; research b148). At or past +-half (`+180`) the ends (+64 / +80); otherwise u = t + half (reverse bit `+200` 0x20: half - t), and the points are walked first to last, each segment counting its length projected onto the first -> last direction (floored at 1e-4, 0x8209BE90); the first segment that takes the total past u holds the point, stepped back inside it, to world by the record frame. Unlike 82D2D2B0 (`at_distance`) the order never reverses and lengths are projected.
+
+## Skater vs prop mesh
+
+2026-10-22, living world todo `living-world-ramp-prop-ride.md` (USER-ASKS 255), research b501
+(`.local/research/b501-ramp-prop-ride.md`).
+
+- **Problem (laptop session 2026-10-22, Black Box park):** "Trying to skate one of the ramp props didn't work at all,
+  the prop moved and my character fell inside of it." (DMO_Glbl_mediumQuarterPipe_1002, vault quarterpipe_medium,
+  250 kg; ridden at 16:41:01, wipeout reason 1, the body sank into it.)
+- **Cause [code, main checked]:** the skater push collided the skater's volumes with the prop's box (the AABB of its
+  collision triangles). On a ramp the box includes the air above the slope, so a board on the slope was "inside" and
+  shoved the prop along the box normal with the full closing speed every tick (under the PROP_SHOVE log threshold);
+  once the prop slid away, its one-sided triangles never pushed the skater back out.
+- **Retail [code from b484 / b485 / b234, inferred for the outcome]:** the skater meets a DMO through its own mesh
+  (ClusteredMesh, one-sided, edge codes), never a box; the DMO callback 82C54618 adds no actor impulse.
+- **Change:** `prop_dynamics.rs` `skater_mesh_manifold`: a skater volume tests the prop's posed triangles in the prop
+  layer with the world triangle test (`primitive_triangle_world_contacts`, the same one-sided test the skater's ground
+  uses); the deepest contact drives the push. The box stays as the cheap bounds reject and as the fallback for a prop
+  with no triangles. Mesh contacts get no overlap nudge (the nudge is ours).
+- **Still ours (NOT RETAIL YET):** the push itself is the impulse model above (share of the closing speed through the
+  reduced mass), not skater rows in the prop solve.
+- **Test:** `riding_up_a_ramp_prop_does_not_shove_it` (a wheel gliding up a wedge prop's slope leaves it in place).
+
+## Prop watch line
+
+(2026-10-22, for the recomp comparison in `.local/research/b509-dmo-rows-trace-spec.md`)
+
+- `SKATE_PROP_WATCH="x y z r"` (spaces or commas): the first tick a prop's centre is within `r` m of the point, the
+  nearest one is armed (`PROP_WATCH_ARM id= template= distance= tick=`); from then on it writes
+  `PROP_WATCH tick= id= pos=[] v=[] w=[] up=[] contacts= asleep=` every physics tick, held or not.
+- `contacts` counts the prop's static triangle manifolds plus prop pairs this tick (not contact points).
+- The recomp counterpart is the `DMOROWS` line (b509): compare time to sleep, final pose, slide distance and peak
+  speed after a wake.

@@ -140,10 +140,7 @@ impl SkyPackage {
         Self::load_from(&root.join("private/native-skies"), name, |_, _| Ok(()))
     }
 
-    /// The Trick Guide set's dome (`<assets>/private/hud/scene/TrickGuide.sky.*`, setup's scene_clips.py): its own
-    /// material_sky parameters with the environment of render location `trick_guide` (sun, anchor height,
-    /// fog_trickguide), which retail's renderer switches to while the set is loaded (sub_827950A8). Exports from
-    /// before that carry no environment: the sun and anchor of `world` (the current map's sky) stand in, no fog.
+    /// The Trick Guide set's dome with render location `trick_guide`'s environment (827950A8); old exports: map sun.
     pub(crate) fn load_scene(directory: &std::path::Path, world: Option<&SkyPackage>) -> Result<Self, String> {
         let (anchor_height, sun_direction) = world
             .and_then(|w| w.sky.environment.as_ref())

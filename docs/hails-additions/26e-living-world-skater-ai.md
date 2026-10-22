@@ -1236,3 +1236,285 @@ graph) but not traced.
 `fast_lines_glide_up_to_the_recorded_speed`, `gates_and_reductions_follow_retail`,
 `target_speed_floors_far_off_the_line_and_slope_is_rise_over_run`; skate-mods patch validation for the push keys.
 Not play-tested yet.
+
+## Code reference: living_world/npc_sim.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/living_world/npc_sim.rs`; each comment there links its section here.
+
+### Simulated NPC skaters model
+
+Simulated NPC skaters (doc 26, "Simulated NPC skaters", M7): an NPC skater is a full physics skater (its own board context and `SkaterRuntime` in the shared world) driven by its AI record, taken over from the replay tier on its first safe node.
+
+Retail runs every ambient NPC skater simulated at any distance (at most 3 offline; b303: the SimController updates every skater each tick, no distance or count tier). So the radius defaults to unlimited; a finite `npc_simulated.radius` is a mod's cost choice (handed back beyond 1.1 x, never switched while airborne or grinding); the handover keeps the line's speed (retail never hands over). Off by default until play-tested: `SKATE_NPC_SIM=1` or `sdk.world.set_tuning("living_world", {npc_simulated = {...}})`.
+
+Per tick (after the population and the replay cursors advanced): the record is built from the cursor (`skate_core::living_world::ai_record`), the retail spawn push applies while the skater is still on its node, and `GamePhysics::advance_npc_skater` runs the same frame as the player. The NPC is drawn from its simulated pose (`render_pose`, like the player); its population position and audio still follow the cursor. A physics error drops it back to the replay tier.
+
+### Simulated backwards line
+
+The `NPC_SKATER_BACKWARDS` line for a simulated NPC is drawn from its own body, not the replay cursor's ghost (b352: every ghost line in one session was a sim NPC), so it reads the body: effective board forward more than 135 deg from the deck velocity at 1 m/s or more (the replay check's diagnostic threshold), with the body's retail fakie bit (`82BB2330`; a fakie rider is not wrong).
+
+### Effective root and B reads
+
+What B reads from the simulated skater (b80): `[rec+56]+161` = SkaterOffBoard (Processed +2484 0x08000000), `+160` = TransitioningOnOffBoard (+2480 0x4), both written by `82DB6EC0`; "can move" (`82466ED0`) = off the board and not toggling (its `[rec+72]+308 / +309` terms are not identified: taken as clear); the hand-back byte `[rec+28]+59` = the wipeout bit (`82DB6EC0` copies it there).
+
+The skater's effective animation root (`GetEffectiveRoot` `82BE3650`): rows 0 and 2 negated while Processed 2476 bit 2 (the mirrored stance) is set. The raw root of a goofy / mirrored skater faces backwards: controller B then walked the skater straight away from its node.
+
+### Clear line state
+
+`sub_82467FC8` (b116, main checked the state 500 / wipeout byte tests): the point the path projection, the lost test and the speed (`pc+96`) use, with the heading `pc+128` (`sub_8246BCF8`). Off the board (BipedGround) or wiping out: the animation root and its forward row; on the board: the board (retail: the board rigid body's position, SkateboardReckoning +144; ours the deck part, open) and the deck's forward. The per-line state retail's path reset `sub_82468AC8` clears (air, trick slot, board yaw), shared by a line switch and the stage-2 re-snap so the two cannot drift apart. The tracker block is not touched here: a line switch also resets it (`path_reset`), the re-snap `sub_8246D168` saves and restores it around the reset (b207).
+
+### Controller A activate
+
+A re-attaches by its saved line id at the node (`824689C0`); a success resets the line controller's sub-mode (b66). Retail's A activate (`sub_824689C0`, b115): the controller reset (off the path) with the search at the node nearest the skater over the whole line (`sub_82455108`); the rejoin commit puts it back on the path.
+
+### Activate reset
+
+The activate's reset (`82468AC8`) also clears the takeoff flip latch (`pc+927` / `+928`), the trick slot and the board yaw; none of them is in the saved `pc+528..580` block, so a walk-back no longer carries the old line's air / trick state onto the new one (b291). Retail sets no facing here: controller B lined the skater up before "Arrived".
+
+### Projection and avoider
+
+The obstacle avoider's answer (`npc_avoid`): retail caps / floors the record speed (`sub_82470830`) and moves the target across the path (`sub_82464E30`, controller `+933` = steering). Retail's projection (`sub_8246D560`, b110): cursor A from the skater's position, B one shaped recorded tick ahead; the cursor (and so the target, the record and the trick events) goes to B.
+
+## Code reference: living_world/ai_record.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/ai_record.rs`; each comment there links its section here.
+
+### AI physics record
+
+The NPC skater's AI physics record (AIPhysicsInput, 164 bytes) built from its recorded line (doc 26, "Simulated NPC skaters"). The physics reads it in the ground states' board path (`crate::riding::grounded::state::board_path`).
+
+Retail (TU3, evidence only; re-implemented): `sub_8246DB50` -> `sub_8246DE38` each tick:
+- target frame = the path frame of the committed cursor node (`sub_82453AD0`: board orientation `+0x18`, turned about up on board-flipped nodes, `sub_82453A58`) at the node position; when its forward points away from the skater's (`dot < 0`), its Ri and At rows are negated (the line is ridden switch / fakie instead of turning round);
+- target velocity = the node's per-frame displacement (`+0x0C`) x 60 (`0x8302EE08`), its length clamped to 99.9 (`0x822F94D4`); above 0.001 (`0x82063A48`) the speed shape `sub_82470830` may scale it (`0.3 * s * influence + 0.125 * s * speed factor`, applied when it changes the speed by more than 0.01; both inputs not decoded yet, 0 here = no change);
+- flags `+160`: bit 25 = on-board steering (`pc+922`, seeded by `sub_8246DB50`); with it (`pc+922`) bit 31 always, bit 30 = A and C, bit 29 = B and C, bit 28 = B, where A = (state byte `14652` clear and `pc+933` clear), B = A and `pc+945` clear, C = `pc+944` clear or trick category (`pc+832`) 9; without it all of bits 31..28 (holding the cached pose when the skater is more than 10 m off the path, `0x821963E4`, AI kind 0). The record's other words (trajectory block +80..+144, bits 27..25) are not built yet.
+
+### Spawn push
+
+The spawn push (`sub_824701F8` hold branch): while the skater is still within 0.01 m (`0x820D71E8`; 0.05 m `0x82165A00` when the cursor's node `pc+816` is not 0) of its node in the ground plane, every board part gets the node's per-frame displacement x 60 x 0.75 (`0x821814A0`; x 0.5 `0x8209975C` for AI kind 1 outside motion states 19 / 20) as its velocity (`82C04168`). `None` once it has left the node.
+
+### Lands in grind
+
+`sub_824551C0(path, node)`: whether the recorded jump after `from` lands in a grind or slide. From the first node carrying a trajectory on, it walks the line summing the recorded frames: a start-trick of category 5 (grind / slide, `catalog::category`, `sub_824545F0`) answers yes; category 8 / 9 (manual / powerslide), incidental air, an end-trick on the ground, another trajectory more than 60 frames later or more than 600 frames in all answer no; after an airborne end-trick the first ground node answers yes only when the next node starts a category-5 trick.
+
+## Code reference: living_world/ai_signals.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/ai_signals.rs`; each comment there links its section here.
+
+### AI trick signals
+
+The ActionGraph signals an AI skater's PathController posts so a simulated NPC skater rides into its recorded tricks like a player would (doc 26 "Simulated NPC skaters do their tricks"). Retail writes named signals into the same intent map the player's pad listener fills; no pad bits or stick gestures (`.local/research/npc/m7-ai-trick-signals.md`, main checked `sub_824691A0` and the signal addresses).
+
+Retail (TU3, evidence only; re-implemented):
+- anticipation `sub_824691A0` (each tick from the node advance `sub_8246D560`): within 3.0 m of the line (`pc+828`, `0x82063B08`) it looks up to 60 recorded frames past the cursor for a start-trick node (`sub_82456550`); an ollie or flip there (category 1 / 2) sets `AnticMag` 1.0 and `AnticAngle` 0, or pi for a nollie (the recorded trick, `sub_82469048`); `sub_824696B8` posts them (and `Crouch` on a crouched node outside a trick, `Manual` before a manual) when the skater faces along the line (under pi/4, `0x821A9C28`) [code, the posting gates partly inferred];
+- dispatch `sub_8246A2E0`: on the tick the committed cursor reaches the start-trick node it posts `Trick`, the trick's scorable name, `GestureSpeed`, `TrickHeight` and `DontMirrorTrick`, all 1.0 (the graph enters the trick on `HasAGIntent <name>`, names compare case-insensitively); only the newest event node of the tick, none when the cursor crossed more than 3 nodes (1 right after spawn). That perform path is the ollie / flip one only (categories 1 / 2, `sub_8246A080`); the other categories keep the trick in the slot and the per-tick writer posts its timed intents, like a player's held inputs (below, research b113).
+- trick slot: `pc+832` category (from the recorded trick, table 0x820862A8), `pc+844` trick, `pc+904` ticks since the start node (0 there, +1 after every writer call); an end node or a failed dispatch clears the category (0x8246A6D4). Jump table 0x8246A45C: 1 / 2 perform; 3 / 4 / 12 take the trick only when the profile's slot-tricks byte (+51) is set (`sub_82469EF0`; else the slot keeps the old trick); 5 / 7 / 10 / 13 take it; 6 / 9 only validate; 8 is the manual value; 11 (revert) posts `Trick` and `SlideFs180` (fsrevert, id 4) / `SlideBs180` (bsrevert, id 5) (`sub_8246A1E8`).
+- per-tick writer `sub_824696B8` (jump table 0x824698F8): categories 1-5, 7, 10, 12, 13 post the slot trick's `SkaterIntentTuple` list (`sub_82470ED0`: entry live from `start` to `end`, `end` < 0 = open); 6 (handplant) posts `GrabWorld` 1.0; 8 `Manual`; 9 the powerslide keys; 11 nothing.
+- takeoff board yaw (`sub_8246B1F8`) and its post in the air arm (`sub_8246B358` -> `sub_82471008`): see [`BoardYaw`].
+
+### Takeoff board yaw
+
+`sub_8246B1F8` on the takeoff edge, from the cursor node's recorded board and skater frames: d = heading(board forward) - heading(skater forward) ([`retail_heading`]), wrapped to [-pi, pi], folded to [-pi/2, pi/2] (nose and tail lie on the same board line); outside the dead zone the angle is +-pi/2 by the sign of d and the magnitude |d| x scale (not clamped here).
+
+## Code reference: living_world/npc_tricks.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/npc_tricks.rs`; each comment there links its section here.
+
+### NPC trick choice
+
+Which trick an NPC skater does at a recorded trick slot (doc 26, "NPC skater trick choice").
+
+Retail (TU3, evidence only; re-implemented, nothing copied): the PathController's dispatcher `sub_8246A2E0` runs on every start-trick node (event 1) the skater passes. Ollie and flip slots (table820862A8 category 1 / 2) go to `sub_8246A080`; every other category (grinds, grabs, manuals, slides, reverts, plants) does the recorded trick.
+- A higher chain level (heelflip2 and up) takes no action: the base trick already running covers it.
+- Behaviour mode (behaviour context +60): 0 = the recorded trick (`sub_82469FA8` walks the chain within 120 frames but only ever keeps the recorded id: it assigns each matched node's previous level, which is the id it already has); 1 = the default (`sub_824733A0` creates the ambient behaviour with it): when the gate passes, a weighted pick from the character's profile table, else the recorded trick; 2 = a scripted list (not ported yet); 3 and up = no trick.
+- Gate `sub_82469C60`: walk forward from the slot summing the nodes' frames until 300; a start node first passes only when it is an ollie / flip whose previous level is the recorded trick; a landing (airborne seen, then a node without it) passes only when the next node is not a start node and more than 50 frames passed (the landing node's frames included); the end of the window or the line passes.
+- Pick `sub_82469A28` -> `sub_8245FE58`: the nollie table (profile +8) when the recorded trick's name starts with `n` / `N` (`sub_82469048`), else the regular table (profile +0); `u = rand32 / 2^32`; walk the weights (normalised to sum 1 at load, `sub_824720C8`) and take the first entry with `u < sum`, else entry 0.
+
+Not retail yet / determinism choice: retail draws `rand32` from the skater's random source (skater vfunc +36) in tick order. Here the draw is `derive(seed, [line, node, frame])`: the same distribution, but a pure function of the NPC's seed and the slot, so the choice does not depend on how many other draws came first and a client could check it. `sub_82469A28` also keeps the recorded trick when its trick attribute record has no family entries; the per-category lists are built from every record (`sub_82DA1BF0`) and all 105 ollie / flip ids have one, so the check always passes [code + data, research b187].
+
+## Code reference: living_world/ai_controller.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/ai_controller.rs`; each comment there links its section here.
+
+### Avoider modes 6 and 7
+
+The NPC skater controller's sub-modes for the obstacle avoider's modes 6 and 7 (retail TU3, evidence only; re-implemented; `.local/research/npc/b66-npc-modes-6-7.md`, main checked `sub_8246F818` cases 3 / 5):
+- mode 6 (a low prop within 1 s): `sub_8246D560` sets controller sub-mode 4 (`ctrl+568`) when below 4; while 4 the recorded node action is dropped, the speed shape is skipped and no grab / trick is posted;
+- mode 7 (blocked by a prop within 1.5 s, cap under 0.1): `sub_8246F938` (not airborne) sets sub-mode 3 and a one-shot reposition request (`ctrl+941`) on the first tick; a second tick still in mode 7 sets sub-mode 5, remembers the prop's path node (`ctrl+756`) and posts `WipeOutRequest` 1.0 once (key 0x830BECC4); later ticks post nothing;
+- `sub_8246FE38` at the end of every controller tick: a pending request (offline only) re-places the skater on its line, at most once per 60 clock units: in sub-mode 3 at cursor + 5 (or the prop's node when further in mode 7), else at the cursor; then + 2; a remembered prop node + 2 within 1..19 nodes ahead wins; clamped to the line. A successful move resets the controller (sub-mode 0). The request is cleared either way.
+
+Multiplayer: [`ControllerState`] is plain per-NPC data; the host runs it.
+
+### Safe node picker
+
+The safe node picker (`sub_82455728`): a node is good when more than `safe_jump_frames` (45) recorded 60 Hz frames have passed since a jump marker and more than `safe_flag_frames` (15) since a flag-0x4 node, its step slope y^2 / (x^2 + z^2) is under `safe_slope` (1.0, `0x8231A844`; 0 when the horizontal length^2 is at most `0x82063A48` 0.001) and its trick class is 0, 4 or 8; the first of `safe_run` (3) good nodes in a row wins.
+
+### Off-board toggle
+
+The off-board toggle the line controller presses (the push-state object `M` at brain `+92` it shares with controller B; b117, main checked `sub_8246FA30` -> `824712E0`): A's activate clears it (`sub_82468AC8`: mode 0, count 0); each path tick presses first, then sets the mode for the next tick: 2 = get back on (1 = stay off, when `pc+336`, which retail never sets for ambient skaters).
+
+### Bail respawn node
+
+`sub_8246ED68`: the node a bailed AI skater is placed at again, picked when the bail starts (`sub_8246EE30`, `pc+880`; main checked 0x8246ED68..0x8246EE24): the projection's search node (`pc+816`) plus `reposition_past`, a remembered prop's node instead when it lies ahead within `remembered_window`, clamped to the last node, then the first safe node from there ([`safe_node`]). Not ported: game modes 19 / 20 (`sub_824681D8`) use `sub_824553D8(line, cursor A)` instead.
+
+### Track stuck
+
+`sub_82468240` for one tick (b111 section 4): `pos` = the skater, `a` / `a_pos` = cursor A and its point, `progress` = the projection's flag (`PathFollow::progress`), `can_track` = `sub_82468070` (not scripted, not toggling on / off the board; on board not airborne, off board not mounting / unmounting). The stage climbs on no-progress ticks only; progress ticks count toward the clear.
+
+## Code reference: living_world/controller_b.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/controller_b.rs`; each comment there links its section here.
+
+### Controller B
+
+Controller B (retail "NavMeshController"), the NPC skater's walk back to its line for the obstacle avoider's mode 7 ("back to the line past the prop"; retail TU3, evidence only; re-implemented; `.local/research/npc/b70-npc-submode-reposition.md` and `b78-mode7-controller-b.md`, `b79-controller-b-outputs-path.md`; main checked the constants, the throttle `82467B00`, the reset `82466F40` and the writer slots `82470D08` / `82470D78`):
+- the brain swaps from the line controller (A) to B (`sub_824661A8`); B's activate (`82467508`) resets it (`82466F40`: everything 0, waypoint seen -1, the "can move" latch = the skater's state now) and plans a path to the chosen line node (`82467088`): with waypoints the last one must lie within 2.0 h / 1.0 v of the node, without waypoints the node within 1.5 h / 3.0 v of the skater; a failed plan keeps A;
+- B's tick (`824675C8`) writes the on-foot intents, never position or velocity: abort / hand back, the `WipeOutRequest` (key `0x830BECC4`) on a stop request or when stuck, then the path update (`82467718`: latch, re-plan, arrival, waypoint advance, stuck monitor `82466A00`), the off-board toggle presses (`824712E0`, "ToggleOffboardState": `NewToggleOffBoardState` / `ToggleOffBoardState` until the skater is off the board), the steer (`82467C90`, "OffBoardMotion" slot 2 `82470D78`: `OB_Steer` and `OB_MagHeld` = s) and the throttle (`82467B00`, slot 1 `82470D08`: `OB_Mag` and `OB_MagHeld` = min(f, 1), only when f > 0); so the skater steps off and walks back on the navmesh (NavPower in retail, the peds' navmesh here);
+- B hands back to A (`sub_824661A8(brain, null)`: A re-attaches by its saved line id) on arrival (all legs done, 2.4 h / 1.0 v of the node, heading within pi/8 of the node direction), when no plan is left, or on abort.
+
+Distances are horizontal (x, z) and vertical (y). Angles are signed about +Y. Multiplayer: [`ControllerB`] is plain per-NPC data, ticked by the host at the retail tick; [`PathService`] must be deterministic.
+
+### Controller B path service
+
+The peds' navmesh as B's path service (retail: NavPower, the same runtime the peds use; b79). Every path corner, the goal included, becomes one element with entry = exit = the corner [inference: retail's 56-byte elements carry two points per portal; ours are the funnel's corners], so a reachable goal always has a last waypoint for the 2.0 h / 1.0 v acceptance. The mesh is static, so a held path stays valid (retail re-checks its element references each tick, `829277C0`). The goal is the nearest point the start can reach (retail `82928618`, b277). The start is the peds' point query, else the nearest walkable polygon at any distance (retail `82933848` -> `829338B0`: range `0x8206D108` FLT_MAX, best distance from `0x822F9310`; b324): a skater stalled on a grind block or inside an obstacle's navmesh cut can be 0.65 to 2.6 m off the mesh, which the peds' 0.5 m snap refused, so every walk-back there failed with "no plan".
+
+## Code reference: living_world/avoid.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/avoid.rs`; each comment there links its section here.
+
+### Obstacle avoider
+
+The NPC skater's obstacle avoider (retail `ObstacleAvoider`, AI controller `+80`), doc 26 "NPC skater obstacle avoider". Pure: the game gathers the obstacles near one NPC skater each tick, this module turns them into retail's speed floor / cap and mode.
+
+Retail (TU3, evidence only; re-implemented), all called from the PathController advance `sub_8246D560` once per tick:
+- reset: own speed, floor 0, cap FLT_MAX, mode 0; gathering only when the global avoidance switch is clear: skaters 64 m (`sub_82464968`, type 3), peds 8 m (`sub_82463C08`, type 2), vehicles 20 m (`sub_82464000`, type 4), props 16 m (`sub_82464448`, type 5);
+- entry add `sub_82463A40`: kept inside 40 deg of the facing, or inside 88 deg when closer than 1.8 m, at most 16;
+- entry fill `sub_824636B0`: closing rate and time to contact (`sub_82462D00`), the lateral interval the obstacle blocks on the path (`sub_824629A8` circle, `sub_82462448` box for vehicles and props), the speed limits for moving obstacles (`sub_82463200`), the close blocker test, the skitch candidate (`sub_82462ED0`);
+- floor / cap aggregation `sub_82464FA8`, skitch target `sub_824650A0`, steer target and free path gaps `sub_82465198` / `sub_82461DC8`, mode `sub_82465578`. The speed consumer is the record builder's speed shape (`sub_82470830`): mode 1 floors, mode 2 caps the AI record speed. Modes 3 and 4 move the AI's target sideways (`sub_82465280` gap choice, `sub_82464E30` offset, [`steer_point`]). Not ported (open): the prop gate `sub_82464350`, the consumers of modes 6 and 7, and an offset term of the entry add that reads controller `+128`.
+
+Multiplayer: a pure function of positions and velocities, so the host runs it and clients consume its result (the replay tier's lag, see the game side).
+
+## Code reference: living_world/path_follow.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/path_follow.rs`; each comment there links its section here.
+
+### AI path projection
+
+Retail's AI path projection (research `.local/research/npc/b110-ai-path-projection.md`): a physics AI skater's place on its recorded line follows the skater, not the recording's clock. Per tick (`sub_8246D560`): 1. the nearest node in a forward window from the search start (`sub_8246D3C0` -> `sub_82455BB0`, start..=start+4, squared 3D distance; the start only grows); 2. the projection onto the two segments around it (`sub_824563D8`), kept or replaced against cursor B with a 0.5 hysteresis, and clamped forward to A + 0.25 of A->B when it falls back (`sub_8246C930`): cursor A; 3. distance to A and the recorded lane test (`sub_8246CCC8`, node widths x 1/50); 4. off path: the rejoin commit within 0.5 m or inside the lane (`sub_8246E2B8`); 5. cursor B = A + the speed-shape ratio in recorded frames (`sub_8246E3B8` -> `sub_82456628`); 6. on path is dropped beyond 1.0 m outside the lane (`sub_8246DB50`).
+
+Positions are (node, t): t in [0, 1] along the segment node -> node + 1. Pure and deterministic (no clock). 0. "lost" (`sub_8246D3C0` -> `sub_82468DD8`, b115): on a tick the search node did not advance, a skater that was off the path, farther than 6 m from the search node and from both lane edge points, and slower than 14 m/s is lost; the caller turns it into the reposition request (`ctrl+941`) that hands it to controller B.
+
+NOT RETAIL YET: the 4.5 m lost test after a line-end re-pick, the node-change handler (`sub_8246BEE0`), the `G+608` and skater flag `0x04000000` in the lost test; which body point retail projects (`sub_82467FC8`) is open (ours: the deck), and so is the lane edge axis (`sub_82454648`; ours: the segment's right).
+
+## Code reference: living_world/ai_push.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/ai_push.rs`; each comment there links its section here.
+
+### AI skater push
+
+The AI skater's push: retail's PathController posts the same push intents the player's pad listener does while the skater is slower than its line wants, so an AI skater plays the normal Push animation (doc 26e "AI skaters push when slower than their line", research b341).
+
+Retail (TU3, evidence only; re-implemented):
+- `sub_8246BAA8` (every board tick, from `sub_8246FA30` on the ground, not in the air): the target speed is the recorded step x 60 (`pc+0x1F0`), floored at tunable `8213474C` (4.0 m/s) when the skater is more than tunable `A8027415` (2.0 m) off the line, then shaped by the avoider (`sub_82470830`, ours [`super::avoid::AvoidState::shape_speed`]). At or above it the brake writer runs (`sub_8246B810`, not ported [`brake`]); below it the push writer `sub_8246B4C8`.
+- `sub_8246B4C8`: no push in trick categories 4, 7, 10, 12 (`pc+0x340`), stuck stage 4 (`pc+0x238`), or when the line direction (`pc+0x26C`) points against the board's forward. The factor is 0.97 (0.99 when `sub_824681D8() == 23`, mode not decoded), or 0.3 when a start-trick node is under 40 recorded frames ahead (`pc+0x31C`, `pc+0x308`) and the speed is above 2.0 m/s; x 0.3 when an off-board node is under 60 frames ahead (`pc+0x39B`, `pc+0x354`), x 0.3 on a slope under -0.22 (`sub_8246B9C0`), x 0.3 above 11.0 m/s. No push at or above factor x target, or with a heading error of tunable `86923C10` (40 degrees) or more. Else `RightPush` or `LeftPush`, `NewPush` and `Pushing`, all 1.0, every tick the condition holds (no timer).
+- The foot (research b347, main checked both getters): `RightPush` when the SkaterAnim component's (type `0x82453410`, "ISkaterAnim") stance-mirror bit (slot +0x1C `82B97140`, flags bit 30) differs from its riding-fakie bit (slot +0x0C `82B970D8`, bit 29), else `LeftPush`: regular forward pushes right, goofy forward left, fakie flips it. Ours: the same two bits of `SkaterAnimation::stance()`.
+- The brake writer `sub_8246B810` (b347), at or above the target, see [`brake`]: `Brake` (or `ManualBrake` in a manual, category 8) with a ramped magnitude, only far above the target speed.
+
+## Code reference: living_world/npc_avoid.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/living_world/npc_avoid.rs`; each comment there links its section here.
+
+### NPC avoid host
+
+NPC skaters avoid peds, cars, props and other skaters with retail's obstacle avoider (`skate_core::living_world::avoid`, doc 26 "NPC skater obstacle avoider").
+
+Each world tick, before the cursors advance, the host gathers the obstacles (peds and their velocity from the last tick, traffic cars with their box, props with their box, the other NPC skaters and the players) and runs the avoider for every riding NPC skater. Its answer goes where retail's goes:
+- the speed (retail: the AI record speed, `sub_82470830`): the replay tier holds the cursor back by the missing recorded frames (`NpcAvoid::lag`), so a cap of 0 stops the skater and a floor only catches up held-back frames (a recording is never played faster than recorded);
+- the steering (retail: the target moved across the path, `sub_82464E30`, and the board pulled towards it at 2 cm a tick, `82C05EC0`): a lateral offset of the drawn skater that moves 2 cm a tick towards the chosen gap and back to the line once the path is clear. The simulated tier reads the same output for its AI record (`npc_sim`).
+
+Air, off-board and trick spans are never held back or moved (the recorded jump would break). Multiplayer: only the host evaluates; `lag` and `offset` are plain per-NPC state a client would take from the host (no replication yet). Logs `NPC_AVOID` on every mode change.
+
+## Code reference: riding/grounded/state/board_path.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/riding/grounded/state/board_path.rs`; each comment there links its section here.
+
+### Board path 82C05EC0
+
+`PhysState_PhysicsGround` / `SlideGround` board path `82C05EC0` (doc 26, "NPC skater steering"): the external (AI) physics record at Processed `1616` pulls the deck toward the recorded pose every tick.
+
+Retail (TU3, evidence only; re-implemented): `UpdatePostPhysics 82D387A8` runs the ground wipeout check `82D8F9E0`, then, while record flag bit 31 ("steer to target", Processed `1776`) is set, `82C05EC0(controller, physics_ai)`:
+- bit 30: position `82C056B0`: `d = (target - deck) * gain`, the deck translation moves by `min(|d|, max_step)` along `d` (only when `|d| > 1e-6`), set on part 6 alone (`82D9C8C8` -> `82BD4318`);
+- bit 28: velocity `82C05868`: the deck body's linear velocity moves toward the target the same way (`gain`, `max_change`);
+- bit 29: facing `82C05988`: the target forward in the ground frame (`controller+292` -> `+752`) with y = 0 and normalised, its signed angle from +Z about +Y (`8296EC98`) wrapped to [-pi, pi], times `gain`, clamped to `max_degrees` (deg -> rad by `0x8206D110`); the deck rotation becomes `D * F^T * Ry(step) * F` about its own position and the whole board is set (`82C0B2C8`).
+
+The gains are the `physics_ai` vault record (`*(*(0x830CFDA4)+272)+4`, class `527C93F55CFC663D`; `default` record values below). The player never has the record: its Processed `1776` stays clear, so this never runs for it.
+
+## Code reference: living_world/npc_reactions.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/npc_reactions.rs`; each comment there links its section here.
+
+### NPC wipeout reactions
+
+NPC skater reactions to other skaters' wipeouts (the reaction manager, research b166 / b168) [code]:
+- each simulation tick (`sub_8245A7E8`, tick mask bit 0) every skater's reaction bits are cleared first (R+0x24 `clrlwi 7`, main-checked), then set from this tick's events, so a pulse lasts one tick;
+- a skater's wipeout start (`sub_82772748`: H+0xD1 = !prev && cur of the wipeout byte, Processed `+2468` bit 18) is passed to every other skater within a strict 15.0 (`0x822F8F68` = 225.0 compared with the squared distance, `sub_8245E950`, main-checked) as the slam bit with "by" = the sender's model (`sub_8245E6C8`, `sub_8245E740`; 0x61 = 97 when the sender has none); its wipeout end (H+0xD2) is passed the same way as slam_b (`sub_8245E848`);
+- the skaters are visited in index order, so the last sender in range names "by";
+- a skater's own crash bit is its wipeout byte itself, a level (`sub_827A1B78`, entry +148 bit 5). Trick seen (score > 50, `Hash_4BEEDCA4AD799796`) waits for the score's writer (b168 open).
+
+Ours: the skater order is the host's stable key order (players first, then NPC skaters by id), and players listen to nothing (only NPC skaters speak these lines). Multiplayer: a pure function of the skater list and the previous tick's wipeout states; the host runs it and sends the raised reactions.
+
+## Code reference: living_world/ground_steer.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/ground_steer.rs`; each comment there links its section here.
+
+### AI ground steer
+
+Retail's analog steer of an AI skater on the ground (research `.local/research/npc/b121-ai-ground-steer.md`): `sub_8246AA00` turns the skater's heading against its line into the error `pc+824`, and `sub_82471070` writes it as stick input to `Turn`, `BodySpin` and `KickTurn`. It runs on and off the path: off the path (beyond 0.4 m) it aims from the far look-ahead point toward the near one, all near from 3 m, which turns a skater back to its line while the steering record carries no target (`sub_8246DB50`).
+
+Pure and deterministic. Retail constants are the tuning defaults (data, a mod may change them).
+
+## Code reference: living_world/air_steer.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/living_world/air_steer.rs`; each comment there links its section here.
+
+### AI air steer
+
+Retail's analog steer of an AI skater in the air (research `.local/research/npc/b123-ai-air-steer.md`): `sub_8246ACF0`'s airborne arm `sub_8246B358` turns the character toward the recorded skater forward at the near look-ahead (`pc+208`, turned 180 degrees when the takeoff latch `pc+927` is set), and `sub_82471188` writes the error as stick input to `Turn`, `BodySpin` and `KickTurn` outside a dead zone. The latch (`sub_8246A700`) is set on the takeoff edge when the character faces against the current node's recorded skater forward.
+
+Pure and deterministic. Retail tunables are the defaults (data, a mod may change them).
+
+## Code reference: physics/board_path.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/physics/board_path.rs`; each comment there links its section here.
+
+### Board path game side
+
+Board path `82C05EC0` in the ground states' post-physics (`82D387A8`): the external (AI) physics record pulls the deck toward its target (`skate_core::riding::grounded::state:: board_path`). Runs only while the record asks to steer (Processed `1776` bit 31); the player's record is never set, so the player's physics is unchanged. NPC skaters with a physics body (living world, simulated tier) set it.
+
+## Stall lines carry the position (2026-10-22, research b523)
+
+`NPC_SKATER_STUCK ... (stage 2)` now ends with `at=[x, y, z] dist=` and `NPC_SKATER_LOST` with `at=[x, y, z]` (the
+skater's projected point): b523 counted 15 LOST and 9 stage 2 stalls in the three newest laptop sessions but could not
+place them without positions. Its findings (drift off the line at speed is the common start; two re-snaps jumped 31
+nodes back) are in `.local/research/b523-npc-skater-stalls.md`; the retail checks it proposes are open.
+## Lateral ratio and the steep re-snap scan as retail (2026-10-22, research b524)
+
+- **Lateral ratio (`pc+868`, `sub_8246CCC8`, asm-checked):** retail divides the distance to A by the NARROWEST
+  same-side lane width of A and the next 4 nodes; the lane flag (`pc+932`) still compares with A's own width. Ours
+  divided by A's width only, so where the lane narrows within 4 nodes our skater still counted as "centred" (ground
+  steer aiming at the far look-ahead) while retail already blends toward the near point. Change: `path_follow.rs`
+  (`PathTuning::lane_lookahead`, default 4). Test `the_lateral_ratio_uses_the_narrowest_width_ahead`.
+- **Steep re-snap scan (`sub_8246D168`, asm-checked):** retail tests "node lower than the search node" before the
+  240-frame budget, and both only past `search + 2`; ours tested the budget first for every node, so a long first
+  segment ended the scan before a lower node. Change: `ai_controller.rs` `resnap_node`. Test
+  `the_steep_resnap_finds_a_lower_node_after_a_long_segment`.
+- **Matches retail already (b524):** the stage 2 re-snap's nearest node is a whole-line, node-point search, first on a
+  tie (`82455108`); the 73 -> 42 jumps in the 2026-10-21 laptop sessions are retail's choice too. The lane flag has no
+  hysteresis in retail either.
+- **Lane side (`pc+932` / `pc+868`, `sub_8246CCC8`, asm-checked by main, research b526):** retail takes
+  s = (P - A) . (d x U), U = (0, 1, 0) (0x82139A20); s < 0 reads width byte +0x25, else +0x26. With the line heading
+  +z, a skater at +x reads +0x25. Ours used the mirrored vector, so a skater on one side was measured against the other
+  side's width (at University nodes 68 to 75 the widths are 5.1 m vs 1.2 to 4.6 m). Fixed in `path_follow.rs`; test
+  `each_side_of_the_line_uses_its_own_width`. Retail's lost test (`sub_82468DD8`, b527) puts the +0x25 edge on the
+  OTHER side (A + n * width, n = d x U): retail is inconsistent between the two, and ours keeps each as retail (the
+  lost test was already right).
+- Not play-tested; whether the lateral fix reduces the University drift (b523) needs a session.

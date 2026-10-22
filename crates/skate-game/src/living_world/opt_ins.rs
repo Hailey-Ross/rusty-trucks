@@ -1,9 +1,5 @@
-//! The living world features still being tested, off by default (opt-in): zombie mode, NPC skater physics and the grab
-//! visualizer (`SKATE_VISUALIZE_GRABS=1`).
-//! The player switches them in the PC overlay (Graphics > Living World), in effect at once and saved in
-//! `settings/graphics.json`; `SKATE_ZOMBIE=1` and `SKATE_NPC_SIM=1` turn one on for a run. Prop grab and skitching
-//! are no longer opt-ins: they are always on in the game, not switchable (user, 2026-10-15; `LivingWorldPlugin`). A mod may still change zombie mode and NPC skater physics
-//! (`world.set_tuning("living_world", …)`); when it stops, the player's choice is back (`reset_mod_overrides`).
+//! Living world features still in test, off by default: zombie mode, NPC skater physics, grab visualizer.
+//! Switches and mod reach: docs/hails-additions/26a-living-world-overview.md#living-world-opt-ins
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 

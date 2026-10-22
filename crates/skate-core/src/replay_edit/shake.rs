@@ -1,9 +1,5 @@
-//! The replay editor's camera shake (the Pro Edit Menu's Shake row; research b376, b399, b400). Retail plays short
-//! recorded handheld-camera clips (`data/scene/ICELite.bin`, 30 keys per second, six channels: rotation x / y / z and
-//! position x / y / z, each -1..1) through the evaluator `82C8AF50`, which builds a rotation + translation and
-//! multiplies it into the camera matrix (camera space). Levels (`8250A6E8`): Off; Low = clip 3 ("Jog") at 0.35; Medium
-//! = clip 3 at 1.0; High = clip 4 ("RunFast") at 1.0; the same value is the amplitude and the frequency. Every value
-//! is data (mod-overridable).
+//! The replay editor's camera shake (b376, b399, b400; evaluator 82C8AF50, levels 8250A6E8); values are data.
+//! Clips and levels: docs/hails-additions/37-instant-replay.md#replay-camera-shake
 
 /// The clips as setup exported them: per clip its keys `[qx, qy, qz, px, py, pz]`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -30,11 +26,7 @@ pub fn retail_levels() -> [Option<ShakeLevel>; 4] {
 /// writers are not found (b400), so ours holds 2 sin(R) at 1 (R = 30 degrees).
 pub const GAIN_FACTOR: f32 = 1.0;
 
-/// The shake at `t` seconds into the take: (rotation quaternion `[x, y, z, w]`, translation `[x, y, z]`) in camera
-/// space, or None when off or the clip is empty. Key position `f = t x freq x key_rate`, keys `i = floor(f) mod n` and
-/// `i + 1`; rotation per key `(qx g, qz g, -qy g)` with `w = sqrt(1 - |xyz|)` (retail's double square root, confirmed
-/// in the recomp), lerped per component without renormalising; translation `(-pz g, -px g, py g)` from key `i` only
-/// (retail reads key `i` twice) [code `82C8AF50`, b399].
+/// The shake at `t` s into the take (82C8AF50, b399): docs/hails-additions/37-instant-replay.md#shake-sample
 pub fn sample(clips: &ShakeClips, level: Option<ShakeLevel>, t: f64) -> Option<([f32; 4], [f32; 3])> {
     let level = level?;
     let keys = clips.clips.get(level.clip).filter(|k| !k.is_empty())?;

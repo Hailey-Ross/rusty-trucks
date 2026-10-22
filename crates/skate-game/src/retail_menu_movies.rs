@@ -27,16 +27,9 @@ use std::path::Path;
 pub const FORMAT: &str = "skate3-menu-movies";
 /// Largest mod movie file accepted (the biggest retail menu movie is well below this).
 pub const MAX_MOD_MOVIE_BYTES: u64 = 16 << 20;
-/// Manifest version setup writes (3: textured units carry their bitmap id, Milestone 4; 4: screens/main; 5: main.apt's
-/// layer movies; 6: the challenge map; 7: named runtime images, the challenge map pictures; 8: the Skate Profile, FE 61;
-/// 9: Extras, FE 18; 10: the text viewer, FE 3; 11: the replay editor and help, FE 12 / 13;
-/// 12: every DLC pack's text tables, so the Challenge Map names the DLC locations; 13: the credits, FE 25, and their
-/// lines file).
+/// Menu manifest version setup writes; history of what each version added: docs/hails-additions/31-retail-menus.md#menu-manifest-versions
 pub const VERSION: u64 = 13;
-/// The oldest version this engine still reads: 6, 8, 9, 10, 11 and 13 only add a movie (a 12 set keeps Credits greyed),
-/// 7 an optional image table and 12 DLC text, so a 5 set
-/// works without the challenge map (its pause item keeps the PC overlay's MAPS until Refresh Game Files), a 6 set draws
-/// no map pictures and a 7 / 8 set keeps the SKATER / EXTRAS overlays for Skate Profile / Extras.
+/// Oldest manifest version this engine reads and what older sets lack: docs/hails-additions/31-retail-menus.md#oldest-menu-manifest
 pub const OLDEST_VERSION: u64 = 5;
 /// Texture key prefix of a named runtime image (`Game.ImageRenderer_Load`): `image/<image_key>`.
 pub const NAMED_IMAGE_PREFIX: &str = "image/";

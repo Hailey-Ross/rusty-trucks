@@ -1,14 +1,5 @@
-//! The ped motion graph's plugin states (`MotionGraph_Pedestrian.xml` includes `motiongraph_sit.xml`,
-//! `motiongraph_atm.xml`, `motiongraph_vend.xml`, `motiongraph_waterfountain.xml`, `motiongraph_newspaperbox.xml`)
-//! [data, b84 / b85]: entered on the monitored packet's name, each state plays its logical clips in order
-//! (`PlayRemappedAnimation`, blend 0.1, the next on `WillExpire 0.01`); a looping clip holds until the packet's next
-//! stage intent appears (`StandUp`, `FinishDrinking`); the last step ends the packet (`MajorIntentComplete`, after
-//! `IntentStageComplete decrement` on the machines). The clip behind each logical name is the ped's anim set remap.
-//!
-//! NOT RETAIL YET: a step table in place of the motion graph itself (the full graph is a later milestone); the
-//! sit-avoid states and the Collision exits are not ported. The hand prop the vending machine and the newspaper box
-//! spawn (`SpawnInteractionBasedHandProp` in the collect clip's branch window, `InTurnBranchWindow`) is the step's
-//! `hand_prop` flag; the host requests it when the clip enters its branch window.
+//! The ped motion graph's plugin states (sit, atm, vend, fountain, newspaper box; b84 / b85) as step tables.
+//! Details and gaps: docs/hails-additions/26g-living-world-ped-interactions.md#plugin-motion-states
 
 /// One clip step; `hold_until` = a looping clip held until the packet's current stage intent is that name;
 /// `hand_prop` = the clip requests the plugin's hand prop in its branch window.

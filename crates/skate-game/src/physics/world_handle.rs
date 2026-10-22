@@ -1,7 +1,5 @@
-//! The static collision world as the physics step sees it: the geometry shared behind an `Arc`, plus this step's own
-//! query scratch. The player's `GamePhysics` and every simulated NPC skater's worker hold a handle to the same world,
-//! so their steps can run on separate threads (a query only reads the world). Reads go through `Deref`; the few
-//! writes (map load, prop streaming, tests) need the world not to be shared at that moment.
+//! The static collision world behind an `Arc` plus per-step query scratch, shared by player and NPC workers.
+//! Details: docs/hails-additions/34-physics-performance.md#world-handle
 use skate_core::physics::board_runtime::BoardRuntime;
 use skate_core::physics::board_step::BoardCollision;
 use skate_core::physics::board_world::{BoardWorld, BoardWorldVolume, ContactRetentionSettings, QueryScratch, WheelWorldSettings};

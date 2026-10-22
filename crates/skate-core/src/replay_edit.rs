@@ -1,23 +1,5 @@
-//! The replay editor's model (M2): clips trimmed out of the recording, each with its effect lanes of hard and soft
-//! keys, and retail's length rules. Pure data, engine independent; the game draws and plays it.
-//!
-//! Retail (FEReplayMenu host `823011D8`, editor state `DAT_83067084`; research b343, b344, b376 to b381):
-//! - The editor opens once the recording holds at least 150 frames (`8250B8F8`, > 149).
-//! - The timeline counts 30 fps frames (`825ADD90`, 30.0 at 0x820D4924).
-//! - Encoded length = round(sum over clips of (end - start) / (speed% x 0.01) / 30 + 0.5) s; sharing needs <= 60 s
-//!   (`825ADF88`, `cmplwi 60`).
-//! - Effect values per clip (record +0x50 speed, +0x54.. the look): speed 10..100 % step 10 default 100 (slows only;
-//!   `82506CD8` stores 100), shake 0..3 wrapping (`8250A6E8`), brightness -100..100 step 20, contrast 10..30 step 2,
-//!   saturation 0..100 step 10, tint R / G / B / A 0..250 step 25 (`8250AB28`, `8250B218`).
-//! - Effect lanes (b461 to b466): per lane hard keys (cuts, D-pad Down) and soft keys (A / X commits). Each segment
-//!   between keys has a start and an end value and ramps linearly on interpolated lanes (speed, the looks); a soft key
-//!   shares its value with the end of the segment before it. Left / Right only step a live value; a commit writes it
-//!   (the base game's B: the segment under the playhead; the film pack's A / X: a soft key). A fresh clip has no keys,
-//!   and a write that adds no key to an empty lane is lost, as in retail.
-//! - Lane values reach the screen as: brightness = the colour matrix add term, contrast, saturation (near and far
-//!   bands), each replacing the world block while set; tint = an RGBA screen overlay (b380).
-//!
-//! Every limit is data ([`EditLimits`], [`LaneSpec`]) so a mod can change them (for example allow speeds over 100 %).
+//! The replay editor model: clips, effect lanes of hard and soft keys, retail length rules; pure data.
+//! Retail rules and limits: docs/hails-additions/37-instant-replay.md#replay-editor-model
 
 use crate::colour_matrix::ColourMatrixRecord;
 
@@ -278,10 +260,7 @@ pub enum Commit {
     Lost,
 }
 
-/// Retail's trigger scrub, data driven. Per console frame (`frame_hz`, the 360's ~30 fps): target = (RT - LT) x
-/// `max_rate`, the rate moves `smoothing` of the way to it, clamps to +-`max_rate`, and stops inside the dead band;
-/// the playhead moves by the rate as a fraction of the whole recording (`82610F18` -> `825071B8` -> `82C7EF90`,
-/// research b387 / b388).
+/// Retail trigger scrub per console frame (82610F18 -> 825071B8 -> 82C7EF90, b387 / b388): docs/hails-additions/37-instant-replay.md#trigger-scrub
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScrubSpec {
     pub max_rate: f32,
@@ -452,16 +431,7 @@ impl ReplayEdit {
         Ok(())
     }
 
-    /// Commit `value` on `lane` at `frame` (retail `82507438` -> the lane setters, b461 / b463 / b464 / b465):
-    /// - over a hard key: nothing;
-    /// - over a soft key: that key's segment takes the value (start and end; a soft next key shares it);
-    /// - `add_key` (X always; A unless the segment is cut on both sides): a soft key at `frame` with the value, its
-    ///   segment ending on it when it ends at a cut (the segment before now ramps into it);
-    /// - else the segment under the playhead takes the value (the base game's B).
-    ///
-    /// On a lane without keys a write that adds no key is lost, as in retail, unless
-    /// [`EditLimits::empty_lane_commit`] says otherwise. A soft key that has no room is not added and the write falls
-    /// back to the segment (retail's insert fails and the setter takes its single write).
+    /// Commit `value` on `lane` at `frame` (82507438, b461 to b465): docs/hails-additions/37-instant-replay.md#lane-commit
     pub fn commit(&mut self, clip: usize, lane: Lane, frame: u32, value: i32, add_key: bool) -> Result<Commit, EditError> {
         let spec = self.limits.lanes[lane.index()];
         let value = value.clamp(spec.min, spec.max);
@@ -582,10 +552,7 @@ impl ReplayEdit {
         self.clips.get(clip).is_some_and(|c| c.set[lane.index()] || c.markers[lane.index()].first().is_some_and(|k| k.frame <= frame))
     }
 
-    /// The look at `frame`: the world grade `base` with the clip's set look lanes replacing their terms (retail's
-    /// consumers `82686DF0` / `82687FD8` / `826888B8` write an override copy of the world colour block, research b380 /
-    /// b408): brightness = the add term on R, G, B, contrast, saturation, in both bands (retail's far band takes the
-    /// near saturation). Values ramp between markers. Plus the tint lanes as an RGBA screen overlay (0 alpha = none).
+    /// The look at `frame`: world grade with the clip's look lanes replacing terms, plus tint (b380 / b408): docs/hails-additions/37-instant-replay.md#clip-look
     pub fn look_at(&self, clip: usize, frame: u32, base: &ColourMatrixRecord) -> Option<ReplayLook> {
         self.clips.get(clip)?;
         let set = |lane: Lane| self.lane_set(clip, lane, frame).then(|| self.lane_effect(clip, lane, frame)).flatten();
@@ -605,10 +572,7 @@ impl ReplayEdit {
         Some(ReplayLook { record, tint })
     }
 
-    /// Retail's encoded length in seconds (`8250B590`, research b472): per segment of the speed lane (hard and soft keys
-    /// alike), its frames inside the heads stretched by the segment's START value (a ramp is not averaged), truncated
-    /// to whole frames; the sum at the timeline rate, plus `length_round_bias`, truncated. A lane without keys is one
-    /// segment at the clip's value (ours: b472 did not read retail's empty-lane count).
+    /// Retail encoded length in seconds (8250B590, b472): docs/hails-additions/37-instant-replay.md#encoded-length
     pub fn encoded_seconds(&self) -> u32 {
         let scale = self.limits.lanes[Lane::Speed.index()].scale;
         let mut frames = 0u32;

@@ -1,22 +1,7 @@
-//! Free Play pause row Extras (doc 31 "Extras and cheat codes"): retail FE screen 18 (vtable 0x82305390, template 15
-//! Extras, `main/extras.swf`, research b320). The movie lists the rows through Game.Extras_GetNumOptions /
-//! _GetOptionTitle / _MenuTitle and asks Game.OnMenuGetItemEnabled / OnMenuSelect; the C++ side keeps the list mode
-//! (main rows or the Skate Reel sub-list, +0x84):
-//! - Back (input 0x82655658, never consumed): in the sub-list plays core_b_button, goes back to the main rows and posts
-//!   SetState(10); in the main rows plays core_b_button and pops the screen;
-//! - select (0x826558E8): row 0 opens text entry FE 46 for a cheat code, rows 1-3 redeem console codes, row 4 pushes
-//!   Credits FE 25, row 5 shows the licenses in the text viewer FE 3, row 6 opens the Skate Reel sub-list.
-//!
-//! What the console-only rows do on PC is ours (user 2026-10-19): rows 1-3 unlock their content directly, Licenses shows
-//! this project's licenses, Credits (retail FE 25, b489) is WIP and greyed. Rows are data (`ExtrasRules`), retail's the
-//! defaults; a mod adds or hides rows.
+//! Free Play pause row Extras (retail FE 18, template 15, b320); rows are data (`ExtrasRules`).
+//! Retail handlers and our PC rows: docs/hails-additions/31-retail-menus.md#extras-rows
 
-/// One entry of the profile unlock list (retail `sub_82503C30(list, kind, fnv1(name), ..)`, research b321; the hash
-/// is FNV-1, multiply then xor, b458, not FNV-1a as b321 said): kind `entitlement` (retail 8: a redeemed code),
-/// `sponsor` (6: a clothing / sponsor item, `cac_unlock_sponsors`), `location` (0: a world location), `challenge`
-/// (passed to TheSim+0xE0 vt+0x14). Retail kinds (b458, string table 8302CC7C): 0 LOCATIONS, 1 CHARACTERS, 2 REPLAY,
-/// 3 EGGS, 4 GESTURES, 5 CLOTHING_UNLOCK, 6 CLOTHING_SPONSOR, 7 SKATEPARK_SET, 8 ENTITLEMENTS, 9 WORLDS, 10 CHALLENGES,
-/// 11 MOVIE, 12 DLC_PRODUCT.
+/// One profile unlock list entry (82503C30, FNV-1 name hash; kinds b321 / b458): docs/hails-additions/31-retail-menus.md#unlock-list-entry
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unlock {
     pub kind: String,
@@ -77,10 +62,7 @@ impl Default for ExtrasRules {
         Self {
             rows: vec![
                 row("extras.cheat_code", "ID_EXTRA_CHEAT_CODE", ExtrasAction::CheatEntry, false),
-                // Ours: unlock directly (user 2026-10-19). Grants from b321: the row key (kind 8) and what the redeem
-                // grants (Emerica 827012E8, Etnies 82701578, pre-sell 82701FF0 + the two `code_unlocks/blackboxpark`
-                // challenges, names not in our export: their record keys). Retail greys a redeemed row; with no store
-                // they stay enabled.
+                // Ours: unlock directly (grants from b321: Emerica 827012E8, Etnies 82701578, pre-sell 82701FF0); rows stay enabled.
                 row("extras.emerica_shoe", "ID_EXTRA_EMERICA_SHOE_CODE", grant("EMERICA_SHOE_UNLOCK", &[("sponsor", "cac_shoe_emerica_promo")]), false),
                 row("extras.etnies_shoe", "ID_EXTRA_ETNIES_SHOE_CODE", grant("ETNIES_SHOE_UNLOCK", &[("sponsor", "cac_shoe_etnies_promo")]), false),
                 row(

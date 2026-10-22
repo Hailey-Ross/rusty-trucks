@@ -178,10 +178,7 @@ fn wheel_lines_keep_audio_and_physics_bits_of_the_same_tag() {
     assert_eq!(lines.seam_patterns, [0; 4]);
 }
 
-/// The AI spawn push (`82C04168` sets every part's velocity) read through the observed acceleration: from rest the
-/// one-step spike reads as IsBumped (`82BA7310`); with the history pre-filled with the pushed velocity, as the engine's
-/// handover does (`GamePhysics::push_context_velocity`), it reads nothing. Retail outcome (recomp trace 2026-10-19,
-/// AIPUSH / BUMPQ: every IsBumped evaluation within 1 s after both AI spawn pushes was false): not bumped.
+/// AI spawn push (82C04168) with pre-filled history reads no IsBumped (82BA7310), matching the recomp trace.
 #[test]
 fn a_spawn_push_with_a_prefilled_history_does_not_read_as_bumped() {
     use crate::animation::ground_acceleration::{is_bumped, Settings};

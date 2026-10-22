@@ -1,7 +1,5 @@
-//! The retail Challenge Map screen's navigation (FE screen 17, research b255 / b256), over the menu registry's map
-//! nodes: the tab (`mgr+0x198`, clamped, no wrap), the folder stack (`mgr+0xE5B4`), the highlighted row (`+0xD8`) and
-//! the selected one (`mgr+0xE5E8`). Engine-independent: the host (skate-game `challenge_map_host`) turns the movie's
-//! natives and picker callbacks into these calls and posts the returned screen states (`SetState(n)`).
+//! The retail Challenge Map navigation (FE 17, b255 / b256): tab, folder stack, highlight, selection.
+//! Details: docs/hails-additions/31-retail-menus.md#challenge-map-navigation
 use crate::menus::{EntryKind, EntryRef, MenuContext, MenuRegistry};
 
 /// The movie's `SetState` codes the C++ posts (b256 "Movie refresh") [code + data].

@@ -608,10 +608,7 @@ impl PlayerAudio {
     }
 }
 
-/// The body poster's hits of one process (`Contacts::body_hits`, one per region that posted, so
-/// a bail logs a few lines, never one per frame): an `AUDIO_EVENT body impact` line each (region,
-/// impact, tiers, materials, position and its distance to the listener `camera`) and the mods'
-/// `body_impact` row while some mod subscribes. Shared by the local player and the NPC host.
+/// The body poster's hits of one process: an `AUDIO_EVENT body impact` line each and the mods' `body_impact` row.
 pub(crate) fn body_hits(hits: &[skate_audio::player::contacts::BodyHit], source: super::mod_audio::Source, owner: u64, camera: Option<[f32; 3]>, events: &mut super::mod_audio::EventBuf) {
     for h in hits {
         let m = &h.message;

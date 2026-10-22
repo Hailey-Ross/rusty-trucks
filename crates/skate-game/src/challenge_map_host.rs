@@ -1,8 +1,5 @@
-//! The Challenge Map screen's natives (FE screen 17): FEChallengeMap (registrar sub_8264A8A8, 24 getters, research
-//! b255) and the movie's picker callbacks (Game.OnMenuHilight / OnMenuSelect, b256). The navigation is
-//! `skate_core::challenge_map`; this host answers the movie from it and queues the screen states the C++ posts
-//! (`SetState(n)`, applied by `retail_menu_stage` after the call returns) and the leaf a select picked (dispatched
-//! through the menu registry, whose handler decides: a teleport, a mod).
+//! The Challenge Map screen's natives (FEChallengeMap 8264A8A8, b255) and picker callbacks (b256).
+//! Details: docs/hails-additions/31-retail-menus.md#challenge-map-host
 use crate::apt_vm::{to_integer, Value, Vm};
 use skate_core::challenge_map::{Action, ChallengeMapState};
 use skate_core::menus::{EntryKind, EntryRef, MenuContext, MenuRegistry};
@@ -77,10 +74,7 @@ impl ChallengeMapHost {
         }
         let s = &self.state;
         Ok(Some(match method {
-            // 8264AF28: [count, selected, labels, header, icon 1, icon 2]; an empty folder gives one `false` per list.
-            // List 3 is `!(child vt+0x28)`, not the greying: the movie adds a `true` row as a picker header
-            // (AddSpecificItem(mHeaderItem)) that the picker skips, so only `map_category` labels are true; greyed rows
-            // come from OnMenuGetItemEnabled.
+            // 8264AF28: [count, selected, labels, header, icon 1, icon 2]; list 3 marks picker headers, not greying.
             "GetStuffMenuItems" => {
                 let rows = s.rows(registry, ctx);
                 let lists: [Vec<Value>; 4] = if rows.is_empty() {

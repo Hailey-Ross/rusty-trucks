@@ -459,11 +459,7 @@ impl Mixer {
         self.voices.len()
     }
 
-    /// Room for one more voice under `max_voices`. At the cap, voices whose sample has ended
-    /// (`done`: nothing left to play, every owner query already reads them as gone) are freed
-    /// first, folding their last send values as a release does. Below the cap nothing changes, so
-    /// what plays is identical until the cap is reached; a finished voice never blocks a new one
-    /// (retail does not keep finished voices allocated, spec §6.6).
+    /// Room for one more voice: at the cap free finished voices first (spec 6.6); below the cap nothing changes.
     fn make_room(&mut self) -> bool {
         if self.voices.len() < self.max_voices {
             return true;

@@ -163,6 +163,22 @@ TYPE_FIELDS = ('Hash_5CCD5998E03C299B', 'Hash_C4D8A03586A31915', 'Hash_E0101A9DF
                'Hash_6E0BB4F5881A4841', 'Hash_CDA7A31C5EDBEB6E', 'Hash_086956BCA2187458')
 
 
+class UnitRecordTests(unittest.TestCase):
+    def test_units_and_corners_follow_the_decoder_triangulation(self):
+        from .dynamic_props import decode_with_units
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/university/tools/vanilla_map_extraction/tools'))
+        import retail_collision_mesh as rcm
+        original = rcm._triangulate_unit
+
+        def fake(data):
+            tris = [t for u in ((2, [0, 1, 2, 3]), (1, [4, 5, 6])) for t in rcm._triangulate_unit(*u)]
+            return type('Mesh', (), {'triangles': tris, 'triangle_cluster_indices': (0, 0, 1)})()
+        with patch.object(rcm, 'decode_clustered_mesh', fake):
+            _, units = decode_with_units(b'')
+        self.assertEqual(units, [(2, 0, [0, 1, 2]), (2, 1, [3, 2, 1]), (1, 0, [4, 5, 6])])
+        self.assertIs(rcm._triangulate_unit, original)
+
+
 class DmoTypeDataTests(unittest.TestCase):
     def test_characteristics_key_is_the_record_at_120(self):
         payload = bytearray(160)

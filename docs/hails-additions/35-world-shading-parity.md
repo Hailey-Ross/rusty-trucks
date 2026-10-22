@@ -279,3 +279,118 @@ Python: `tools/asset_pipeline/test_environment.py` checks each shader's family.
 - Traffic lights (drawn two-sided, class `OpaqueTwoSided`): the retail cycle's start phase and whether
   each crossing has its own offset are not known (the recomp shows one shared pair of rows for the whole map).
   Once the living-world traffic controllers land, they should drive `TrafficLightCycle` so cars and lamps agree.
+
+## Code reference: retail_backdrop.rs
+
+Detail moved out of the code comments of `crates/skate-game/src/retail_backdrop.rs`; each comment there links its section here.
+
+### District backdrop
+
+The district's global presentation model: retail's world record points each district at one extra model outside its world stream (world fields `951898F6C0FA6856` model / `CA5A157A65E75934` textures, for example `DIST_Water_Industrial`). It holds Industrial's sea (`ocean.reflection` around the docks and harbour), the far sea planes of DownTown and University (`environment.reflective_simple`) and the distant tree walls. Setup exports it to `private/native-backdrops/<map>.skate` (`tools/asset_pipeline/backdrop.py`).
+
+Without it Industrial's harbour shows the clear colour: a black void.
+
+Far-proxy terrain: retail also streams `proxy<District>_100_Proxy.big` (`proxyworld.default` hills plus their trees) and swaps it per grid cell: while the full-detail cell `cPres_X_Z_high` is active its partner `cPres_X_Z_high_proxy` is deactivated (TU3 proxy world manager sub_8247EF40, streamer sub_8247BB50 -> sub_82C985A8). The engine keeps every district cell loaded, so setup exports only the unpaired proxy cells to `private/native-backdrops/<map>.proxy.skate` (Industrial's south hills under the tree wall; DownTown and University have none). Its draws carry [`ProxyTerrain`] and follow `BackdropSettings::proxy_terrain`.
+
+Moddability: `BackdropSettings` is the one authority; mods reach it through `sdk.world.set_tuning('backdrop', {visible = false})` (world tuning domain `backdrop`), and a disabled mod gives it back (retail: visible). The package itself is a content file a mod can replace.
+
+## Code reference: colour_matrix.rs
+
+Detail moved out of the code comments of `crates/skate-core/src/colour_matrix.rs`; each comment there links its section here.
+
+### Colour matrix records
+
+Retail post FX colour matrices (`post_fx` vault records `colour_matrix`, `colour_matrix_zombiemode`, ...; research b100). Each record has a near and a far band; a band's values build one 3x4 affine colour matrix with `sub_827F13D8` [code]: contrast about a midpoint plus an add, then saturation with luma weights (0.3, 0.6, 0.1), then a per-channel multiply: `out = multiply * Sat_s(contrast * (x - midpoint) + midpoint + add)`.
+
+The multiply-last order is [inferred] from the instruction order (b100); the base record is the identity.
+
+### Tone pass inputs
+
+What the retail tone pass applies (`postfx_visualfxPS`, research b101): near rows (c7..c9), far rows (c10..c12), the depth weights `(mult.x, mult.y, add.x, add.y)` (c13 / c14: `wA = sat(z * mult.x + add.x)`, `wB = sat(z * mult.y + add.y)`, linear in view depth between the record's distances, `827F3D20`), `(camera near, 0, 0, 0)` and the replay's tint overlay RGBA (alpha 0 = none).
+
+## Code reference: retail_render.rs (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-game/src/retail_render.rs`; each comment there links its section here.
+
+### Advertisement family 17
+
+Shader family of the retail `advertisement.default` materials (`advertisement_defaultPS`): billboards. Diffuse^2 times the boxed, shadowed lightmap (slots 19..31), raised to a global light floor (slot 32), times `m_params` (slot 34); no `kd`, no normal or specular map, plain opaque state, and the reduced output curve of `environmentdiffuse` (slots 36..41).
+
+### Incandescent transparent family 18
+
+Shader family of the retail `incandescent.transparent` materials (`transparentincandescent_defaultPS`): lit signs. Diffuse^2 times `m_params` (slots 3..4), fog, the full output curve, output alpha = diffuse alpha (slot 14); no lightmap or shadow. Drawn with blend state 24: blended, depth write on, all four channels written, no alpha test (technique setter `sub_82CED6D8`).
+
+### Traffic light families
+
+Shader families of the retail `trafficlight.one` / `trafficlight.two` materials (DownTown). Byte-identical pixel programs: unsquared diffuse times `m_params` (slot 3), fog, the full output curve; the vertex programs pick each lamp's UV set from `g_TrafficLightsStatus_1` / `_2`. Opaque blend state 26 (RGB writes), depth state 2, rasterizer state 0 (no culling).
+
+### Animated flag family 21
+
+Shader family of the retail `animated.flag` material (DownTown memorial flag): `vertexanimate_defaultPS` (lightmap^2 * diffuse^2 * g_ViewDotLight.x, fog, full curve, alpha = diffuse alpha) with the cloth sway of `vertexanimate_defaultVS` (`m_params` c8..c10 in `water[0..2]`, weights in the decal UV set). Blend state 1 (alpha test, ref 30), rasterizer 0 (two-sided).
+
+### World shadow floor
+
+Retail dynamic-shadow floor on the baked world, RGB. Every retail world receiver shader (`defaultenvironment_defaultPS`, `environmentdiffuse_defaultPS`, `baseterrain_defaultPS`, the decal / reflective / transparent variants and `water_defaultPS` / `flowingwater_defaultPS` in `shaders_final.big`) computes `min(lightmap^2, csm_visibility + (0.05, 0.09, 0.13))`: the same constant for every caster and receiver, with no per-caster height or depth window. A shadow that lands in baked shade darker than this floor therefore leaves no mark, which is what keeps a car on a bridge from printing its shadow onto the shaded ground below (the city geometry itself casts nothing into this map).
+
+### ViewDotLight inputs
+
+Inputs of `g_ViewDotLight`, from the VLT `rendering` row `default` (the same in every district): `sub_828012D0` stores `(bias + scale * dot(camera forward, light), tree_floor, light_floor, 0)` (`stvx` at view + 0x44370; the four values looked up by hash). Checked in the recomp: the logged .x matches the camera's view direction with this formula. Loaded from `render-parameters.json` (`rendering.default`), so a mod can change them; the retail values are the fallback.
+
+### Fountain donor binding
+
+Better Water fountains (water_look.rs `fountain_water`, not retail): every family 30 material whose detail, macro and decal slots are empty gets the map's largest family 33 body (the donor) bound there: its normal in macro, its `normal2` in detail, its diffuse in decal, all repeating, and its `water` rows in `fountain`. Bound at load whatever the look, so the toggle stays a run-time switch; the presence flags in `mode.y` stay as authored, so the retail program never reads these slots.
+
+### Water scroll time
+
+Water scroll time: retail's `g_fAnimationTime`, which sub_82791628 accumulates without a reset at 1.0 per second (recomp watch, doc 09), times the look's `scroll_rate`. Loops over a period at which every authored scroll speed (all multiples of 0.001) completes whole texture repeats, so the loop is invisible, while keeping t small enough for f32 shader precision. `seamless_clock = false` publishes 0x82790858's restarting value instead (a jump every 10 s; never shown by retail).
+
+### Traffic lamp states
+
+The lamp states the retail renderer uploads as `g_TrafficLightsStatus_1` / `_2`: one row per crossing direction, one component per lamp slot (0 red, 1 amber, 2 green, 3 lit together with green), 2.0 = on.
+
+Read in the recomp (DownTown Aletown, `.local/research/ traffic-light-status/`): a 17 s cycle, direction 1 green 7 s, amber 1 s, all red 0.5 s, then the same for direction 2, matching the `trafficlights` controller timing in the living-world notes. Every traffic light shares the two rows, so all crossings show the same phase. A resource so a mod, or the traffic controllers once they drive cars, can replace the table or the clock.
+
+## Code reference: retail_world.wgsl (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-game/src/retail_world.wgsl`; each comment there links its section here.
+
+### Water look extra layers
+
+Water look: one fine layer at a larger ripple scale tiles visibly over large stretches (DownTown fountain), so add the same PCA wave from a rotated sample at 0.613x and broad swells from the large layer, matched by eye to RPCS3 footage. Smaller bodies move less: `decal.y` is the body's area (water_bodies.rs), 100 m² and below calmest, 4000 m² and up (Aletown canal) full.
+
+### Fountain shading
+
+Water look fountains: flat family 30 pixels (basins) take the map's large-water program, with the donor's PCA textures (macro = normal, detail = normal2; its diffuse in decal is not read) and rows (p.fountain, bound by retail_render::bind_fountain_donor) in world space at fountain.x metres per tile; steep pixels (cascades) keep their own flow and gain foam. Blended by slope so stepped fountains do not seam.
+
+### Park projected lightmap
+
+29..30, 54..56, 66..67, 77..78: min(lerp(dynamic colour, 1, blurred visibility), lerp(exponential colour, 1, saturate(10 N.L) * exponential visibility), projected lightmap). Retail has two shadow terms; our one shadow map feeds both (ours). The park's projected lightmap (skateparkProjectedLightmap, one tap, used linearly; b439 / b440 / b444): g_skateparkProjectedTransform from the world's bounds, the ground projection along the sun (L = the sun direction, toward the sun): u = (z - z0) / dz + y lz / (ly |dz|), v = (x - x0) / dx - y lx / (ly |dx|). Texture rows are flipped at export (map_writer), so v is flipped back. No bounds: neutral 1.
+
+## Code reference: retail_shader_tests.rs (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-game/src/retail_shader_tests.rs`; each comment there links its section here.
+
+### Kd of families 7 and 8
+
+Families 7 / 8 are `environmentsimple.alphatest` / `environmentsimple.diffuse` (`tools/asset_pipeline/retail_material.py`), whose VLT effects are `alphatestdefaultenvironment` / `environmentdiffuse`. Both retail programs (`shaders_final.big`, instructions 27-34 / 26-34) compute `min(avg4(lightmap)^2, vis + floor) * diffuse^2 * m_params[0].y` with no kd term, so kd is exactly 1 for them. The other families without a normal map keep the flat-normal kd `0.39 * 2.3956` of the normal-mapped programs.
+
+### Kd normal normalisation
+
+Which programs normalise the tangent normal before the kd dot product. `environment.default` (family 1, VLT effect `baseenvironment`) does (`baseenvironment_defaultPS` 29-33: rsq of the combined normal, kd from the normalised xy at 66). `environmentsimple.default` (family 2, effect `defaultenvironment`) and `environment.reflective_simple` (family 6, effect `baseenvironmentreflective_simple`) do not: `defaultenvironment_defaultPS` takes kd from the raw `2n - 1` (38, 61, 63, 67) and `baseenvironmentreflective_simple_defaultPS` from the raw `2n - 1` (14-22, 45, 63, 74-76); their rsq instructions normalise only the view vector, the world normal used for specular / reflection and the tangent-frame sun whose signs pick the kd weights.
+
+## Code reference: retail_material_bindings.wgsl (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-game/src/retail_material_bindings.wgsl`; each comment there links its section here.
+
+### Flag sway
+
+Cloth sway of the retail `animated.flag` (family 21), vertexanimate_defaultVS slots 7..17: per axis `w * amplitude * sin((t - w) * frequency + phase)`, with the weights from TEXCOORD1 zw (exported as the decal UVs, `color.xy`, V flipped: zw = (color.x, 1 - color.y)) and `m_params` c8..c10 in `water[0..2]` (amplitudes c8.w / c9.w / c10.w, frequencies c9.xyz, phases c10.xyz). Zero for every other family.
+
+## Code reference: retail_exposure.rs / retail_exposure.wgsl
+
+- The meter reads what retail's CPU meter (`sub_827F0B78`) reads: the alpha of the bloom downsample
+  (bloom_dof_tap4_minusthresholdPS), `dp3_sat(sat(tm/2), (0.3, 0.4, 0.3))` (`meter_luminance`), stored 8-bit and read
+  back as byte / 255, centre-weighted, scaled by 2.515 and fed to the native multiplicative evaluator (`sub_827F0D00`).
+- NOT RETAIL: it samples a 16x16 bilinear grid of the HDR target instead of the console's 4-tap downsample chain (box
+  averages; same mean).
+- The weights and the scale are a mod tuning domain (`exposure`, `ExposureMeter`).

@@ -1,16 +1,5 @@
-//! A traffic car's lane-change passage (retail TU3, evidence only; re-implemented;
-//! `.local/research/npc/b69-traffic-manoeuvres.md` "b71 / b72 extensions"; main checked the progress step 82C3C3C0
-//! and the road-network values 1.3 / 10 in the exported tables):
-//! - enter `sub_82C3A9E0`: from distance d0 on the source lane to d1 = d0 + ext x the spec's passage factor
-//!   (`Hash_328B9F4685A14018`, `+3692`) + speed (one second of travel) on the target lane;
-//! - `sub_82C3F540`: a cubic Hermite curve between the two lane points (`82E14860`), tangents = the lane direction x
-//!   (d1 - d0) x the road network's tangent scale (`Hash_D2C11CC10C9E0E49`, 1.3);
-//! - `sub_82E10C88`: an arc-length table of `Hash_E35079BDD5BAE286` (10) chords; its total is the passage length;
-//! - every tick (`sub_82C3C3C0`): progress += speed x (+1, -1 reversing) x 1/60; the distance along the road is
-//!   lerp(d0, d1, progress / length); the car sits on the curve at the arc-length parameter, facing its tangent
-//!   (`sub_82C3F0C8`); done when progress >= length (`sub_82C3A5A8`), the car's lane becomes the target.
-//!
-//! Multiplayer: the host owns (lanes, d0, d1, progress); the curve and table rebuild from them and the road.
+//! A traffic car's lane-change passage (82C3A9E0, 82C3F540, 82E10C88, 82C3C3C0; b69, b71 / b72).
+//! Details: docs/hails-additions/26h-living-world-traffic.md#lane-change-passage
 
 use super::super::Vec3;
 

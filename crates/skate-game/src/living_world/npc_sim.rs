@@ -1,18 +1,5 @@
-//! Simulated NPC skaters (doc 26, "Simulated NPC skaters", M7): an NPC skater is a full physics
-//! skater (its own board context and `SkaterRuntime` in the shared world) driven by its AI record,
-//! taken over from the replay tier on its first safe node.
-//!
-//! Retail runs every ambient NPC skater simulated at any distance (at most 3 offline; b303: the
-//! SimController updates every skater each tick, no distance or count tier). So the radius defaults
-//! to unlimited; a finite `npc_simulated.radius` is a mod's cost choice (handed back beyond
-//! 1.1 x, never switched while airborne or grinding); the handover keeps the line's speed (retail never hands over).
-//! Off by default until play-tested: `SKATE_NPC_SIM=1` or `sdk.world.set_tuning("living_world", {npc_simulated = {...}})`.
-//!
-//! Per tick (after the population and the replay cursors advanced): the record is built from the
-//! cursor (`skate_core::living_world::ai_record`), the retail spawn push applies while the skater
-//! is still on its node, and `GamePhysics::advance_npc_skater` runs the same frame as the player.
-//! The NPC is drawn from its simulated pose (`render_pose`, like the player); its population
-//! position and audio still follow the cursor. A physics error drops it back to the replay tier.
+//! Simulated NPC skaters: full physics skaters driven by their AI record, taken over from the replay tier.
+//! Details: docs/hails-additions/26e-living-world-skater-ai.md#simulated-npc-skaters-model
 
 use super::npc_skaters::{NpcReplay, NpcSkater};
 use super::{LivingWorldObservers, LivingWorldSettings, NetRole, PopulationState};
@@ -100,16 +87,10 @@ impl SimulatedTierSettings {
     }
 }
 
-/// The wipeout bit of the skater's flags word (`flags2468` bit 18, the "Wipeout" graph
-/// attribute): retail's physics step copies it to skater component `+59` (`sub_82DB6EC0`), the
-/// PathController latches it into `pc+924` each tick (`sub_8246EF78`) and its rising edge starts
-/// the respawn (`sub_8246EE30`).
+/// Wipeout bit of the flags word (flags2468 bit 18; 82DB6EC0 -> +59, 8246EF78 latch, 8246EE30 respawn).
 pub(crate) const WIPEOUT_BIT: u32 = 0x0004_0000;
 
-/// The `NPC_SKATER_BACKWARDS` line for a simulated NPC, `None` when it is not riding backwards. It is drawn from its
-/// own body, not the replay cursor's ghost (b352: 161 ghost lines in session 2026-10-19 18:04 were all sim NPCs), so
-/// this reads the body: effective board forward more than 135 deg from the deck velocity at 1 m/s or more (the
-/// replay check's diagnostic threshold), with the body's retail fakie bit (`82BB2330`; a fakie rider is not wrong).
+/// `NPC_SKATER_BACKWARDS` line for a simulated NPC, read from its body (b352): docs/hails-additions/26e-living-world-skater-ai.md#simulated-backwards-line
 pub(crate) fn backwards_line(id: super::LivingWorldId, character: &str, sim: &NpcSim) -> Option<String> {
     let forward = GamePhysics::context_effective_forward(&sim.context);
     let velocity = GamePhysics::context_deck_velocity(&sim.context);
@@ -216,13 +197,7 @@ struct Walker {
     node: u32,
 }
 
-/// What B reads from the simulated skater (b80): `[rec+56]+161` = SkaterOffBoard (Processed +2484 0x08000000),
-/// `+160` = TransitioningOnOffBoard (+2480 0x4), both written by `82DB6EC0`; "can move" (`82466ED0`) = off the board
-/// and not toggling (its `[rec+72]+308 / +309` terms are not identified: taken as clear); the hand-back byte
-/// `[rec+28]+59` = the wipeout bit (`82DB6EC0` copies it there).
-/// The skater's effective animation root (`GetEffectiveRoot` `82BE3650`): rows 0 and 2 negated while Processed 2476 bit 2
-/// (the mirrored stance) is set. The raw root of a goofy / mirrored skater faces backwards: controller B then walked
-/// the skater straight away from its node (session 2026-10-16, NPC #67 cuz, goofy).
+/// Effective animation root (GetEffectiveRoot 82BE3650; what controller B reads, b80): docs/hails-additions/26e-living-world-skater-ai.md#effective-root-and-b-reads
 fn effective_root(runtime: &SkaterRuntime) -> skate_core::animation::output::NativeMatrix {
     let mut root = runtime.animated_skeleton.roots.animation_to_world;
     if runtime.player_input.processed.flags_2476 & 4 != 0 {
@@ -255,13 +230,7 @@ pub(crate) fn walker_input(runtime: &SkaterRuntime) -> skate_core::living_world:
     }
 }
 
-/// `sub_82467FC8` (b116, main checked the state 500 / wipeout byte tests): the point the path projection, the lost test
-/// and the speed (`pc+96`) use, with the heading `pc+128` (`sub_8246BCF8`). Off the board (BipedGround) or wiping out:
-/// the animation root and its forward row; on the board: the board (retail: the board rigid body's position,
-/// SkateboardReckoning +144; ours the deck part, open) and the deck's forward.
-/// The per-line state retail's path reset `sub_82468AC8` clears (air, trick slot, board yaw), shared by a line
-/// switch and the stage-2 re-snap so the two cannot drift apart. The tracker block is not touched here: a line switch
-/// also resets it (`path_reset`), the re-snap `sub_8246D168` saves and restores it around the reset (b207).
+/// Per-line state the path reset 82468AC8 clears (also the 82467FC8 projection point): docs/hails-additions/26e-living-world-skater-ai.md#clear-line-state
 fn clear_line_state(sim: &mut NpcSim) {
     sim.air = Default::default();
     sim.slot = Default::default();
@@ -279,10 +248,7 @@ fn projected_point(sim: &NpcSim, state: PhysicalStateId) -> ([f32; 3], [f32; 3])
     }
 }
 
-/// The effective deck forward (`GetEffectiveTransform` 82C01BF8: deck column 2, negated while the board is flipped
-/// under the rider, Processed+2468 bit 20): what the steer, the facing gates and the path projection's signed speed
-/// (`sub_8246BCF8` through `sub_82592A00`, b116 / b292) read. The raw deck made a rider standing backwards on its
-/// board look like it travelled backwards.
+/// Effective deck forward (GetEffectiveTransform 82C01BF8, flipped by Processed+2468 bit 20; b116 / b292).
 fn effective_deck_forward(sim: &NpcSim) -> [f32; 3] {
     let c = GamePhysics::context_deck(&sim.context).basis.columns[2];
     let sign = if sim.body.runtime.player_input.processed.flags_2468 & 0x0010_0000 != 0 { -1.0 } else { 1.0 };
@@ -505,10 +471,7 @@ fn line_spawn(target: &ai_record::LineTarget) -> skate_core::physics::drive_fram
     }
 }
 
-/// Place a simulated skater on its line with the player's teleport and the spawn push as its velocity (engine
-/// handover; retail never hands over), so the teleport's reset does not zero the speed (b109: the context velocity
-/// alone was zeroed on the first step and the skater dropped in from rest). Its own context is kept (a fresh one
-/// restarted the clock and the camera refused the older subject tick).
+/// Place a simulated skater on its line with the teleport and the spawn push as velocity (engine handover, b109).
 fn place(sim: &mut NpcSim, target: &ai_record::LineTarget, hold_ticks: u32) -> Result<[f32; 3], String> {
     let spawn = line_spawn(target);
     let c = spawn.basis.columns;
@@ -578,11 +541,7 @@ struct Job {
     intents: Vec<(String, f32)>,
 }
 
-/// The simulated NPCs' physics steps, each on its own worker (`GamePhysics::npc_worker`) on the compute pool.
-/// Every worker is synced from the shared physics as it stands after the player's step, so each NPC solves against
-/// the same proxies and props (the serial loop before 2026-10-15 let each NPC start from the proxies the previous NPC's
-/// solve had moved). Errors and the shared physics' proxy results are applied afterwards in NPC id order: the shared
-/// proxies end as the last NPC's solve left them, as before.
+/// The simulated NPCs' physics steps, one worker each, synced after the player's step; results in id order.
 #[allow(clippy::too_many_arguments)]
 /// NPC_SKATER_CONTACT: a simulated NPC's skeleton meets another skater's body (the player or an NPC) in its own solve;
 /// logged once per contact, with the skater force its wipeout check reads (`maximum_skater_force`), the NPC's speed,
@@ -884,17 +843,11 @@ pub(crate) fn simulate(
                     let search_start = sim.follow.map_or(replay.cursor.node, |(_, f)| f.search_start);
                     sim.respawn_node = lines.get(&replay.cursor.line).map(|line| {
                         let node = skate_core::living_world::ai_controller::respawn_node(&replay.avoid.controller, &rules.controller, search_start, line);
-                        // NOT RETAIL: retail clamps to the last node and re-picks a line from there. Ours chained to
-                        // the next line's node 0 up to 4 m away, off its path and before its start nodes: no target and
-                        // no spawn push, so the skater stood still (user 2026-10-15, ryan_smith at node 25 of 26). Kept
-                        // off the last two nodes, it respawns on a node, gets the push and chains while riding.
+                        // NOT RETAIL: retail clamps to the last node and re-picks; ours stays off the last two nodes so it respawns on one.
                         let last = line.nodes.len().saturating_sub(3) as u32;
                         (replay.cursor.line, node.min(last))
                     });
-                    // The respawn is the skater's own wipeout-end teleport (like the player's, one actor reply), sent to
-                    // the chosen node instead of its checkpoint history. Before 2026-10-15 a 5 s timer placed it with a
-                    // second teleport while the wipeout was still running: every respawn wiped out again within 0.2 s,
-                    // and the built-in checkpoint respawn later threw the skater to an old checkpoint (41 m off its line).
+                    // The respawn is the skater's own wipeout-end teleport, sent to the chosen node.
                     if let Some(target) = sim.respawn_node.and_then(|(line, node)| skate_core::living_world::replay::LineCursor::spawn(&*lines, line, node).line_target(&*lines)) {
                         sim.body.runtime.set_respawn_destination(spawn_matrix(&line_spawn(&target)), true);
                     }
@@ -1057,11 +1010,7 @@ pub(crate) fn simulate(
                             if wipe_out {
                                 walk_intents.push(("WipeOutRequest".into(), 1.0));
                             }
-                            // A re-attaches by its saved line id at the node (`824689C0`); a success resets the
-                            // line controller's sub-mode (b66).
-                            // Retail's A activate (`sub_824689C0`, b115): the controller reset (off the path) with the
-                            // search at the node nearest the skater over the whole line (`sub_82455108`); the rejoin commit
-                            // puts it back on the path.
+                            // A re-attaches by its saved line id at the node (824689C0, b66 / b115; search 82455108): docs/hails-additions/26e-living-world-skater-ai.md#controller-a-activate
                             let at = walker_input(&sim.body.runtime).position;
                             let node = lines.get(&w.line).map_or(w.node, |line| skate_core::living_world::path_follow::nearest_node(line, at));
                             replay.cursor = skate_core::living_world::replay::LineCursor::spawn(&*lines, w.line, node);
@@ -1082,10 +1031,7 @@ pub(crate) fn simulate(
                             info!("NPC_WALK_BACK #{} {} hand back ({reason:?}) at line node {node} (walked to {})", npc.id.serial, npc.character, w.node);
                             events.write(super::npc_skaters::NpcSkaterEvent::WalkBack { id: npc.id, node: w.node, started: false });
                             sim.walker = None;
-                            // The activate's reset (`82468AC8`) also clears the takeoff flip latch (`pc+927` / `+928`),
-                            // the trick slot and the board yaw; none of them is in the saved `pc+528..580` block, so a
-                            // walk-back no longer carries the old line's air / trick state onto the new one (b291).
-                            // Retail sets no facing here: controller B lined the skater up before "Arrived".
+                            // The activate's reset (82468AC8) also clears flip latch, trick slot and board yaw (b291): docs/hails-additions/26e-living-world-skater-ai.md#activate-reset
                             clear_line_state(sim);
                         }
                     }
@@ -1105,11 +1051,7 @@ pub(crate) fn simulate(
                     jobs.push(Job { entity: e, serial: npc.id.serial, character: npc.character.clone(), intents: walk_intents });
                     continue;
                 }
-                // The obstacle avoider's answer (`npc_avoid`): retail caps / floors the record
-                // speed (`sub_82470830`) and moves the target across the path (`sub_82464E30`,
-                // controller `+933` = steering).
-                // Retail's projection (`sub_8246D560`, b110): cursor A from the skater's position, B one shaped
-                // recorded tick ahead; the cursor (and so the target, the record and the trick events) goes to B.
+                // Avoider answer (82470830, 82464E30) and retail projection 8246D560 (b110): docs/hails-additions/26e-living-world-skater-ai.md#projection-and-avoider
                 let shape_ratio = {
                     let v = target.step.map(|x| x * ai_record::FRAMES_PER_SECOND);
                     let s = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -1160,7 +1102,7 @@ pub(crate) fn simulate(
                             let (pos, heading) = projected_point(sim, state_now);
                             if stuck_resnap {
                                 let node = skate_core::living_world::ai_controller::resnap_node(line, &rules.controller, f.search_start, pos);
-                                info!("NPC_SKATER_STUCK #{} {} re-snap node {} -> {node} (stage 2)", npc.id.serial, npc.character, f.search_start);
+                                info!("NPC_SKATER_STUCK #{} {} re-snap node {} -> {node} (stage 2) at=[{:.1}, {:.1}, {:.1}] dist={:.1}", npc.id.serial, npc.character, f.search_start, pos[0], pos[1], pos[2], f.dist);
                                 // Retail's re-snap is a full path reset that keeps the stuck tracker (b207); before,
                                 // ours kept a stale air / trick slot / board yaw across the jump.
                                 clear_line_state(sim);
@@ -1200,7 +1142,7 @@ pub(crate) fn simulate(
                             // next tick hands the skater to controller B, which walks it back (b115).
                             if f.lost && rules.walk_back && sim.walker.is_none() {
                                 if !was_lost {
-                                    info!("NPC_SKATER_LOST #{} {} at node {} ({:.1} m from the path, {speed:.1} m/s)", npc.id.serial, npc.character, f.search_start, f.dist);
+                                    info!("NPC_SKATER_LOST #{} {} at node {} ({:.1} m from the path, {speed:.1} m/s) at=[{:.1}, {:.1}, {:.1}]", npc.id.serial, npc.character, f.search_start, f.dist, pos[0], pos[1], pos[2]);
                                 }
                                 replay.avoid.controller.reposition_request = true;
                             }
@@ -1268,10 +1210,7 @@ pub(crate) fn simulate(
                         sim.speed_watch = (now_speed, 1, 30);
                     }
                 }
-                // The spawn push (`824701F8` hold branch, `82C04168`): once, on the hold's last tick, while the skater is
-                // still within 0.01 / 0.05 m of where it was placed (retail measures from the node it placed it on), not
-                // on an off-board node. Before 2026-10-17 it was set at the placement and re-tested every tick from the
-                // deck, which sits 0.2 to 0.46 m off the node, so it never fired again (b178).
+                // Spawn push (824701F8 hold branch, 82C04168): once on the hold's last tick near the placed node (b178).
                 if !sim.teleport_pending && sim.hold_ticks > 0 {
                     let at = projected_point(sim, state_now).0;
                     let placed = *sim.placed_at.get_or_insert(at);
@@ -1492,10 +1431,7 @@ pub(crate) fn simulate(
                     (200..300).contains(&(state as u32)),
                     state == skate_core::player::state::PhysicalStateId::Skitching,
                 );
-                // Off the board: no recorded trick (pc byte +0xA1 gates the dispatcher `sub_8246A2E0`). Off the path the
-                // trick still goes out, as retail: `sub_8246FA30` runs the dispatcher before the path drop
-                // `sub_8246DB50`, which never gates it (b279; b109's off-path drop dates from before the cursor followed
-                // the skater, b110).
+                // Off the board: no recorded trick (pc +0xA1 gates 8246A2E0); off the path it still goes out (b279).
                 let off_board = sim.body.runtime.player_input.processed.flags_2484 & 0x0800_0000 != 0;
                 if off_board {
                     if intents.iter().any(|x| x.0 == "Trick") {
@@ -1644,10 +1580,7 @@ pub(crate) fn simulate(
 
 }
 
-/// The reaction manager (`sub_8245A7E8` once per simulation tick; `skate_core::living_world::npc_reactions`): the
-/// players (observers, model 0, not listening) and every NPC skater (its voice model, the simulated ones' wipeout byte;
-/// replay-tier skaters never wipe out) in stable order; the raised reactions go out as [`NpcSkaterReactionEvent`]s
-/// (the bridge holds each for a console frame). Host only.
+/// The reaction manager (8245A7E8 per tick): players and every NPC skater in stable order; host only.
 pub(crate) fn reactions(
     settings: Res<LivingWorldSettings>,
     observers: Res<LivingWorldObservers>,

@@ -1,18 +1,5 @@
-//! ICE camera tracks (the cutscene Scene system's cameras, e.g. the Trick Guide demo's 21 ViewScene tracks in
-//! scene.big `data/scene/ice_000.bin`; parsed by `skate_data::ice_camera`). A track keys the camera elements of
-//! key group 0: EYE and LOOK (scene space, Z-up), DUTCH (roll), TANGENT_EYE / TANGENT_LOOK and LENS_LENGTH (mm).
-//!
-//! Sampling ports the TU3 segment setup sub_828F0BB0 and the tangent sub_828F0990: each element is a cubic Hermite
-//! per segment, `((a*u + b)*u + c)*u + d` with u the segment fraction, a = m0 + m1 - 2D, b = 3D - m1 - 2*m0, c = m0,
-//! d = p0, D = p1 - p0. The tangent at a segment end is the non-uniform Catmull-Rom tangent in the segment's own
-//! parameter, `D*dt_n/(dt+dt_n) + D_n*(dt/dt_n)*dt/(dt+dt_n)` with the neighbour segment n (previous for m0, next
-//! for m1; none at the track ends: D), scaled by the element's TANGENT value at that key. Each element names its
-//! spline switch and tangent element (descriptor +60 / +64, read live in the recomp): EYE, DUTCH and LENS_LENGTH use
-//! CUBIC_EYE (87) / TANGENT_EYE (7), LOOK uses CUBIC_LOOK (88) / TANGENT_LOOK (8). A switch is a per-segment value;
-//! when it is 0 the tangents are D (linear).
-//! Each segment also carries the eye and look space (SPACE_EYE / SPACE_LOOK, 89 / 90) and the followed object
-//! (AVATAR_EYE / AVATAR_LOOK, 91 / 92), applied by the scene player (sub_828F2C38 -> sub_828F36B0).
-//! Data-driven: tracks come from the disc; a mod can replace or add tracks by index, segment settings included.
+//! ICE camera tracks (Scene system cameras, e.g. the Trick Guide demo), sampled like 828F0BB0 / 828F0990.
+//! Sampling and element switches: docs/hails-additions/31-retail-menus.md#ice-camera-tracks
 
 /// sub_828F1E80: the film half-width (mm, 0x822F91F4) the lens is measured against.
 pub const FILM_HALF_WIDTH_MM: f32 = 15.96;

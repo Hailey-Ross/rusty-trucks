@@ -1,23 +1,5 @@
-//! Traffic cars touching peds (doc 26, "Cars hit peds"; rules and retail evidence in
-//! `skate_core::living_world::peds::vehicle_contact`).
-//!
-//! Retail [code]: a ped's contact with an `IVehicle` body is contact kind 2 (`sub_82E38400`); the
-//! ped's callback (`sub_82E38FB8`) only lets the ped's root follow its collision body, which the
-//! car's kinematic box has shoved aside. No knock-down, stumble, ragdoll, speech or fade.
-//!
-//! Here (`FixedUpdate`, after the peds and the cars stepped this tick): every ped against every
-//! car's box (GLB bounds, the same box as the car's skater proxy), peds and cars in id order so
-//! the result is deterministic; a contact pushes the ped out ([`VehicleContactReaction::Push`],
-//! kept on its navmesh), is published as a serialisable [`VehicleContactEvent`] (the planned
-//! `sdk.living_world` events and a future host read it) and logged as `VEHICLE_CONTACT` (once per
-//! car and ped per second). Rules: [`LivingWorldSettings::ped_vehicle_contact`]
-//! (`sdk.world.set_tuning("living_world", {ped_vehicle_contact = {enabled, push}})`); a mod that
-//! stops is undone with the settings reset.
-//!
-//! NOT RETAIL YET: the ped body is a cylinder of the NavPower agent radius / height (retail's
-//! Havok ped shape is not decoded), the push is the smallest separation in the ground plane
-//! (Havok's penetration recovery is not decoded), the navmesh stands in for the world collision
-//! of the pushed body; the car side (hit-by mask, horn, the planner stopping for peds) is V4.
+//! Traffic cars touching peds (retail kind 2: the car shoves the ped, no reaction); events and logs.
+//! Host order, mod rules and gaps: docs/hails-additions/26g-living-world-ped-interactions.md#car-ped-contacts-host
 
 use super::peds::{PedBody, PedData, Pedestrian};
 use super::vehicles::{CarMotion, TrafficCar};

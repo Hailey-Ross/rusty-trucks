@@ -1,7 +1,5 @@
-//! Retail sea reset (doc 09, "Falling into the Industrial sea"): Industrial's sea has an
-//! invisible floor at y -4.0 (surface 768, physics type 6 `physics_unrideable`). Touching it
-//! raises the teleport request (82DB8120), so the checkpoint reset carries reason `boundary`.
-//! Real map and stock graphs: drop the skater over open sea, read the respawn event.
+//! Retail sea reset (doc 09): Industrial's invisible floor at y -4.0 raises the teleport request (82DB8120),
+//! so the reset reason is `boundary`. Real map and stock graphs.
 use super::*;
 
 #[test]

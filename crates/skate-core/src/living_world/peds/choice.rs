@@ -1,24 +1,5 @@
-//! Which ped a census spawn becomes: entity inside the category, its model (look), tints.
-//!
-//! Retail order (TU3): the census picks the category (`sub_826B8B88`, ported in
-//! `census::pick_category`), then in the same function the entity: count = the category's
-//! `entities` array (`Hash_D5E1267E2D715124`, `sub_8269B040`), draw `sub_826BB058`
-//! (u32 x 2^-32 as f32), index = `trunc(draw x 100) % count` (unsigned remainder), count 0 = no
-//! spawn [code]. The model's tints come from one rand `r` (`sub_827B4170`): `tints_a[r % na]`,
-//! `tints_b[r % nb]`, a default vector when an array is empty [code]. `tints_a` is the model's
-//! `secondary_colours` list (`Hash_DF76D7D773857EDB`, read first), `tints_b` its
-//! `chassis_colours` (`Hash_12026E2EED18CC8D`) [code: the two hash keys in `sub_827B4170`]; the
-//! ped shaders paint the atlas's red mask with `tints_a` and the blue mask with `tints_b`
-//! (`colorize`).
-//!
-//! Our draws come from the spawn record's seed (one sub-RNG per ped, fixed draw order: entity,
-//! group child, tints), not from retail's global RNG, so a ped's look is a pure function of its
-//! spawn record. The stream differs from retail's; the distribution is the same.
-//!
-//! Group model records without a recipe (`skater_female`, `skater_male`, `worker_male` [data]):
-//! the looks are the records that inherit from them. How retail picks among them is not read
-//! from the code yet: placeholder = a uniform pick by the seed (`draw % children`), children in
-//! key order. Parked in doc 26.
+//! Which ped a census spawn becomes: entity, model and tints (826B8B88, 826BB058, 827B4170), seeded per ped.
+//! Retail order and our draws: docs/hails-additions/26f-living-world-peds.md#ped-choice
 
 use crate::living_world::rng::{Rng, derive};
 use std::collections::BTreeMap;

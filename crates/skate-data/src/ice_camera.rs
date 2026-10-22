@@ -1,16 +1,5 @@
-//! ICE camera tracks from the player's disc (scene.big `data/scene/ice_%03d.bin`, loaded by TU3 sub_82827EB0;
-//! doc 31 "Trick Guide camera"). The file is little-endian (sub_828EDD80 swaps it in place on the console).
-//! A scene block is `{u32 1, u32 size, u32 scene hash, u32 track count}` followed by the track records back to
-//! back (sub_828F51E8). A record: +12 f32 length (s), +20 37 key groups `{u16 segments, u16 keys}`, then from +168
-//! `sum(max(segments-2, 0))` u16, aligned to 2, `sum(max(segments-1, 0))` u16 interior key times, aligned to 4,
-//! then every element's values in element id order (sub_828EE070): element `id` of group g holds `segments` values
-//! (per-segment elements) or `keys` values, each a MSB-first bit stream padded to `((bits*count+31)>>3) & !3` bytes
-//! (32-bit elements are raw f32). The element table is `ELEMENTS` (registered by sub_82903840).
-//! Read here: group 0's keyed camera elements EYE_X..LOOK_Z (f32), DUTCH, TANGENT_EYE, TANGENT_LOOK, LENS_LENGTH, and
-//! its per-segment CUBIC_EYE / CUBIC_LOOK, SPACE_EYE / SPACE_LOOK, AVATAR_EYE / AVATAR_LOOK (values checked against
-//! the recomp's per-track player words for tracks 0, 1, 3, 18, 19 and 20).
-//! NOT RETAIL YET (inferred from the data): interior key time = u16/65535 * length and the dequantisation
-//! `min + raw*(max-min)/2^bits`.
+//! ICE camera tracks from the disc (scene.big `ice_%03d.bin`, 82827EB0), little-endian.
+//! Layout and gaps: docs/hails-additions/31-retail-menus.md#ice-camera-file
 use skate_core::camera_track::{CameraKey, CameraSegment, CameraSpace, CameraTrack};
 
 /// The Trick Guide's ViewScene scene hash (miscboot.big scene_000.bin record #254).

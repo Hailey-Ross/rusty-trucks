@@ -167,11 +167,7 @@ pub struct AudioState {
     /// the values before the bridge's speed graph: the poster applies it at [`Self::com_speed_216`]
     /// (retail stores the product back into `+496`).
     pub body_impact: [f32; 6],
-    /// `+596` / `+600` / `+608` (Collision `+180` / `+184` / `+192`, the tail of `sub_82BD60C8`
-    /// copying SkeletonCollision `+4056` / `+4048` / `+4060`): this frame's largest contact speed
-    /// against a group 8 body (a car), a group 5 body (another skater, × the skater / AI scalar)
-    /// and a group 11 body (`SkeletonCollision::maximum_group_8_force` / `maximum_skater_force` /
-    /// `maximum_group_11_force`). The collide line reads them ([`super::contacts`]).
+    /// This frame's largest contact speed against group 8 / 5 / 11 bodies (+596 / +600 / +608, 82BD60C8 tail).
     pub collide_vehicle: f32,
     pub collide_skater: f32,
     pub collide_other: f32,

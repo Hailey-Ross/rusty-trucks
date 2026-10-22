@@ -633,7 +633,7 @@ fn retail_screen_keys_help_panel_and_photo() {
         .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
         .init_resource::<Time<Real>>()
         .init_resource::<crate::popup_host::PopupMods>()
-        .insert_resource(RetailReplayUi(true))
+        .insert_resource(RetailReplayUi(true, false))
         .add_message::<crate::ui_audio::FrontendSound>()
         .add_systems(Update, controls);
     let tick = |app: &mut App, buttons| {

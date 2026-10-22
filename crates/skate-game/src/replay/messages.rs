@@ -1,7 +1,5 @@
-//! One-shot messages recorded with their frame time and written again when the playback cursor crosses that time
-//! going forward: the world's one-shot sounds (horns, car alarms, tazers, ped body falls) come back in the replay,
-//! as retail's audio runs on the recorded state (b375, b378 channel A4). Speech is not recorded (retail blocks
-//! speech in replay). Any `Message + Clone` registered with [`track`] works the same.
+//! One-shot messages recorded and re-sent when playback crosses them (b375, b378 A4); speech not recorded.
+//! Details: docs/hails-additions/37-instant-replay.md#replay-one-shot-messages
 use super::Replay;
 use bevy::{ecs::message::Message, prelude::*};
 use std::collections::VecDeque;

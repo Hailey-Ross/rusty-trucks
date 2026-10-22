@@ -1,7 +1,5 @@
-//! The Trick Guide screen's natives (doc 31 "Trick Guide"): FETrickTutorial (registrar sub_825AE7E0),
-//! Game.GetMenuItems over the screen's list and the picker callbacks, HUDComponents.PlayerStance_IsRegular. The
-//! navigation is `skate_core::trick_guide`; this host turns the movie's calls into it and queues the screen states
-//! the C++ posts back (the facade's SetScreenState, applied by `retail_menu_stage` after the call returns).
+//! The Trick Guide screen's natives (FETrickTutorial 825AE7E0, GetMenuItems, PlayerStance_IsRegular).
+//! Details: docs/hails-additions/31-retail-menus.md#trick-guide-natives
 use crate::apt_vm::{to_integer, Value, Vm};
 use skate_core::trick_guide::{Stance, TrickGuide, TrickGuideState};
 use std::sync::Arc;

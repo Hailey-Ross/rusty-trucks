@@ -420,10 +420,7 @@ impl DynamicsWorld {
     /// with fixed internal edges takes about a second). [`Self::install_ground`] then makes the same world
     /// [`Self::set_ground`] makes.
     pub fn build_ground(triangles: impl Iterator<Item = [[f32; 3]; 3]>) -> Result<GroundCollider, String> {
-        // Density 0: the ground hangs off a fixed body, whose mass rapier never uses, but with the default density it
-        // integrated the whole city mesh's mass properties when the collider was attached and again at the first
-        // step (about 25 ms each for 1.5 M triangles, 2026-10-18). Same simulation, bit for bit
-        // (`a_massless_ground_simulates_like_the_default_one`).
+        // Density 0 for the fixed ground: skips mass properties of the city mesh; same simulation bit for bit.
         Self::build_ground_with_density(triangles, 0.)
     }
 

@@ -1,38 +1,5 @@
-//! A traffic car touching a ped (doc 26, "Cars hit peds"): detection and the ped's response.
-//!
-//! What retail does [code, TU3; addresses are evidence only]:
-//! - Every contact on a ped's collision body goes through the ped's contact callback
-//!   `sub_82E38FB8` (ped vtable `0x8232BE80`). It first classifies the contact with vtable slot
-//!   +164, `sub_82E38400`, which returns a contact kind 0..5 ([`RetailContactKind`]). The other
-//!   body's owner (`[[contact+76]+32]`) is checked with the interface cast `sub_82965630`: an
-//!   owner that is an `IVehicle` (type getter `0x82C34050` -> `0x823220B8`, string `IVehicle`)
-//!   gives kind 2, with no speed or angle test.
-//! - The callback's switch at `0x82E39230` sends kinds 1 and 2 to the same block (`0x82E3926C`):
-//!   the ped's root is set to its collision body's position after the solver moved the body
-//!   (body pose from `sub_82585CB0`, minus the body-to-root offset at `[ped+5756]+19872` when the
-//!   ped's slot +180 says so), keeping the root's height (`vrlimi` keeps y), skipped when the
-//!   result is not finite or out of range (`0x822F88D4`). Nothing else: no reaction kind or
-//!   direction (`ped+2496` / `+2500`), no `Collision` intent, no speech, no brain flag
-//!   (`+3196` bit 0x80 is set only for kinds 4 and 5). So a car never knocks a ped down,
-//!   never makes it stumble, ragdoll or fade: the car's (infinite mass, kinematic) box shoves
-//!   the ped's body out of the way and the ped walks on.
-//! - Kind 5 (an `IActor` owner, `0x82586478` -> `0x823000F0`, e.g. the skater) is the
-//!   knock-down / stumble path (3.0 / 6.0 thresholds, `peds-re.md` section 5); kind 4 is an actor
-//!   contact on body part 1 or 2 (acted on only while `[ped+5756]+140` is 7); kind 3 sets `+3278` bit 0x80.
-//! - The car side (`sub_82C3C150`, vehicle collision interface `+136`) records an `IActor`
-//!   toucher in its "hit by" mask `+4248` and sets `+4401` bit 0x20 for a contact ahead of the
-//!   car; it does not stop or honk there. Peds flee from cars only through the horn
-//!   (`sub_82C40660` kind 2, the honked-at input, `RunFromHonker`; `traffic/horn.rs` sets the
-//!   ped's honker, the RunFromHonker op is not ported yet).
-//!
-//! Ours (stated, NOT RETAIL YET where marked): the car is our kinematic box (GLB bounds), the
-//! ped body is a vertical cylinder of the NavPower agent radius and height (retail's Havok ped
-//! shape, `sub_82E26430`, is not decoded); the solver's separation is the smallest push that
-//! takes the cylinder out of the box in the ground plane (Havok's own penetration recovery is
-//! not decoded). The game then keeps the pushed ped on its navmesh, standing in for the world
-//! collision the retail body has.
-//!
-//! Deterministic: pure functions of the poses; the game resolves peds and cars in id order.
+//! A traffic car touching a ped: detection and the ped's response (retail kind 2: shoved, no reaction).
+//! Retail mechanism (82E38FB8) and our stand-ins: docs/hails-additions/26g-living-world-ped-interactions.md#cars-touching-peds
 
 use crate::living_world::Vec3;
 

@@ -1,12 +1,5 @@
-//! The credits (doc 31 "Credits"): retail FE screen 25 (vtable 0x82302C50, template 30 `extras/credits.swf`, research
-//! b489), opened from the Extras Credits row. Its init reads `data\credits\credits.txt` (miscload.big) through the
-//! cCreditsManager; the parser (0x82D07C40) turns each line `<font> <size> <spacing> "<text>"` into entries; the movie
-//! asks for them through the `FECredits` object (registrar 0x825AAE58: GetNumCredits, GetFontSize, GetLineSpacing,
-//! GetLineOffset, GetLine, ExitCredits), scrolls them up itself and calls ExitCredits after the last one; B pops the
-//! screen at any time. The screen posts SetState(1) (Rolling) once the file is parsed.
-//!
-//! Moddable: the lines are data. Mods append their own sections (`#ID_` string ids or literal text, size, spacing)
-//! after the retail lines; the movie needs no change.
+//! The credits: retail FE 25 (template 30, b489), lines from `credits.txt` via `FECredits`; mods append lines.
+//! Retail flow: docs/hails-additions/31-retail-menus.md#credits-screen
 
 /// The movie state the screen posts once the credits are loaded (82608CE8).
 pub const STATE_ROLLING: i32 = 1;

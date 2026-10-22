@@ -155,10 +155,7 @@ pub fn selector(surface: i32) -> i32 {
     }
 }
 
-/// The rolling surface of an audio material (wheel tag − 1; 143 = none) from the retail vault's
-/// `Sk8::AudioSurfaceMap` word +4 (lookup `sub_82494CD8`; decoded in grain-player-spec §1.4),
-/// material 143 → 3 (`sub_824C82A8`). The default when the install has no surface table; the
-/// install's table (a mod can replace it with the audio tuning) wins in [`surface_for`].
+/// Rolling surface of an audio material from `Sk8::AudioSurfaceMap` word +4 (82494CD8; 143 -> 3, 824C82A8).
 pub fn retail_surface(material: u32) -> i32 {
     if material >= NO_MATERIAL {
         return 3;
@@ -701,11 +698,7 @@ mod tests {
         Unverified(&'static str),
     }
 
-    /// Every audio surface tag (`tag & 0x7F`) by rolling surface, decoded from the vault's
-    /// `Sk8::AudioSurfaceMap` word +4 (grain-player-spec §1.4; the data-gated
-    /// `grain_for_matches_the_vault_surface_map_and_the_bed_loads` in skate-game checks it against
-    /// the install's table). Tag 0 and tags ≥ 95 → surface 3 (material 143 / `sub_82494CD8`'s fallback
-    /// entry).
+    /// Every audio surface tag by rolling surface (AudioSurfaceMap word +4); tag 0 and >= 95 -> surface 3.
     const RETAIL_ROUTING: &[(i32, &[u32], Plays)] = &[
         (1, &[2], Plays::Grain("asphalt_rough_hard", "asphalt_rough_soft")),
         (2, &[4, 66], Plays::Grain("concrete_rough_hard", "concrete_rough_soft")),
@@ -728,13 +721,7 @@ mod tests {
         RETAIL_ROUTING.iter().find(|(_, tags, _)| tags.contains(&tag)).map_or(3, |r| r.0)
     }
 
-    /// Retail parity for every audio surface tag 0..127, hard and soft wheels: tag → material
-    /// (tag − 1, 0 → 143) → rolling surface (`sub_824C82A8` + `sub_82494CD8`, the AudioSurfaceMap
-    /// word +4) → what the owner's routing `sub_824C5CA8` starts: a grain bind of `sub_824C8370`'s
-    /// member (kind 1) with no Class_rolling patch, or the per-surface Class_rolling patch
-    /// (`sub_824C4C18`, selector by the `+1488` switch: 7→1, 8→2, 10→10, 11→12, 12→11, 13→9, w6 = the
-    /// surface) with **no grain**. Run on both the install-table route ([`surface_for`] with a
-    /// table) and the no-table default ([`retail_surface`]).
+    /// Retail parity for every audio surface tag 0..127, hard and soft wheels (824C5CA8 routing): docs/hails-additions/11-audio.md#rolling-routing-parity-test
     #[test]
     fn every_surface_tag_routes_as_retail() {
         // Every tag 1..94 is listed once; the rest are surface 3 (asphalt_smooth).

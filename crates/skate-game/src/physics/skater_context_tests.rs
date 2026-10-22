@@ -196,10 +196,7 @@ fn a_ped_takedown_publishes_the_external_impulse_and_wipes_the_skater_out() {
     assert!(player.runtime.takedown.is_none(), "the latch is used by WipeoutGround Enter");
 }
 
-/// Retail's car-hit bail (`sub_82D90C98`, b37): the skeleton's largest relative normal speed
-/// against a vehicle-group body above `Wipeout_GroundVehicleContact` (9.0) wipes the skater
-/// out. A traffic car (kinematic box in the vehicle group, as `living_world::vehicles::proxy`)
-/// driving into the standing skater at 12 m/s knocks them down at once.
+/// Retail car-hit bail (82D90C98, b37): vehicle-group contact above 9.0 wipes the skater out.
 #[test]
 #[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
 fn a_traffic_car_knocks_the_skater_down_above_the_contact_limit() {
@@ -300,10 +297,7 @@ fn a_thrown_can_reaches_the_skater_region_forces() {
     assert!(peak > 1.0, "the can's contact reaches the region forces: {peak}");
 }
 
-/// Peds are solid (`living_world::ped_body`, retail group 11, b138): a ped body closing on the standing skater is
-/// solved against, so the contact reaches the group-11 force and the region forces (the skater no longer passes
-/// through), and the ordinary wipeout check decides. Walking speed does not bail the skater; the closing speed of a
-/// fast skater (relative speed is what the solve sees) is logged with its outcome.
+/// Peds are solid (group 11, b138): contact reaches the force; walking speed does not bail.
 #[test]
 #[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
 fn a_ped_body_is_solid_to_the_skater() {
@@ -585,10 +579,7 @@ fn npc_skaters_stepped_in_parallel_match_the_serial_steps_bit_for_bit() {
     assert!(npcs_b.iter().all(|n| !n.context.failed), "npc physics failed; decks {moved:?}");
 }
 
-/// The player and a simulated NPC skater collide as full skaters (`living_world::npc_skaters::push_proxies` and
-/// `npc_sim::run_steps`: each solve sees the other's board and skeleton as a peer proxy, retail group 5; research m7 /
-/// b125): an NPC riding hard into the standing player is knocked down by its own skeleton contact and wipeout check; a
-/// slow roll-in is not. Logs both sides' first wipeout tick.
+/// Player and simulated NPC collide as full skaters (group 5, b125): a hard ride-in knocks the NPC down.
 #[test]
 #[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
 fn a_hard_bump_knocks_a_simulated_npc_skater_down() {
@@ -655,10 +646,7 @@ fn a_hard_bump_knocks_a_simulated_npc_skater_down() {
     assert_eq!((npc, player), (None, None), "a slow roll-in knocks nobody down");
 }
 
-/// Skitching end to end (2026-10-16: the first live skitch failed in PreState, then would have in FillPhysOut): the
-/// skater rolls, a taxi with its exported rear grab spline drives just ahead at the skater's speed (grab scene +
-/// solid proxy, as `living_world::vehicles` feeds them), grab is held: the skater must latch (Skitching), be towed
-/// for seconds through every frame stage without an error, and leave Skitching after letting go.
+/// Skitching end to end: latch to a taxi's rear grab spline, tow through every stage, release.
 #[test]
 #[ignore = "requires private stock graphs, the living-world export and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
 fn a_skater_latches_onto_a_traffic_car_rides_and_lets_go() {

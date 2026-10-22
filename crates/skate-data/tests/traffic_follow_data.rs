@@ -1,8 +1,5 @@
-//! Data-gated run of the V3 lane follower (`skate_core::living_world::traffic::follow`) on the
-//! user's own export: DownTown filled with cars by the retail placement rules, two minutes of
-//! traffic at the 60 Hz world tick. Cars follow their lanes, enter signalled junctions only on
-//! green (or turning right; retail has no amber go-through, b163), never overlap and never pass
-//! the lane limit. Skips (passes with a note) when `SKATE3_ASSET_ROOT` is not set.
+//! Data-gated (skips without `SKATE3_ASSET_ROOT` data): V3 lane follower on DownTown for two minutes at 60 Hz: lanes, green-only
+//! entries (right turns aside, b163), no overlaps, lane limits.
 
 use skate_core::living_world::rng::Rng;
 use skate_core::living_world::traffic::follow::{self, Car, FollowEvent, FollowParams};

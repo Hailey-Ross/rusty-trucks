@@ -234,9 +234,6 @@ pub fn to_number(value: &Value) -> Value {
         }
     }
 }
-/// Built-in String methods (standard AS2 semantics, indices in characters). The menu
-/// movies use them on clip names, e.g. screenmanager.OnLoaded takes the screen id from
-/// `Screen_<id>` with indexOf + substring.
 /// Math members (standard AS2 semantics).
 fn math(method: &str, args: &[Value]) -> Option<Value> {
     let n = |i: usize| args.get(i).map_or(f64::NAN, Value::number);

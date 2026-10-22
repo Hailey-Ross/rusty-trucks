@@ -1,14 +1,5 @@
-//! The skitch hands (`sub_82D4A378`): where each hand grips the grab edge, when a hand lets go, and the hand IK
-//! weights. Retail (TU3, evidence only; re-implemented; `.local/research/npc/b59-skitch-hand-targets.md`; main checked
-//! the IK write path against ours):
-//! - sub-mode 0 clears the hand-off flags (1328 / 1332); a lean yaw (940) outside -60..35 / -35..60 degrees sets them;
-//! - 988 follows the world grab height: `clamp(988 + 0.1 ((c M).y - S(908).y), 0, 0.8)`, `c = (0, grab y, grab z)`;
-//! - each hand's spline parameter is the posed hand (908) plus its part's skeleton-local x minus the anchor's x,
-//!   clamped to the range (x / z mirrored by Processed 2476 bit 2); a shoulder part farther than 0.9 + 0.7 m (through
-//!   the skeleton and the car's last-frame motion) from its spline point lets that hand go;
-//! - on a flag change the hand's weight target becomes 0 (off) or 1 (on); the weight moves toward it by +0.03 / -0.2;
-//! - a hand with weight > 0 gets an IK target: the spline point plus the car's velocity over one tick, clamped to
-//!   0.9 m from the shoulder; the bitmask 984 says which hands are on.
+//! The skitch hands (82D4A378, b59): grip points, letting go and hand IK weights.
+//! Details: docs/hails-additions/26h-living-world-traffic.md#skitch-hands
 
 use super::super::super::living_world::Vec3;
 

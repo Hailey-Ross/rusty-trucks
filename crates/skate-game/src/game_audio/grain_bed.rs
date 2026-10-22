@@ -5,10 +5,7 @@
 //! interim speed-band loop is gone).
 //!
 //! Per frame, after the MixMap tick (`native::mixmap_frame`):
-//! - **Surface routing** (§1.4, one sounding truck): the wheels' majority surface → rolling surface
-//!   ([`surface_of_tag`], the retail AudioSurfaceMap) → grain member ([`bound_for`]: none on the
-//!   Class_rolling surfaces 7, 8, 10..13, as `sub_824C5CA8`); a change stops both players and binds
-//!   the new member (pulsing SkateBoard input 0); grinding (surface 14) stops them. In the air the last
+//! - **Surface routing**: docs/hails-additions/11-audio.md#code-reference-grain_bedrs-world_audiors. In the air the last
 //!   member keeps playing and the MixMap's no-contact duck silences it (what retail does with the
 //!   wheel material in the air is UNCERTAIN, spec §2.10).
 //! - **Records** (§2.2): position A from the member's Bézier of speed (push-scaled), B 0.1 behind;
@@ -78,11 +75,7 @@ pub(super) fn surface_of_tag(t: &skate_audio::player::tuning::PlayerTuning, audi
     rolling::surface_for(t, if tag == 0 { skate_audio::player::state::NO_MATERIAL } else { tag - 1 })
 }
 
-/// What the bed binds for a rolling surface, the same for both routings: `sub_824C5CA8` binds a
-/// grain only on a grain surface (`rolling::grain_surface`); the Class_rolling surfaces 7, 8, 10..13
-/// (grass, dirt, …) play **no grain** (their patch is the native rolling layers'). The member is
-/// `sub_824C8370`'s (`rolling::member`); soft members the install lacks play their hard member.
-/// `has` = the bed has that collection's tuning.
+/// What the bed binds for a rolling surface (824C5CA8): grain only on grain surfaces; member from 824C8370.
 fn bound_for(surface: i32, soft: bool, has: impl Fn(&str) -> bool) -> Option<Bound> {
     if !rolling::grain_surface(surface) {
         return None;
@@ -538,11 +531,7 @@ mod tests {
         bound_for(surface_of_tag(t, tag), soft, |_| true)
     }
 
-    /// The bed's own routing binds what retail's `sub_824C5CA8` binds (the full tag table and the
-    /// Class_rolling routing are pinned in `skate_audio::player::rolling`'s
-    /// `every_surface_tag_routes_as_retail`): a grain member on grain surfaces, nothing on the
-    /// Class_rolling surfaces. Grass / dirt (tags 8, 10, 70) bound concrete_aggregate_hard before
-    /// 2026-10-08, tags 37 and 67..69 metal_smooth_hard, tag 90 wood_ramp_hard.
+    /// The bed's routing binds what retail 824C5CA8 binds: grain members on grain surfaces, nothing on Class_rolling.
     #[test]
     fn rolling_grains_follow_the_retail_routing() {
         let t = PlayerTuning::default(); // no install table: the decoded retail map
@@ -586,11 +575,7 @@ mod tests {
         assert_eq!(bound_of(&modded, 8, false), b("concrete_rough_hard", "concrete_rough_hard"));
     }
 
-    /// The decoded retail map ([`rolling::retail_surface`], the bed's and the routing's default)
-    /// against the install's own `Sk8::AudioSurfaceMap` word +4: every tag 0..127 → material
-    /// (tag − 1; 0 = none → 143 → surface 3) → rolling surface, and what the bed binds there (a
-    /// grain member on 1–6 and 9, none on the Class_rolling surfaces 7, 8, 10..13, the `default`
-    /// collection on 0). And every member has its tuning and recording.
+    /// Decoded retail surface map vs the install's `Sk8::AudioSurfaceMap` word +4 for every tag, and member tuning.
     #[test]
     #[ignore = "needs the private install data"]
     fn grain_for_matches_the_vault_surface_map_and_the_bed_loads() {

@@ -191,10 +191,7 @@ pub(crate) enum OverlayKey {
     /// One step back (the recomp's `NavigateBack`): text edit, sub-page, row column, rail, then closed.
     Back,
 }
-/// The PC overlay's keys (like the recomp's settings overlay): Guide (pad bit 0x0400) and F1 open or close it from
-/// anywhere, over the retail menus too; Escape opens it and backs out level by level while open, like pad B; pad
-/// Start toggles it only while the retail pause menu cannot open (`retail_menu_stage::RetailPause`: menus off, or
-/// tables from before the FE screen records); otherwise Start is the retail pause menu's.
+/// PC overlay keys: Guide / F1 toggle, Escape opens and backs out, Start only while the retail pause cannot open.
 pub(crate) fn overlay_key(escape: bool, f1: bool, pressed: u16, open: bool, retail_pause: bool, fe_suspended: bool) -> Option<OverlayKey> {
     let guide = pressed & 0x0400 != 0;
     let pad_start = pressed & 0x0010 != 0 && !retail_pause && !fe_suspended;

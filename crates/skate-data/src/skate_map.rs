@@ -127,11 +127,7 @@ struct Reader<'a> {
     at: usize,
 }
 
-/// A decoded MOBJ static-object record: identity plus a geometry range shared
-/// with other instances of the same template.
-/// MOBJ authored rigid-body parameters (schema 3+): the six-float physics
-/// block plus the two sleep flags. `physics_type` and `collision_shape` stay
-/// validated-only; dynamic bodies are built by the runtime, not authored.
+/// MOBJ authored rigid-body parameters (schema 3+): six-float physics block plus two sleep flags.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ObjectPhysics {
     pub density: f32,
@@ -409,12 +405,7 @@ impl<'a> Reader<'a> {
 #[derive(Clone, Copy)]
 struct StoredBlock<'a> { expected: usize, method: u32, bytes: &'a [u8] }
 impl StoredBlock<'_> {
-    /// Rejects a declared size the stored bytes could never decode to, before
-    /// anything is reserved for it. Deflate writes at most 1032 bytes per stored
-    /// byte (two bits per 258-byte match), Zstandard at most 32768 (four bytes
-    /// per RLE block of up to 128 KiB). A SKATE15 transform writes at most four
-    /// bytes per byte of its payload (an index varint is at least one byte), and
-    /// the payload follows a 4-byte size as Zstandard (3..=6) or deflate (7..=10).
+    /// Reject a declared size the stored bytes could never decode to (deflate x1032, zstd x32768, SKATE15 x4).
     fn check_size(&self) -> Result<(), String> {
         let most = |method: u32, stored: usize| match method {
             0 => stored,

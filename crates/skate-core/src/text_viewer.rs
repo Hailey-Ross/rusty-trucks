@@ -1,10 +1,5 @@
-//! The text viewer (doc 31 "Extras: Licenses"): retail FE screen 3, ToSScreen (vtable 0x82304F10, template 28
-//! `nucleus/nucleus_tos.swf`, research b322), the Nucleus terms-of-service screen the Extras Licenses row reuses in its
-//! view-only state. The C++ splits the body into words at its delimiters (0x8263AD78: space, LF, CR, TAB; word i runs
-//! from boundary i to boundary i + 1, so every word after the first keeps its leading delimiter and the movie's layout
-//! sees the line breaks) up to a character cap (setup flag +0x31: 81626); the movie asks for them through the `tos`
-//! object (GetHeaderText, GetTOSstate, GetNumWords, GetWordRange) and lays them out itself, 20 lines, scrolled by the
-//! left stick. Back plays core_b_button and closes the screen in view mode.
+//! The text viewer: retail FE 3 ToSScreen (template 28, b322) reused for Extras Licenses, view-only.
+//! Retail word split and natives: docs/hails-additions/31-retail-menus.md#text-viewer
 
 /// GetTOSstate: view only (the licenses) vs account creation (an Accept button).
 pub const STATE_VIEW: i32 = 1;

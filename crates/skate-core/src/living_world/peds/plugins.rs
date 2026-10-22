@@ -1,18 +1,5 @@
-//! Ped plugins on world props: benches, trash bins, newspaper boxes, vending machines, ATMs, water fountains,
-//! look-at and spectate spots, gathering places (retail TU3, evidence only; re-implemented;
-//! `.local/research/peds/b81-ped-plugin-acquisition.md`, `b82-ped-plugin-search.md`; main checked the ped roll
-//! `82E3B060` and the d100 roll `8269A588`):
-//! - a plugin prop owns waypoint groups, one waypoint each for DMO hotpoints (`82C4E128`: hotpoint type 1 = trash bin,
-//!   2 = newspaper box, 0 = the root (no waypoint), 8 skipped, any other type = a seat) or the placed groups of the
-//!   world (`waypoints.json`: vending machines, trash bins);
-//! - a ped type's `plugin_odds` (attribute `F89323E420A6AAA3`, a list of {prop class, probability}) drives two things:
-//!   the ped's own yes / no when a prop is offered (`82E3B060`: odds x 100 >= `rand() % 100 + 1`; a refusal remembers
-//!   the prop, `82E40BD0`, at most 16 entries with the value 30.0) and the spawner's weighted pick of a ped type to
-//!   spawn at a free prop (`826B90F8`: weight = group weight x odds, draw = rand x 2^-32 x total; on success the prop's
-//!   cooldown `+232` restarts from `+228`);
-//! - a descriptor takes one participant unless it says otherwise (`82C17AF8`: `maxNumberOfParticipants`, default 1).
-//!
-//! Multiplayer: [`PluginProp`] and [`RefusalMemory`] are plain host-owned data; every roll takes the host's seeded RNG.
+//! Ped plugins on world props (benches, bins, machines, spots, gathering places).
+//! Retail mechanism (82E3B060, 826B90F8, 82C4E128): docs/hails-additions/26g-living-world-ped-interactions.md#ped-plugins
 
 use super::conversation::{Conversation, ConversationRow};
 use crate::living_world::{Rng, Vec3};
@@ -143,11 +130,7 @@ impl TransferView {
         Self { hand_prop: h.has(), disposable: h.disposable, can_sit: h.can_sit, chasing: brain.chasee.is_some() }
     }
 
-    /// One transfer condition for `ped` at `prop`: `HasHandProp` (`826AD1A8`), `HasDisposableHandProp` (`8269D170`),
-    /// `CanSitWithHandProp` (`8269D268`), `IsChasing`; `IsOnRoad` is false (its condition slot is the `li r3,0` stub
-    /// `8274CA90`). `HasFirstWaypointAvailable` (the prop's waypoint 0 is free) and `InFrontOfFirstWaypoint` (`8269CF58` [code]: the ped
-    /// within `front_half_angle` of waypoint 0's flat facing; a near-zero vector counts as angle 0) are ported. Other names
-    /// (`IsNearCrossWalk`, not ported) answer false like the brain's pending conditions.
+    /// One transfer condition for `ped` at `prop` (826AD1A8, 8269D170, 8269D268, 8269CF58): docs/hails-additions/26g-living-world-ped-interactions.md#plugin-transfer-conditions
     pub fn condition(&self, name: &str, prop: &PluginProp, ped: Vec3, s: &PluginSettings) -> bool {
         let first = prop.waypoints.first();
         match name {
@@ -203,12 +186,7 @@ pub enum PropCheck {
 /// The rotation-equality epsilon (`0x820BA998` = 2^-16).
 pub const ROTATION_EPSILON: f32 = 1.0 / 65536.0;
 
-/// `82C56DB0` on one prop: `authored` / `now` = (position, basis columns). Moved farther than `max_distance` from
-/// its authored spot (|d|^2 - max^2 > 0) -> off. Every rotation element within 2^-16 of the authored -> probe the
-/// seats. Otherwise the relative rotation as a rotation vector (`8296F1A0`: axis x angle, radians) is compared per
-/// axis with `tolerance_deg` x 0.0174533 (`0x8206D110`); any axis over -> off. NOT RETAIL YET: the volume-box test
-/// (`*(0x83085494)` vf+144) is not ported, and the frame of the relative rotation (`8286CAF0`'s operand order) is
-/// taken as world (now x authored^T).
+/// 82C56DB0 on one prop: moved or turned past tolerance -> off, else probe seats: docs/hails-additions/26g-living-world-ped-interactions.md#plugin-prop-check
 pub fn check_prop(authored: (Vec3, [Vec3; 3]), now: (Vec3, [Vec3; 3]), tolerance_deg: Vec3, max_distance: f32) -> PropCheck {
     let d: f32 = (0..3).map(|k| (now.0[k] - authored.0[k]).powi(2)).sum();
     if d - max_distance * max_distance > 0.0 {
@@ -360,12 +338,7 @@ pub struct Attach {
     pub waypoint: usize,
 }
 
-/// One prop's offer in the scan (`826C0058` -> `826BFE18` for every ped, registry order, no early exit): a ped
-/// without a plugin, not refusing the prop, within `height_tolerance` vertically and `radius` horizontally, accepted
-/// by `qualifies` (the offer's own test, vfunc 10) and passing its `plugin_odds` roll takes the prop's nearest free
-/// waypoint (vfunc 14); taking it also remembers the prop for 30 s (`8269F248`). NOT RETAIL YET: the offer's
-/// vfuncs 18 / 9 / 10 are not decoded (ours: a free waypoint and below the descriptor's participant cap, then
-/// `qualifies`); the radius source is open (ours: the class field `E2101F2B17A0E6B5`, [inference]).
+/// One prop's offer in the scan (826C0058 -> 826BFE18): docs/hails-additions/26g-living-world-ped-interactions.md#plugin-prop-offer
 #[allow(clippy::too_many_arguments)]
 pub fn offer(prop: &mut PluginProp, radius: f32, max_participants: u32, peds: &mut [OfferPed], qualifies: &mut dyn FnMut(&PluginProp, &OfferPed) -> bool, s: &PluginSettings, rng: &mut Rng) -> Vec<Attach> {
     let mut out = Vec::new();
@@ -422,11 +395,7 @@ pub fn conversation_qualifies(transfer: Option<&Transfer>, c: &Conversation, ent
     transfer.is_none_or(|t| t.evaluate(&mut |name, _| conversation_condition(name, c, entity, rows).or_else(|| view.ped_condition(name)).unwrap_or(false)))
 }
 
-/// A conversation area offered to one ped (`826BFE18` with the conversation offer `0x8232B798`, b212): a ped without a
-/// plugin, not refusing the area, within `height_tolerance` vertically and `radius` horizontally of its centre, passing
-/// the descriptor's transfer expression (`qualifies`) and its `plugin_odds` roll for [`CONVERSATION_CLASS`] attaches
-/// (`82E1BF00`); the add (`82E1D380`) can still turn it away. Used by the scan for passers-by and by the spawner for
-/// the founders (`826A6CD8`). Joining remembers the area like a prop.
+/// A conversation area offered to one ped (826BFE18, offer 0x8232B798, b212): docs/hails-additions/26g-living-world-ped-interactions.md#conversation-offer
 #[allow(clippy::too_many_arguments)]
 pub fn offer_conversation(c: &mut Conversation, radius: f32, ped: &mut OfferPed, qualifies: &mut dyn FnMut(&Conversation, &OfferPed) -> bool, rows: &[ConversationRow], s: &PluginSettings, rng: &mut Rng) -> bool {
     let key = conversation_key(c.id);

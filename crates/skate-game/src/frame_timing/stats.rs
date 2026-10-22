@@ -7,12 +7,7 @@
 //!   frame times. Reported in ms (and as fps = 1000 / ms where a rate is shown).
 //!   An average FPS hides a hitch; these do not.
 //! - **worst**: the longest frame in the window.
-//! - **hitch**: a frame longer than [`HITCH_FACTOR`] × its expected time (needs
-//!   [`HITCH_MIN_HISTORY`] previous frames). Expected = the median of the previous
-//!   [`HITCH_HISTORY`] frames without their physics loop, plus the frame's fixed steps
-//!   × the median cost of one step ([`expected_ms`]). A frame that runs the ~6 ms
-//!   fixed step every other frame at ~180 fps is a normal frame, not a hitch
-//!   (2026-10-19 laptop log: 9,912 of 9,918 flagged frames were exactly that).
+//! - **hitch**: docs/hails-additions/25-perf-diagnostics.md#code-reference-apprs-performancers-frame_timingstatsrs
 
 /// A frame is a hitch when it is longer than this many expected frame times.
 pub(crate) const HITCH_FACTOR: f32 = 2.0;

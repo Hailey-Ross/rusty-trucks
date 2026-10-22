@@ -171,8 +171,8 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
 - Movable pieces (b435), the Monster Park challenge locator, `cap.AllowCollision` (the DLC recipe precedence is moot, see
   "Recipe precedence across packs" above).
 - Do-not-fuse pieces (see "IgnoreFuser pieces leave the fused set"): a second source of flag 2 (a template map at
-  mgr+0x3B2C, b482) is open; whether retail props touch the unfused pieces only, or the fused ones twice (research
-  b485).
+  mgr+0x3B2C, b482) is open; retail's second read of fused pieces for props: settled, none (run 4, see "Props and
+  IgnoreFuser pieces"); the ground set's reduction is not ported yet (b510).
 - The two dead stops of the laptop session 2026-10-21 21:38 where the user saw nothing (see "Seam audit of every
   layout"): verify captures (2026-10-22) show both pieces drawn (Back Lot `ab_stairs_sm_Downtown` bottom riser,
   DownTown `aa_padStreet_md_Downtown` raised edge). The trace shows head-on hits at 8.2 and 5.7 m/s with the speed
@@ -260,11 +260,36 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
   - Asset-gated `ignore_fuser_counts_per_layout`: 16 / 8 / 9 / 13 in backlot_full / Downtown_Fullpark / ZenPlaza_Full
     / Nightpark, 0 in MegaPark and Starter.
 - **Not play-tested.** Skating through a hedge or bush in these layouts is now retail behaviour.
-- **Known gap (props):** retail props still touch these pieces. The DmoGround task reads the TerrainPool with no filter,
-  so props get every piece's own mesh, fused pieces included (research b485: `8277C5D8` -> `8277CAA0`, bbox test only;
-  `82763EE0` kicks it with r8=0, the GroundPool tasks with r8=1, checked by main). Ours: props step against the
-  skater's world (`physics.rs` `step_with_actors(&self.world, ..)`), so they now pass through these pieces too. Port
-  needs a props-only set of the unfused pieces; whether retail's double read of fused pieces changes the outcome is open.
+- **Props:** retail props still touch these pieces; ported 2026-10-22, see "Props and IgnoreFuser pieces".
+
+## Props and IgnoreFuser pieces
+
+(2026-10-22, follow-up of USER-ASKS 233; todo park-props-vs-unfused.md)
+
+- **Problem:** after the IgnoreFuser change, the unfused pieces were in no world at all, so props (bins, cones, Move
+  Object pieces) fell through hedges and bushes.
+- **Retail:** the DmoGround task reads the TerrainPool with no filter, so props get every piece's own mesh, fused
+  pieces included (research b485: `8277C5D8` -> `8277CAA0`, bbox test only; `82763EE0` kicks it with r8=0, the
+  GroundPool tasks with r8=1, checked by main). Both DMO jobs write into the world's one contact stream (island +0xC,
+  research b492; r4 = r5 = 0 on every `827771E8` kick checked by main). For an IgnoreFuser piece the TerrainPool read is
+  the only one, so props collide with its raw mesh.
+- **Change:** `skate_world::props_only_world` builds a world of the IgnoreFuser pieces (native edge codes, one query
+  range per piece, layout order); `PropDynamics::set_props_only_world` stores it at load and both prop contact passes
+  (`row_corrections`, `contact_corrections`) read it after the step's world. The skater, walker and NPC queries never
+  see it. Log: `SKATE_PARK_PROPS_ONLY pieces= triangles=`.
+- **Fused pieces for props, settled:** research b508 found the consumer of the contact stream (the rigid body sim's
+  "Contact Compiler" `82AE10C8` builds one row per record, "Iterations" `82AE27D0` solves them all, no merge; main
+  checked `82DC2840` and the head of `82AE10C8`), and a recomp trace settled which sets a prop gets (2026-10-22,
+  research b509 / b512 / b517, hook `DMOROWS`, run 4): the Stadium - Full construction barrier (one rigid body)
+  resting on a fused piece got 4 to 6 ground-set rows per step, all against the static world, and no terrain-set row
+  on any step. So retail solves fused pieces once for props, as ours does. Not ported yet: the ground set's reduction
+  `82779EB0` (at most 4 points per coplanar group, research b510); ours uses every triangle contact.
+- **Moddability:** a piece's set follows its sidecar `caps.IgnoreFuser` (a mod clears or sets it per instance); the
+  world is rebuilt with the rest at every map load.
+- **Tests:** `props_rest_on_props_only_pieces` (a crate rests on a props-only plate, falls through without it),
+  `ignore_fuser_pieces_stay_out_of_the_fused_set` (the props-only world holds exactly the flagged piece), asset-gated
+  `ignore_fuser_counts_per_layout` (each layout with IgnoreFuser pieces gets a props-only world, the others none).
+  Not play-tested.
 
 ## Unpaired fused edges are not convex: no catch at ramp toes (2026-10-22, USER-ASKS 235 / 237)
 
@@ -290,7 +315,48 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
 - **Tests:** `fused_park_pieces_pair_their_flush_seams` (a 5 cm gap stays unpaired: not convex, cosine 1),
   `speed_watch_logs_catches_not_pushes_or_slowdowns`. skate-game 887 passed. Not play-tested.
 - **Open:** the concave rule above 1.8 (retail writes cosine about 1.0, ours keeps the pair's cosine); where retail
-  sets vertex-disable bits (`82875200` / `82AC2BE8`, ours: the coplanar rule); which pool holds the map floor.
+  sets vertex-disable bits (`82875200` / `82AC2BE8`, ours: the coplanar rule); which pool holds the map floor. The
+  first two are answered in the next section.
+
+## Fused edge bytes and vertex bits
+
+2026-10-22, research b488 (`.local/research/b488-fused-vertex-concave-bits.md`). Main checked every function and
+constant below in Ghidra and the recomp asm.
+
+- **Problem:** our fused park path stored each paired edge's full cosine n1 . n2 and set vertex-disable bits only for
+  all-coplanar vertices. Retail writes quantised edge bytes and has a second vertex rule. So our wheels took edge
+  contacts over about twice the angle retail allows on every park seam, and kept vertices retail disables.
+- **Retail [code]:**
+  - Angle code `82AC0140(score)`: x = score, or 2 - score above 1.0 (`8231A844` 1.0, `82060C50` 2.0).
+    theta = acos(x), at least 6.6e-5 (`822F8EB0`), times 1/pi (`822F8610`). code = trunc(-2 log2(theta / pi))
+    (`82094178` -2.0), below 0 -> 0, 27 or more -> 26. Decoded as a disc map's byte, 1 - pi^2 / (8 << code) is about
+    cos(theta / 2) at the bin edge: about the half dihedral angle.
+  - Edge byte `82AC2390`: the angle code; OR 0x20 (convex) for a score below 1.0; OR 0x1A for a score above
+    2 + builder tolerance (-0.2, `8208EA7C`), which decodes to cosine 1 (sharp concave); OR 0x9A with no neighbour.
+  - Vertex bits `82875200`: per vertex V with a kept face, T0 = its first kept face. V is disabled (`828749C0` ORs
+    0x40 into V's corner byte of every kept face at V) when either test holds:
+    - `828746A8`: every later face is coplanar with T0, abs(n . n_ref - 1) <= 0.01 (`820D71E8`).
+    - `82874DC8` (with `82874CD0`): u1, u2 = norm(V - a), norm(V - b) for T0's other vertices (`82874B08`: next
+      corner first). For each other vertex p of each later face, w = norm(V - p) and s = w . n_ref (T0's normal).
+      With abs(s) > 0.05 (`82165A00`): s < 0.15 (`820994B4`) disables V. Otherwise (in plane): if -w lies in the wedge
+      ((u1 + u2) . q >= 0 and q . u1, q . u2 >= u1 . u2 - 0.05, q = -w), V is disabled. Else the wedge widens: u2 = w
+      when u2 . w > u1 . w and u1 . u2 > u1 . w, else u1 = w when u1 . u2 > u2 . w.
+- **Change:** `skate_world.rs` `fused_edge_features` builds each kept triangle's three bytes (`fused_edge_byte`,
+  `fused_angle_code`) and vertex bits (`fused_vertex_not_convex` plus the coplanar test), then decodes them with
+  `decode_native_edges`, as the disc map path does. Retail's acos / log2 are vector estimates, so a score right on a
+  bin edge may land one code apart: same outcome, not bit-identical.
+- **Moddability:** `park_layout.rs` `FuseRules` (weld, concave_tolerance, coplanar, in_plane, below_plane,
+  wedge_slack) hold retail's values as defaults. A layout sidecar overrides them with `fuse_weld` and a `fuse_rules`
+  object. The values are logged in `SKATE_PARK_FUSE`.
+- **Multiplayer:** pure functions of the positions and the triangle order, so every peer builds the same bytes.
+- **Tests:** `fused_edge_bytes_follow_retail` (open edge 0x9A, 90 degree convex 0x22 with cosine 0.6916, concave 0x1B
+  with cosine 1, 14 degrees -> code 7) and `fused_vertex_bits_follow_retail` (flat centre and valley floor disabled,
+  pyramid apex kept). Regression pass 2026-10-22: skate-game 892 passed; asset-gated `park_layout_seam_audit`,
+  `park_layout_render_vs_collision`, `ignore_fuser_counts_per_layout` pass; `backlot_plaza_pad_seam_is_flat_after_fusing`
+  now checks only that the seam stays flat (an open edge and a flat pair both decode to cosine 1, so its old "open"
+  count no longer tells them apart); it passes (6 seam edges, 0 bent).
+- **Open:** the sort order of retail's per-vertex face list (ours: triangle order); whether the welded path (props,
+  mixed maps) should use the same bytes. Needs the regression pass and a MegaPark / Stadium session.
 
 ## Seam audit of every layout (2026-10-22, USER-ASKS 231 / 232)
 
@@ -310,3 +376,153 @@ Asset-gated report tests in `skate_world.rs` (run with `-- --ignored --nocapture
   be real geometry, such as mellow ramp lips).
 - Play test 2026-10-21 23:07 (laptop, build db1cd1e5): "stadium full seams are WAY better" (one bail in about 70 s
   against 4 in 25 s on the big ramp before) and "backlot collision is way better".
+
+## Fused vertex order
+
+2026-10-22, #52 item 12 (USER-ASKS 251), research b496 / b497 / b498 (`.local/research/`). Main checked 82AC21D8,
+82AC4A40 / 82AC52D0 / 82AC5418 / 82AC6660 / 82AC6BD8 (the sort), 82AC0CE0 (merge test) and 8277E650 (unit iterator)
+in Ghidra and the recomp asm.
+
+- **Problem:** retail's fuser walks each vertex's triangles in the order of a sorted table; ours walked them in
+  triangle order. On edges more than two triangles share (1078 on MegaPark) the pairing, the back-to-back cull and the
+  vertex bits' reference face T0 can then pick differently.
+- **Retail [code]:**
+  - 82872D70 copies each fused piece (layout record order, IgnoreFuser pieces left out) into the builder: per
+    cluster all its vertices, then ONE triangle per unit from the unit's first three index bytes. A quad unit gives
+    only corners 0-1-2; its 3-2-1 half never enters the fused set. The iterator 8277E650 steps a whole unit.
+  - Vertex ids are raw builder indices (piece, cluster, the cluster's vertex order). 82AC10E8 merges vertices whose
+    squared distance is strictly below the weld squared; a merged vertex keeps the smallest raw index.
+  - 82AC21D8 writes (vertex, triangle) for every builder triangle's three corners, collapsed ones included, and sorts
+    the table with EASTL quick_sort on the vertex only (unstable): introsort to 28 entries, depth 2 floor(log2 n),
+    median of first / middle / last, two-sided partition, then insertion sort; heap sort when the depth runs out.
+- **Change:**
+  - Setup (`dynamic_props.py` `decode_with_units`) records per collision triangle its unit `[type, half]` and each
+    corner's `[mesh, cluster, index]` (`units`, `vertex_keys` in the template collision), by watching the vendored
+    decoder's unit triangulation; the vendored file is not edited.
+  - Engine (`skate_world.rs`): `FuseTag` per triangle; `fused_vertex_ranks` gives each merged vertex the rank of its
+    smallest (piece, mesh, cluster, index) key; `eastl_quick_sort` sorts the table as retail; quad second halves leave
+    the fused set (`FuseRules.quad_first_half_only`, default true, sidecar `fuse_rules.quad_first_half_only`). A sidecar
+    without the new keys keeps the old triangle order.
+- **Kept as ours:** our merge forms the groups (first-seen within the weld; retail's grid hash differs only on chains
+  where A-B and B-C are within the weld but A-C is not); zero-area template triangles are skipped before the fuse
+  (retail keeps them in the table, then drops them).
+- **Quad check (user 2026-10-22: check first):** `park_layout_quad_second_halves` after the maps refresh: 0 quad
+  second halves in all 11 layouts (about 1.02 million fused triangles); every park template unit is type 1 (MegaPark:
+  31,586 units, all type 1). The earlier "up to 351 quad-looking pairs" were two triangle units. So the rule changes
+  nothing for retail content; it stays for mod content with quads.
+- **Tests:** `eastl_quick_sort_orders_by_key_and_keeps_every_entry`, `fused_vertex_ranks_follow_the_smallest_raw_key`,
+  `fused_set_leaves_out_a_quads_second_half`, `fused_set_drops_a_zero_area_triangle`; Python
+  `test_dynamic_props` unit record.
+
+## Ground plane pass
+
+2026-10-22, laptop session (USER-ASKS 252: "Transitioning from the floor onto the placed ramps is still not right and
+you lose speed and/or get bumped up in the air sometimes"), research b502 / b503 / b505, recomp traces by main.
+
+- **Problem:** at every Stadium - Full floor-to-ramp drop (b502) the lead wheels reach a quarterpipe toe. The toe edge
+  pairs with the piece's own underside, a convex knife (code 0, cosine -0.2337), so a wheel up to about 1 m before the
+  toe gets a predicted edge contact whose normal leans back toward it and takes several m/s (b503).
+- **Retail [trace]:** hook WHLC (recomp `src/research/hooks_wheelc.cpp`) on a scripted roll into the toe at x 223.53
+  (`.local/recomp/traces/toe/`, 2327 lines, 0 malformed): the same toe edge is NOT convex with cosine 0.9993976
+  (code 11) and its edge contacts are rejected; only face contacts are taken. Table `.local/research/b505-toe-runtime-data.md`.
+- **Retail [code, b505]:** the fuser finalise 82876188 runs 82874248 between the pairing and the byte writer. For each
+  ground plane (normal, d, optional box; at most 6) and each live triangle facing into it (normal component difference
+  at most job +8) with v1 on it (|n . v1 - d| at most job +4), every paired edge with a score below job +12 calls
+  82874070: the partner's score becomes the edge score of (plane normal, partner normal, edge) and the triangle adds
+  it to its own. 827765C0 gives a park with no planes one: normal (0, 1, 0), d 0, no box.
+- **Retail values [trace, hook FUSEPL at 82874248 on Stadium - Full]:** job +4 = 0.05 (distance), +8 = 0.01 (normal),
+  +12 = 0.1 (score limit); one plane, normal (0, 1, 0), d 0, no box.
+- **Change:** `skate_world.rs` `fused_edge_features` runs the pass after the pairing; `park_layout.rs` `FuseRules`
+  carries `ground_planes` (default the y = 0 plane), `plane_distance` / `plane_normal` / `plane_score_limit`
+  (0.05 / 0.01 / 0.1). Sidecar `fuse_rules`: `ground_planes` (list of {normal, d, min, max}, at most 6; an empty list
+  turns the pass off) and the three tolerances, so a mod layout on a raised deck sets its own plane.
+- **Result (asset probe `park_layout_fused_probe` at 223.53 / -88.359):** toe face edge 0 cosine 0.99939764, not
+  convex; underside edge 2 cosine 0.6915748, convex: both as retail. Vertex bits match retail on every toe triangle.
+  Still different (last bit, b506): the coplanar quad diagonal scores one ulp under 1.0 (code 25, convex, cosine
+  0.99999994; retail code 26, not convex): its two faces' vertex positions differ from retail's in the last bits (our
+  piece placement arithmetic). Builder normals use retail's formula (`fused_normal`, 82875CA8). A convex edge with
+  that cosine accepts only contact normals within about 0.03 deg of the face, so it changes nothing in play.
+- **Test:** `a_knife_toe_on_the_ground_plane_is_not_convex`.
+
+## Mesh floor pass
+
+2026-10-22, research b507 (`.local/research/b507-fuser-pass-82873EA0.md`; main checked the constant 0.005 at 82099920).
+
+- **Retail [code]:** the fuser finalise 82876188 runs 82873EA0 after the ground plane pass and before the edge bytes:
+  the same idea for pieces that stand on another piece's flat top above the ground. Up-facing flat triangles
+  (|1 - n.y| at most job +8, 0.01) are the floors. Each down-facing triangle (|-1 - n.y| at most 0.01) whose v0 is off
+  the ground (|v0.y| above job +4, 0.05) takes each paired edge with a score below -job +12 (-0.1, a sharp convex
+  edge) to 82874070 with normal (0, 1, 0) when a flat triangle of a DIFFERENT piece has its v0 within job +0x10
+  (0.005) of the edge start in height and overlaps the edge in xz (82873270, four separating axes, touching counts).
+  The grid it builds (16^3 cells) only speeds up the search. It is the only score-changing step of 82876188 we lacked
+  (b507 lists the full call order).
+- **Change:** `skate_world.rs` `fused_edge_features` runs it after the ground plane pass (`xz_segment_meets_triangle`;
+  floors sorted by height and searched in the 0.005 band instead of retail's grid, same result). `FuseRules`:
+  `mesh_floor_pass` (on), `mesh_floor_gap` (0.005), `mesh_floor_up` (0, 1, 0); it reuses the plane tolerances as
+  retail reads the same job fields. Sidecar `fuse_rules.mesh_floor_pass` / `mesh_floor_gap`.
+- **Effect:** b507's estimate for MegaPark_Fullpark: about 206 underside edges on 19 pieces (Mega quarter pipe, lower
+  and down ramps, roll-in, University quarter pipes and steep ramps), upper bound before the cull.
+- **Test:** `a_knife_toe_on_a_raised_deck_is_not_convex` (and unchanged with a gap over 0.005, on the same piece, or
+  with the pass off).
+
+## Code reference: park_layout.rs
+
+- A world row (`dist_megapark_full`) names a `.park` layout. Setup (`tools/asset_pipeline/park_layout.py`) writes each
+  layout as a render-only MOBJ package `private/park-layouts/<layout>.skate`, its sidecar `<layout>.json` (instances,
+  per-template collision and rails, the movable pieces) and `worlds.json` {world row: {layout, stream}}.
+- Retail keeps every static piece as its own object: it collides through a per-piece static set (b431 section 2) and
+  grinds on its template's splines posed once by the piece matrix (82868860 -> 82C1F098, b431 section 1); both are
+  rebuilt when a layout is applied.
+- Ours: the map load carries the chosen layout (an in-memory `EXTENSION_TAG` extension on the loaded map, never written
+  to a file); physics appends the posed piece triangles to the static world as one query range per piece and the posed
+  rails to the static rail provider as one asset per piece; the renderer spawns the pieces as `ParkPiece` entities.
+  A layout change is a map load (retail re-applies a layout in place; the outcome is the same).
+- Moddable: a mod ships its own `<layout>.skate` / `.json` and `worlds.json` row; the world row is part of the
+  serialisable map request (`map_library::Entry::world`).
+
+## Code reference: skate_world.rs
+
+- Backdrop: the district's global presentation model (`private/native-backdrops/<map>.skate`: ocean surfaces, distant
+  tree walls, far sea planes) draws through the district's retail material path; every draw carries `Backdrop`, so its
+  visibility follows `BackdropSettings` (mod-reachable). No lights, no collision.
+- Dynamic props (DMO instances): ported from SK8-ENGINE PR #15 (laaledesiempre, phase 0). Each MOBJ record is one root
+  entity with its own transform; its template geometry is merged per (render class, slab) in template space and shared
+  between instances.
+- `prop_files`: a map with a skate.Park layout that has movable pieces uses `park-layouts/<layout>.props.skate`
+  (research b435: ordinary DMOs), else the district's `native-props/<map>.skate`. No park stream has district props,
+  so the layout's package stands in for them; a stream with both would need the two merged.
+- Fused park set (`append_pieces` / `split_unfused`): retail fuses the static pieces into one mesh and rebuilds its edge
+  codes (b478, fuserJob 828728B8 / 82876188). Pieces with flag 2 (IgnoreFuser, b482: hedges, bushes, shrubs) stay out
+  of the fuse (827765C0); their own collision lives only in the TerrainPool (b483), which the skater's ground query
+  never reads (island +0x5590 = the GroundPool, 827632A8 / 8275DCC8, b484). A mod that wants one solid clears its
+  `IgnoreFuser` cap in its layout sidecar. Props collide with them through `props_only_world` (see "Props and IgnoreFuser pieces").
+- `welded_edge_features`: 1 mm welding and edge pairing shared by the portable map world and props created mid-game;
+  `reconstruct = false` keeps the default features (fully native maps decode theirs per triangle).
+- `fused_edge_features` (b478): vertices merge within the weld; triangles the merge collapses or flattens are dropped
+  (82AC2010); faces of different pieces lying back to back (abutting side walls under their tops) are removed in
+  pairs or as two quads (828755B8 with 82875438); each edge pairs with the neighbour of the highest score, a better pair
+  displacing a worse one (82875B20 / 82875CA8); then the edge bytes and vertex bits of the section above.
+- `portable_parts_fused`: `fuse` merges vertices across the whole set and rebuilds every edge code, ignoring the native
+  ones (surfaces kept), as retail's 82872D70 copies only the corners, piece and surface of each triangle; collapsed
+  triangles are dropped and the split ranges follow the kept triangles.
+- `add_instance` (mid-game prop, e.g. a released hand prop or a mod's): template-space triangles with scale folded in,
+  baked like `rebake`; edge features from the instance's own triangles (load-time instances also pair edges with
+  touching neighbours); a retired slot with the same triangle count is reused, so repeated spawns do not grow the
+  world.
+- DMO template collision (`native-props/<map>.json` `collision`, setup `dynamic_props.template_collision`): the
+  template's ClusteredMesh triangles in model space with their RW edge codes and surface ids (research
+  dmo-physics-collision.md), keyed by template id so a mod can supply or replace one.
+- DMO type data: setup maps each template id to its type's vault record (`types` in `native-props/<map>.json`, from
+  the template's EB000D +120); the values come from the installation's stock vault
+  (`livingworld_dynamicobject_characteristics`, `prop_dynamics::dmo_type_blocks`). Without a type map (older setup)
+  the props keep their authored material until setup group maps runs again.
+- `load_dmo_grab_splines`: the authored grab splines per DMO template id (`grab_splines`, doc 26i "Move Object step 1").
+- `load_prop_layer`: the prop package is a presentation supplement; missing or invalid files leave props uncollidable
+  instead of failing the map, as the render path does.
+- Tests: the asset-gated prop type test checks every type in a set-up map resolves to the stock vault's record (default
+  record: restitution 0.5, free pair 0.8 / 0.6; `SKATE3_ASSET_ROOT`, `SKATE3_PROP_MAP`, default DownTown). The seam
+  audit (`park_layout_seam_audit`) fuses each layout and reports what can still catch a wheel on a floor (normal y >
+  0.7): edges more than two live triangles share, unjoined floor edges with another within 1 cm, and joined edges
+  between near-flat floors (y > 0.95) with a decoded cosine below 0.99863 (code 9 or less, normals more than about 5.6
+  degrees apart; b496). The two-pads test models Back Lot's aa_PlazaPad seams: each pad's side wall lies back to back
+  on the other's, 828755B8 removes them, and the tops pair flat.

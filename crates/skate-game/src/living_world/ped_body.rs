@@ -1,23 +1,5 @@
-//! Peds as solid bodies in the skater's contact solve (doc 26g, "Peds are solid"; research b138, b144 to b147).
-//!
-//! Retail: a ped is a body in collision group 11 that the skater's skeleton contact traversal
-//! (`sub_82BD4A30`, group switch at `0x82BD5388`) solves against like a car (8) or another skater
-//! (5): the solver pushes the two apart, the group-11 force goes to `+4060`, and every contact also
-//! feeds the per-region strongest contact the wipeout checks read, so a hard or mid-trick hit into a
-//! ped bails the skater through the ordinary thresholds [code, b138 finding 1]. The ped's own
-//! reaction (`sub_82E38FB8` kind 5: knock-down / stumble) stays in `peds::skater_hit`.
-//!
-//! The body (group 11, `sub_82E268C8`) has three capsule parts, measured in the recomp (b146: radius,
-//! half length, mass) and posed every frame from the animated skeleton by `sub_82E35838` (b147, main
-//! checked the table builder `sub_82E33070`): part 0 at Hips, framed along Hips -> Head; parts 1 / 2
-//! halfway between LeftForeArm / LeftHand and RightForeArm / RightHand along the forearm; every part
-//! moved ahead by the ped's velocity x 1/60 s. The parts are keyframed (rebuilt from the pose, no
-//! write-back found): a finite mass for the solve, no rotation from it.
-//! NOT RETAIL YET: part 0's axis is taken as Hips -> Head (retail builds a frame from Hips' third axis
-//! and that direction, then turns it 90 degrees; which way is open); body A (retail's group-9 movement
-//! proxy, b342) is not ported, body B stays in the solve through every reaction, as retail (b203);
-//! bodies only within [`PedBodySettings::range`] of an observer (ours: posing costs time). All
-//! mod-overridable (`living_world.ped_body`).
+//! Peds as solid bodies (group 11) in the skater's contact solve (b138, b144 to b147).
+//! Retail mechanism and gaps: docs/hails-additions/26g-living-world-ped-interactions.md#ped-solid-bodies
 use bevy::prelude::*;
 
 use super::peds::{PedBody, PedData, Pedestrian};
@@ -55,10 +37,7 @@ pub(crate) struct PedBodyPart {
     pub friction: f32,
 }
 
-/// Retail 0 [code, b289]: every ped part's contact material is static / dynamic friction and restitution 0.0
-/// (`82E268C8` fills the three slots from `0x82165A10` = 0.0, the owner's material vfuncs +120 / +124 leave them;
-/// `82E0E4B0` writes them to the part definition +0x80, `82DC4588` copies them into the collision object). Our 0.5
-/// before had no source and spun the torso about its long axis past the 3.0 rad/s knock-down gate (b288).
+/// Retail 0 (b289): ped part friction and restitution 0.0 (82E268C8, 82E0E4B0, 82DC4588).
 pub(crate) const DEFAULT_PART_FRICTION: f32 = 0.0;
 
 /// `living_world.ped_body` (mod-facing; the default is retail as marked).
@@ -78,13 +57,7 @@ pub(crate) struct PedBodySettings {
     pub proxy: Option<PedProxy>,
 }
 
-/// Body A (retail `sub_82E38400`, group 9; b146 radius / half length / mass, b342): one upright capsule from the ped
-/// root. Retail pairs group 9 with the static map, cars (8) and DMOs (12..14), never with the skater or another ped
-/// (the collision-type table `40122C30`, read in the recomp, b342 section 7). Ours: props meet it through the
-/// pusher rule skater volumes use (`PropDynamics::push_from_skater`) with its mass, so a shoved bench stops against a
-/// ped; cars still push the root through `vehicle_contacts` (retail's kind 2 does it through body A). NOT RETAIL
-/// YET: the capsule's height offset (`sub_82E35160`, tuning +0x2C, not decoded; ours stands it on the root) and
-/// the root following body A for a ped's own plugin object (kind 1).
+/// Body A (82E38400, group 9; b146, b342): upright root capsule vs map, cars and DMOs: docs/hails-additions/26g-living-world-ped-interactions.md#ped-body-a
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PedProxy {
     pub radius: f32,
@@ -206,11 +179,7 @@ pub(crate) fn bone_world(position: Vec3, heading: f32, global: &Mat4) -> Vec3 {
     position + Quat::from_rotation_y(heading) * global.w_axis.truncate()
 }
 
-/// Add the near peds' bodies to the skater solve (after the other proxies; rebuilt every tick). The bodies stay
-/// through a stumble or knock-down, as retail's do: retail removes a ped's collision bodies only in the collision
-/// object's destructor (`sub_82E22D50`, ped despawn; research b203, laptop trace 175036), so a skater cannot roll
-/// through a ped that is already reacting. New hits during the reaction are still skipped (`peds.rs`, retail
-/// `sub_82E38FB8`).
+/// Add near peds' bodies to the skater solve each tick; they stay through reactions (b203): docs/hails-additions/26g-living-world-ped-interactions.md#ped-proxies-in-the-solve
 pub(crate) fn push_ped_proxies(
     peds: Query<(&Pedestrian, &PedBody)>,
     data: Res<PedData>,

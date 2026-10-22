@@ -1,19 +1,5 @@
-//! The traffic manoeuvre decider (retail TU3, evidence only; re-implemented;
-//! `.local/research/npc/b69-traffic-manoeuvres.md` with the b71 to b74 extensions; main checked the overtake hash
-//! before the first roll, the driver block at `[car+4116]` (schema offsets) and the bit roller):
-//! - `sub_82C3D830` first: a pending pull-over is cancelled while a skater holds the car (unless the car has the
-//!   "pulls over while held" trait), outside junction state 2: the spot is released, the timer reset;
-//! - `sub_82C41CD0`, only while no manoeuvre is pending: (1) the overtake roll (`Hash_9366C67755A24D89`, 0 in every
-//!   stock record, one draw every call); (2) the lane timer (`+3632`, + dt per tick) past the spec's period
-//!   (`[spec+48]` = `Hash_90AB56A5DDCF2A3A`, 10 s, sports 5, truck 8) resets and rolls "go" (driver +28
-//!   `Hash_52CF2CF3...`: 0.1, taxi 0.4, others 0) and "least loaded" (driver +24 `Hash_7C6B48BD...`); on a road that
-//!   allows lane changes the adjacent lane (random, one draw, or the least loaded) must pass the gap check
-//!   (`82E14928`); (3) when the timer fired and no lane change started: the pull-over roll (`Hash_559BA807...`, 0.02,
-//!   taxi 0.04; 0 while held without the trait) on a road that allows it, on the outer lane, with a spot at least
-//!   the approach length ahead (`82E14CF8`), which is reserved.
-//!
-//! The roll is retail's percent test (`8269A588`: `r % 100 + 1 <= chance x 100`, [`super::horn::percent_roll`]).
-//! Multiplayer: [`DeciderState`] is plain per-car data; the host rolls with its seeded RNG.
+//! The traffic manoeuvre decider (b69, b71 to b74; 82C3D830, 82C41CD0): overtake, lane change, pull-over.
+//! Retail mechanism: docs/hails-additions/26h-living-world-traffic.md#traffic-manoeuvres
 
 /// Per-car values (spec and driver records; retail defaults from the setup data, a mod may override them).
 #[derive(Clone, Copy, Debug, PartialEq)]

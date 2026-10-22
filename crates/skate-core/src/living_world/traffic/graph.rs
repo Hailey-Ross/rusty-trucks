@@ -1,18 +1,5 @@
-//! The road graph the traffic runs on: directed segments with ~4 m lane pieces, junctions with
-//! approach / exit ends and turn connectors (retail RW object `0x00EB0013`, decoded in milestone V0,
-//! `docs/hails-additions/living-world/vehicles-data.md`).
-//!
-//! Built from plain input records ([`RoadInput`]) that the data layer fills from the user's export
-//! (`skate-data::roads::RoadGraph::traffic_input`) or a mod fills from its own map; no I/O here.
-//! Every element keeps its retail identity ([`SegmentId`], [`JunctionId`], [`ConnectorId`],
-//! [`LaneId`]) and the network stores them sorted by that identity, so the dense indices are the
-//! same on every machine that loads the same roads (multiplayer and replay safe).
-//!
-//! Lane geometry [data, all 138 shipped connectors]: a piece's centre curve is the middle of the
-//! road; lane `k` of `n` sits at `(k + 0.5) / n` of the way from the left edge to the right edge
-//! (lanes 4 m apart: -2 / +2 m on the two-lane roads, 0 on one-lane roads), and every connector
-//! starts exactly on its approach lane at the last piece's end and ends exactly on its exit lane at
-//! the first piece's start. Lane 0 is the left lane: right turns leave from the right lane.
+//! The road graph traffic runs on (retail RW object 0x00EB0013), built from plain input records.
+//! Identity, ordering and lane geometry: docs/hails-additions/26h-living-world-traffic.md#traffic-road-graph
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -178,10 +165,7 @@ pub struct EndInput {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConnectorInput {
     pub index: u32,
-    /// Retail connector `+0x50` (`f32_50` in V0): the speed a car must be at or below before it
-    /// enters (the query returns "approach" while faster and still beyond its look-ahead,
-    /// `sub_82E11E90` compares `+80` with the speed) [code]. The road speed on straight
-    /// connectors, 1.4-2.7 m/s on turns [data].
+    /// Retail connector +0x50: entry speed a car must be at or below (82E11E90 compares +80).
     pub entry_speed: f32,
     pub from_end: u8,
     pub from_lane: u8,
@@ -337,10 +321,7 @@ fn normalise(v: Vec3) -> Vec3 {
 }
 
 impl RoadNetwork {
-    /// Build and check the network. References that cannot be resolved are errors (a connector
-    /// naming a missing end or lane, a lane list naming a missing connector, duplicate ids,
-    /// pieces out of order); a junction end without a segment is kept as `segment: None` (the
-    /// map edge).
+    /// Build and check the network; unresolved references are errors, an end without a segment is a map edge.
     pub fn build(input: &RoadInput) -> Result<Self, TrafficError> {
         let mut segs: Vec<&SegmentInput> = input.segments.iter().collect();
         segs.sort_by_key(|s| s.id);

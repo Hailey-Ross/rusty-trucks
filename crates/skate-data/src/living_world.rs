@@ -1,15 +1,5 @@
-//! Readers for the living-world export the population core needs (setup group `livingworld`,
-//! formats in `docs/hails-additions/living-world/{peds-data,skaters-data}.md`). Bytes in, core
-//! types out; no file I/O.
-//!
-//! - `<District>.census.bin` → [`CensusGrid`] (`tools/asset_pipeline/living_world.py`,
-//!   `write_census_grid`);
-//! - `tables.json` → [`LivingWorldTables`]: `livingworld_census` records resolved through their
-//!   category group, and the `livingworld_census_ranges` circles;
-//! - `skater_profiles.json` → [`SkaterCharacter`]s of the free-roam pool and the AI profiles'
-//!   trick tables ([`skater_trick_profiles`]);
-//! - decoded AIPATH lines (`aipath`) → [`SkaterLine`]s (population) and [`ReplayLine`]s (the
-//!   replay-tier cursor, milestone 3).
+//! Readers for the living-world export the population core needs (census grid, tables, profiles, lines).
+//! Formats: docs/hails-additions/living-world/peds-data.md, skaters-data.md; list: docs/hails-additions/26b-living-world-population.md#living-world-readers
 
 use crate::aipath::AiPath;
 use serde_json::Value;

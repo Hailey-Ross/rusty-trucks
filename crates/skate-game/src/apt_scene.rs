@@ -154,10 +154,7 @@ fn visit(
         return Ok(());
     }
     let character = &movie.characters[&instance.character];
-    // A clip whose `_type` names a native component is drawn by the player in place of its placeholder shapes
-    // (research `.local/research/menu-white-squares.md`). CustomButton (button_item2's mButtonRender, `_test` = the
-    // retail button "A" / "B" / ...): one quad over the placeholder's bounds with texture `prompt/<button>`, which
-    // the host resolves to the connected pad's prompt (SDL button labels). Other components draw nothing yet.
+    // Native components by `_type` (CustomButton: one quad with `prompt/<button>`); others draw nothing yet.
     if let crate::apt_vm::Value::Text(kind) = vm.get(id, "_type") {
         // Every retail button name resolves to the connected pad's glyph (prompt_glyphs); "Unknown" = an unused item.
         let button = vm.get(id, "_test").text();
@@ -171,12 +168,7 @@ fn visit(
                 .map(|slot| format!("{}{slot}", crate::image_renderer_host::SLOT_TEXTURE_PREFIX)),
             _ => None,
         };
-        // MapRenderComponent (b262 / b263, retail 825E2618 -> 8268D898): the host draws the map markers in the clip's
-        // own space, centred on its origin; this placeholder carries the clip transform (the images of (0, 0), (1, 0)
-        // and (0, 1)) for the stage to expand (`MAP_MARKERS`).
-        // CustomTimeline (the replay editor's strip, mCustomRender; retail dispatcher 825D4828 -> 82509B80, b403): drawn
-        // by the host in the clip's own space (x = normalised time x 817); the placeholder carries the full clip
-        // transform for the stage to expand (`REPLAY_TIMELINE`).
+        // MapRenderComponent (b262 / b263) and CustomTimeline (b403) placeholders carry the clip transform for the stage.
         if kind == "CustomTimeline" {
             let point = |x: f32, y: f32| transform(matrix, &Vertex { position: [x, y], uv: [0., 0.] });
             out.push(Draw { texture: REPLAY_TIMELINE.to_owned(), fill: Fill::TextureClamped, vertices: vec![point(0., 0.), point(1., 0.), point(0., 1.)], multiply, add });
@@ -258,10 +250,7 @@ fn visit(
             let alignment = text["alignment"].as_u64().unwrap_or(0);
             let autosize = vm.get(id, "autoSize").text();
             let alignment = if autosize == "left" { 0 } else { alignment };
-            // Word-wrapped fields break into lines (82CA14D0), each aligned on its own and drawn one line advance
-            // below the last, unclipped (82CA2118). NOT RETAIL YET: the wrap flag (descriptor +28) is taken as the
-            // field's word_wrap (the descriptor fill is not decoded; the trick guide sets word_wrap and multiline
-            // together).
+            // Word-wrapped fields break into lines (82CA14D0, 82CA2118); wrap flag from word_wrap (NOT RETAIL YET).
             let lines = if text["word_wrap"].as_bool() == Some(true) || vm.get(id, "wordWrap") == crate::apt_vm::Value::Bool(true) {
                 font.wrap(&value, height, bounds[2] - bounds[0])
             } else {
@@ -313,10 +302,7 @@ fn visit(
                 16,
             )
             .map_err(|e| e.to_string())?;
-            // `TextField.textColor` (0xRRGGBB) set by the movie's script replaces the field's authored colour; the
-            // alpha stays the field's. The settings rows set it per state in SetState (highlight_selector /
-            // highlight_slider / menu_part_text_hilite: selected 0x37A5FF, rows on / off / disabled); without it the
-            // selected value ("< Normal >", "100%") drew in its dark authored colour (play test, 2026-10-12).
+            // Script `TextField.textColor` replaces the authored colour (alpha kept); settings rows set it per state.
             let rgb = match vm.get(id, "textColor") {
                 crate::apt_vm::Value::Undefined => argb & 0xFF_FFFF,
                 v => crate::apt_vm::to_integer(&v) as u32 & 0xFF_FFFF,

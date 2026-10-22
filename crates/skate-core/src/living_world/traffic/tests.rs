@@ -278,11 +278,7 @@ fn change_gaps(controller: u8, ticks: u64) -> Vec<(u64, usize, usize)> {
 
 #[test]
 fn phase_timing_matches_the_recorded_ticks() {
-    // proof1.tsv TRAFLIGHT2, controller 0: the first line (one tick in, 0.483 left) then 29
-    // ticks to phase 1, 480 to phase 2, 30 to the green, 252 to the walk amber, 168 to the car
-    // amber, 60 to phase 0, 30 to phase 1, 480 ... [trace]. Controller 1 (f32 carries make its
-    // walk light lead the car light by one tick): 30 to the green, 253 to the walk amber, 167 to
-    // the car amber, 1 to the walk red, 59 to the all-red, 1, 29 to the red, 1, 479 [trace].
+    // Traced phase gaps of controllers 0 and 1 (proof1.tsv TRAFLIGHT2): docs/hails-additions/26h-living-world-traffic.md#traced-signal-phase-gaps
     let c0 = change_gaps(0, 2100);
     let gaps: Vec<u64> = c0.iter().map(|g| g.0).take(10).collect();
     assert_eq!(gaps, vec![30, 480, 30, 252, 168, 60, 30, 480, 30, 252]);

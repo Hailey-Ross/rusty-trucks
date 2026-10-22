@@ -4998,3 +4998,41 @@ Full write-up: [15](15-world-audio.md), section "Follow-ups". In short:
   0.94 (was 0.045 / 0.065 and 0.005 / 0.014 with the NPC always dead ahead). No engine change.
 - **NPC board slide observed** in session 180430 (an NPC bail, two posts, `board_scrapes` 62–68 ms later).
 - Local player byte-identical (e2e bench, all sets).
+
+## Code reference: player/hand_grabs.rs
+
+Detail moved out of the code comments of `crates/skate-audio/src/player/hand_grabs.rs`; each comment there links its section here.
+
+### HandGrabs skitch audio
+
+The HandGrabs component's skitch part (`sub_824EC3E0` -> `sub_824EC488`). Retail (TU3, evidence only; re-implemented; `.local/research/audio/b141-skitch-audio.md`, main read the packer, bridge and reader):
+- the packer `sub_827A1B78` sets record `+152` bit `0x100` while the physical state is 104 (Skitching, `0x827A29EC`); the bridge `sub_824B0DA8` copies it to audio state `+744` ([`AudioState::skitching`]);
+- the component updates only for the local player; on the rising edge of `+744` it releases its two voices and starts the `aud_splicer` `handgrab` pair (field `3A6CB8809410A268` Skate_Collisions, `04B0B78035ED5EC6` Skate_Metal) through the eEQChain bus of field `CCDFABBAEEA33EAE`, start block `[0, 1, 0, dt, 1, 1]`; the falling edge only clears the latch (the one-shots run out);
+- MixMap `HandGrabs.in0` is 32767 while the latch is set, else 0 (the MixMap's own player fades the board's volume by it).
+
+## Code reference: player/contacts.rs (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-audio/src/player/contacts.rs`; each comment there links its section here.
+
+### Audio posting points
+
+Retail's posting points per poster (the instance bridge `sub_824B0DA8` fills audio state `+48` from the skater record's `+0` = our `com_position`, `+144` from `+48` = our `board_position`): the body poster `sub_824BC188` (`lvx128` r18 = 48) and the grind start `sub_824BB0E0` (`li r5, 48`) post at the skater; the deck impact `sub_824BD000` (`li r24, 144`) and the landing pair `sub_824BA630` (`li r5, 144`) at the board.
+
+## Code reference: player/rolling.rs (fork additions)
+
+Detail moved out of the fork-added code comments of `crates/skate-audio/src/player/rolling.rs`; each comment there links its section here.
+
+### Rolling routing parity test
+
+Retail parity for every audio surface tag 0..127, hard and soft wheels: tag → material (tag − 1, 0 → 143) → rolling surface (`sub_824C82A8` + `sub_82494CD8`, the AudioSurfaceMap word +4) → what the owner's routing `sub_824C5CA8` starts: a grain bind of `sub_824C8370`'s member (kind 1) with no Class_rolling patch, or the per-surface Class_rolling patch (`sub_824C4C18`, selector by the `+1488` switch: 7→1, 8→2, 10→10, 11→12, 12→11, 13→9, w6 = the surface) with **no grain**. Run on both the install-table route ([`surface_for`] with a table) and the no-table default ([`retail_surface`]).
+
+## Code reference: grain_bed.rs, world_audio.rs
+
+- `grain_bed.rs` surface routing (one sounding truck): the wheels' majority surface -> rolling surface
+  (`surface_of_tag`, the retail AudioSurfaceMap) -> grain member (`bound_for`: none on the Class_rolling surfaces 7, 8,
+  10..13, as `sub_824C5CA8`); a change stops both players and binds the new member (pulsing SkateBoard input 0);
+  grinding (surface 14) stops them.
+- `world_audio.rs` `VehicleHornState`: a vehicle's effective horn state (the bridge's hold from `VehicleHorn` /
+  `VehicleAlarm`, else the AI's `horn`) is the one value the audio host plays. The replay records it with the actor and
+  plays it back at the playhead, so a seek or rewind into a sounding alarm or horn plays it (research b409: retail keeps
+  a 4-bit horn field per vehicle entry per recorded frame).

@@ -1,17 +1,5 @@
-//! What a ped knows about and sees (doc 26 "Ped perception"). Retail (TU3, evidence only;
-//! re-implemented; `.local/research/peds/b17-chase-rest-lost.md`, `b18-ped-perception-mood-ops.md`,
-//! main checked the setup data):
-//! - the brain keeps at most 5 perception entries (`brain+624`, 80 bytes each); a new entry
-//!   (`82E42690`) evicts the oldest (largest age), starts with "just told" (flags 0x80), the
-//!   given memory, age 0 and no mood suppression;
-//! - each tick (`82E418E8`) memory counts down, age up, the suppression down; the vision test sets
-//!   "visible" (0x40) and refreshes the last position and velocity while seen; "just told" is
-//!   cleared; an entry whose target is gone, or whose memory ran out while not just told, is erased;
-//! - the vision test (`82E27240`): seen within 1 m on the ground plane and 2 m in height (touch),
-//!   or within the near range from the eye, or within the far range inside the view cone
-//!   (`dot(dir, forward) > |cos(fov)|`) with a clear line of sight. Near / far = the mood event
-//!   category `chasedpersondetectibilitytest` (20 / 30 m) times the ped type's perception scales
-//!   (`D036` / `D238`, pedestrians 1.0); fov = `7435` (120 deg).
+//! What a ped knows about and sees: perception entries (82E42690, 82E418E8) and the vision test 82E27240.
+//! Retail rules (b17, b18): docs/hails-additions/26g-living-world-ped-interactions.md#ped-perception
 
 use super::super::Vec3;
 

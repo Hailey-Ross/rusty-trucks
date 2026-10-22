@@ -263,10 +263,7 @@ pub(super) fn advance(
     //World8275ECA4 ends skeleton tests after state/forces and before solving.
     //Teleport resets previous observations, but preserves this pending batch.
     skeleton_queries.publish(&mut skater.player_input.player);
-    // Prop grab/place (Phases 3-4): grab held on the retail GrabWorld button
-    // (RB), placement on a B rising edge, from the derived controller; right
-    // stick and DPad levels from the sampled gameplay actions. A is sprint
-    // and must not grab; see prop_carry.
+    // Prop grab on held GrabWorld (RB), placement on B; A is sprint and must not grab (see prop_carry).
     let carry_tick = super::prop_carry::Tick::from_controller(
         controls.controller.words(),
         physics.prop_carry.buttons(),

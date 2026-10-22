@@ -1,18 +1,5 @@
-//! Skitching (physical state 104, held to a car's grab spline): the tow / ride-height spring
-//! (`sub_82D4B500`, board force tag 6). Retail (TU3, evidence only; re-implemented;
-//! `.local/research/npc/b27-skitch-state.md`, main checked the vault keys and the constants):
-//! a velocity-target spring along the hold axis `n` (state+784), not a position pin:
-//! ```text
-//! cd    = clamp(n . state+624, 0.5, 1.0)
-//! pred  = state+848 + state+852 + dt * (2 * state+832 - p+2612)
-//! z     = body height (negated when p+2476 bit 2 is set)
-//! err   = pred - (p+2820 - z + offset)        offset: 0.1 (sub-mode 2: a second key, 0.1)
-//! v     = curve(err)                          vault PointGraph, -20 .. +4 m/s
-//! dv    = (v - damping * (-state+856)) / cd   damping 0.2
-//! F     = n * dv * mass / dt, length-clamped to 500
-//! ```
-//! The state fields (+624, +832, +848, +852, +856) come from the skitch frame step `sub_82D48148`
-//! ([`frame`]); this module keeps the spring formula with named inputs.
+//! Skitching (state 104): the tow / ride-height spring 82D4B500 (board force tag 6), a velocity-target spring.
+//! Formula and inputs: docs/hails-additions/26h-living-world-traffic.md#skitch-spring
 
 use crate::point_graph::PointGraph;
 
@@ -125,15 +112,7 @@ pub struct SkitchModeWrites<'a> {
     pub pushed: &'a mut f32,
 }
 
-/// `82D49AB8` before its hold step (`82D49D70`), after the shimmy chain (TU3 call order in the state update:
-/// `82D49580`, `82D48C98`, `82D49AB8`). Retail (evidence only; re-implemented; main read the switch on 1324):
-/// - 0: `904 = clamp(864, -928, 928)`;
-/// - 1: both hands grip again (`1328 = 1332 = 0`) every tick;
-/// - 2: the edge point `e = +-932` (sign of 836, + only for 836 > 0) latches into 900 once (1344 bit 0x02), a
-///   snapped hand (bit 0x01) takes it as 864; 960 counts while the car's along acceleration 868 pushes outward past
-///   50 (both 868 and 836 non-zero, same sign), else 0; the hand on the outer side lets go (836 > 0: hand A off,
-///   B on; else A on, B off);
-/// - 3: the same latch with `e = +-(928 + 0.8)`, both hands off.
+/// 82D49AB8 sub-mode writes before the hold step 82D49D70 (switch on 1324): docs/hails-additions/26h-living-world-traffic.md#skitch-sub-mode-writes
 pub fn mode_writes(mode: u8, along: f32, half_length: f32, along_limit: f32, car_accel: f32, w: SkitchModeWrites, s: &SkitchSubModeSettings, dt: f32) {
     let sign = if along > 0.0 { 1.0 } else { -1.0 };
     let latch = |e: f32, w: &mut SkitchModeWrites| {

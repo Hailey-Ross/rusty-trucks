@@ -1,10 +1,5 @@
-//! Retail's analog steer of an AI skater on the ground (research `.local/research/npc/b121-ai-ground-steer.md`):
-//! `sub_8246AA00` turns the skater's heading against its line into the error `pc+824`, and `sub_82471070` writes it
-//! as stick input to `Turn`, `BodySpin` and `KickTurn`. It runs on and off the path: off the path (beyond 0.4 m) it
-//! aims from the far look-ahead point toward the near one, all near from 3 m, which turns a skater back to its line
-//! while the steering record carries no target (`sub_8246DB50`).
-//!
-//! Pure and deterministic. Retail constants are the tuning defaults (data, a mod may change them).
+//! Retail analog steer of an AI skater on the ground (b121; 8246AA00 -> 82471070). Pure; tuning is data.
+//! Details: docs/hails-additions/26e-living-world-skater-ai.md#ai-ground-steer
 
 use super::Vec3;
 

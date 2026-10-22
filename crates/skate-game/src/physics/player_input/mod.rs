@@ -10,7 +10,7 @@ mod reset;
 mod services;
 use super::{ground_runtime::GroundRuntime, riding_outputs::RidingOutputs};
 pub(crate) use output_reset::reset_outputs;
-pub(crate) use services::{InputHostFrame, PlayerInputCallbacks};
+pub(crate) use services::{ArrivalSolids, InputHostFrame, PlayerInputCallbacks};
 use skate_core::{
     math::Vector3,
     physics::{
@@ -46,10 +46,7 @@ pub(crate) struct PlayerInputRuntime {
     pub grind_observation: Option<super::grind::ManagerObservation>,
 }
 impl PlayerInputRuntime {
-    /// A pooled NPC body becoming a new NPC: retail builds a new PhysicalPlayer for every new actor
-    /// (`82590DC0` -> `82DB18A0`, b295), so every ctor-built part starts fresh (processed-input cache, grind input,
-    /// pre-input, dynamic normal). The physical / processed words mirror the live state and stay for the placement's
-    /// state Exit / Enter (b299). The same actor keeps all of it across a respawn or its next line: pool only.
+    /// A pooled NPC body becoming a new NPC starts its ctor-built parts fresh (82590DC0 -> 82DB18A0, b295 / b299).
     pub(crate) fn reset_for_new_actor(&mut self, data: &Collections) -> Result<(), String> {
         let fresh = Self::load(data)?;
         let old = std::mem::replace(self, fresh);
@@ -171,6 +168,7 @@ impl PlayerInputRuntime {
         stage: InputStage,
         world: &skate_core::physics::board_world::BoardWorld,
         world_edges: crate::grind_world::RailView<'_>,
+        arrival: services::ArrivalSolids<'_>,
     ) -> Result<Option<input_phase::InputContinuation>, String> {
         let mut service = services::Services {
             board,
@@ -187,6 +185,7 @@ impl PlayerInputRuntime {
             pending_teleport: &mut self.pending_teleport,
             pending_velocity: &mut self.pending_velocity,
             pending_ground_fit: &mut self.pending_ground_fit,
+            arrival,
         };
         match stage {
             InputStage::ThroughTeleport => input_phase::start_input(

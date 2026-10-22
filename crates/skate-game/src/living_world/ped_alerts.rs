@@ -1,13 +1,5 @@
-//! The alert over a ped that warns (yellow) or chases (red) the player: retail's "ChaseArrow" HUD (b191, doc 26g).
-//!
-//! Engine-facing: [`PedAlerts`] (settings with retail defaults, the list, the textures). The states come from the
-//! peds' `SendChaseStateMessage` (`PedEvent::Chase` kinds `state_*`, player targets only). Mod-facing:
-//! `sdk.ui.chase_alerts(enabled)` hides or shows them (released when the mod stops); mods also see the same
-//! `ped_chase` events. Textures: retail's `arrow_warn` / `arrow_chase` / `arrow_tired` / `arrow_giveup`
-//! (`private/hud/chase-arrows`, setup's `prepare_chase_arrows.py`).
-//!
-//! Placement over the head: retail anchors on the translation of the ped matrix its vfn 0x28 returns (not decoded,
-//! b191 open 1); the user saw the alert over the ped's head, so ours anchors `anchor_height` m above the ped's root.
+//! The alert over a warning (yellow) or chasing (red) ped: retail's ChaseArrow HUD (b191); mods: `sdk.ui.chase_alerts`.
+//! Details: docs/hails-additions/26g-living-world-ped-interactions.md#chase-alerts
 use super::peds::{PedBody, PedEvent, Pedestrian, PLAYER_TARGET_BASE};
 use bevy::{
     asset::RenderAssetUsages,

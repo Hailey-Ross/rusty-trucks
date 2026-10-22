@@ -1,34 +1,5 @@
-//! Which trick an NPC skater does at a recorded trick slot (doc 26, "NPC skater trick choice").
-//!
-//! Retail (TU3, evidence only; re-implemented, nothing copied): the PathController's dispatcher
-//! `sub_8246A2E0` runs on every start-trick node (event 1) the skater passes. Ollie and flip slots
-//! (table820862A8 category 1 / 2) go to `sub_8246A080`; every other category (grinds, grabs,
-//! manuals, slides, reverts, plants) does the recorded trick.
-//! - A higher chain level (heelflip2 and up) takes no action: the base trick already running
-//!   covers it.
-//! - Behaviour mode (behaviour context +60): 0 = the recorded trick (`sub_82469FA8` walks the
-//!   chain within 120 frames but only ever keeps the recorded id: it assigns each matched node's
-//!   previous level, which is the id it already has); 1 = the default (`sub_824733A0` creates the
-//!   ambient behaviour with it): when the gate passes, a weighted pick from the character's
-//!   profile table, else the recorded trick; 2 = a scripted list (not ported yet); 3 and up = no
-//!   trick.
-//! - Gate `sub_82469C60`: walk forward from the slot summing the nodes' frames until 300; a start
-//!   node first passes only when it is an ollie / flip whose previous level is the recorded trick;
-//!   a landing (airborne seen, then a node without it) passes only when the next node is not a
-//!   start node and more than 50 frames passed (the landing node's frames included); the end of
-//!   the window or the line passes.
-//! - Pick `sub_82469A28` -> `sub_8245FE58`: the nollie table (profile +8) when the recorded
-//!   trick's name starts with `n` / `N` (`sub_82469048`), else the regular table (profile +0);
-//!   `u = rand32 / 2^32`; walk the weights (normalised to sum 1 at load, `sub_824720C8`) and take
-//!   the first entry with `u < sum`, else entry 0.
-//!
-//! Not retail yet / determinism choice: retail draws `rand32` from the skater's random source
-//! (skater vfunc +36) in tick order. Here the draw is `derive(seed, [line, node, frame])`: the same
-//! distribution, but a pure function of the NPC's seed and the slot, so the choice does not depend
-//! on how many other draws came first and a client could check it. `sub_82469A28` also keeps the
-//! recorded trick when its trick attribute record has no family entries; the per-category lists are
-//! built from every record (`sub_82DA1BF0`) and all 105 ollie / flip ids have one, so the check
-//! always passes [code + data, research b187].
+//! Which trick an NPC skater does at a recorded trick slot (dispatcher 8246A2E0, gate 82469C60, pick 82469A28).
+//! Retail mechanism and our determinism choice: docs/hails-additions/26e-living-world-skater-ai.md#npc-trick-choice
 
 use crate::scoring::catalog;
 

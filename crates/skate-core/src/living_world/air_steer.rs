@@ -1,10 +1,5 @@
-//! Retail's analog steer of an AI skater in the air (research `.local/research/npc/b123-ai-air-steer.md`):
-//! `sub_8246ACF0`'s airborne arm `sub_8246B358` turns the character toward the recorded skater forward at the near
-//! look-ahead (`pc+208`, turned 180 degrees when the takeoff latch `pc+927` is set), and `sub_82471188` writes the
-//! error as stick input to `Turn`, `BodySpin` and `KickTurn` outside a dead zone. The latch (`sub_8246A700`) is set
-//! on the takeoff edge when the character faces against the current node's recorded skater forward.
-//!
-//! Pure and deterministic. Retail tunables are the defaults (data, a mod may change them).
+//! Retail analog steer of an AI skater in the air (b123; 8246B358 -> 82471188, latch 8246A700). Pure; data.
+//! Details: docs/hails-additions/26e-living-world-skater-ai.md#ai-air-steer
 
 use super::replay::{decode_orientation, retail, rotate, slerp, ReplayLine};
 use super::Vec3;
