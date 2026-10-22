@@ -12,7 +12,7 @@ fn a_pending_request_cannot_be_replaced_by_another_menu_action() {
 
 #[test]
 fn a_failed_change_reloads_the_live_map_once() {
-    let live = || Entry { label: "DownTown".into(), path: Some("maps/DownTown.skate".into()) };
+    let live = || Some(Entry { label: "DownTown".into(), path: Some("maps/DownTown.skate".into()) });
     let mut restoring = None;
     let reload = after_failure(&mut restoring, live(), "University", "bad block".into()).unwrap();
     assert_eq!(reload.label, "DownTown");
@@ -21,6 +21,15 @@ fn a_failed_change_reloads_the_live_map_once() {
     // Reloading the live map failed as well: nothing is left to go back to.
     let message = after_failure(&mut restoring, live(), "DownTown", "also bad".into()).unwrap_err();
     assert_eq!(message, "Could not load University: bad block\nReloading DownTown failed too: also bad");
+    assert!(restoring.is_none());
+}
+
+#[test]
+fn a_failed_start_map_with_nothing_to_go_back_to_leaves_the_error() {
+    // The Switch's empty start scene: no live map, and no test world to reload instead.
+    let mut restoring = None;
+    let message = after_failure(&mut restoring, None, "DownTown", "bad block".into()).unwrap_err();
+    assert_eq!(message, "Could not load DownTown: bad block");
     assert!(restoring.is_none());
 }
 
@@ -41,7 +50,7 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     };
     let mut world = World::new();
     world.insert_resource(Config { asset_root: root.clone(), verification_capture: None,
-        map: None, map_path: None, difficulty, check_assets: false, validate_maps: false, start_paused: false, teleport: None, mute: false, multiplayer: Default::default(), map_fingerprint: crate::config::map_fingerprint(None).unwrap() });
+        map: None, map_path: None, boot_map: None, difficulty, check_assets: false, validate_maps: false, start_paused: false, teleport: None, mute: false, multiplayer: Default::default(), map_fingerprint: crate::config::map_fingerprint(None).unwrap() });
     world.insert_resource(CurrentMap::from_package(None, None));
     world.insert_resource(graphs);
     world.insert_resource(physics);
@@ -144,7 +153,7 @@ fn measure_university_to_downtown_peak() {
     let mut controls = PlayerControls::load(&root).unwrap();
     let mut world = World::new();
     world.insert_resource(Config { asset_root: root.clone(), verification_capture: None,
-        map: None, map_path: None, difficulty, check_assets: false, validate_maps: false, start_paused: false, teleport: None, mute: false, multiplayer: Default::default(), map_fingerprint: crate::config::map_fingerprint(None).unwrap() });
+        map: None, map_path: None, boot_map: None, difficulty, check_assets: false, validate_maps: false, start_paused: false, teleport: None, mute: false, multiplayer: Default::default(), map_fingerprint: crate::config::map_fingerprint(None).unwrap() });
     world.insert_resource(CurrentMap::from_package(None, None));
     world.insert_resource(graphs);
     world.insert_resource(physics);

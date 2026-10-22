@@ -139,8 +139,12 @@ pub(crate) fn publish_actions(
     debug: Res<crate::debug_cam::DebugCam>,
     camera: Res<crate::camera::CameraRuntime>,
     mods: Option<Res<crate::modding::Mods>>,
+    loading: Option<Res<crate::loading_screen::LoadingScreen>>,
 ) {
-    let blocked = !crate::graphics_menu::gameplay_active(menu) || debug.suppress_gameplay(&camera);
+    // Behind the loading screen the world runs, so its first frames render and their shaders
+    // compile (loading_screen.rs), but nothing the player presses reaches it.
+    let blocked = !crate::graphics_menu::gameplay_active(menu) || debug.suppress_gameplay(&camera)
+        || loading.is_some_and(|l| l.shown());
     if blocked {
         input.discard_gameplay();
     }

@@ -105,14 +105,20 @@ impl Plugin for MapTransitionPlugin {
 }
 
 /// `env SKATE_MAP_CHANGE=<map name>@<seconds>` (options.txt `env` line): requests a map change
-/// that many seconds after the first frame, once. The emulator harness can't reliably drive the
-/// menu with timed key presses, and a map change is the case the memory log has to catch
-/// (findings 57 §4.5). `<map name>` is a stem under the installation's `maps/`, case-insensitive.
+/// that many seconds after the first world is on screen (the loading screen first gone), once.
+/// The emulator harness can't reliably drive the menu with timed key presses, and a map change is
+/// the case the memory log has to catch (findings 57 §4.5). `<map name>` is a stem under the
+/// installation's `maps/`, case-insensitive.
 fn scheduled_map_change(
     config: Res<Config>,
     mut transition: ResMut<MapTransition>,
+    loading: Option<Res<crate::loading_screen::LoadingScreen>>,
     mut fired: Local<Option<(String, f32, std::time::Instant, bool)>>,
 ) {
+    // A request while a load runs would be dropped, and the hook fires once.
+    if transition.busy() || loading.is_some_and(|l| l.shown()) {
+        return;
+    }
     if fired.is_none() {
         let spec = std::env::var("SKATE_MAP_CHANGE").ok().filter(|s| !s.is_empty());
         *fired = spec.and_then(|spec| {
@@ -125,7 +131,7 @@ fn scheduled_map_change(
         }
     }
     // Wall clock, not Time<Virtual>: the emulator's start-up menu pauses virtual time, and
-    // the point is to fire a fixed real time after the first frame.
+    // the point is to fire a fixed real time after the world first shows.
     let Some(state) = fired.as_mut() else { return };
     if state.3 || state.2.elapsed().as_secs_f32() < state.1 {
         return;
@@ -276,7 +282,10 @@ fn poll(world: &mut World) {
 /// the menu stays open on both errors.
 fn failed(world: &mut World, label: &str, error: String) -> Phase {
     let live = Entry { label: world.resource::<CurrentMap>().name.clone(), path: world.resource::<Config>().map_path.clone() };
-    let outcome = after_failure(&mut world.resource_mut::<MapTransition>().restoring, live, label, error);
+    // With no map loaded yet (the Switch's empty start scene) the live "map" is the test world,
+    // which that build doesn't have.
+    let restorable = live.path.is_some() || crate::map_library::TEST_WORLD_AVAILABLE;
+    let outcome = after_failure(&mut world.resource_mut::<MapTransition>().restoring, restorable.then_some(live), label, error);
     match outcome {
         Ok(live) => {
             warn!("MAP_TRANSITION_FAILED {}; reloading {}",
@@ -293,14 +302,16 @@ fn failed(world: &mut World, label: &str, error: String) -> Phase {
 }
 
 /// The map to reload after loading `label` failed (`live`, once), or, when that
-/// reload is what failed, the message to leave the menu on.
-fn after_failure(restoring: &mut Option<String>, live: Entry, label: &str, error: String) -> Result<Entry, String> {
-    match restoring.take() {
-        None => {
+/// reload is what failed or there is no live map to reload, the message to leave
+/// the menu on.
+fn after_failure(restoring: &mut Option<String>, live: Option<Entry>, label: &str, error: String) -> Result<Entry, String> {
+    match (restoring.take(), live) {
+        (None, Some(live)) => {
             *restoring = Some(format!("Could not load {label}: {error}"));
             Ok(live)
         }
-        Some(failure) => Err(format!("{failure}\nReloading {label} failed too: {error}")),
+        (None, None) => Err(format!("Could not load {label}: {error}")),
+        (Some(failure), _) => Err(format!("{failure}\nReloading {label} failed too: {error}")),
     }
 }
 

@@ -1,12 +1,22 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
+/// Whether the start map is read by the map loader after the game has started, with the
+/// loading screen up, rather than before the window exists. On the Switch a city's read, physics
+/// and scene build left the screen black for about 46 s (findings 59); elsewhere the start
+/// stays as it was, which `--verify` captures and `--teleport` rely on.
+pub(crate) const LOAD_START_MAP_IN_BACKGROUND: bool = cfg!(target_os = "horizon");
+
 #[derive(Resource)]
 pub(crate) struct Config {
     pub asset_root: PathBuf,
     pub verification_capture: Option<PathBuf>,
     pub map: Option<skate_data::skate_map::SkateMap>,
     pub map_path: Option<PathBuf>,
+    /// The start map when the map loader reads it after the game has started, behind the loading
+    /// screen (`world::spawn` requests it), not before the window exists: `map` and `map_path`
+    /// stay `None` until it is committed. See [`LOAD_START_MAP_IN_BACKGROUND`].
+    pub boot_map: Option<PathBuf>,
     pub difficulty: crate::difficulty::Difficulty,
     pub check_assets: bool,
     /// `--validate-maps`: validate map paths read from stdin (see map_validation).
@@ -26,6 +36,7 @@ impl Config {
             verification_capture: None,
             map: None,
             map_path: None,
+            boot_map: None,
             difficulty: crate::difficulty::Difficulty::default(),
             check_assets: false,
             validate_maps: false,
@@ -123,10 +134,14 @@ impl Config {
         }
         if !explicit_map {
             if let Some(path) = crate::map_library::start_map(&config.asset_root)? {
-                let (map, fingerprint) = skate_data::skate_map::SkateMap::load_with_fingerprint(&path)?;
-                config.map = Some(map);
-                config.map_path = Some(path.canonicalize().map_err(|e| e.to_string())?);
-                loaded_fingerprint = Some(fingerprint);
+                if LOAD_START_MAP_IN_BACKGROUND {
+                    config.boot_map = Some(path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?);
+                } else {
+                    let (map, fingerprint) = skate_data::skate_map::SkateMap::load_with_fingerprint(&path)?;
+                    config.map = Some(map);
+                    config.map_path = Some(path.canonicalize().map_err(|e| e.to_string())?);
+                    loaded_fingerprint = Some(fingerprint);
+                }
             }
         }
         if config.validate_maps && (config.map.is_some() || config.check_assets) {

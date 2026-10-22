@@ -360,7 +360,9 @@ fn setup(
         });
     });
     commands.insert_resource(SceneTarget(target));
-    let selected_map = maps.iter().position(|m| m.path.as_ref() == config.map_path.as_ref()).unwrap_or(0);
+    // The start map, also while it loads behind the loading screen (`Config::boot_map`).
+    let current = config.map_path.as_ref().or(config.boot_map.as_ref());
+    let selected_map = maps.iter().position(|m| m.path.as_ref() == current).unwrap_or(0);
     if config.start_paused { time.pause(); }
     commands.insert_resource(Menu {
         open: config.start_paused,

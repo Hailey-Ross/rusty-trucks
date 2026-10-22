@@ -61,6 +61,7 @@ mod prepass_order;
 mod grind_world;
 mod skate_world;
 mod map_validation;
+mod loading_screen;
 mod water_splash;
 mod game_audio;
 pub(crate) mod world_audio;
