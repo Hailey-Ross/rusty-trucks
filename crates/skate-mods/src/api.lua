@@ -569,7 +569,8 @@ end
 function sdk.triggers.box(key, options) submit{kind="trigger_box",key=key,options=options} end
 function sdk.triggers.remove(key) submit{kind="trigger_remove",key=key} end
 -- A teleporter (doc 38 "Teleporters"): {volume=<volume id or own box key>, exits={{position={x,y,z}, heading=<rad>,
--- map=<map name>?}, ...}, title=<prompt text>?}; nil options remove it. Events: {name="teleporter_used",
+-- map=<map name>?, world=<world row>?}, ...}, title=<prompt text>?, indicator=<ribbon_indicator key>?,
+-- indicator_position={x,y,z}?}; nil options remove it. Events: {name="teleporter_used",
 -- teleporter=<id>, exit=<1-based index>, body="player"}.
 function sdk.triggers.set_enabled(id, enabled) submit{kind="trigger_enable",id=id,enabled=enabled ~= false} end
 local function non_empty(t) if type(t) == "table" and next(t) ~= nil then return t end return nil end

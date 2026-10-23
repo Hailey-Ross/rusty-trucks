@@ -143,12 +143,23 @@ pub(super) fn set_teleporter(world: &mut World, owner: &str, key: String, option
         // Rows: right, up, forward (sin h, 0, cos h), position (as setup's locator matrices).
         let (s, c) = e.heading.sin_cos();
         crate::teleporters::Exit { map: e.map.clone().unwrap_or_else(|| map.clone()), locator: String::new(),
-            matrix: [[c, 0., -s, 0.], [0., 1., 0., 0.], [s, 0., c, 0.], [e.position[0], e.position[1], e.position[2], 1.]] }
+            matrix: [[c, 0., -s, 0.], [0., 1., 0., 0.], [s, 0., c, 0.], [e.position[0], e.position[1], e.position[2], 1.]],
+            world: e.world.clone() }
     }).collect();
+    // The icon: a `ribbon_indicator` key, upright at the mod's point or the volume's centre.
+    let indicator = options.indicator.clone().map(|key| {
+        let at = options.indicator_position.or_else(|| volumes_center(world, &volume)).unwrap_or_default();
+        crate::visual_indicators::Placement { key, locator: String::new(),
+            matrix: [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [at[0], at[1], at[2], 1.]] }
+    });
     let teleporter = crate::teleporters::Teleporter { id: key, map, volume_id: volume, volume: None, title_id: None,
-        title: options.title, exits, layout: None };
+        title: options.title, exits, layout: None, indicator };
     world.resource_mut::<crate::teleporters::Teleporters>().mods.insert(slot, teleporter);
     Ok(())
+}
+
+fn volumes_center(world: &World, id: &str) -> Option<[f32; 3]> {
+    world.resource::<TriggerVolumes>().get(id).map(|v| v.shape.center)
 }
 
 pub(super) fn remove_box(world: &mut World, owner: &str, key: &str) {

@@ -70,6 +70,9 @@ pub struct TeleporterExit {
     pub heading: f32,
     #[serde(default)]
     pub map: Option<String>,
+    /// A skate.Park world row on that map (`dist_megapark_full`): the map loads with its layout.
+    #[serde(default)]
+    pub world: Option<String>,
 }
 
 /// `sdk.triggers.teleporter`: a teleporter like retail's (doc 38 "Teleporters"): entering `volume` (a map volume id
@@ -82,6 +85,12 @@ pub struct TeleporterOptions {
     pub exits: Vec<TeleporterExit>,
     #[serde(default)]
     pub title: Option<String>,
+    /// A `ribbon_indicator` key (`teleport`) for the floating icon; none without it.
+    #[serde(default)]
+    pub indicator: Option<String>,
+    /// Where the icon's anchor sits (default: the volume's centre).
+    #[serde(default)]
+    pub indicator_position: Option<[f32; 3]>,
 }
 
 impl TeleporterOptions {
@@ -91,6 +100,8 @@ impl TeleporterOptions {
             && self.exits.iter().all(|e| e.position.iter().all(|v| v.is_finite() && v.abs() <= 100_000.)
                 && e.heading.is_finite() && e.map.as_deref().is_none_or(crate::schema::valid_id))
             && self.title.as_ref().is_none_or(|t| t.len() <= 128 && !t.chars().any(char::is_control))
+            && self.indicator.as_ref().is_none_or(|k| !k.is_empty() && k.len() <= 64 && !k.chars().any(char::is_control))
+            && self.indicator_position.is_none_or(|p| p.iter().all(|v| v.is_finite() && v.abs() <= 100_000.))
     }
 }
 

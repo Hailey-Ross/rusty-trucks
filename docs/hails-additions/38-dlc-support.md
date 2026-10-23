@@ -536,3 +536,56 @@ The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, 
   (folder still present) is not handled; carried collection rows and unlocks are per pack, not per map.
 - **Tests:** `tools/asset_pipeline/test_retained.py` (kept maps, every file kind, the new run wins, idempotent).
   Python asset tests 274 pass. Not refresh-tested with the folder hidden.
+
+## Teleporters into skate.Park worlds load the world's layout
+
+(2026-10-22, USER-ASKS 264, research b532)
+
+- **Report (user):** "found the prompt for entering the stadium from the university map, its missing its floating icon
+  ingame that shows the volume location. it currently loads the wrong skate.park, as the right one is the stadium -
+  full version".
+- **Retail [data, b532]:** each teleporter's exit record names its target `world` row; `tele_world_to_stadium` names
+  `dist_megapark_full` (Stadium - Full). Also `tele_dwtn_to_dwtnskpk` -> `dist_downtownpark_full`, `tele_indu_to_teamhq`
+  -> `dist_industrialpark_full`, `tele_world_to_prog_park` / `tele_world_to_train_park` -> `dist_startpark_progression`;
+  every other exit names a world without a layout.
+- **Ours before:** setup (`teleporters.py`) kept only the world's stream, so these five exits loaded the plain map.
+- **Change:** setup writes `exits[].world` (the row key); `teleporters.rs` `apply` loads the map as that world through
+  `park_layout::layout_for` (as the Challenge Map's `plan`) and moves in place only when map and layout both match;
+  `SKATE_TELEPORTER` logs `world=` / `layout=`. Mods: an optional `world` per exit on `sdk.triggers.teleporter`
+  (`sdk/ENGINE_API.md`). Needs a refresh (setup's teleporters step) to reach an install.
+- **Floating icon:** see [Teleporter markers](#teleporter-markers) below.
+
+## Teleporter markers
+
+(2026-10-22, USER-ASKS 264 / 266, research b532 / b533)
+
+- **Retail [code + data]:** the challenge system's refresh (`82D53F70`) registers one visual indicator per active
+  challenge (`82D4F0B0`, one entry per locator; an existing entry is kept). Its key is the bank field
+  `0x284B07325D587CC4` (read at `82D5424C`; the `teleports` group row gives `teleport`, every `tele_*` row inherits
+  it), its anchor the full matrix of the challenge's own locator, bank field `0xF1C6D5FA4A23951E`
+  (`tele_world_to_stadium` -> `tele_world_to_stadium_origin_locator_01`), not the trigger volume. The `ribbon_indicator`
+  row `teleport` gives Offset (0, 1, 0) and, through `ribbon_spline` `teleport`, spline id 0x0001DA7E03E38707. The
+  draw list keeps enabled entries within 400 m of the query point (`82D4F8A8`, constant 0x820C6AF0 = 400.0). The Lua
+  side names the indicator group kinds (`82D4FBF0`): None, Obstacle, RaceNextGate, RaceGates, RaceFinish,
+  SpotNextGates, SpotGates, SpotFinish, ChallengeBoundary, FollowMeTarget, Teleporter, PinchPoint.
+- **The model [data]:** `visual_indicators_sk82.rx2` object type 0x00EB0021 (VISUALINDICATORDATA) holds 50 splines
+  (header: count, total segments, table offset, segment offset; 64-byte entries: name hash, spline id, bounds, kind,
+  segment count, offset; 64-byte segments, each a 4x4 power-basis cubic in the x / y plane). `teleport` is 46
+  segments, a glyph about 1.0 x 1.57 units, drawn as a ribbon. The arena's three plain meshes (`placeholderGeo`,
+  `sg_front`, a box) are not it.
+- **Change:** setup `visual_indicators.py` writes `assets/private/visual-indicators.json` (the splines and the 72
+  `ribbon_indicator` rows with offset, spline, enabled flag and style row, inheritance resolved); `teleporters.py`
+  adds `indicator` {key, locator, matrix} per teleporter through the bank row's parent chain (all 16 disc teleporters
+  resolve). Engine `visual_indicators.rs` builds a ribbon mesh per spline and keeps one icon per anchor locator for
+  the armed teleporters (map, layout and mod changes respawn them), at anchor + Offset in the anchor's frame (the
+  layout loader `827AB790` applies Offset that way; the challenge path is inferred to match), hidden beyond 400 m.
+  `SKATE_VISUAL_INDICATORS map= shown=` logs each respawn.
+- **Not retail yet (ours, constants in `visual_indicators.rs`):** the ribbon width (0.06 m), colour (yellow), samples
+  per segment, and the icon turning about the vertical to face the camera. Retail's draw goes through an interface
+  at manager+0x2234 whose implementation (and with it any spin, pulse, trace-in animation, the `visualindicators`
+  style floats and the textures in `visual_indicators_sk82_Textures.rx2`) is not read yet; next Ghidra step: that
+  interface's vtable and the 300-slot pool `82D5D2B8` feeds.
+- **Mods:** `indicator="<ribbon_indicator key>"` and `indicator_position={x,y,z}` on `sdk.triggers.teleporter`
+  (`sdk/ENGINE_API.md`); the icon goes with the teleporter.
+- **Tests:** `test_visual_indicators.py` (spline layout, the bank chain), `visual_indicators.rs` tests (one icon per
+  locator, Offset in the anchor frame, ribbon geometry).

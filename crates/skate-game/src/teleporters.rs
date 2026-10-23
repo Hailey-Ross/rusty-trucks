@@ -13,6 +13,9 @@ pub(crate) struct Exit {
     pub map: String,
     pub locator: String,
     pub matrix: [[f32; 4]; 4],
+    /// The exit's world row (`dist_megapark_full`): a skate.Park world loads its layout (research b532).
+    #[serde(default)]
+    pub world: Option<String>,
 }
 
 /// One teleporter as setup wrote it (or a mod added it).
@@ -35,6 +38,9 @@ pub(crate) struct Teleporter {
     /// with that layout (park_layout.rs).
     #[serde(default)]
     pub layout: Option<String>,
+    /// The floating icon: its `ribbon_indicator` key and anchor (visual_indicators.rs, research b533).
+    #[serde(default)]
+    pub indicator: Option<crate::visual_indicators::Placement>,
 }
 
 #[derive(Deserialize)]
@@ -246,7 +252,6 @@ fn prompt(
     for e in exited.read().filter(|e| e.body == crate::trigger_volumes::PLAYER) {
         if teleporters.by_volume(path.as_deref(), &e.volume).map(|t| t.id.clone()) == teleporters.inside {
             teleporters.inside = None;
-    teleporters.layout = map.layout.clone();
         }
     }
     for e in entered.read().filter(|e| e.body == crate::trigger_volumes::PLAYER) {
@@ -327,9 +332,12 @@ fn apply(
         let on_board = true;
         let request = crate::challenge_map::TeleportRequest { destination: t.id.clone(), map: exit.map.clone(),
             transform: exit.matrix, on_board, session_marker: false };
-        info!("SKATE_TELEPORTER {} exit={} map={} locator={}", t.id, event.exit, exit.map, exit.locator);
+        // A skate.Park world on the exit's map loads with its layout, as the Challenge Map does (challenge_map::plan).
+        let worlds = crate::park_layout::worlds(&config.asset_root);
+        let layout = crate::park_layout::layout_for(&worlds, exit.world.as_deref(), &exit.map);
+        info!("SKATE_TELEPORTER {} exit={} map={} world={:?} layout={:?} locator={}", t.id, event.exit, exit.map, exit.world, layout, exit.locator);
         queue.push(event.clone());
-        if current.path.as_deref().is_some_and(|p| crate::teleport_menu::same_map(p, &exit.map)) {
+        if current.path.as_deref().is_some_and(|p| crate::teleport_menu::same_map(p, &exit.map)) && layout == current.layout.as_deref() {
             if let Err(e) = skater.travel_ex(exit.matrix, None, on_board) {
                 warn!("SKATE_TELEPORTER {} failed: {e}", t.id);
             }
@@ -344,7 +352,8 @@ fn apply(
             warn!("SKATE_TELEPORTER {} refused: no map switch in multiplayer", t.id);
             continue;
         }
-        travel.start((request, Some(entry.clone())), current.path.clone(), &mut transition);
+        let entry = crate::map_library::Entry { world: layout.and(exit.world.clone()), ..entry.clone() };
+        travel.start((request, Some(entry)), current.path.clone(), &mut transition);
     }
     teleporters.mod_queue.extend(queue);
 }
@@ -358,7 +367,7 @@ mod tests {
         m[3] = [1.0, 2.0, 3.0, 1.0];
         Teleporter { id: "tele_world_to_stadium".into(), map: "University".into(), volume_id: "2c701706002605aa".into(),
             volume: None, title_id: Some("ID_TELE_WORLD_TO_STADIUM_PARK".into()), title: Some("Enter Stadium \u{a9}Park".into()),
-            exits: (0..exits).map(|i| Exit { map: "MegaPark".into(), locator: format!("dest_{i}"), matrix: m }).collect(), layout: None }
+            exits: (0..exits).map(|i| Exit { map: "MegaPark".into(), locator: format!("dest_{i}"), matrix: m, world: None }).collect(), layout: None, indicator: None }
     }
 
     #[test]
