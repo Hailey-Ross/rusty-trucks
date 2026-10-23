@@ -114,7 +114,8 @@ pub struct CensusKindConfig {
     /// vehicles: no (`sub_826B7760`) [code].
     pub spawn_in_zombie: bool,
     /// Culled whatever the distance while the zombie cheat is on: vehicles yes (the cull `sub_826BAAB8` despawns a
-    /// car beyond the cull radius OR when the zombie query is true) [code]; peds no.
+    /// car beyond the cull radius OR when the zombie query is true) [code]; peds no. Also whether the Free Play mass
+    /// cull at density 0 runs in zombie mode (`sub_826B7010` guards only the ped clear, b551).
     pub cull_in_zombie: bool,
 }
 
