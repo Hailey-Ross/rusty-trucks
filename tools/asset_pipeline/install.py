@@ -637,6 +637,8 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 from .teleporters import export as write_teleporters
                 bigs=dlc_packages.extract_bigs(dlc_folder,work/'dlc',lambda paths:any(p.lower().startswith(('data/db/challenge','data/content/missions/')) for p in paths)) if dlc_jobs else []
                 write_teleporters(game_root,converted,dlc_vaults,bigs,work/'teleporters',stage/'assets/private/teleporters.json',text if named else None,report)
+                # A success clears an older failure's note (it was copied forward and reported again at every refresh).
+                (private/'map-status'/'teleporters-availability.json').unlink(missing_ok=True)
             except CONTENT_ERRORS as error:
                 (stage/'assets/private/teleporters.json').unlink(missing_ok=True)
                 note(private/'map-status'/'teleporters-availability.json','Teleporters',error,report=report)
@@ -651,6 +653,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 shutil.rmtree(stage/'assets/private/park-layouts',ignore_errors=True)
                 park_rows=Collections(merged(converted,list(dlc_vaults)))
                 write_park_layouts(sources,world_layouts(park_rows),stage/'assets/private/park-layouts',report,teleporter_roles(park_rows))
+                (private/'map-status'/'park-layouts-availability.json').unlink(missing_ok=True)
             except CONTENT_ERRORS as error:
                 shutil.rmtree(stage/'assets/private/park-layouts',ignore_errors=True)
                 note(private/'map-status'/'park-layouts-availability.json','skate.Park layouts',error,report=report)
