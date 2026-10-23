@@ -467,17 +467,17 @@ fn show(
 fn spawn_overlay(mut commands: Commands) {
     // Uses the existing UI camera; no separate render loop. Hidden until the
     // graphics menu's "Frame-time counter" row turns it on.
-    // The top-right corner holds the counter and, below it, the refresh warning; a hidden counter takes no room, so
-    // the warning then sits in its place.
+    // The top-left corner (the HUD minimap owns the top right, user 2026-10-23) holds the counter and, below it, the
+    // refresh warning; a hidden counter takes no room, so the warning then sits in its place.
     let corner = commands
         .spawn((
             Name::new("Frame-time corner"),
             Node {
                 position_type: PositionType::Absolute,
                 top: px(12),
-                right: px(12),
+                left: px(12),
                 flex_direction: FlexDirection::Column,
-                align_items: AlignItems::FlexEnd,
+                align_items: AlignItems::FlexStart,
                 row_gap: px(6),
                 ..default()
             },

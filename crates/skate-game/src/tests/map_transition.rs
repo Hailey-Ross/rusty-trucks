@@ -11,6 +11,16 @@ fn a_pending_request_cannot_be_replaced_by_another_menu_action() {
 }
 
 #[test]
+fn the_map_being_loaded_is_named_until_it_is_committed() {
+    let mut transition = MapTransition::default();
+    assert!(transition.loading().is_none());
+    transition.request(Entry { label: "next".into(), path: Some("maps/DownTown.skate".into()), world: None });
+    assert_eq!(transition.loading().and_then(|e| e.path.as_deref()), Some(std::path::Path::new("maps/DownTown.skate")));
+    transition.phase = Phase::Publishing { frames: 3, notice: String::new() };
+    assert!(transition.loading().is_none(), "committed: the audio reads the current map's beds again");
+}
+
+#[test]
 #[ignore = "requires private installed assets; CPU lifecycle only, no gameplay"]
 fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     let root = PathBuf::from(std::env::var("SKATE_TRANSITION_TEST_ASSETS").unwrap()).canonicalize().unwrap();

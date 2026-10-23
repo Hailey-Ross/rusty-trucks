@@ -425,6 +425,7 @@ impl Plugin for GameAudioPlugin {
             .add_systems(Update, (emitters::update, random_sets::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
             .add_systems(Update, voices::sync.after(CueSet))
             .add_systems(Update, timing::report)
+            .add_systems(Update, map_audio::read_ahead_next_map.before(map_audio::update))
             .add_plugins(native::register)
             .add_plugins(world_sources::register)
             .add_plugins(npc_skaters::register)
