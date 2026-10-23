@@ -123,6 +123,24 @@ def styles(collections):
     return out
 
 
+PARK_WORLD = 'Hash_0C54AD24155E3220'
+
+
+def park_maps(collections):
+    """The maps whose `world` rows set the park bool (inherited from `default_skateparks`; every row of a stream agrees,
+    research b539): the fade end is x10 there (b538)."""
+    from .teleports import label_of
+    out = set()
+    for (row_cls, key), row in collections.rows.items():
+        if row_cls != key_hash('world'):
+            continue
+        fields, _ = collections.resolve('world', key)
+        flag, stream = fields.get(key_hash(PARK_WORLD), {}).get('data'), fields.get(key_hash('WorldStream'), {}).get('data')
+        if stream and flag and int(flag[:2], 16):
+            out.add(label_of(stream))
+    return sorted(out)
+
+
 TEXTURES = 'data/content/textures/vitextures.rx2'
 COLOUR_FIELDS = dict(front='Hash_8E38A3CD0186F8DA', background='Hash_FF4DCA217E05B9BC', tint='Hash_E4F3418597AACAA5')
 
@@ -193,8 +211,8 @@ def export(game_root, collections, output, report=print):
     textures = write_textures(boot.read(entry), output.parent / 'visual-indicators',
                               {c['background'] for c in rows_colour.values()})
     output.write_text(json.dumps({'format': FORMAT, 'version': VERSION, 'splines': splines, 'indicators': rows,
-                                  'styles': found, 'colours': rows_colour,
-                                  'textures': 'visual-indicators'}), encoding='utf-8')
+                                  'styles': found, 'colours': rows_colour, 'textures': 'visual-indicators',
+                                  'park_maps': park_maps(collections), 'park_fade_scale': 10.0}), encoding='utf-8')
     missing = sorted(k for k, r in rows.items() if r['spline'] and r['spline'] not in splines)
     report(f'Visual indicators: {len(rows)} rows, {len(splines)} splines, {len(textures)} textures'
            + (f'; splines missing for {", ".join(missing)}' if missing else ''))

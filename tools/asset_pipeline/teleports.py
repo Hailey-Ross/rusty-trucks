@@ -16,6 +16,12 @@ from .environment import Collections, key_hash
 from .vlt import vault
 
 
+def label_of(district):
+    """The map label of a district stream (as asset_pipeline.dlc.map_jobs and the disc jobs name maps); the prefix
+    in any case (Zen's stream is `Dist_Zen`)."""
+    return district[5:] if district.lower().startswith('dist_') else district
+
+
 def cstring(raw, offset, limit=None):
     limit = len(raw) if limit is None else limit
     if not 0 <= offset < limit <= len(raw):
@@ -107,7 +113,7 @@ def convert(game_root, assets, converted, dlc_vaults=()):
         raw = path.read_bytes()
         stream = path.parent.name
         for record in location_records(raw):
-            record.update(map=stream.removeprefix('DIST_'), source=str(path.relative_to(game_root)),
+            record.update(map=label_of(stream), source=str(path.relative_to(game_root)),
                           source_sha256=hashlib.sha256(raw).hexdigest())
             locators.setdefault((stream.casefold(), record['locator']), []).append(record)
     for v in dlc_vaults:
@@ -187,7 +193,7 @@ def convert(game_root, assets, converted, dlc_vaults=()):
         unique = {json.dumps(m['matrix']) for m in matches}
         if len(unique) > 1:
             raise ValueError('Ambiguous authored teleport: ' + locator)
-        item = dict(id=row['key'], name=name, map=stream.removeprefix('DIST_'), world=world_keys.get(world_key),
+        item = dict(id=row['key'], name=name, map=label_of(stream), world=world_keys.get(world_key),
                     label_key=label, locator=locator, matrix=None)
         if matches:
             item.update(matches[0])

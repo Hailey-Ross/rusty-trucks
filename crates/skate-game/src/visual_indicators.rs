@@ -41,6 +41,12 @@ impl Default for Style {
 }
 
 impl Style {
+    /// In a park world only the fade's end moves out (`827B1B70` scales x3 alone, b537).
+    pub(crate) fn in_park(mut self, scale: f32) -> Self {
+        self.fade[3] *= scale;
+        self
+    }
+
     /// Opacity at `distance` from the camera (`827B1B70` fade window: graph row 1, linear, b534 / b537); 0 = hidden.
     pub(crate) fn alpha(&self, distance: f32) -> f32 {
         let [x0, x1, x2, x3] = self.fade;
@@ -86,6 +92,15 @@ struct File {
     /// Folder under `private/` holding the textures as PNGs.
     #[serde(default)]
     textures: Option<String>,
+    /// Maps whose `world` rows are park worlds (b539) and the fade end's scale there (b538, renderer +0x34786).
+    #[serde(default)]
+    park_maps: Vec<String>,
+    #[serde(default = "park_fade_scale")]
+    park_fade_scale: f32,
+}
+
+fn park_fade_scale() -> f32 {
+    10.0
 }
 
 /// A `ribbon_spline_colour` row (b535 `827AEF08`): the front and background pass textures. Its tint (E4F3) is not an
@@ -144,6 +159,8 @@ pub(crate) struct VisualIndicators {
     styles: HashMap<String, Style>,
     colours: HashMap<String, Colour>,
     textures: Option<String>,
+    park_maps: Vec<String>,
+    park_fade_scale: f32,
     meshes: HashMap<(String, String), Handle<Mesh>>,
     shown: Vec<Placement>,
 }
@@ -271,6 +288,8 @@ fn sync(
                 state.styles = file.styles;
                 state.colours = file.colours;
                 state.textures = file.textures;
+                state.park_maps = file.park_maps;
+                state.park_fade_scale = file.park_fade_scale;
             }
             Err(e) => info!("SKATE_VISUAL_INDICATORS none ({e})"),
         }
@@ -289,7 +308,10 @@ fn sync(
         let Some(spline_id) = indicator.spline.clone() else { continue };
         let billboard = state.splines.get(&spline_id).is_some_and(|s| s.kind & 1 == 1);
         let style_key = placement.style.clone().or(indicator.style.clone()).unwrap_or_default();
-        let style = state.styles.get(&style_key).cloned().unwrap_or_default();
+        let mut style = state.styles.get(&style_key).cloned().unwrap_or_default();
+        if state.park_maps.iter().any(|m| m.eq_ignore_ascii_case(&map.name)) {
+            style = style.in_park(state.park_fade_scale);
+        }
         let mesh = match state.meshes.get(&(spline_id.clone(), style_key.clone())) {
             Some(mesh) => mesh.clone(),
             None => {
@@ -455,6 +477,15 @@ mod tests {
         assert_eq!(shown.iter().filter(|&&s| s).count(), MAX_DRAWN);
         // 300 m .. 10 m: the 8 farthest (300 .. 230 m) drop out.
         assert!(!shown[8] && shown[9] && shown[30]);
+    }
+
+    #[test]
+    fn park_worlds_move_only_the_fade_end() {
+        let s = Style { width: [0.2, 0.15], samples: 10, three_strips: true, fade: [4.234_528, 13.355_05, 100.0, 100.0], intensity: [1.0, 0.7] }.in_park(10.0);
+        assert_eq!(s.fade, [4.234_528, 13.355_05, 100.0, 1000.0]);
+        assert_eq!(s.alpha(100.0), 1.0);
+        assert!((s.alpha(550.0) - 0.5).abs() < 1e-6);
+        assert_eq!(s.alpha(1000.5), 0.0);
     }
 
     #[test]

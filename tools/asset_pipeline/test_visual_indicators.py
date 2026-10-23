@@ -3,7 +3,7 @@ import unittest
 
 from .teleporters import CHALLENGE, indicator
 from .environment import Collections
-from .visual_indicators import COLOUR_FIELDS, SPLINES, STYLE_FIELDS, colours, parse_splines, styles
+from .visual_indicators import COLOUR_FIELDS, PARK_WORLD, SPLINES, STYLE_FIELDS, colours, park_maps, parse_splines, styles
 
 
 def arena(segments):
@@ -67,6 +67,14 @@ class VisualIndicatorTests(unittest.TestCase):
         found = colours(Collections({'collections': rows}))
         self.assertEqual(found['default'], dict(front='visual_indicator_blue', background='visual_indicator_bg_blue', tint=[2.0, 2.0, 2.0, 0.5]))
         self.assertEqual((found['red']['front'], found['red']['background']), ('visual_indicator_red', 'visual_indicator_bg_blue'))
+
+    def test_park_maps_come_from_the_world_rows_park_bool(self):
+        world = lambda key, parent, fields: {'class': 'world', 'key': key, 'parent': parent,
+                                             'fields': {k: {'data': v} for k, v in fields.items()}}
+        rows = [world('default_skateparks', '', {PARK_WORLD: '01'}),
+                world('dist_zenplazapark_full', 'default_skateparks', {'WorldStream': 'Dist_Zen'}),
+                world('dist_university', '', {'WorldStream': 'DIST_University', PARK_WORLD: '00'})]
+        self.assertEqual(park_maps(Collections({'collections': rows})), ['Zen'])
 
 
 if __name__ == '__main__':
