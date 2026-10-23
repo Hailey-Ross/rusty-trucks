@@ -176,7 +176,9 @@ pub(crate) fn key_from_view(row: usize, view: &Transform, root: &Transform) -> O
 }
 
 /// One console frame of the key edit controls, scaled by `dt` x the console rate (retail steps per frame, no dt).
-pub(crate) fn edit(key: &mut CameraKey, lens: &mut f32, height: &mut FreeHeight, input: CameraInput, rules: &CameraRules, dt: f32) {
+/// `root` is the skater root at the cursor: a Tripod key orbits its world eye around the look point (b550).
+pub(crate) fn edit(key: &mut CameraKey, lens: &mut f32, height: &mut FreeHeight, input: CameraInput, rules: &CameraRules,
+                   root: Option<&Transform>, dt: f32) {
     let frames = dt * rules.console_hz;
     let cap = |v: f32, c: f32| v.clamp(-c, c);
     *lens = (*lens + input.zoom * rules.lens_step * frames).clamp(rules.lens_range.0, rules.lens_range.1);
@@ -189,7 +191,22 @@ pub(crate) fn edit(key: &mut CameraKey, lens: &mut f32, height: &mut FreeHeight,
                 .clamp(rules.distance_range.0, rules.distance_range.1);
             *look_height = (*look_height + input.height * rules.look_step * frames).clamp(rules.look_range.0, rules.look_range.1);
         }
-        CameraKey::Tripod { look_height, .. } => {
+        CameraKey::Tripod { eye, look_height } => {
+            // `82C82E40` with the pivot byte set: the look point is the pivot, eye = look + v(yaw, pitch, distance) in
+            // world angles, the same caps as Follow; the lift moves the look point only (`82C80EA0` re-derives v).
+            if let Some(root) = root {
+                let look = root.translation + Vec3::Y * (rules.look_target_height + *look_height);
+                let v = *eye - look;
+                let distance = v.length().max(1e-3);
+                let mut yaw = v.x.atan2(v.z).to_degrees();
+                let mut pitch = (v.y / distance).clamp(-1.0, 1.0).asin().to_degrees();
+                yaw += cap(input.turn.x * rules.orbit_deg_per_unit, rules.orbit_deg_cap) * frames;
+                pitch = (pitch + cap(input.turn.y * rules.orbit_deg_per_unit, rules.orbit_deg_cap) * frames)
+                    .clamp(-rules.pitch_limit, rules.pitch_limit);
+                let distance = (distance - cap(input.move_.y, rules.distance_step) * frames).clamp(rules.distance_range.0, rules.distance_range.1);
+                let (yaw, pitch) = (yaw.to_radians(), pitch.to_radians());
+                *eye = look + Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()) * distance;
+            }
             *look_height = (*look_height + input.height * rules.look_step * frames).clamp(rules.look_range.0, rules.look_range.1);
         }
         CameraKey::Free { eye, yaw, pitch } => {
@@ -266,13 +283,13 @@ mod tests {
         let mut lens = 24.0;
         let rules = CameraRules::default();
         for _ in 0..30 {
-            edit(&mut key, &mut lens, &mut FreeHeight::default(), CameraInput { turn: Vec2::new(10.0, 0.0), ..default() }, &rules, 1.0 / 30.0);
+            edit(&mut key, &mut lens, &mut FreeHeight::default(), CameraInput { turn: Vec2::new(10.0, 0.0), ..default() }, &rules, None, 1.0 / 30.0);
         }
         let CameraKey::Follow { yaw, .. } = key else { panic!() };
         assert!((yaw - 90.0).abs() < 1e-3, "{yaw}");
         // Pitch stops at 85, the lens at 75 mm.
         for _ in 0..120 {
-            edit(&mut key, &mut lens, &mut FreeHeight::default(), CameraInput { turn: Vec2::new(0.0, 1.0), zoom: 1.0, ..default() }, &rules, 1.0 / 30.0);
+            edit(&mut key, &mut lens, &mut FreeHeight::default(), CameraInput { turn: Vec2::new(0.0, 1.0), zoom: 1.0, ..default() }, &rules, None, 1.0 / 30.0);
         }
         let CameraKey::Follow { pitch, .. } = key else { panic!() };
         assert_eq!((pitch, lens), (85.0, 75.0));
@@ -288,7 +305,7 @@ mod tests {
         let mut key = CameraKey::Free { eye: Vec3::ZERO, yaw: 0.0, pitch: 0.0 };
         let input = CameraInput { turn: Vec2::new(0.32, 0.0), move_: Vec2::new(0.2, 0.5), height: 1.0, zoom: 0.0 };
         for _ in 0..60 {
-            edit(&mut key, &mut lens, &mut height, input, &rules, 1.0 / 30.0);
+            edit(&mut key, &mut lens, &mut height, input, &rules, None, 1.0 / 30.0);
         }
         let CameraKey::Free { eye, yaw, .. } = key else { panic!() };
         // 32 % stick already turns at the 1.6 degree cap.
@@ -299,5 +316,26 @@ mod tests {
         assert!(eye.y > 0.0 && eye.y < 60.0 * 0.0375 + 1e-3, "{eye}");
         // Each axis moves at most 0.2 m per frame: 60 frames, 12 m along each before the turn spreads them.
         assert!(Vec2::new(eye.x, eye.z).length() <= 60.0 * 0.2 * 2f32.sqrt() + 1e-3);
+    }
+
+    /// b550: a Tripod key orbits its world eye around the look point; distance moves the eye along the sight line.
+    #[test]
+    fn tripod_orbits_its_eye_around_the_look_point() {
+        let rules = CameraRules::default();
+        let root = Transform::from_xyz(10.0, 0.0, 5.0);
+        let look = root.translation + Vec3::Y * rules.look_target_height;
+        let mut key = CameraKey::Tripod { eye: look + Vec3::new(0.0, 0.0, 4.0), look_height: 0.0 };
+        let (mut lens, mut height) = (24.0, FreeHeight::default());
+        for _ in 0..30 {
+            edit(&mut key, &mut lens, &mut height, CameraInput { turn: Vec2::new(10.0, 0.0), ..default() }, &rules, Some(&root), 1.0 / 30.0);
+        }
+        let CameraKey::Tripod { eye, .. } = key else { panic!() };
+        // 3 degrees per frame for 30 frames: a quarter turn at the same 4 m.
+        assert!((eye - (look + Vec3::new(4.0, 0.0, 0.0))).length() < 1e-3, "{eye}");
+        for _ in 0..5 {
+            edit(&mut key, &mut lens, &mut height, CameraInput { move_: Vec2::new(0.0, 1.0), ..default() }, &rules, Some(&root), 1.0 / 30.0);
+        }
+        let CameraKey::Tripod { eye, .. } = key else { panic!() };
+        assert!((eye.distance(look) - 3.0).abs() < 1e-3, "{eye}");
     }
 }
