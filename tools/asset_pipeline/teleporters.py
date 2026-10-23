@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from .environment import Collections, key_hash
-from .teleports import cstring
+from .teleports import cstring, label_of
 
 FORMAT = 'skate3rust.teleporters'
 VERSION = 1
@@ -28,11 +28,6 @@ INDICATOR = 'Hash_284B07325D587CC4' # RefSpec -> ribbon_indicator row (bank row,
 LOCAL = 'data/db/challenge_local_data/'
 BANKS = 'data/db/challengebanks/'
 MISSIONS = 'data/content/missions/'
-
-
-def label_of(district):
-    """The map label of a district stream (as asset_pipeline.dlc.map_jobs and the disc jobs name maps)."""
-    return district[5:] if district.lower().startswith('dist_') else district
 
 
 def parse_trigger(raw, binary):

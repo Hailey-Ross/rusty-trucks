@@ -135,7 +135,10 @@ pub(crate) fn retail_table(c: &skate_data::collections::Collections) -> HashMap<
     let mut rows: HashMap<String, (bool, String)> = HashMap::new();
     for row in c.entries().iter().filter(|e| e.class_name == "world") {
         let Ok(stream) = c.field("world", &row.key, "WorldStream") else { continue };
-        let Some(stem) = stream.data.strip_prefix("DIST_") else { continue };
+        let stem = crate::park_layout::stream_map(&stream.data);
+        if stem.len() == stream.data.len() {
+            continue;
+        }
         let own = row.key.eq_ignore_ascii_case(&format!("dist_{stem}"));
         let key = stem.to_ascii_lowercase();
         if rows.get(&key).is_none_or(|(was_own, _)| own && !was_own) {

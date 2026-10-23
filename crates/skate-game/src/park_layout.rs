@@ -49,10 +49,15 @@ pub(crate) fn worlds(assets: &Path) -> BTreeMap<String, WorldLayout> {
     }
 }
 
+/// The map a district stream names: `DIST_MegaPark` -> `MegaPark`; the prefix in any case (Zen's is `Dist_Zen`).
+pub(crate) fn stream_map(stream: &str) -> &str {
+    stream.get(..5).filter(|p| p.eq_ignore_ascii_case("DIST_")).map_or(stream, |_| &stream[5..])
+}
+
 /// The layout a world row places on `map` (the stream's own name, `MegaPark`), if any.
 pub(crate) fn layout_for<'a>(worlds: &'a BTreeMap<String, WorldLayout>, world: Option<&str>, map: &str) -> Option<&'a str> {
     let found = worlds.get(world?)?;
-    found.stream.strip_prefix("DIST_").unwrap_or(&found.stream).eq_ignore_ascii_case(map).then_some(found.layout.as_str())
+    stream_map(&found.stream).eq_ignore_ascii_case(map).then_some(found.layout.as_str())
 }
 
 /// Mark a freshly loaded map with the layout of `world` (nothing when the world places none on it).
@@ -368,6 +373,15 @@ mod tests {
         assert_eq!(layout_for(&worlds, Some("dist_megapark_full"), "DownTown"), None);
         assert_eq!(layout_for(&worlds, Some("dist_megapark"), "MegaPark"), None, "the Empty row places nothing");
         assert_eq!(layout_for(&worlds, None, "MegaPark"), None);
+    }
+
+    /// Zen Plaza's stream is `Dist_Zen` (research b539): its Full row places ZenPlaza_Full on the map `Zen`.
+    #[test]
+    fn the_stream_prefix_matches_in_any_case() {
+        let worlds: BTreeMap<String, WorldLayout> =
+            [("dist_zenplazapark_full".to_string(), WorldLayout { layout: "ZenPlaza_Full".into(), stream: "Dist_Zen".into() })].into();
+        assert_eq!(layout_for(&worlds, Some("dist_zenplazapark_full"), "Zen"), Some("ZenPlaza_Full"));
+        assert_eq!((stream_map("DIST_MegaPark"), stream_map("Dist_Zen"), stream_map("DLC_DW_MegaCompund")), ("MegaPark", "Zen", "DLC_DW_MegaCompund"));
     }
 
     #[test]

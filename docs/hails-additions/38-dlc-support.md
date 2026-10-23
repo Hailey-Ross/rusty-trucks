@@ -553,6 +553,12 @@ The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, 
   `park_layout::layout_for` (as the Challenge Map's `plan`) and moves in place only when map and layout both match;
   `SKATE_TELEPORTER` logs `world=` / `layout=`. Mods: an optional `world` per exit on `sdk.triggers.teleporter`
   (`sdk/ENGINE_API.md`). Needs a refresh (setup's teleporters step) to reach an install.
+- **Zen Plaza (2026-10-23, research b539):** its stream is `Dist_Zen`, not `DIST_Zen`. `layout_for` and the map audio
+  table stripped `DIST_` case-sensitively, so `dist_zenplazapark_full` never placed ZenPlaza_Full on `Zen`, and setup's
+  `teleports.py` wrote the Challenge Map's Zen destinations with map `Dist_Zen` (no such map). All three now strip the
+  prefix in any case (`park_layout::stream_map`, `teleports.label_of`); checked in game: the Zen Plaza - Full
+  destination logs `world dist_zenplazapark_full places ZenPlaza_Full on Zen` (270 pieces). The teleports fix reaches
+  an install with the next refresh.
 - **Floating icon:** see [Teleporter markers](#teleporter-markers) below.
 
 ## Teleporter markers
@@ -637,15 +643,20 @@ The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, 
   in the recomp), sent at world load with the `world` row's park bool 0x0C54AD24155E3220 (b443): x10 in park worlds.
 - **Change (2026-10-23):** the engine billboards only splines with kind bit 0 and keeps the anchor's up while doing so,
   otherwise keeps the anchor's rotation; hides past the fade's end on camera distance; keeps the nearest 22 icons
-  within 400 m of the player (the camera when there is none).
+  within 400 m of the player (the camera when there is none). Park worlds (research b539): the park bool is the same on
+  every `world` row of a stream, so it is a per-map fact; setup writes `park_maps` (the maps of the rows with the bool,
+  DLC vaults merged: MegaPark, StartPark, DownTownSkatePark, IndustrialSkatePark, Zen, BackLotParkDLC,
+  DownTownSkateParkNightDLC; main checked all seven against the park layout sidecars) and `park_fade_scale` 10.0 in
+  visual-indicators.json; on those maps the engine scales only the fade end (smallarrow 100 m -> 1000 m, still within
+  the 400 m cull).
 - **Not retail yet:** the fade is per icon, not per vertex; the depth byte order and cull value are inferred; the
   render-target gamma of the 360 versus Bevy's linear blend may shift the glow slightly; the passes field, wiggle and
-  flicker are not modelled; the x10 in park worlds needs a map to `world` row link the export does not have yet (park
-  maps without a layout, e.g. DownTownSkatePark = `dist_downtownpark`); all teleporter icons are one group (retail's
+  flicker are not modelled; a mod map cannot mark itself a park world yet; all teleporter icons are one group (retail's
   per-script groups and the CreateGroup(false) hiding are not modelled).
 - **Mods:** `indicator="<ribbon_indicator key>"`, `indicator_position={x,y,z}`, `indicator_style="<visualindicators row>"` and `indicator_colour="<ribbon_spline_colour row>"` on `sdk.triggers.teleporter`
   (`sdk/ENGINE_API.md`); the icon goes with the teleporter.
-- **Tests:** `test_visual_indicators.py` (spline layout, the bank chain, style rows with inheritance),
+- **Tests:** `test_visual_indicators.py` (spline layout, the bank chain, style rows with inheritance, park maps from the
+  world rows),
   `visual_indicators.rs` tests (one icon per locator, Offset in the anchor frame, three strips / one strip and the
-  samples cap, the fade window, the nearest-22 cap, the billboard keeping the icon's up, the anchor rotation). Captured 2026-10-22: the University icon at 15 m; University to Stadium loads
+  samples cap, the fade window, the nearest-22 cap, park worlds moving only the fade end, the billboard keeping the icon's up, the anchor rotation). Captured 2026-10-22: the University icon at 15 m; University to Stadium loads
   Stadium - Full (`MegaPark_Fullpark`, 450 pieces).
