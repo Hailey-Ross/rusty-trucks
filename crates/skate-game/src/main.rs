@@ -58,7 +58,18 @@ mod retail_menu_stage;
 mod rumble;
 mod asset_check;
 mod startup_loading;
+#[cfg(windows)]
 mod splash;
+/// The splash is a Win32 window (splash.rs); other platforms draw none (or their own, behind these calls).
+#[cfg(not(windows))]
+mod splash {
+    pub(crate) fn show() {}
+    pub(crate) fn close() {}
+    pub(crate) fn stage(_label: &str) {}
+    pub(crate) fn detail(_text: String) {}
+    pub(crate) fn warning(_text: String) {}
+    pub(crate) fn active() -> bool { false }
+}
 mod modding;
 mod customiser;
 mod customiser_parts;

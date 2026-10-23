@@ -177,6 +177,7 @@ fn refresh_log(exe_dir: &Path) -> Option<(PathBuf, std::fs::File)> {
 }
 
 /// The local time as `yyyyMMdd-HHmmss`, like the launch scripts' `Get-Date -Format`.
+#[cfg(windows)]
 fn local_stamp() -> String {
     #[repr(C)]
     #[derive(Default)]
@@ -198,6 +199,24 @@ fn local_stamp() -> String {
     // SAFETY: GetLocalTime only fills the struct it is given.
     unsafe { GetLocalTime(&mut t) };
     format!("{:04}{:02}{:02}-{:02}{:02}{:02}", t.year, t.month, t.day, t.hour, t.minute, t.second)
+}
+
+/// Elsewhere the same stamp in UTC (it only names the refresh log).
+#[cfg(not(windows))]
+fn local_stamp() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let (days, rest) = ((secs / 86_400) as i64, secs % 86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}{month:02}{day:02}-{:02}{:02}{:02}", rest / 3_600, rest % 3_600 / 60, rest % 60)
 }
 
 /// The data folder a refresh rebuilds: the installation behind a development copy's `--assets` link (refreshed by
