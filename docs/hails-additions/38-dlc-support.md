@@ -593,12 +593,26 @@ The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, 
   row 2) per `visualindicators` row, the eight known rows by name (`smallarrow`, `gates`, ...); the engine builds the
   strips, billboards and fades per icon (one material each, alpha blended) from the row, and falls back to the
   `default` row's values for installs without the export.
-- **Not retail yet:** the colour (our yellow, `COLOR`) and texture (retail's are in a shader or
-  `visual_indicators_sk82_Textures.rx2`, not read); the billboard flag (Spline +0x96A, set by `827B0490`, not read;
-  inferred on); the fade ramps are linear and graph row 2 is unused (shader not read); the 22-entry cap, passes,
+- **Colour and texture [code + data], research b535 / b536 (2026-10-22):** no flat colour: `827AFC80` draws every
+  indicator twice, first the background pass then the front pass (`827B2200` binds texture param 0x9C1D9BBD from
+  ind+0x18 / +0x14). `827AEF08` resolves the request's colour key in VLT `ribbon_spline_colour` (0xF0DB8767D611AF94):
+  front texture field 8E38, background field FF4D, tint Vector4 E4F3. Teleporter requests pass -1 = the `default` row
+  = `visual_indicator_blue` / `visual_indicator_bg_blue`, tint (1, 1, 1, 1). The textures are in `miscboot.big`
+  `data/content/textures/vitextures.rx2` (16 textures): the fronts are 64x64 R5G6B5 bands, constant along u, black at
+  both edges and bright in the middle (blue peaks at 107, 174, 231); the backgrounds 64x64 A8R8G8B8, darker, alpha 0
+  at the edges. The passes use pixel shaders `spline_defaultPS` (front: rgb only, additive-style) and
+  `spline_darkenPS` (background: alpha-blend-style) [b536, shader decoded by hand]. Main verified the colour rows in
+  the export and decoded all 16 textures (setup `write_textures`; the Xenos decoder now handles R5G6B5).
+- **Change (2026-10-22, colour):** setup exports `colours` (the `ribbon_spline_colour` rows) and every vitextures
+  texture as PNG under `assets/private/visual-indicators/`; the engine draws each icon as two child meshes, the
+  background texture alpha blended, then the front texture additive (sorted after it), both tinted and faded, UV u =
+  spline parameter in segments, v = strip side. Installs without the textures keep the flat colour.
+- **Not retail yet:** the exact pass blend / depth states and the shader factors (b536: front rgb * sqrt(i0.x *
+  i1.z), background alpha sqrt(tex.a * i0.y * i1.z); not modelled); the billboard flag (Spline +0x96A, set by
+  `827B0490`, not read; inferred on); the fade ramps are linear and graph row 2 is unused; the 22-entry cap, passes,
   wiggle, flicker and the x10 draw distance flag are not modelled; the snapshot may keep only the anchor's translation
   (inferred, ours applies Offset in the anchor's frame).
-- **Mods:** `indicator="<ribbon_indicator key>"`, `indicator_position={x,y,z}` and `indicator_style="<visualindicators row>"` on `sdk.triggers.teleporter`
+- **Mods:** `indicator="<ribbon_indicator key>"`, `indicator_position={x,y,z}`, `indicator_style="<visualindicators row>"` and `indicator_colour="<ribbon_spline_colour row>"` on `sdk.triggers.teleporter`
   (`sdk/ENGINE_API.md`); the icon goes with the teleporter.
 - **Tests:** `test_visual_indicators.py` (spline layout, the bank chain, style rows with inheritance),
   `visual_indicators.rs` tests (one icon per locator, Offset in the anchor frame, three strips / one strip and the

@@ -3,7 +3,7 @@ import unittest
 
 from .teleporters import CHALLENGE, indicator
 from .environment import Collections
-from .visual_indicators import SPLINES, STYLE_FIELDS, parse_splines, styles
+from .visual_indicators import COLOUR_FIELDS, SPLINES, STYLE_FIELDS, colours, parse_splines, styles
 
 
 def arena(segments):
@@ -53,6 +53,18 @@ class VisualIndicatorTests(unittest.TestCase):
         self.assertAlmostEqual(found['default']['width'][1], 0.15, places=6)
         self.assertEqual(found['default']['fade'], [4.25, 13.5, 100.0, 100.0])
         self.assertEqual(found['default']['fade_alpha'], [0.0, 1.0, 1.0, 0.0])
+
+    def test_colour_rows_name_both_pass_textures_and_the_tint(self):
+        text = lambda s: {'data': s}
+        rows = [{'class': 'ribbon_spline_colour', 'key': 'default', 'parent': '',
+                 'fields': {COLOUR_FIELDS['front']: text('visual_indicator_blue.Texture'),
+                            COLOUR_FIELDS['background']: text('visual_indicator_bg_blue.Texture'),
+                            COLOUR_FIELDS['tint']: text(struct.pack('>4f', 2, 2, 2, 0.5).hex())}},
+                {'class': 'ribbon_spline_colour', 'key': 'red', 'parent': 'default',
+                 'fields': {COLOUR_FIELDS['front']: text('visual_indicator_red.Texture')}}]
+        found = colours(Collections({'collections': rows}))
+        self.assertEqual(found['default'], dict(front='visual_indicator_blue', background='visual_indicator_bg_blue', tint=[2.0, 2.0, 2.0, 0.5]))
+        self.assertEqual((found['red']['front'], found['red']['background']), ('visual_indicator_red', 'visual_indicator_bg_blue'))
 
 
 if __name__ == '__main__':

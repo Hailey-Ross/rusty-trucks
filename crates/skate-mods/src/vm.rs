@@ -94,6 +94,9 @@ pub struct TeleporterOptions {
     /// A `visualindicators` row (`smallarrow`, `gates`, ...) in place of the indicator row's own style.
     #[serde(default)]
     pub indicator_style: Option<String>,
+    /// A `ribbon_spline_colour` row (`default` = blue, `red`, `green`, ...) for the icon's textures.
+    #[serde(default)]
+    pub indicator_colour: Option<String>,
 }
 
 impl TeleporterOptions {
@@ -106,6 +109,7 @@ impl TeleporterOptions {
             && self.indicator.as_ref().is_none_or(|k| !k.is_empty() && k.len() <= 64 && !k.chars().any(char::is_control))
             && self.indicator_position.is_none_or(|p| p.iter().all(|v| v.is_finite() && v.abs() <= 100_000.))
             && self.indicator_style.as_ref().is_none_or(|k| !k.is_empty() && k.len() <= 64 && !k.chars().any(char::is_control))
+            && self.indicator_colour.as_ref().is_none_or(|k| !k.is_empty() && k.len() <= 64 && !k.chars().any(char::is_control))
     }
 }
 

@@ -570,7 +570,7 @@ function sdk.triggers.box(key, options) submit{kind="trigger_box",key=key,option
 function sdk.triggers.remove(key) submit{kind="trigger_remove",key=key} end
 -- A teleporter (doc 38 "Teleporters"): {volume=<volume id or own box key>, exits={{position={x,y,z}, heading=<rad>,
 -- map=<map name>?, world=<world row>?}, ...}, title=<prompt text>?, indicator=<ribbon_indicator key>?,
--- indicator_position={x,y,z}?, indicator_style=<visualindicators row>?}; nil options remove it. Events: {name="teleporter_used",
+-- indicator_position={x,y,z}?, indicator_style=<visualindicators row>?, indicator_colour=<ribbon_spline_colour row>?}; nil options remove it. Events: {name="teleporter_used",
 -- teleporter=<id>, exit=<1-based index>, body="player"}.
 function sdk.triggers.set_enabled(id, enabled) submit{kind="trigger_enable",id=id,enabled=enabled ~= false} end
 local function non_empty(t) if type(t) == "table" and next(t) ~= nil then return t end return nil end
