@@ -22,12 +22,19 @@ pub(crate) struct Style {
     pub three_strips: bool,
     /// Fade graph x points: fade in from [0] to [1], out from [2] to [3], hidden beyond [3].
     pub fade: [f32; 4],
+    /// Shader `i_intensity` (b536): front pass brightness, background pass opacity.
+    #[serde(default = "retail_intensity")]
+    pub intensity: [f32; 2],
+}
+
+fn retail_intensity() -> [f32; 2] {
+    [1.0, 0.7]
 }
 
 impl Default for Style {
     /// Retail's `default` row, for installs that predate the style export.
     fn default() -> Self {
-        Self { width: [0.4, 0.3], samples: 10, three_strips: true, fade: [0.0, 8.306_189, 94.299_67, 100.0] }
+        Self { width: [0.4, 0.3], samples: 10, three_strips: true, fade: [0.0, 8.306_189, 94.299_67, 100.0], intensity: retail_intensity() }
     }
 }
 
@@ -76,17 +83,34 @@ struct File {
     textures: Option<String>,
 }
 
-/// A `ribbon_spline_colour` row (b535 `827AEF08`): the front and background pass textures and the tint.
+/// A `ribbon_spline_colour` row (b535 `827AEF08`): the front and background pass textures. Its tint (E4F3) is not an
+/// input of the ribbon's pixel shaders (b536).
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct Colour {
     pub front: String,
     pub background: String,
-    #[serde(default = "white")]
-    pub tint: [f32; 4],
 }
 
-fn white() -> [f32; 4] {
-    [1.0; 4]
+/// One draw pass of an icon (b536 `82CE9080`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Pass {
+    /// `spline_darkenPS`, alpha blended: rgb = tex * I.y, alpha = sqrt(tex.a * I.y * fade) (setup stores sqrt(tex.a)).
+    Background,
+    /// `spline_defaultPS`, additive: rgb = tex * I.x * fade.
+    Front,
+    /// No textures installed: our flat colour, alpha = fade.
+    Flat,
+}
+
+impl Pass {
+    /// The material's linear base colour for intensity `i` (front, background) and `fade`.
+    pub(crate) fn colour(self, i: [f32; 2], fade: f32) -> [f32; 4] {
+        match self {
+            Pass::Background => [i[1], i[1], i[1], (i[1] * fade).max(0.0).sqrt()],
+            Pass::Front => [i[0] * fade, i[0] * fade, i[0] * fade, 1.0],
+            Pass::Flat => [COLOR[0], COLOR[1], COLOR[2], fade],
+        }
+    }
 }
 
 /// Teleporter requests name no colour (-1, b533), which retail resolves to this row.
@@ -123,7 +147,7 @@ pub(crate) struct VisualIndicators {
 #[derive(Component)]
 pub(crate) struct IndicatorMarker {
     style: Style,
-    passes: Vec<(Handle<StandardMaterial>, [f32; 4], bool)>,
+    passes: Vec<(Handle<StandardMaterial>, Pass)>,
 }
 
 #[derive(Component)]
@@ -255,28 +279,28 @@ fn sync(
                 mesh
             }
         };
-        // Retail's two passes (b535 `827AFC80`): the background texture, then the front one. Blend modes inferred
-        // (background alpha, front additive) until b536; materials per icon as the fade is per icon.
+        // Retail's two passes (b535 `827AFC80`, b536 `82CE9080`): the background texture alpha blended, then the
+        // front one additive; depth test, no depth write, no cull. Materials per icon as the fade is per icon.
         let colour = state.colours.get(placement.colour.as_deref().unwrap_or(DEFAULT_COLOUR)).cloned();
-        let layers: Vec<(Option<String>, [f32; 4], bool)> = match (colour, state.textures.as_deref()) {
+        let layers: Vec<(Option<String>, Pass)> = match (colour, state.textures.as_deref()) {
             (Some(c), Some(folder)) => vec![
-                (Some(format!("private/{folder}/{}.png", c.background)), c.tint, false),
-                (Some(format!("private/{folder}/{}.png", c.front)), c.tint, true),
+                (Some(format!("private/{folder}/{}.png", c.background)), Pass::Background),
+                (Some(format!("private/{folder}/{}.png", c.front)), Pass::Front),
             ],
-            _ => vec![(None, [COLOR[0], COLOR[1], COLOR[2], 1.0], false)],
+            _ => vec![(None, Pass::Flat)],
         };
-        let passes: Vec<(Handle<StandardMaterial>, [f32; 4], bool)> = layers.into_iter().map(|(texture, tint, additive)| {
+        let passes: Vec<(Handle<StandardMaterial>, Pass)> = layers.into_iter().map(|(texture, pass)| {
             let material = materials.add(StandardMaterial {
-                base_color: Color::srgba(0.0, 0.0, 0.0, 0.0),
+                base_color: Color::linear_rgba(0.0, 0.0, 0.0, 0.0),
                 base_color_texture: texture.map(|path| server.load(path)),
-                alpha_mode: if additive { AlphaMode::Add } else { AlphaMode::Blend },
+                alpha_mode: if pass == Pass::Front { AlphaMode::Add } else { AlphaMode::Blend },
                 // The front pass sorts after the background one at the same distance.
-                depth_bias: if additive { 1.0 } else { 0.0 },
+                depth_bias: if pass == Pass::Front { 1.0 } else { 0.0 },
                 unlit: true,
                 cull_mode: None,
                 ..default()
             });
-            (material, tint, additive)
+            (material, pass)
         }).collect();
         let root = commands.spawn((IndicatorMarker { style, passes: passes.clone() },
             Transform::from_translation(position(&placement.matrix, indicator.offset)), Visibility::Hidden)).id();
@@ -302,13 +326,14 @@ fn face_camera(
         if back.x.abs() + back.z.abs() > 1e-6 {
             t.rotation = Quat::from_rotation_y(back.x.atan2(back.z));
         }
-        let distance = camera.translation().distance(t.translation);
-        let alpha = if distance < DRAW_DISTANCE { marker.style.alpha(distance) } else { 0.0 };
+        // The fade runs on view depth (the vertex shader's clip z, b536), the request cull on distance.
+        let to = t.translation - camera.translation();
+        let depth = to.dot(camera.forward().as_vec3());
+        let alpha = if to.length() < DRAW_DISTANCE && depth > 0.0 { marker.style.alpha(depth) } else { 0.0 };
         visibility.set_if_neq(if alpha > 0.0 { Visibility::Visible } else { Visibility::Hidden });
-        for (material, tint, additive) in &marker.passes {
-            // Additive light fades by its colour, the blended pass by its alpha.
-            let k = if *additive { alpha } else { 1.0 };
-            let want = Color::srgba(tint[0] * k, tint[1] * k, tint[2] * k, (tint[3] * alpha).min(1.0));
+        for (material, pass) in &marker.passes {
+            let [r, g, b, a] = pass.colour(marker.style.intensity, alpha);
+            let want = Color::linear_rgba(r, g, b, a);
             if materials.get(material).is_some_and(|m| m.base_color != want)
                 && let Some(m) = materials.get_mut(material)
             {
@@ -336,10 +361,20 @@ mod tests {
         assert_eq!(wanted[0].matrix[3][0], 1.0);
     }
 
+    /// b536 pixel shaders with smallarrow's intensity (1.0, 0.7): the front glows by the fade, the background keeps
+    /// its colour and fades its opacity as sqrt.
+    #[test]
+    fn pass_colours_follow_the_pixel_shaders() {
+        assert_eq!(Pass::Front.colour([1.0, 0.7], 0.5), [0.5, 0.5, 0.5, 1.0]);
+        let b = Pass::Background.colour([1.0, 0.7], 1.0);
+        assert!((b[0] - 0.7).abs() < 1e-6 && (b[3] - 0.7f32.sqrt()).abs() < 1e-6);
+        assert_eq!(Pass::Background.colour([1.0, 0.7], 0.0)[3], 0.0);
+    }
+
     /// smallarrow (teleporters): fades in from 4.23 m to 13.36 m, gone beyond 100 m.
     #[test]
     fn fade_window() {
-        let s = Style { width: [0.2, 0.15], samples: 10, three_strips: true, fade: [4.234_528, 13.355_05, 100.0, 100.0] };
+        let s = Style { width: [0.2, 0.15], samples: 10, three_strips: true, fade: [4.234_528, 13.355_05, 100.0, 100.0], intensity: [1.0, 0.7] };
         assert_eq!(s.alpha(2.0), 0.0);
         assert!((s.alpha(8.795) - 0.5).abs() < 1e-3);
         assert_eq!(s.alpha(50.0), 1.0);
@@ -360,7 +395,7 @@ mod tests {
     fn ribbon_follows_the_spline() {
         // One straight segment from (0, 0) to (0, 1): c1 = (0, 1), c0 = 0.
         let spline = Spline { segments: vec![[[0.0; 3], [0.0; 3], [0.0, 1.0, 0.0], [0.0; 3]]] };
-        let style = Style { width: [0.2, 0.15], samples: 10, three_strips: true, fade: [0.0, 0.0, 100.0, 100.0] };
+        let style = Style { width: [0.2, 0.15], samples: 10, three_strips: true, fade: [0.0, 0.0, 100.0, 100.0], intensity: [1.0, 0.7] };
         let mesh = ribbon(&spline, &style);
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
         // Three strips of 11 point pairs; full width 0.5 * (A + B) = 0.175 along z, then y, then x.

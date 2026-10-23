@@ -607,8 +607,17 @@ The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, 
   texture as PNG under `assets/private/visual-indicators/`; the engine draws each icon as two child meshes, the
   background texture alpha blended, then the front texture additive (sorted after it), both tinted and faded, UV u =
   spline parameter in segments, v = strip side. Installs without the textures keep the flat colour.
-- **Not retail yet:** the exact pass blend / depth states and the shader factors (b536: front rgb * sqrt(i0.x *
-  i1.z), background alpha sqrt(tex.a * i0.y * i1.z); not modelled); the billboard flag (Spline +0x96A, set by
+- **Pass states and shader factors [code], research b536 (main verified the FNV-1 32 names: technique "darken"
+  0x8DB32DC8 / "default" 0x2EA8FB98, `i_intensity` 0xF8CB054C, `i_clipvalues`, `i_diffuse`; the intensity fields
+  031D / 1643 = 1.0 / 0.7 for smallarrow):** `82CE9080` / `82CF5A10`: background blend 0x07060706 = alpha blend,
+  front 0x01010101 = additive, depth less-equal with test on and write off [inferred byte order], cull 4 [inferred
+  none]. `spline_darkenPS`: rgb = tex * I.y, alpha = sqrt(tex.a * I.y * fade); `spline_defaultPS`: rgb = tex * I.x *
+  fade (gamma 2 pairs reduced on decoded textures); UV (t, side); the fade runs per vertex on clip z (view depth).
+  Ported (2026-10-22): style `intensity` exported, `Pass::colour` gives those factors as linear material colours,
+  setup stores sqrt(alpha) in the background textures so the material's product equals the shader's root, fade on
+  view depth per icon.
+- **Not retail yet:** the fade is per icon, not per vertex; the depth byte order and cull value are inferred; the
+  render-target gamma of the 360 versus Bevy's linear blend may shift the glow slightly; the billboard flag (Spline +0x96A, set by
   `827B0490`, not read; inferred on); the fade ramps are linear and graph row 2 is unused; the 22-entry cap, passes,
   wiggle, flicker and the x10 draw distance flag are not modelled; the snapshot may keep only the anchor's translation
   (inferred, ours applies Offset in the anchor's frame).

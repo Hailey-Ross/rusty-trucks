@@ -44,7 +44,8 @@ class VisualIndicatorTests(unittest.TestCase):
         graph = struct.pack('>12f', 0, 0, 100, 1, 4.25, 13.5, 100, 100, 0, 1, 1, 0).hex()
         base = {STYLE_FIELDS['width_a']: struct.pack('>f', 0.2).hex(), STYLE_FIELDS['width_b']: struct.pack('>f', 0.15).hex(),
                 STYLE_FIELDS['samples']: '000A', STYLE_FIELDS['passes']: '0001', STYLE_FIELDS['three_strips']: '01000000',
-                STYLE_FIELDS['fade']: graph}
+                STYLE_FIELDS['fade']: graph, STYLE_FIELDS['intensity_front']: struct.pack('>f', 1.0).hex(),
+                STYLE_FIELDS['intensity_background']: struct.pack('>f', 0.75).hex()}
         rows = [dict({'class': 'visualindicators', 'key': 'default', 'parent': '', 'fields': {k: {'data': v} for k, v in base.items()}}),
                 dict({'class': 'visualindicators', 'key': 'gates', 'parent': 'default', 'fields': {STYLE_FIELDS['samples']: {'data': '0004'}}})]
         found = styles(Collections({'collections': rows}))
@@ -53,6 +54,7 @@ class VisualIndicatorTests(unittest.TestCase):
         self.assertAlmostEqual(found['default']['width'][1], 0.15, places=6)
         self.assertEqual(found['default']['fade'], [4.25, 13.5, 100.0, 100.0])
         self.assertEqual(found['default']['fade_alpha'], [0.0, 1.0, 1.0, 0.0])
+        self.assertEqual(found['gates']['intensity'], [1.0, 0.75])
 
     def test_colour_rows_name_both_pass_textures_and_the_tint(self):
         text = lambda s: {'data': s}
