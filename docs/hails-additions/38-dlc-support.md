@@ -649,10 +649,33 @@ The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, 
   DownTownSkateParkNightDLC; main checked all seven against the park layout sidecars) and `park_fade_scale` 10.0 in
   visual-indicators.json; on those maps the engine scales only the fade end (smallarrow 100 m -> 1000 m, still within
   the 400 m cull).
+- **The current object [code], research b540 (2026-10-23):** manager+4 is the challenge manager (sim+0x148), stored
+  by its listener registration `82BCFFC8` (`stw r29,4(r30)`, main checked); vtable slot 4 `82C8CDC0` returns +0xC, the
+  current challenge (null in free skate: every group walked). The icon this port draws comes from `82D53F70` ->
+  `82D4F0B0` into the group `82D52758` creates with key 0 through `82D4ECC8` (main checked) and the default flag 1,
+  so it shows whatever challenge is current; only a game-mode gate (`82552750`, bit 4) creates or destroys that group.
+  The stategraph's `CreateGroup(false)` groups are a second registration that hides while another challenge is
+  current.
+- **The mode gate [code], research b541 (2026-10-23):** `82552750` returns 8 (sim vt[0] == 1), 0x10 (GameMode 2), 1
+  (front-end state 2), 2 (GameMode 0 / 3 / 7), else 4 (main checked the order and constants). GameMode is 0x830B7AE8
+  (`.claude` menu notes: 1 Career, 4 / 5 online); Free Play stores 3 (`82706B40`, main checked) and re-runs the mask.
+  So in Free Play the key 0 group does not exist: the icons a free skater sees come from each teleporter's stategraph
+  `CreateGroup(false)` group, which hides while another challenge is current (no challenge is current in Free Play;
+  b540 found teleport challenges load as ambient, never current).
+- **The stategraph's icon [code + data], research b542 (2026-10-23):** only its `challengeassetloadcomplete` handler
+  touches the library, once: `CreateGroup(false)` then `AddLocationIndicator(group, self.Location,
+  self.SignUpIndicator)`; nothing removes, disables or recolours it later (not on entering the volume, the prompt, the
+  teleport or a cooldown). The two fields are the ones setup reads (main checked: `Location` = F1C6D5FA4A23951E,
+  `SignUpIndicator` = 284B07325D587CC4 by name hash). `AddLocationIndicator` (`82D502C8` -> `82D4F328` locator lookup
+  -> `82D4F2A8`, main checked its call to `82D4F0B0` with -1 colour / style) builds the same entry as the key 0 path:
+  full anchor matrix, ribbon key, colour and style `default`. So in Free Play ours matches in anchor, key, colour,
+  style and timing. Edge cases not modelled: retail dedupes per group (ours per locator, only matters if two
+  teleporters share one), and a missing locator falls back to a fixed matrix (ours draws none); with a challenge
+  runner, each teleporter's icon hides while another challenge is current.
 - **Not retail yet:** the fade is per icon, not per vertex; the depth byte order and cull value are inferred; the
   render-target gamma of the 360 versus Bevy's linear blend may shift the glow slightly; the passes field, wiggle and
-  flicker are not modelled; a mod map cannot mark itself a park world yet; all teleporter icons are one group (retail's
-  per-script groups and the CreateGroup(false) hiding are not modelled).
+  flicker are not modelled; a mod map cannot mark itself a park world yet; the mode gate of the key 0 group
+  (`82552750`, word 0x830B7AE8) and the stategraph's CreateGroup(false) groups are not modelled.
 - **Mods:** `indicator="<ribbon_indicator key>"`, `indicator_position={x,y,z}`, `indicator_style="<visualindicators row>"` and `indicator_colour="<ribbon_spline_colour row>"` on `sdk.triggers.teleporter`
   (`sdk/ENGINE_API.md`); the icon goes with the teleporter.
 - **Tests:** `test_visual_indicators.py` (spline layout, the bank chain, style rows with inheritance, park maps from the
