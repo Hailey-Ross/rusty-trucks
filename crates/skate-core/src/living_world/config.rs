@@ -47,6 +47,8 @@ pub mod retail {
     pub const SKATER_SLOTS: u32 = 7; // *(0x83067060+8), 168-byte slots, slot 0 = local player
     pub const SKATER_POOL: u32 = 5; // character pool entries at mgr+64
     pub const SKATER_SPAWN_INNER: f32 = 60.0; // 0x821FF080
+pub const SKATER_COMPANION_SLOTS: u32 = 3; // companion entries at [[0x830CFD94]+0xE0]+0x5C (b544)
+pub const SKATER_COMPANION_INNER: f32 = 4.0; // spawn inner radius while a called skater waits (sub_8245C548, b544)
     pub const SKATER_SPAWN_OUTER: f32 = 90.0; // sub_82459480
     pub const SKATER_MAX_CANDIDATE_LINES: usize = 32; // sub_82459480
     pub const SKATER_CULL: f32 = 120.0; // 0x82256FE0
@@ -183,6 +185,9 @@ pub struct SkaterConfig {
     /// removed below opacity 0.2 (`sub_8246EA90`, `sub_8245A9B8`), only at a dead end of the
     /// replay tier (fix 9: retail chains lines, see `line_chain`).
     pub leave_fade: super::leave_fade::LeaveFadeConfig,
+    /// Called skaters (FE 62 Call Skater): slots and the spawn inner radius while one waits (research b544 / b563).
+    pub companion_slots: u32,
+    pub companion_inner: f32,
     /// What a skater does at the end of its line: continue on a line starting within 4 m
     /// (`sub_8246C7F8`, [data] `ai_skater` tunable), so it leaves only by the 120 m cull.
     pub line_chain: super::replay::ChainConfig,
@@ -210,6 +215,8 @@ impl SkaterConfig {
             near_radius2: SKATER_NEAR_RADIUS2,
             score_rand: SKATER_SCORE_RAND,
             allow_community_offline: true,
+            companion_slots: SKATER_COMPANION_SLOTS,
+            companion_inner: SKATER_COMPANION_INNER,
             leave_fade: super::leave_fade::LeaveFadeConfig::retail(),
             line_chain: super::replay::ChainConfig::retail(),
         }

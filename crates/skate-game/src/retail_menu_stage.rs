@@ -92,6 +92,16 @@ const PROFILE_SCROLL: [u32; 4] = [12, 13, 24, 25];
 const EXTRAS: &str = "Extras";
 const EXTRAS_PATH: &str = "main/extras.swf";
 const EXTRAS_ITEM: &str = "Extras";
+/// The SpawnSkater template (record 107) and its path; FE screen 62's init opens it (0x8264D958, b543). The Free Play
+/// and Call Skater pause items.
+const SPAWN_SKATER: &str = "SpawnSkater";
+const SPAWN_SKATER_PATH: &str = "cas/spawnskater.swf";
+const SPAWN_SKATER_MOVIE: &str = "source/screens/cas/spawnskater";
+/// Its limit popup's callback (the choice changes nothing).
+const SPAWN_SKATER_POPUP: &str = "spawn_skater.limit";
+/// The Free Play options template (record 13) and its path; FE 34 (X in FE 62 Free Play, flow 0x8A; b548 / b564).
+const FREE_SKATE: &str = "FreeSkateOption";
+const FREE_SKATE_PATH: &str = "main/freeskate_options.swf";
 /// AptMisc (X) and AptOption (Y) key indices.
 const APT_MISC: u32 = 5;
 const APT_OPTION: u32 = 4;
@@ -193,6 +203,13 @@ struct MenuStage {
     /// The credits FE 25's AS id and its `FECredits` host.
     credits_id: i32,
     credits: crate::extras_host::CreditsHost,
+    /// FE 62's AS id, its `SkaterSpawner` host and the mode the next push opens it in (the pause item picks it).
+    spawn_skater_id: i32,
+    spawn_skater: crate::spawn_skater_host::SpawnSkaterHost,
+    spawn_skater_mode: skate_core::spawn_skater::Mode,
+    /// FE 34's AS id and its `FreeSkateOption` host.
+    free_skate_id: i32,
+    free_skate: crate::free_skate_options_host::FreeSkateOptionsHost,
     /// The image slots the movies draw named images through (image_renderer_host).
     image_slots: crate::image_renderer_host::ImageSlots,
     /// The retail guide (mod layers apply over it) and the mod generation it was built for.
@@ -249,6 +266,7 @@ impl Plugin for RetailMenuStagePlugin {
             .init_resource::<crate::popup_host::PopupMods>()
             .add_message::<crate::extras_host::CheatChanged>()
             .add_message::<crate::extras_host::UnlockGranted>()
+        .add_message::<crate::spawn_skater_host::SpawnSkaterRequest>()
             .add_plugins(crate::text_entry_ui::TextEntryUiPlugin);
         if !enabled() {
             return;
@@ -561,6 +579,19 @@ fn setup(
             } else {
                 warn!("RETAIL_MENUS: Extras screen unavailable (no extras movie); the EXTRAS overlay stands in; run Refresh Game Files");
             }
+            // SpawnSkater (FE 62): Free Play (SoloFreeskateOptions) and Call Skater (SkateWith) push it (b307); greyed
+            // without the movie (sets before version 14).
+            if movies.movies.contains_key(SPAWN_SKATER_MOVIE) {
+                for (item, _) in skate_core::spawn_skater::SpawnSkaterRules::default().items {
+                    if menus.registry.data().item(&item).is_some() {
+                        let owner = Owner::Engine(format!("{}{}", crate::retail_menus::SCREEN, crate::fe_backdrop::SPAWN_SKATER_SCREEN));
+                        let handler = skate_core::menus::Handler { owner, select: true, highlight: false, callback: None };
+                        menus.registry.register_handler(EntryRef::item(&item), handler);
+                    }
+                }
+            } else {
+                warn!("RETAIL_MENUS: SpawnSkater screen unavailable (no spawnskater movie); run Refresh Game Files");
+            }
             info!("RETAIL_MENUS stage ready (F8 opens the retail pause menu)");
             // The replay screen: the first whose movie was exported and whose template is registered (usize::MAX: none).
             let replay_screen = REPLAY_SCREENS
@@ -611,6 +642,11 @@ fn setup(
                 tos: Default::default(),
                 credits_id: as_id(CREDITS),
                 credits: Default::default(),
+                spawn_skater_id: as_id(SPAWN_SKATER),
+                spawn_skater: Default::default(),
+                spawn_skater_mode: Default::default(),
+                free_skate_id: as_id(FREE_SKATE),
+                free_skate: Default::default(),
                 image_slots: Default::default(),
                 video_cal_id: as_id(VIDEO_CALIBRATION),
                 video_cal: Default::default(),
@@ -679,13 +715,17 @@ fn update(
         Option<ResMut<crate::replay::RetailReplayUi>>,
         Option<ResMut<crate::replay::ReplayLookScreen>>,
     ),
-    // Challenge Map travel; cheats out, typed text in and the zombie flag the cheat toggles.
-    (mut travel, mut cheats_out, mut unlocks_out, mut typing, living): (
+    // Challenge Map travel; cheats out, typed text in and the zombie flag the cheat toggles; FE 62's characters and
+    // its requests out.
+    (mut travel, mut cheats_out, mut unlocks_out, mut typing, mut living, mut characters, mut spawner_out, population): (
         ResMut<crate::challenge_map::ChallengeMapTravel>,
         MessageWriter<crate::extras_host::CheatChanged>,
         MessageWriter<crate::extras_host::UnlockGranted>,
         MessageReader<bevy::input::keyboard::KeyboardInput>,
-        Option<Res<crate::living_world::LivingWorldSettings>>,
+        Option<ResMut<crate::living_world::LivingWorldSettings>>,
+        Option<ResMut<crate::custom_models::CustomModels>>,
+        MessageWriter<crate::spawn_skater_host::SpawnSkaterRequest>,
+        Option<Res<crate::living_world::PopulationState>>,
     ),
 ) {
     let ready = stage.as_ref().is_some_and(|s| !s.failed) && movies.is_some() && menus.is_some();
@@ -703,6 +743,8 @@ fn update(
     let entry = backdrop.index(crate::fe_backdrop::TEXT_ENTRY_SCREEN);
     let viewer = backdrop.index(crate::fe_backdrop::TEXT_VIEWER_SCREEN);
     let credits = backdrop.index(crate::fe_backdrop::CREDITS_SCREEN);
+    let spawn = backdrop.index(crate::fe_backdrop::SPAWN_SKATER_SCREEN);
+    let free = backdrop.index(crate::fe_backdrop::FREE_SKATE_SCREEN);
     available.set_if_neq(RetailPause(ready && pause.is_some()));
     if ready && pause.is_none() && !std::mem::replace(&mut *warned, true) {
         warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup); Start opens the PC overlay until then");
@@ -762,6 +804,10 @@ fn update(
     fe.tos = std::mem::take(&mut ms.tos);
     fe.credits = std::mem::take(&mut ms.credits);
     fe.extras.open = extras.is_some() && ms.stack.top(Layer::Main) == extras;
+    fe.spawn_skater = std::mem::take(&mut ms.spawn_skater);
+    fe.spawn_skater.open = spawn.is_some() && ms.stack.top(Layer::Main) == spawn;
+    fe.free_skate = std::mem::take(&mut ms.free_skate);
+    fe.free_skate.open = free.is_some() && ms.stack.top(Layer::Main) == free;
     // The on-screen keyboard (FE 46 on top): typed text and Escape (ours), once per frame; the pad keys go through the
     // key loop below.
     let entry_open = entry.is_some_and(|e| ms.stack.top(Layer::Main) == Some(e)) && text_entry.keyboard.is_some();
@@ -889,7 +935,7 @@ fn update(
                 continue;
             }
             let target = ms.stack.input_target();
-            let Some(screen) = target.filter(|t| [pause, options, trick, cal, map, profile, extras, viewer, credits].contains(&Some(*t))) else { continue };
+            let Some(screen) = target.filter(|t| [pause, options, trick, cal, map, profile, extras, viewer, credits, spawn, free].contains(&Some(*t))) else { continue };
             // sub_825EC0E8: the screen's C++ handler first, then the movie's UpdateInput when the handler did not
             // consume the key and the screen's record says so (+12).
             let mut consumed = false;
@@ -909,6 +955,10 @@ fn update(
                 ms.viewer_id
             } else if Some(screen) == credits {
                 ms.credits_id
+            } else if Some(screen) == spawn {
+                ms.spawn_skater_id
+            } else if Some(screen) == free {
+                ms.free_skate_id
             } else {
                 trick_id
             };
@@ -921,7 +971,47 @@ fn update(
                 // the close fades out (S+52).
                 continue;
             }
-            if Some(screen) == credits {
+            if Some(screen) == free {
+                // Screen 34 input 8260A4E8 (b564): Up / Down pick the row (sound, SetState 999), Left / Right step it
+                // (SetState row; the movie plays the slider sound), B writes back and closes; the movie takes no keys.
+                use skate_core::free_skate_options::Key;
+                let k = match key {
+                    APT_PREVIOUS => Some(Key::Back),
+                    k if KEYS_UP.contains(&k) => Some(Key::Up),
+                    k if KEYS_DOWN.contains(&k) => Some(Key::Down),
+                    k if KEYS_LEFT.contains(&k) => Some(Key::Left),
+                    k if KEYS_RIGHT.contains(&k) => Some(Key::Right),
+                    _ => None,
+                };
+                consumed = true;
+                if let Some(k) = k {
+                    let f = &mut fe.free_skate;
+                    let out = f.screen.key(k, &f.rules);
+                    if let Some(sound) = &out.sound {
+                        sounds.write(FrontendSound::named(sound));
+                    }
+                    f.states.extend(out.states);
+                    if let Some(values) = out.close {
+                        // Flow 0x8B: the values go to the session (Free Play only), then the screen closes.
+                        info!("RETAIL_MENUS free play options {values:?}");
+                        if let Some(l) = living.as_mut() {
+                            l.free_play = Some(values);
+                        }
+                        ms.stack.request(Layer::Main, Request::Close { screen });
+                    }
+                }
+            } else if Some(screen) == spawn {
+                // Screen 62 input 0x8264DF18 (b543): B closes (not in the demo mode), X dismisses a called skater or opens
+                // the Free Play options; never consumed (NOT RETAIL YET: the return value is not read), so the movie's
+                // picker also gets every key. Y (gamercard) is console platform UI.
+                let s = &mut fe.spawn_skater;
+                let out = match key {
+                    APT_PREVIOUS => s.screen.back(&s.rules),
+                    APT_MISC => s.screen.x(&s.rules),
+                    _ => Default::default(),
+                };
+                s.take(out);
+            } else if Some(screen) == credits {
                 // Screen 25 input 0x82608DC8 (b489): Back pops the screen, no sound, at any time; the movie takes no
                 // keys (its record's input flag is off).
                 if key == APT_PREVIOUS {
@@ -1152,6 +1242,38 @@ fn update(
                     info!("RETAIL_MENUS close Extras (FE {i})");
                     fe.extras.open = false;
                     close(&mut ms.stage, ms.extras_id, &mut fe)?;
+                }
+                Effect::Open(i) if Some(i) == spawn => {
+                    // The living world owns the called skaters and the pool Call Skater lists from.
+                    let callable = crate::spawn_skater_host::callable(&config.asset_root);
+                    let companions = population.as_ref().map(|p| p.world.companions().iter().map(|c| skate_core::spawn_skater::Skater::Character(c.key.clone())).collect()).unwrap_or_default();
+                    let groups = crate::spawn_skater_host::groups(characters.as_deref(), &callable);
+                    let s = &mut fe.spawn_skater;
+                    s.screen = skate_core::spawn_skater::SpawnSkater::open(ms.spawn_skater_mode, &groups, companions);
+                    info!("RETAIL_MENUS open SpawnSkater (FE {i}) mode {} rows {}", s.screen.mode.code(), s.screen.rows().len());
+                    s.states.clear();
+                    s.actions.clear();
+                    s.open = true;
+                    open_screen(&mut ms.stage, SPAWN_SKATER_PATH, SPAWN_SKATER, &mut fe)?;
+                }
+                Effect::Open(i) if Some(i) == free => {
+                    // Init copies the session's values into the screen (b564).
+                    let values = living.as_ref().and_then(|l| l.free_play).unwrap_or_default();
+                    info!("RETAIL_MENUS open Free Play options (FE {i}) {values:?}");
+                    fe.free_skate.screen = skate_core::free_skate_options::FreeSkateOptions::open(values);
+                    fe.free_skate.states.clear();
+                    fe.free_skate.open = true;
+                    open_screen(&mut ms.stage, FREE_SKATE_PATH, FREE_SKATE, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == free => {
+                    info!("RETAIL_MENUS close Free Play options (FE {i})");
+                    fe.free_skate.open = false;
+                    close(&mut ms.stage, ms.free_skate_id, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == spawn => {
+                    info!("RETAIL_MENUS close SpawnSkater (FE {i})");
+                    fe.spawn_skater.open = false;
+                    close(&mut ms.stage, ms.spawn_skater_id, &mut fe)?;
                 }
                 Effect::Open(i) if Some(i) == viewer => {
                     info!("RETAIL_MENUS open text viewer (FE {i})");
@@ -1492,6 +1614,86 @@ fn update(
         for state in std::mem::take(&mut fe.extras.states) {
             set_state(&mut ms.stage, ms.extras_id, state, &mut fe)?;
         }
+        // SpawnSkater: loaded -> SetState(State_UpdateList) builds the list (NOT RETAIL YET: who posts retail's first one
+        // is not read); intro complete = ready; then the picks and keys (b543 / b545).
+        if let Some(s) = spawn.filter(|s| ms.stack.top(Layer::Main) == Some(*s)) {
+            if take_call(&mut fe, &format!("Game.OnScreenLoaded({})", ms.spawn_skater_id)) {
+                fe.spawn_skater.states.push(fe.spawn_skater.rules.state_list);
+            }
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({})", ms.spawn_skater_id)) {
+                ms.stack.ready(s);
+            }
+        }
+        // Free Play options: loaded -> every row refreshes and the selection shows (NOT RETAIL YET: the poster of the
+        // first states is not read); intro complete = ready; then the key states.
+        if let Some(f) = free.filter(|f| ms.stack.top(Layer::Main) == Some(*f)) {
+            if take_call(&mut fe, &format!("Game.OnScreenLoaded({})", ms.free_skate_id)) {
+                let first = [0, 1, 2, fe.free_skate.rules.state_selection];
+                fe.free_skate.states.extend(first);
+            }
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({})", ms.free_skate_id)) {
+                ms.stack.ready(f);
+            }
+        }
+        for state in std::mem::take(&mut fe.free_skate.states) {
+            set_state(&mut ms.stage, ms.free_skate_id, state, &mut fe)?;
+        }
+        for sound in std::mem::take(&mut fe.spawn_skater.sounds) {
+            sounds.write(FrontendSound::named(&sound));
+        }
+        for state in std::mem::take(&mut fe.spawn_skater.states) {
+            set_state(&mut ms.stage, ms.spawn_skater_id, state, &mut fe)?;
+        }
+        for action in std::mem::take(&mut fe.spawn_skater.actions) {
+            use skate_core::spawn_skater::{Action, Skater};
+            info!("RETAIL_MENUS spawn skater {action:?}");
+            match action {
+                Action::Close => {
+                    if let Some(s) = spawn {
+                        ms.stack.request(Layer::Main, Request::Close { screen: s });
+                    }
+                }
+                Action::LimitReached => {
+                    let [description, title, button] = fe.spawn_skater.rules.limit_popup.clone();
+                    ms.popups.push(skate_core::fe_popup::PopupRequest {
+                        title,
+                        description,
+                        options: vec![button],
+                        kind: skate_core::fe_popup::PopupKind::Small,
+                        callback: SPAWN_SKATER_POPUP.into(),
+                        ..Default::default()
+                    });
+                    ms.popup_dirty = true;
+                }
+                // FlowMessage 0x89 (82705E88, b562): fade, reload the player record, close FE 62. NOT RETAIL YET: no fade,
+                // the pause menu closes with it (inferred: Free Play resumes).
+                Action::SetPlayer(skater) => {
+                    spawner_out.write(crate::spawn_skater_host::SpawnSkaterRequest(Action::SetPlayer(skater.clone())));
+                    if let Some(c) = characters.as_mut() {
+                        match &skater {
+                            Skater::Own => c.request_stock(),
+                            Skater::Character(id) => {
+                                if !c.request_character(id) {
+                                    warn!("RETAIL_MENUS spawn skater: no character {id}");
+                                }
+                            }
+                        }
+                    }
+                    for s in [spawn, pause].into_iter().flatten() {
+                        ms.stack.request(Layer::Main, Request::Close { screen: s });
+                    }
+                }
+                // Flow 0x8A: the Free Play options FE 34 over FE 62.
+                Action::Options => match free {
+                    Some(f) => ms.stack.request(Layer::Main, Request::push(f)),
+                    None => warn!("RETAIL_MENUS: no Free Play options screen (FE 34) in the tables"),
+                },
+                // Called / dismissed companions go to the living world; the preview is not ported yet.
+                other => {
+                    spawner_out.write(crate::spawn_skater_host::SpawnSkaterRequest(other));
+                }
+            }
+        }
         for action in std::mem::take(&mut fe.extras.selected) {
             use skate_core::extras::ExtrasAction;
             info!("RETAIL_MENUS extras select {action:?}");
@@ -1642,6 +1844,8 @@ fn update(
     ms.extras = std::mem::take(&mut fe.extras);
     ms.tos = std::mem::take(&mut fe.tos);
     ms.credits = std::mem::take(&mut fe.credits);
+    ms.spawn_skater = std::mem::take(&mut fe.spawn_skater);
+    ms.free_skate = std::mem::take(&mut fe.free_skate);
     ms.image_slots = std::mem::take(&mut fe.image_slots);
     ms.popup = std::mem::take(&mut fe.popup);
     // A Challenge Map leaf the player picked goes through the registry: the engine's teleport handler queues the
@@ -1689,7 +1893,15 @@ fn update(
                                 run_fade_action(&mut ms.stack, action);
                             }
                         }
-                        Some(screen) => ms.stack.request(Layer::Main, Request::push(screen)),
+                        Some(screen) => {
+                            // The row sets FE 62 +0x40 before the push (b307: 200 Free Play, 100 Call Skater).
+                            if Some(screen) == spawn {
+                                if let Some((_, mode)) = ms.spawn_skater.rules.items.iter().find(|(i, _)| *i == item) {
+                                    ms.spawn_skater_mode = *mode;
+                                }
+                            }
+                            ms.stack.request(Layer::Main, Request::push(screen))
+                        }
                         None => warn!("RETAIL_MENUS: no FE screen {id}"),
                     }
                 } else if let (Some(section), Some(overlay)) =

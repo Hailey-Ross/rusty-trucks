@@ -29,9 +29,9 @@ pub use census::{CensusCircle, CensusGrid, CensusMap, CensusRange, CensusRecord,
 pub use clock::ConsoleClock;
 pub use config::{CensusKindConfig, FreePlay, PopulationConfig, SkaterConfig};
 pub use draw_distance::DrawDistance;
-pub use population::{LaneState, LivingWorld, TickInputs};
+pub use population::{CallOutcome, LaneState, LivingWorld, TickInputs};
 pub use rng::Rng;
-pub use skaters::{SkaterCharacter, SkaterLine, SkaterWorld};
+pub use skaters::{Companion, SkaterCharacter, SkaterLine, SkaterWorld};
 
 /// World position, metres (engine axes: y up; census grids use x / z).
 pub type Vec3 = [f32; 3];

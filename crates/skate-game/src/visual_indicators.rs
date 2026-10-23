@@ -177,7 +177,7 @@ pub(crate) struct IndicatorMarker {
 pub(crate) struct IndicatorPass;
 
 pub(crate) fn install(app: &mut App) {
-    app.init_resource::<VisualIndicators>().add_systems(Update, (sync, face_camera).chain());
+    app.init_resource::<VisualIndicators>().add_systems(Update, (sync, face_camera, companion_trails).chain());
 }
 
 fn load(assets: &Path) -> Result<File, String> {
@@ -239,6 +239,11 @@ pub(crate) fn ribbon(spline: &Spline, style: &Style) -> Mesh {
             }
         }
     }
+    strips(&points, style)
+}
+
+/// The strips over sampled points (each with its texture u), shared by the spline icons and the trails.
+fn strips(points: &[(Vec3, f32)], style: &Style) -> Mesh {
     let h = 0.25 * (style.width[0] + style.width[1]);
     let edges: Vec<(Vec3, Vec3)> = if style.three_strips {
         vec![(Vec3::new(0.0, 0.0, -h), Vec3::new(0.0, 0.0, h)), (Vec3::new(0.0, -h, 0.0), Vec3::new(0.0, h, 0.0)), (Vec3::new(-h, 0.0, 0.0), Vec3::new(h, 0.0, 0.0))]
@@ -323,15 +328,33 @@ fn sync(
         };
         // Retail's two passes (b535 `827AFC80`, b536 `82CE9080`): the background texture alpha blended, then the
         // front one additive; depth test, no depth write, no cull. Materials per icon as the fade is per icon.
-        let colour = state.colours.get(placement.colour.as_deref().unwrap_or(DEFAULT_COLOUR)).cloned();
-        let layers: Vec<(Option<String>, Pass)> = match (colour, state.textures.as_deref()) {
-            (Some(c), Some(folder)) => vec![
-                (Some(format!("private/{folder}/{}.png", c.background)), Pass::Background),
-                (Some(format!("private/{folder}/{}.png", c.front)), Pass::Front),
-            ],
-            _ => vec![(None, Pass::Flat)],
-        };
-        let passes: Vec<(Handle<StandardMaterial>, Pass)> = layers.into_iter().map(|(texture, pass)| {
+        let passes = pass_materials(&state, placement.colour.as_deref().unwrap_or(DEFAULT_COLOUR), &server, &mut materials);
+        let root = commands.spawn((IndicatorMarker { billboard, style, passes: passes.clone() },
+            Transform::from_translation(position(&placement.matrix, indicator.offset)).with_rotation(anchor_rotation(&placement.matrix)),
+            Visibility::Hidden)).id();
+        for (material, ..) in passes {
+            commands.spawn((IndicatorPass, Mesh3d(mesh.clone()), MeshMaterial3d(material), Transform::default(), ChildOf(root)));
+        }
+        spawned += 1;
+    }
+    info!("SKATE_VISUAL_INDICATORS map={} shown={spawned}", map.name);
+    state.shown = wanted;
+}
+
+/// Retail's two passes (b535 `827AFC80`, b536 `82CE9080`) for a `ribbon_spline_colour` row: the background texture
+/// alpha blended, then the front one additive; depth test, no depth write, no cull. Per indicator (the fade is).
+fn pass_materials(state: &VisualIndicators, colour: &str, server: &AssetServer, materials: &mut Assets<StandardMaterial>) -> Vec<(Handle<StandardMaterial>, Pass)> {
+    let colour = state.colours.get(colour).cloned();
+    let layers: Vec<(Option<String>, Pass)> = match (colour, state.textures.as_deref()) {
+        (Some(c), Some(folder)) => vec![
+            (Some(format!("private/{folder}/{}.png", c.background)), Pass::Background),
+            (Some(format!("private/{folder}/{}.png", c.front)), Pass::Front),
+        ],
+        _ => vec![(None, Pass::Flat)],
+    };
+    layers
+        .into_iter()
+        .map(|(texture, pass)| {
             let material = materials.add(StandardMaterial {
                 base_color: Color::linear_rgba(0.0, 0.0, 0.0, 0.0),
                 base_color_texture: texture.map(|path| server.load(path)),
@@ -343,17 +366,113 @@ fn sync(
                 ..default()
             });
             (material, pass)
-        }).collect();
-        let root = commands.spawn((IndicatorMarker { billboard, style, passes: passes.clone() },
-            Transform::from_translation(position(&placement.matrix, indicator.offset)).with_rotation(anchor_rotation(&placement.matrix)),
-            Visibility::Hidden)).id();
-        for (material, ..) in passes {
-            commands.spawn((IndicatorPass, Mesh3d(mesh.clone()), MeshMaterial3d(material), Transform::default(), ChildOf(root)));
+        })
+        .collect()
+}
+
+/// A called skater's trail (b566 `827AEC80`): world-space points, so the root stays at the origin.
+#[derive(Component)]
+pub(crate) struct CompanionTrail {
+    serial: u32,
+    trail: skate_core::indicator_trail::Trail,
+    /// The skater's anchor bone entity, once found (else its root).
+    bone: Option<Entity>,
+    style: Style,
+    mesh: Handle<Mesh>,
+    passes: Vec<(Handle<StandardMaterial>, Pass)>,
+}
+
+/// Retail keeps 4 trail objects (`827ADA30`).
+const MAX_TRAILS: usize = 4;
+
+/// The style row by name, or by its vault hash as setup exports unnamed rows (`Hash_<16 hex>`).
+fn style_row<'a>(styles: &'a HashMap<String, Style>, name: &str) -> Option<&'a Style> {
+    styles.get(name).or_else(|| styles.get(&format!("Hash_{:016X}", skate_audio::player::tuning::name_hash(name.as_bytes()))))
+}
+
+/// The first descendant named `bone` (any case).
+fn find_bone(root: Entity, bone: &str, children: &Query<&Children>, names: &Query<&Name>) -> Option<Entity> {
+    let mut stack = vec![root];
+    while let Some(e) = stack.pop() {
+        if names.get(e).is_ok_and(|n| n.as_str().eq_ignore_ascii_case(bone)) {
+            return Some(e);
         }
-        spawned += 1;
+        stack.extend(children.get(e).into_iter().flatten().copied());
     }
-    info!("SKATE_VISUAL_INDICATORS map={} shown={spawned}", map.name);
-    state.shown = wanted;
+    None
+}
+
+/// One trail per called skater (up to 4), fed every period with its board bone (b567: `skateboard_root` + 0.25 m),
+/// drawn as retail's B-spline; hidden on greenscreen, below 4 points and past the style's fade.
+#[allow(clippy::too_many_arguments)]
+fn companion_trails(
+    mut commands: Commands,
+    time: Res<Time>,
+    state: Res<VisualIndicators>,
+    population: Option<Res<crate::living_world::PopulationState>>,
+    npcs: Query<(Entity, &crate::living_world::npc_skaters::NpcSkater)>,
+    transforms: Query<&GlobalTransform>,
+    (children, names): (Query<&Children>, Query<&Name>),
+    mut trails: Query<(Entity, &mut CompanionTrail, &mut Visibility)>,
+    cameras: Query<&GlobalTransform, With<crate::camera::GameplayCamera>>,
+    replay: Option<Res<crate::replay::Replay>>,
+    server: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let rules = skate_core::indicator_trail::TrailRules::default();
+    let wanted: Vec<u32> = population.as_ref().map(|p| p.world.companions().iter().filter_map(|c| c.serial).take(MAX_TRAILS).collect()).unwrap_or_default();
+    let mut have = Vec::new();
+    for (e, t, _) in &trails {
+        if wanted.contains(&t.serial) {
+            have.push(t.serial);
+        } else {
+            commands.entity(e).despawn();
+        }
+    }
+    if let Some(style) = style_row(&state.styles, &rules.style) {
+        for &serial in wanted.iter().filter(|s| !have.contains(s)) {
+            info!("SKATE_VISUAL_INDICATORS trail for called skater #{serial} ({})", rules.style);
+            let mesh = meshes.add(strips(&[], style));
+            let passes = pass_materials(&state, DEFAULT_COLOUR, &server, &mut materials);
+            let root = commands
+                .spawn((CompanionTrail { serial, trail: Default::default(), bone: None, style: style.clone(), mesh: mesh.clone(), passes: passes.clone() }, Transform::default(), Visibility::Hidden))
+                .id();
+            for (material, ..) in passes {
+                commands.spawn((IndicatorPass, Mesh3d(mesh.clone()), MeshMaterial3d(material), Transform::default(), ChildOf(root)));
+            }
+        }
+    }
+    let camera = cameras.iter().next();
+    let greenscreen = replay.is_some_and(|r| r.active && r.view.greenscreen);
+    for (_, mut t, mut visibility) in &mut trails {
+        let Some((root, _)) = npcs.iter().find(|(_, n)| n.id.serial == t.serial) else { continue };
+        if t.bone.is_none() {
+            t.bone = find_bone(root, &rules.bone, &children, &names);
+        }
+        let Ok(at) = transforms.get(t.bone.unwrap_or(root)) else { continue };
+        let changed = t.trail.step(time.delta_secs(), at.translation().to_array(), &rules);
+        if changed {
+            let samples = t.style.samples.clamp(1, MAX_SAMPLES) as usize;
+            let points: Vec<(Vec3, f32)> = t.trail.curve(samples).into_iter().map(|(p, u)| (Vec3::from_array(p), u)).collect();
+            let mesh = strips(&points, &t.style);
+            if let Some(m) = meshes.get_mut(&t.mesh) {
+                *m = mesh;
+            }
+        }
+        let depth = camera.map_or(f32::MAX, |c| (at.translation() - c.translation()).dot(c.forward().as_vec3()));
+        let alpha = if greenscreen || depth <= 0.0 || t.trail.points.len() < 4 { 0.0 } else { t.style.alpha(depth) };
+        visibility.set_if_neq(if alpha > 0.0 { Visibility::Visible } else { Visibility::Hidden });
+        for (material, pass) in &t.passes {
+            let [r, g, b, a] = pass.colour(t.style.intensity, alpha);
+            let want = Color::linear_rgba(r, g, b, a);
+            if materials.get(material).is_some_and(|m| m.base_color != want) {
+                if let Some(m) = materials.get_mut(material) {
+                    m.base_color = want;
+                }
+            }
+        }
+    }
 }
 
 /// The request cull and the entry cap (`82D4F8A8`, b538): the nearest [`MAX_DRAWN`] icons within [`DRAW_DISTANCE`] of
@@ -375,8 +494,11 @@ fn face_camera(
     players: Query<&GlobalTransform, With<crate::world::PlayerRoot>>,
     mut markers: Query<(&IndicatorMarker, &mut Transform, &mut Visibility)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    replay: Option<Res<crate::replay::Replay>>,
 ) {
     let Some(camera) = cameras.iter().next() else { return };
+    // The replay greenscreen skips the indicator draw (`827FF7D0` -> `827AFC80`, b559).
+    let greenscreen = replay.is_some_and(|r| r.active && r.view.greenscreen);
     let back = -camera.forward().as_vec3();
     // The cull's query point is the player (`827AAF10`, b538); the camera only when there is none.
     let query = players.iter().next().unwrap_or(camera).translation();
@@ -392,7 +514,7 @@ fn face_camera(
         // camera distance (`827B1B70`, b537).
         let to = t.translation - camera.translation();
         let depth = to.dot(camera.forward().as_vec3());
-        let in_range = kept && to.length() <= marker.style.fade[3];
+        let in_range = !greenscreen && kept && to.length() <= marker.style.fade[3];
         let alpha = if in_range && depth > 0.0 { marker.style.alpha(depth) } else { 0.0 };
         visibility.set_if_neq(if alpha > 0.0 { Visibility::Visible } else { Visibility::Hidden });
         for (material, pass) in &marker.passes {
@@ -433,6 +555,39 @@ mod tests {
         let b = Pass::Background.colour([1.0, 0.7], 1.0);
         assert!((b[0] - 0.7).abs() < 1e-6 && (b[3] - 0.7f32.sqrt()).abs() < 1e-6);
         assert_eq!(Pass::Background.colour([1.0, 0.7], 0.0)[3], 0.0);
+    }
+
+    /// Setup exports the trail rows under their vault hash; the lookup by name finds them (b566: trail_follow =
+    /// 0x8330C6CBB7402726).
+    #[test]
+    fn trail_style_found_by_its_hash() {
+        let mut styles = HashMap::new();
+        styles.insert("Hash_8330C6CBB7402726".to_string(), Style::default());
+        assert!(style_row(&styles, "trail_follow").is_some());
+        assert!(style_row(&styles, "trail_skatewith").is_none());
+    }
+
+    /// The replay greenscreen hides the icons; they come back when it is off (b559).
+    #[test]
+    fn greenscreen_hides_the_icons() {
+        let mut app = App::new();
+        app.init_resource::<Assets<StandardMaterial>>().init_resource::<crate::replay::Replay>().add_systems(Update, face_camera);
+        let world = app.world_mut();
+        world.spawn((crate::camera::GameplayCamera, GlobalTransform::IDENTITY));
+        let icon = world.spawn((IndicatorMarker { billboard: false, style: Style::default(), passes: Vec::new() },
+            Transform::from_xyz(0.0, 0.0, -50.0), Visibility::Hidden)).id();
+        app.update();
+        assert_eq!(app.world().get::<Visibility>(icon), Some(&Visibility::Visible));
+        {
+            let mut replay = app.world_mut().resource_mut::<crate::replay::Replay>();
+            replay.active = true;
+            replay.view.toggle(0);
+        }
+        app.update();
+        assert_eq!(app.world().get::<Visibility>(icon), Some(&Visibility::Hidden));
+        app.world_mut().resource_mut::<crate::replay::Replay>().active = false;
+        app.update();
+        assert_eq!(app.world().get::<Visibility>(icon), Some(&Visibility::Visible));
     }
 
     /// smallarrow (teleporters): fades in from 4.23 m to 13.36 m, gone beyond 100 m.

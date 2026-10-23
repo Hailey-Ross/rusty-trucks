@@ -293,13 +293,13 @@ struct ViewApplied {
 }
 
 /// The film pack's replay mode on the player and the world (b557, `827F9D40` / `827FEFD0`): "player visible" off hides
-/// the player's root; greenscreen hides everything the map owns (not its lights, so the characters stay lit) and
-/// clears to the greenscreen colour. Put back when the mode changes or the replay closes.
+/// the player's root; greenscreen hides everything the map owns and the sky dome (not the lights, so the characters
+/// stay lit) and clears to the greenscreen colour (retail fills (0, 1, 0, 1) before the scene, b558 `827FE8D8`). Put back when the mode changes or the replay closes.
 fn apply_view(
     replay: Res<Replay>,
     mut state: Local<ViewApplied>,
     players: Query<Entity, With<crate::world::PlayerRoot>>,
-    map: Query<Entity, (With<crate::map_render::MapEntity>, Without<ChildOf>, Without<DirectionalLight>, Without<PointLight>, Without<SpotLight>)>,
+    map: Query<Entity, (Or<(With<crate::map_render::MapEntity>, With<crate::retail_sky::SkyDome>)>, Without<ChildOf>, Without<DirectionalLight>, Without<PointLight>, Without<SpotLight>)>,
     mut visibility: Query<&mut Visibility>,
     clear: Option<ResMut<ClearColor>>,
     mut commands: Commands,
@@ -360,6 +360,7 @@ mod tests {
         let level = world.spawn((crate::map_render::MapEntity, Visibility::Visible)).id();
         let sky = world.spawn(crate::map_render::MapEntity).id();
         let sun = world.spawn((crate::map_render::MapEntity, DirectionalLight::default(), Visibility::Inherited)).id();
+        let dome = world.spawn((crate::retail_sky::SkyDome, Visibility::Visible)).id();
         {
             let mut replay = world.resource_mut::<Replay>();
             replay.active = true;
@@ -370,12 +371,14 @@ mod tests {
         let w = app.world();
         let vis = |e: Entity| w.get::<Visibility>(e).copied();
         assert_eq!((vis(player), vis(level), vis(sky), vis(sun)), (Some(Visibility::Hidden), Some(Visibility::Hidden), Some(Visibility::Hidden), Some(Visibility::Inherited)));
+        assert_eq!(vis(dome), Some(Visibility::Hidden));
         assert_eq!(w.resource::<ClearColor>().0, Color::srgb(0.0, 1.0, 0.0));
         app.world_mut().resource_mut::<Replay>().view = super::super::ReplayViewMode::default();
         app.update();
         let w = app.world();
         let vis = |e: Entity| w.get::<Visibility>(e).copied();
         assert_eq!((vis(player), vis(level), vis(sky)), (Some(Visibility::Inherited), Some(Visibility::Visible), None));
+        assert_eq!(vis(dome), Some(Visibility::Visible));
         assert_eq!(w.resource::<ClearColor>().0, Color::BLACK);
     }
 }

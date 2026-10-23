@@ -133,7 +133,7 @@ Test: the leash keeps a camera inside 40 m and pulls a far one onto the sphere.
   commits a soft key): Save to PC (with the Save Replay? confirm), Take Photo (the same flow as the base X), Replay
   Mode, Reset Timeline Current Channel, Reset Timeline. Replay Mode is a popup of three toggles that stays up
   (`82615728`): greenscreen (only characters drawn over a flat colour: everything the map owns hides except its
-  lights, the clear colour turns green; retail's exact colour at the renderer's +0x7DF0 is not read, so it is data),
+  lights, the clear colour turns green; retail fills the screen with the constant (0, 1, 0, 1) before the scene while greenscreen is on [code 827FE8D8, b558; the +0x7DF0 read in b557 is a screen fade colour], so the default matches retail and stays data; the retail sky dome hides with the world, and the visual indicators (teleporter icons) hide too, as retail skips their draw [code 827FF7D0 -> 827AFC80, b559]),
   player visible (the player's root), skaters visible (NPC skaters and peds; cars and props hide only under
   greenscreen). They are local view state (`Replay::view`) and go back to the defaults when the replay closes
   (`82610828`). The resets (`82C7F728`) ask No / Yes (No reopens the menu) and clear every key of the current channel
@@ -935,3 +935,17 @@ handling, replay.rs help block and panel gate).
   Game row changes the lens only; Y (Create pack) cycles the edit channel, and after Y moves off "camera", A opens that
   channel's rows instead of the camera rows (b386, b401, b402, b405, b411). Ours follows that. The new REPLAY_EDITOR
   line shows which mode a session reached.
+
+## Teleporter Yes did nothing: the replay took every popup answer (2026-10-23, USER-ASKS 286)
+
+- **Problem:** play session 2026-10-23 13:39 (University, Harley Stadium teleporter): "the prompt triggered and it
+  asked me if I wanted to teleport in, yes or no. But when I chose Yes, nothing happened."
+- **Evidence:** the log has `RETAIL_MENUS popup 0 (engine:teleporter)` and `popup 0 choice 1 (engine:teleporter)`
+  (1 = Yes, `teleporters::chosen_exit`), then no `SKATE_TELEPORTER` line.
+- **Root cause:** the replay's popup handler (`replay.rs`, since df85d911) emptied the whole engine answer queue
+  (`std::mem::take(&mut popups.engine_choices)`) and kept only its own answers. When it ran before
+  `teleporters::prompt` (the two systems are not ordered), the teleporter's answer was lost.
+- **Change:** the replay takes only answers whose callback starts with `engine:replay.` and leaves the rest queued.
+- **Test:** `replay::tests` (the quit warning test) queues a replay answer and a teleporter answer: the replay acts
+  on its own, and the teleporter answer is still queued afterwards.
+- **Files:** `crates/skate-game/src/replay.rs`, `crates/skate-game/src/replay/tests.rs`.

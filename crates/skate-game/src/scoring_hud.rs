@@ -1,5 +1,5 @@
 //! Original APT HUD rendered independently of the world's resolution scale.
-use crate::{apt_scene, config::Config, hud_central, hud_runtime, physics::SkaterRuntime};
+use crate::{apt_scene, config::Config, hud_central, hud_minimap, hud_runtime, physics::SkaterRuntime};
 use bevy::{
     asset::{RenderAssetUsages, embedded_asset},
     camera::{RenderTarget, ScalingMode, visibility::RenderLayers},
@@ -81,6 +81,38 @@ struct Hud {
     /// The central message HUD (`hud2/hudcentral`), drawn above the trick display; `None` in an install from before
     /// it was converted (Refresh Game Files adds it).
     central: Option<Central>,
+    /// The minimap frame (`hud2/hudminimap`); `None` in an install from before it was converted.
+    minimap: Option<MiniMap>,
+}
+/// The minimap frame movie and its draw slots.
+struct MiniMap {
+    runtime: hud_minimap::Runtime,
+    shapes: apt_scene::Shapes,
+    slots: Vec<Slot>,
+    failed: bool,
+}
+/// Below the central messages, above the trick display.
+const MINIMAP_Z: f32 = 29.0;
+/// The north needle retail draws over the minimap (82665848, `north_pointer.Texture` of icons/minimap, 16 x 128), its
+/// texture key here and its centre: the movie's needle clip `mNorth` (b568). The texture lives in the menu movie set.
+const NEEDLE_TEXTURE: &str = "minimap:north_pointer";
+/// The minimap icon pack's textures the HUD loads (menu set `texture/<name>`), keyed `minimap:<name>`.
+const MINIMAP_TEXTURES: [&str; 2] = ["north_pointer", "mini_skater"];
+/// The pointer quad in map units (+-16 x +-100, 0x8232F9C0..0x8232F9FF; b571), scaled like the icons.
+const NEEDLE_UNITS: [f32; 2] = [32.0, 200.0];
+
+/// The needle quad turned degrees clockwise on screen.
+fn needle_draw(degrees: f32) -> apt_scene::Draw {
+    // Map units turned, then the map matrix's scale and centre (skate_core::minimap::IconRules, traced).
+    let rules = skate_core::minimap::IconRules::default();
+    let (s, c) = degrees.to_radians().sin_cos();
+    let [hw, hh] = [NEEDLE_UNITS[0] / 2.0, NEEDLE_UNITS[1] / 2.0];
+    let corner = |x: f32, y: f32, u: f32, v: f32| apt_scene::Vertex {
+        position: [rules.centre[0] + (x * c - y * s) * rules.scale[0], rules.centre[1] + (x * s + y * c) * rules.scale[1]],
+        uv: [u, v],
+    };
+    let [a, b, d, e] = [corner(-hw, -hh, 0.0, 0.0), corner(hw, -hh, 1.0, 0.0), corner(hw, hh, 1.0, 1.0), corner(-hw, hh, 0.0, 1.0)];
+    apt_scene::Draw { texture: NEEDLE_TEXTURE.into(), vertices: vec![a.clone(), b, d.clone(), a, d, e], multiply: [1.0; 4], add: [0.0; 4], fill: apt_scene::Fill::TextureClamped }
 }
 /// The central message movie and its draw slots.
 struct Central {
@@ -129,6 +161,7 @@ impl Plugin for ScoringHudPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "hud_render.wgsl");
         embedded_asset!(app, "hud_composite.wgsl");
+        app.init_resource::<hud_minimap::MinimapHeading>().init_resource::<hud_minimap::MinimapIcons>();
         app.add_message::<hud_central::CentralMessage>().add_plugins((
             Material2dPlugin::<HudMaterial>::default(),
             UiMaterialPlugin::<HudComposite>::default(),
@@ -145,7 +178,7 @@ impl Plugin for ScoringHudPlugin {
         )
         .add_systems(
             Update,
-            (resize_target, reset, render)
+            (resize_target, reset, hud_minimap::track_heading, hud_minimap::called_skater_icons, render)
                 .chain()
                 .after(crate::app::FrameSet::Physics),
         );
@@ -210,6 +243,30 @@ fn setup(
                 Some(Central { runtime, source, shapes, sounds, slots: Vec::new(), failed: false })
             }
         };
+        let minimap = match std::fs::read(root.join("runtime/hudminimap.json")) {
+            Err(_) => {
+                info!("Minimap HUD not installed ({}): Refresh Game Files adds it", root.display());
+                None
+            }
+            // Optional: a minimap that does not load leaves the rest of the HUD running.
+            Ok(bytes) => match (|| -> Result<MiniMap, String> {
+                let source: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                let runtime = hud_minimap::Runtime::load(&source)?;
+                let shapes: apt_scene::Shapes = serde_json::from_value(source["shapes"].clone()).map_err(|e| e.to_string())?;
+                Ok(MiniMap { runtime, shapes, slots: Vec::new(), failed: false })
+            })() {
+                Ok(m) => {
+                    for texture in m.shapes.values().flatten().filter_map(|s| s.texture.as_ref()) {
+                        files.insert(texture.rgba.clone(), [texture.width, texture.height]);
+                    }
+                    Some(m)
+                }
+                Err(error) => {
+                    error!("Minimap HUD could not load: {error}");
+                    None
+                }
+            },
+        };
         let mut textures = BTreeMap::new();
         for (path, size) in files {
             let bytes = std::fs::read(root.join(&path)).map_err(|e| format!("HUD {path}: {e}"))?;
@@ -229,6 +286,24 @@ fn setup(
             );
             textures.insert(path, images.add(image));
         }
+        // The needle and icon textures from the menu movie set's minimap icons (manifest `images`: texture/<name>).
+        if minimap.is_some() {
+            let set = crate::retail_menu_movies::set_root(&config);
+            let manifest = std::fs::read(set.join("manifest.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).unwrap_or_default();
+            for name in MINIMAP_TEXTURES {
+                let e = &manifest["images"][format!("texture/{name}")];
+                match (e["rgba"].as_str(), e["width"].as_u64(), e["height"].as_u64()) {
+                    (Some(rgba), Some(w), Some(h)) => match std::fs::read(set.join(rgba)) {
+                        Ok(bytes) if bytes.len() == (w * h * 4) as usize => {
+                            let image = Image::new(Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 }, TextureDimension::D2, bytes, TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::RENDER_WORLD);
+                            textures.insert(format!("minimap:{name}"), images.add(image));
+                        }
+                        _ => warn!("Minimap texture {rgba} unreadable"),
+                    },
+                    _ => warn!("Minimap: no texture/{name} in the menu set (Refresh Game Files)"),
+                }
+            }
+        }
         Ok(Hud {
             target: Handle::default(),
             composite: Handle::default(),
@@ -241,6 +316,7 @@ fn setup(
             generation: 0,
             failed: false,
             central,
+            minimap,
         })
     })();
     match result {
@@ -501,6 +577,12 @@ fn advance(
         }
     }
     messages.clear();
+    if let Some(m) = hud.minimap.as_mut().filter(|m| !m.failed) {
+        if let Err(error) = m.runtime.update() {
+            error!("Minimap HUD stopped: {error}");
+            m.failed = true;
+        }
+    }
     if hud.failed || hud.generation != map.generation {
         return;
     }
@@ -526,9 +608,11 @@ fn render(
     overlay: Option<Res<crate::graphics_menu::Menu>>,
     menus: Option<Res<crate::retail_menus::RetailMenus>>,
     mut was_showing: Local<bool>,
+    heading: Res<hud_minimap::MinimapHeading>,
+    icons: Res<hud_minimap::MinimapIcons>,
 ) {
     let started = std::time::Instant::now();
-    render_hud(commands, hud, meshes, materials, fe_hud, overlay, menus, &mut was_showing);
+    render_hud(commands, hud, meshes, materials, fe_hud, overlay, menus, &mut was_showing, &heading, &icons);
     crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_HUD_RENDER, started);
 }
 fn render_hud(
@@ -540,6 +624,8 @@ fn render_hud(
     overlay: Option<Res<crate::graphics_menu::Menu>>,
     menus: Option<Res<crate::retail_menus::RetailMenus>>,
     was_showing: &mut bool,
+    heading: &hud_minimap::MinimapHeading,
+    icons: &hud_minimap::MinimapIcons,
 ) {
     let Some(mut hud) = hud else {
         return;
@@ -585,6 +671,49 @@ fn render_hud(
         );
     }
     *was_showing = showing;
+    // The minimap (82665278): off with the HUD, else the Game Settings Minimap row (+158, retail default on); our
+    // pause menu is Free Play (game mode 3), where the row decides.
+    let setting = menus
+        .as_deref()
+        .and_then(|m| crate::retail_menus::setting(m, "ID_GAMESETTINGS_MINIMAP_TOGGLE"))
+        .is_none_or(|v| skate_core::menu_values::number(&v) != 0.0);
+    let minimap_draws = match hud.minimap.as_mut() {
+        Some(m) if !m.failed => {
+            let shown = skate_core::minimap::visible(!hidden, 3, setting);
+            let changed = m.runtime.shown() != shown;
+            // The needle turns with the heading-up map (82665848). NOT RETAIL YET: world north taken as +z.
+            let north = skate_core::minimap::needle_degrees(&heading.needle);
+            match m.runtime.set_shown(shown).and_then(|_| m.runtime.set_north(north)).and_then(|_| if shown { apt_scene::draw(&m.runtime.bindings.movie, &m.runtime.vm, &m.shapes).map_err(|e| e.to_string()) } else { Ok(Vec::new()) }) {
+                Ok(draws) => {
+                    if changed {
+                        info!("HUD_MINIMAP {} draws={}", if shown { "shown" } else { "hidden" }, draws.len());
+                    }
+                    draws
+                }
+                Err(error) => {
+                    error!("Minimap HUD: {error}");
+                    m.failed = true;
+                    Vec::new()
+                }
+            }
+        }
+        _ => Vec::new(),
+    };
+    let mut minimap_draws = minimap_draws;
+    if !minimap_draws.is_empty() {
+        // The icon groups in order (826656F8 -> 8268CB40), then the needle on top (82665848).
+        let rules = skate_core::minimap::IconRules::default();
+        for icon in icons.groups.values().flatten() {
+            let key = format!("minimap:{}", icon.texture);
+            let Some((c, a)) = hud.textures.contains_key(&key).then(|| skate_core::minimap::place(icon, heading.player, &heading.heading, &rules)).flatten() else { continue };
+            let v = |i: usize, u: f32, w: f32| apt_scene::Vertex { position: c[i], uv: [u, w] };
+            let [r, g, b, alpha] = icon.colour;
+            minimap_draws.push(apt_scene::Draw { texture: key, vertices: vec![v(0, 0.0, 0.0), v(1, 1.0, 0.0), v(2, 1.0, 1.0), v(0, 0.0, 0.0), v(2, 1.0, 1.0), v(3, 0.0, 1.0)], multiply: [r, g, b, alpha * a], add: [0.0; 4], fill: apt_scene::Fill::TextureClamped });
+        }
+        if hud.textures.contains_key(NEEDLE_TEXTURE) {
+            minimap_draws.push(needle_draw(skate_core::minimap::needle_degrees(&heading.needle)));
+        }
+    }
     let hud = &mut *hud;
     apply_draws(
         &mut commands,
@@ -597,6 +726,10 @@ fn render_hud(
     if let Some(central) = hud.central.as_mut() {
         let textures = &hud.textures;
         render_draws(&mut commands, &mut meshes, &mut materials, &mut central.slots, &central_draws, |t| textures.get(t).cloned(), CENTRAL_Z, true);
+    }
+    if let Some(m) = hud.minimap.as_mut() {
+        let textures = &hud.textures;
+        render_draws(&mut commands, &mut meshes, &mut materials, &mut m.slots, &minimap_draws, |t| textures.get(t).cloned(), MINIMAP_Z, true);
     }
 }
 fn hud_position(v: &apt_scene::Vertex) -> [f32; 3] {

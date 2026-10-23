@@ -46,6 +46,12 @@ pub(crate) const TEXT_ENTRY_SCREEN: &str = "47ddadb752e051b6";
 pub(crate) const TEXT_VIEWER_SCREEN: &str = "bd688a2a5602e595";
 /// The credits screen's id (TU3 FE id 25, template 30 `extras/credits.swf`, b489).
 pub(crate) const CREDITS_SCREEN: &str = "0bdb6ab1cb803a1b";
+/// The SpawnSkater screen's id (TU3 FE id 62, template 107 `cas/spawnskater.swf`; info record 0x83026088 + 62 * 24,
+/// disc index 60; b543).
+pub(crate) const SPAWN_SKATER_SCREEN: &str = "6abd6ed78ce7e627";
+/// The Free Play options screen's id (TU3 FE id 34, template 13 `main/freeskate_options.swf`; info record 0x83026088 +
+/// 34 * 24, disc index 32; b548 / b564).
+pub(crate) const FREE_SKATE_SCREEN: &str = "898675eacd78bf05";
 
 #[derive(Resource, Default)]
 pub(crate) struct FeBackdrop {

@@ -314,6 +314,8 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
   DownTown pad edge) and no pushes.
 - **Tests:** `fused_park_pieces_pair_their_flush_seams` (a 5 cm gap stays unpaired: not convex, cosine 1),
   `speed_watch_logs_catches_not_pushes_or_slowdowns`. skate-game 887 passed. Not play-tested.
+- **Play test (desktop session 2026-10-23 13:39, Skate.Park Stadium full, the user):** "The seams between the floor
+  and the ramps are great! no noticeable slowdown when tranisitioning."
 - **Open:** the concave rule above 1.8 (retail writes cosine about 1.0, ours keeps the pair's cosine); where retail
   sets vertex-disable bits (`82875200` / `82AC2BE8`, ours: the coplanar rule); which pool holds the map floor. The
   first two are answered in the next section.

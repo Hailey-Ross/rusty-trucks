@@ -343,6 +343,19 @@ def convert_map(archive,work,maps,stage,game_exe,log,report,district=None,label=
     return entry
 
 
+# Groups whose outputs a refresh that does not rebuild them hard-links into the new installation (see `_install`).
+LINKED_GROUPS=('audio',)
+
+
+def shared_changed(shared):
+    """Linked files whose size or modification time moved since they were linked, i.e. written in place."""
+    def moved(path,before):
+        try:now=os.stat(path)
+        except OSError:return False  # replaced or removed: the previous installation's copy is untouched
+        return now.st_ino==before.st_ino and (now.st_size,now.st_mtime_ns)!=(before.st_size,before.st_mtime_ns)
+    return [path for path,before in shared if moved(path,before)]
+
+
 def install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None):
     from .setup_state import setup_lock
     from .setup_budget import lowered_priority
@@ -411,6 +424,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
     install_id=uuid.uuid4().hex
     stage=base/'installations'/install_id
     stage.mkdir(parents=True)
+    shared=[]  # (file, stat when linked): hard links shared with the previous installation
     if previous:
         report('Preparing an asset update; keeping the previous installation until it succeeds')
         immutable_maps = ({(previous[0]/item['path']).resolve() for item in
@@ -420,6 +434,11 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         sets=previous[0]/'assets/private/customisation/sets'
         immutable_sets=[p.resolve() for p in sets.glob('*') if p.is_dir()
                         and all((p/(name+'-complete.json')).is_file() for name in character_stages)]
+        # The audio's outputs (4.9 GB, written only by the audio step) share storage too when the audio group is not
+        # rebuilt (just verified by damaged()). Not every group: other steps write into core's stock/dlc and the living
+        # world's hand props in place (the maps step), which reached the previous installation (laptop 2026-10-23).
+        from .group_receipts import files as group_files
+        unchanged={p.resolve() for g in LINKED_GROUPS if g not in groups for p in group_files(previous[0],g)}
         for entry in previous[0].iterdir():
             if entry.name in {'conversion','setup-report.json'} or setup_log_name(entry.name):continue
             # Unchanged maps and immutable character generations share storage.
@@ -431,7 +450,13 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 else:shutil.copy2(src,dst)
                 return dst
             def copy_asset(src,dst):
-                if any(Path(src).resolve().is_relative_to(root) for root in immutable_sets):
+                resolved=Path(src).resolve()
+                if resolved in unchanged:
+                    try:
+                        os.link(src,dst)
+                        shared.append((Path(dst),os.stat(dst)))
+                    except OSError:shutil.copy2(src,dst)
+                elif any(resolved.is_relative_to(root) for root in immutable_sets):
                     try:os.link(src,dst)
                     except OSError:shutil.copy2(src,dst)
                 else:shutil.copy2(src,dst)
@@ -688,6 +713,11 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         elif finalize:finalize(stage)
         from .validation_report import summary
         warnings=summary(stage)
+    changed=shared_changed(shared)
+    if changed:
+        listed='\n'.join(f'  {path}' for path in changed)
+        raise RuntimeError(f'Setup changed {len(changed)} file(s) shared with the previous installation; the update was '
+                           f'not published:\n{listed}')
     # Publish after core validation and all optional outcomes have been recorded.
     marker=base/'installation.json.new'
     marker.write_text(json.dumps({'version':1,'directory':'installations/'+install_id,'source':source,'source_hash':source_hash,'pipelines':target_versions,'outputs':outputs(stage),

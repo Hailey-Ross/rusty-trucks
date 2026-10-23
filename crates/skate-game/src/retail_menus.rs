@@ -297,9 +297,8 @@ const STORED_OWNER: &str = "settings";
 /// Rows with a retail rule whose effect the engine does not have yet (user, 2026-10-13: grey them like the other
 /// unported items). They get no stored layer, so they stay greyed and show retail's default; a mod's value layer
 /// still enables them. Remove an id here when its feature lands (doc 31 "Stored settings").
-const NO_EFFECT_YET: [&str; 10] = [
+const NO_EFFECT_YET: [&str; 9] = [
     "ID_GAMESETTINGS_SUBTITLE_TOGGLE",
-    "ID_GAMESETTINGS_MINIMAP_TOGGLE",
     "ID_GAMESETTINGS_CAM_MAN_TOGGLE",
     "ID_GAMESETTINGS_HOM_MODE_OPTIONS",
     "ID_GAMESETTINGS_UNITS_TOGGLE",
@@ -1001,10 +1000,10 @@ mod tests {
     #[test]
     fn rows_without_an_effect_stay_greyed_until_a_mod_binds_them() {
         use skate_core::menus::Setting;
-        let minimap = "ID_GAMESETTINGS_MINIMAP_TOGGLE";
+        let row = "ID_GAMESETTINGS_SUBTITLE_TOGGLE";
         let mut d = data();
-        d.settings.push(Setting { id: minimap.into(), label: minimap.into(), widget: Widget::Selector, link: None });
-        d.screens[6].push(minimap.into());
+        d.settings.push(Setting { id: row.into(), label: row.into(), widget: Widget::Selector, link: None });
+        d.screens[6].push(row.into());
         let dir = std::env::temp_dir().join(format!("skate3rust-menus-noeffect-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut app = App::new();
@@ -1012,11 +1011,11 @@ mod tests {
             .insert_resource(StoredSettings::load(dir.join("game-settings.json")))
             .add_systems(Update, sync_stored_values);
         app.update();
-        let entry = EntryRef::setting(minimap);
+        let entry = EntryRef::setting(row);
         let menus = app.world().resource::<RetailMenus>();
         assert!(!menus.registry.enabled(&entry, &menus.context.clone()), "greyed");
         assert!(menus.registry.owner_value(&entry, &Owner::Engine(STORED_OWNER.into())).is_none(), "not stored");
-        apply_command(&mut app.world_mut().resource_mut::<RetailMenus>(), "m", command(json!({"kind":"menu_handle","entry":"setting","id":minimap,"options":{"select":false,"value":0}}))).unwrap();
+        apply_command(&mut app.world_mut().resource_mut::<RetailMenus>(), "m", command(json!({"kind":"menu_handle","entry":"setting","id":row,"options":{"select":false,"value":0}}))).unwrap();
         app.update();
         let menus = app.world().resource::<RetailMenus>();
         assert!(menus.registry.enabled(&entry, &menus.context.clone()), "a mod's value enables it");

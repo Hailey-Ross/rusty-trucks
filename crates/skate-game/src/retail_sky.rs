@@ -17,6 +17,10 @@ use bevy::{
 
 use crate::map_render::{AssetSink, SceneCommands};
 
+/// Marks the retail sky dome entity.
+#[derive(Component)]
+pub(crate) struct SkyDome;
+
 /// What the world shader needs from the sky package.
 ///
 /// The defaults are the no-sky case: the same sun vector the material table used
@@ -298,6 +302,7 @@ impl SkyPackage {
         .with_inserted_indices(bevy::mesh::Indices::U32(self.sky.indices));
         commands.spawn((
             Name::new("Retail sky dome"),
+            SkyDome,
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(materials.add(SkyMaterial {
                 params,
