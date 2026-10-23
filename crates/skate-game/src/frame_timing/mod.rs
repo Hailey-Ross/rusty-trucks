@@ -285,6 +285,20 @@ struct RefreshWarning;
 #[derive(Component)]
 struct RefreshWarningText;
 
+/// The machine's threads and Bevy's pool sizes once at start-up: the parallel transform propagation spikes seen on
+/// one PC and not another (research b554) depend on them.
+fn log_threads() {
+    use bevy::tasks::{AsyncComputeTaskPool, ComputeTaskPool, IoTaskPool};
+    let logical = std::thread::available_parallelism().map_or(0, |n| n.get());
+    let pool = |n: Option<usize>| n.map_or("-".to_owned(), |n| n.to_string());
+    info!(
+        "SKATE_THREADS logical={logical} compute={} async_compute={} io={}",
+        pool(ComputeTaskPool::try_get().map(|p| p.thread_num())),
+        pool(AsyncComputeTaskPool::try_get().map(|p| p.thread_num())),
+        pool(IoTaskPool::try_get().map(|p| p.thread_num())),
+    );
+}
+
 pub(crate) struct FrameTimingPlugin;
 
 impl Plugin for FrameTimingPlugin {
@@ -293,7 +307,7 @@ impl Plugin for FrameTimingPlugin {
         if let Some(log) = log::FrameLog::from_env() {
             app.insert_resource(FrameLogSink(log));
         }
-        app.add_systems(Startup, spawn_overlay)
+        app.add_systems(Startup, (spawn_overlay, log_threads))
             .add_systems(First, begin_frame.before(bevy::time::TimeSystems))
             .add_systems(RunFixedMainLoop, begin_fixed.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .add_systems(RunFixedMainLoop, end_fixed.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
