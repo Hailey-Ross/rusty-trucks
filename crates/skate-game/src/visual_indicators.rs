@@ -11,6 +11,8 @@ const COLOR: [f32; 3] = [1.0, 0.85, 0.2];
 const MAX_SAMPLES: u16 = 10;
 /// Retail draws an indicator only within 400 m of the query point (`82D4F8A8`, constant 0x820C6AF0).
 pub(crate) const DRAW_DISTANCE: f32 = 400.0;
+/// Retail keeps at most 22 entries in range per frame (`82D5D478`, b534), nearest first within a group (b538).
+pub(crate) const MAX_DRAWN: usize = 22;
 
 /// A `visualindicators` row as the draw reads it (setup visual_indicators.py `styles`, research b534).
 #[derive(Clone, Debug, Deserialize)]
@@ -39,7 +41,7 @@ impl Default for Style {
 }
 
 impl Style {
-    /// Opacity at `distance` from the camera (`827B1B70` fade window, linear ramps assumed, b534); 0 = hidden.
+    /// Opacity at `distance` from the camera (`827B1B70` fade window: graph row 1, linear, b534 / b537); 0 = hidden.
     pub(crate) fn alpha(&self, distance: f32) -> f32 {
         let [x0, x1, x2, x3] = self.fade;
         if distance > x3 {
@@ -54,6 +56,9 @@ impl Style {
 pub(crate) struct Spline {
     /// Power-basis cubics, rows c3, c2, c1, c0 (setup visual_indicators.py).
     pub segments: Vec<[[f32; 3]; 4]>,
+    /// The spline table's kind; bit 0 = billboard (`827B0490` -> Spline +0x96A, b537).
+    #[serde(default)]
+    pub kind: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -146,6 +151,7 @@ pub(crate) struct VisualIndicators {
 /// One icon: the billboard root; its pass children carry [`IndicatorPass`].
 #[derive(Component)]
 pub(crate) struct IndicatorMarker {
+    billboard: bool,
     style: Style,
     passes: Vec<(Handle<StandardMaterial>, Pass)>,
 }
@@ -184,6 +190,19 @@ pub(crate) fn wanted(placements: &[&Placement]) -> Vec<Placement> {
 pub(crate) fn position(matrix: &[[f32; 4]; 4], offset: [f32; 3]) -> Vec3 {
     let row = |i: usize| Vec3::new(matrix[i][0], matrix[i][1], matrix[i][2]);
     row(3) + row(0) * offset[0] + row(1) * offset[1] + row(2) * offset[2]
+}
+
+/// The anchor matrix's rotation (rows right, up, forward); retail keeps it for icons that do not billboard (b537).
+pub(crate) fn anchor_rotation(matrix: &[[f32; 4]; 4]) -> Quat {
+    let row = |i: usize| Vec3::new(matrix[i][0], matrix[i][1], matrix[i][2]).normalize_or_zero();
+    Quat::from_mat3(&Mat3::from_cols(row(0), row(1), row(2))).normalize()
+}
+
+/// Billboard (`827B1A00`, b534 / b537): forward and right from the camera's view axis reversed, up kept from the icon.
+pub(crate) fn billboard(rotation: Quat, back: Vec3) -> Option<Quat> {
+    let up = rotation * Vec3::Y;
+    let forward = (back - up * back.dot(up)).try_normalize()?;
+    Some(Quat::from_mat3(&Mat3::from_cols(up.cross(forward), up, forward)).normalize())
 }
 
 /// The spline as retail's strips (`827B0BA8` / `827B2200`, b534): per strip the sampled points with a fixed edge
@@ -268,6 +287,7 @@ fn sync(
     for placement in &wanted {
         let Some(indicator) = state.indicators.get(&placement.key).filter(|i| i.enabled).cloned() else { continue };
         let Some(spline_id) = indicator.spline.clone() else { continue };
+        let billboard = state.splines.get(&spline_id).is_some_and(|s| s.kind & 1 == 1);
         let style_key = placement.style.clone().or(indicator.style.clone()).unwrap_or_default();
         let style = state.styles.get(&style_key).cloned().unwrap_or_default();
         let mesh = match state.meshes.get(&(spline_id.clone(), style_key.clone())) {
@@ -302,8 +322,9 @@ fn sync(
             });
             (material, pass)
         }).collect();
-        let root = commands.spawn((IndicatorMarker { style, passes: passes.clone() },
-            Transform::from_translation(position(&placement.matrix, indicator.offset)), Visibility::Hidden)).id();
+        let root = commands.spawn((IndicatorMarker { billboard, style, passes: passes.clone() },
+            Transform::from_translation(position(&placement.matrix, indicator.offset)).with_rotation(anchor_rotation(&placement.matrix)),
+            Visibility::Hidden)).id();
         for (material, ..) in passes {
             commands.spawn((IndicatorPass, Mesh3d(mesh.clone()), MeshMaterial3d(material), Transform::default(), ChildOf(root)));
         }
@@ -313,23 +334,44 @@ fn sync(
     state.shown = wanted;
 }
 
+/// The request cull and the entry cap (`82D4F8A8`, b538): the nearest [`MAX_DRAWN`] icons within [`DRAW_DISTANCE`] of
+/// the query point. Retail sorts within each group; ours are one group (the teleporters' group keys are unproven).
+fn kept(distances: &[f32]) -> Vec<bool> {
+    let mut near: Vec<usize> = (0..distances.len()).filter(|&i| distances[i] < DRAW_DISTANCE).collect();
+    near.sort_by(|&a, &b| distances[a].total_cmp(&distances[b]));
+    let mut out = vec![false; distances.len()];
+    for i in near.into_iter().take(MAX_DRAWN) {
+        out[i] = true;
+    }
+    out
+}
+
 /// Per viewing camera (`827B1A00`, b534): a yaw-only billboard whose local z is the camera's flattened view axis
 /// reversed (screen-parallel), then the style's distance fade; hidden beyond the request cull or the fade's end.
 fn face_camera(
     cameras: Query<&GlobalTransform, With<crate::camera::GameplayCamera>>,
+    players: Query<&GlobalTransform, With<crate::world::PlayerRoot>>,
     mut markers: Query<(&IndicatorMarker, &mut Transform, &mut Visibility)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let Some(camera) = cameras.iter().next() else { return };
     let back = -camera.forward().as_vec3();
-    for (marker, mut t, mut visibility) in &mut markers {
-        if back.x.abs() + back.z.abs() > 1e-6 {
-            t.rotation = Quat::from_rotation_y(back.x.atan2(back.z));
+    // The cull's query point is the player (`827AAF10`, b538); the camera only when there is none.
+    let query = players.iter().next().unwrap_or(camera).translation();
+    let markers: Vec<_> = markers.iter_mut().collect();
+    let kept = kept(&markers.iter().map(|(_, t, _)| t.translation.distance(query)).collect::<Vec<_>>());
+    for ((marker, mut t, mut visibility), kept) in markers.into_iter().zip(kept) {
+        if marker.billboard
+            && let Some(rotation) = billboard(t.rotation, back)
+        {
+            t.rotation = rotation;
         }
-        // The fade runs on view depth (the vertex shader's clip z, b536), the request cull on distance.
+        // The fade runs on view depth (the vertex shader's clip z, b536); the update hides past the fade's end on
+        // camera distance (`827B1B70`, b537).
         let to = t.translation - camera.translation();
         let depth = to.dot(camera.forward().as_vec3());
-        let alpha = if to.length() < DRAW_DISTANCE && depth > 0.0 { marker.style.alpha(depth) } else { 0.0 };
+        let in_range = kept && to.length() <= marker.style.fade[3];
+        let alpha = if in_range && depth > 0.0 { marker.style.alpha(depth) } else { 0.0 };
         visibility.set_if_neq(if alpha > 0.0 { Visibility::Visible } else { Visibility::Hidden });
         for (material, pass) in &marker.passes {
             let [r, g, b, a] = pass.colour(marker.style.intensity, alpha);
@@ -385,6 +427,37 @@ mod tests {
     }
 
     #[test]
+    fn billboard_keeps_the_icon_up() {
+        // Level anchor: a pure yaw toward the camera's reversed view axis.
+        let back = Vec3::new(1.0, -0.5, 0.0);
+        let q = billboard(Quat::IDENTITY, back).unwrap();
+        assert!((q * Vec3::Z - Vec3::X).length() < 1e-5 && (q * Vec3::Y - Vec3::Y).length() < 1e-5);
+        // Tilted anchor: up stays the anchor's, forward is the view axis made perpendicular to it.
+        let tilted = Quat::from_rotation_x(0.3);
+        let q = billboard(tilted, back).unwrap();
+        assert!((q * Vec3::Y - tilted * Vec3::Y).length() < 1e-5);
+        assert!((q * Vec3::Z).dot(tilted * Vec3::Y).abs() < 1e-5);
+        assert!(billboard(Quat::IDENTITY, Vec3::Y).is_none());
+    }
+
+    #[test]
+    fn anchor_rotation_reads_the_rows() {
+        let matrix = [[0.0, 0.0, -1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0; 4]];
+        let q = anchor_rotation(&matrix);
+        assert!((q * Vec3::X - Vec3::new(0.0, 0.0, -1.0)).length() < 1e-5 && (q * Vec3::Z - Vec3::X).length() < 1e-5);
+    }
+
+    #[test]
+    fn the_nearest_22_icons_in_range() {
+        let distances: Vec<f32> = [500.0].into_iter().chain((0..30).map(|i| 300.0 - i as f32 * 10.0)).collect();
+        let shown = kept(&distances);
+        assert!(!shown[0]);
+        assert_eq!(shown.iter().filter(|&&s| s).count(), MAX_DRAWN);
+        // 300 m .. 10 m: the 8 farthest (300 .. 230 m) drop out.
+        assert!(!shown[8] && shown[9] && shown[30]);
+    }
+
+    #[test]
     fn offset_is_in_the_anchor_frame() {
         // Rows right, up, forward: an anchor lying on its side moves the (0, 1, 0) offset along world x.
         let matrix = [[0.0, -1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [5.0, 2.0, 3.0, 1.0]];
@@ -394,7 +467,7 @@ mod tests {
     #[test]
     fn ribbon_follows_the_spline() {
         // One straight segment from (0, 0) to (0, 1): c1 = (0, 1), c0 = 0.
-        let spline = Spline { segments: vec![[[0.0; 3], [0.0; 3], [0.0, 1.0, 0.0], [0.0; 3]]] };
+        let spline = Spline { segments: vec![[[0.0; 3], [0.0; 3], [0.0, 1.0, 0.0], [0.0; 3]]], kind: 3 };
         let style = Style { width: [0.2, 0.15], samples: 10, three_strips: true, fade: [0.0, 0.0, 100.0, 100.0], intensity: [1.0, 0.7] };
         let mesh = ribbon(&spline, &style);
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };

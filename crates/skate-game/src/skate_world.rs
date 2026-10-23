@@ -81,7 +81,7 @@ fn spawn_static<T: Bundle + Clone>(
     buffers: &mut impl AssetSink<bevy::render::storage::ShaderStorageBuffer>,
     tag: T,
 ) -> (SceneStats, [usize; RenderClass::ALL.len()]) {
-    let mut table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
+    let table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
 
     let mut triangles: Vec<Triangle> = Vec::with_capacity(map.geometry.indices.len() / 3);
     for tri in map.geometry.indices.chunks_exact(3) {

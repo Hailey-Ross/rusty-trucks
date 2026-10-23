@@ -616,14 +616,36 @@ The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, 
   Ported (2026-10-22): style `intensity` exported, `Pass::colour` gives those factors as linear material colours,
   setup stores sqrt(alpha) in the background textures so the material's product equals the shader's root, fade on
   view depth per icon.
+- **Fade, billboard flag and Offset [code], research b537 (2026-10-23):** `827B1B70` reads only graph row 1 (rows 0
+  and 2 are never read, so `non_fade` still fades) into C = (x0, x1 - x0, x2, x3' - x2), the same constants the vertex
+  shader fades with per vertex, linear: min(sat((z - x0) / (x1 - x0)), 1 - sat((z - x2) / (x3' - x2))), a zero length a
+  step; x3' = x3 * 10 when a global byte (`*(0x83083C5C)+0x34786`, unidentified) is set; the update hides the icon when
+  the 3D camera distance exceeds x3'. Billboard: `827B0490` stores Spline +0x96A = spline table entry +0x30 (the
+  exported `kind`) & 1 (main checked the stores in the recomp: `clrlwi r11,r5,31` from `lwz r5,48(r4)`, and the read in
+  `827B1A00`); the teleport spline has kind 3 (on); kinds in the export: 2, 3, 8, 9. With it on, rows 0 and 2 come from
+  the camera and row 1 keeps the icon's own up; off, the icon keeps the anchor matrix it was spawned with. Both callers
+  of the spawn `827B14E0` pass a full matrix (Offset in the anchor's frame, as ours); the challenge request's path to
+  `827AB790` is inferred.
+- **Walk order, cull point and the x10 [code], research b538 (2026-10-23):** `82D5D478` walks the groups whose key is
+  the current object's first, then the rest in ascending 64-bit key order, taking another group only when there is no
+  current object (key -1) or its byte +0x2249 is 1, until 22 entries. +0x2249 is the argument of the Lua binding
+  `VisualIndicators.CreateGroup([bool], default true)` (`82D50598`); the teleport stategraph passes false (b421), so a
+  teleporter icon hides while another script's key is current (when that happens in free skate is unproven). Within a
+  group `82D4F8A8` keeps enabled entries within 400 m of the query point and sorts them nearest first (`82D5E4C0`, main
+  checked the call). The query point is the player (`827AAF10`: the sim focus object), not the camera. The x10 byte is
+  the renderer's +0x34786, written by the handler `8279EBA0` of message 0x4B6965CE (main checked the store and the id
+  in the recomp), sent at world load with the `world` row's park bool 0x0C54AD24155E3220 (b443): x10 in park worlds.
+- **Change (2026-10-23):** the engine billboards only splines with kind bit 0 and keeps the anchor's up while doing so,
+  otherwise keeps the anchor's rotation; hides past the fade's end on camera distance; keeps the nearest 22 icons
+  within 400 m of the player (the camera when there is none).
 - **Not retail yet:** the fade is per icon, not per vertex; the depth byte order and cull value are inferred; the
-  render-target gamma of the 360 versus Bevy's linear blend may shift the glow slightly; the billboard flag (Spline +0x96A, set by
-  `827B0490`, not read; inferred on); the fade ramps are linear and graph row 2 is unused; the 22-entry cap, passes,
-  wiggle, flicker and the x10 draw distance flag are not modelled; the snapshot may keep only the anchor's translation
-  (inferred, ours applies Offset in the anchor's frame).
+  render-target gamma of the 360 versus Bevy's linear blend may shift the glow slightly; the passes field, wiggle and
+  flicker are not modelled; the x10 in park worlds needs a map to `world` row link the export does not have yet (park
+  maps without a layout, e.g. DownTownSkatePark = `dist_downtownpark`); all teleporter icons are one group (retail's
+  per-script groups and the CreateGroup(false) hiding are not modelled).
 - **Mods:** `indicator="<ribbon_indicator key>"`, `indicator_position={x,y,z}`, `indicator_style="<visualindicators row>"` and `indicator_colour="<ribbon_spline_colour row>"` on `sdk.triggers.teleporter`
   (`sdk/ENGINE_API.md`); the icon goes with the teleporter.
 - **Tests:** `test_visual_indicators.py` (spline layout, the bank chain, style rows with inheritance),
   `visual_indicators.rs` tests (one icon per locator, Offset in the anchor frame, three strips / one strip and the
-  samples cap, the fade window). Captured 2026-10-22: the University icon at 15 m; University to Stadium loads
+  samples cap, the fade window, the nearest-22 cap, the billboard keeping the icon's up, the anchor rotation). Captured 2026-10-22: the University icon at 15 m; University to Stadium loads
   Stadium - Full (`MegaPark_Fullpark`, 450 pieces).

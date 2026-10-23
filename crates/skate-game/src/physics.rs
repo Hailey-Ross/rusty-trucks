@@ -78,7 +78,7 @@ mod revert_state;
 mod ground_exit;
 mod ground_phase;
 mod ground_runtime;
-pub(crate) use ground_runtime::{set_skitch_enabled, skitch_enabled};
+pub(crate) use ground_runtime::set_skitch_enabled;
 mod input_phase;
 mod landing_quality;
 mod offboard;
