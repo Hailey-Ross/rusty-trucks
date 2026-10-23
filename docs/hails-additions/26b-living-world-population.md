@@ -51,8 +51,14 @@ What retail does, checked in the code for this milestone (tags [code] / [data]; 
   zombie cheat is on; category roll `rand() % 100 + 1` against the cumulative weight x 100 (`0x820ED57C`), no hit =
   no spawn (DownTown traffic weights sum to 0.875) [code, data]. Ped pool 31 [code].
 - **Free Play** (mode 3): `sub_826B7010` clamps `+336` / `+332` to 0..1 as the ped / vehicle density; below 1.19e-7
-  the whole kind is culled at once [code]. A.I. Skaters `+340` off: no spawns (`sub_8245C548`) and the per-skater
-  checks despawn every ambient NPC (`sub_8245A9B8`, the `r25` gate) [code].
+  the whole kind is culled at once [code]; the ped clear is guarded by a zombie query, the vehicle clear is not, so
+  in zombie mode "No" traffic still removes the cars (research b551, main read the asm 2026-10-23; ours used to skip
+  both, now `census_pass` follows `cull_in_zombie`, test `free_play_zero_in_zombie_mode_clears_cars_not_peds`).
+  A.I. Skaters `+340` off: no spawns (`sub_8245C548`) and the per-skater checks despawn every ambient NPC
+  (`sub_8245A9B8`, the `r25` gate) [code]; retail keeps and still spawns the up to 3 requested ("Call Skater")
+  skaters, which ours does not have yet (todo fe62-spawn-skater.md). The menu rows store tenths (step 0.1, below 0.09
+  snaps to 0; labels are bands over 10 bars, b551). Open for multiplayer: `FreePlay` is not serialisable (skate-core
+  has no serde).
 - **Ambient skaters** `sub_8245BA28`: 60-tick cycle (cull 0, pool 15, spawn 30, checks 3-12 / 18-27 / 33-57),
   desired 3 (0 online), AI cap 5, 7 slots shared with players, spawn at the start node of an unused line 60-90 m away
   (`0x821FF080`), cull 120 m 3-D or 1000 m height (`0x82256FE0`, `0x82256FE8`) or excess [code]. Line scorer

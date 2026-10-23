@@ -366,8 +366,9 @@ pub(crate) fn census_pass(cfg: &CensusKindConfig, st: &mut KindState, inputs: &T
         return;
     }
     let Some(range) = cfg.range else { return };
-    // Mass cull at density ~0 (not in zombie mode) [code sub_826B7010].
-    if !inputs.zombie && density < retail::DENSITY_EPSILON {
+    // Mass cull at density ~0 [code sub_826B7010]: peds keep theirs in zombie mode (a zombie query guards that
+    // clear), the vehicle clear has no such guard (research b551; the same split as `cull_in_zombie`).
+    if (!inputs.zombie || cfg.cull_in_zombie) && density < retail::DENSITY_EPSILON {
         st.despawn_all(tick, DespawnReason::FreePlayOff, out);
         return;
     }
