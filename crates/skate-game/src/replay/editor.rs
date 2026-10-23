@@ -245,13 +245,18 @@ impl Editor {
         Some(mode)
     }
 
-    /// A on a camera key in the timeline (b405, `82612C28`): that key's edit mode, None when no key is there.
+    /// A on a camera key in the timeline (b405, `82612C28`): that key's edit mode, None when no key is there or the
+    /// key is a Game camera (retail's kind >= 3 returns without opening anything, b555).
     pub fn reopen_at(&mut self, time: f64) -> Option<u8> {
         let i = self.key_near(time)?;
-        self.editing = Some(i);
         let k = &self.cameras[i];
+        if matches!(k.camera, super::camera_key::CameraKey::Game) {
+            return None;
+        }
         let row = if k.soft { [4, 5, 2, 6][k.camera.row().min(3)] } else { k.camera.row() };
-        super::camera_key::CameraKey::edit_mode_and_state(row).map(|(mode, _)| mode)
+        let mode = super::camera_key::CameraKey::edit_mode_and_state(row).map(|(mode, _)| mode)?;
+        self.editing = Some(i);
+        Some(mode)
     }
 
     /// The key edit controls on the key being edited.
@@ -634,6 +639,11 @@ mod tests {
         // A on the Tripod key re-edits it (mode 8); not on a key: None.
         assert_eq!(e.reopen_at(5.0), Some(8));
         assert_eq!(e.reopen_at(7.0), None);
+        // A on a Game camera key opens nothing (`82612C28`, kind >= 3 returns, b555) and leaves the edited key alone.
+        e.cameras[1].camera = super::super::camera_key::CameraKey::Game;
+        let editing = e.editing;
+        assert_eq!(e.reopen_at(10.0), None);
+        assert_eq!(e.editing, editing);
         // A in the timeline (b462 / b463): over the hard Tripod key refused, over a soft key its edit, else the menu;
         // the clip's very ends are refused.
         assert_eq!(e.a_target(5.0, false), ATarget::Refused);

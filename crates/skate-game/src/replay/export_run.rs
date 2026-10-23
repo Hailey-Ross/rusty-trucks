@@ -17,6 +17,20 @@ pub(crate) const FINISHED_POPUP: &str = "engine:replay.finished";
 /// table or mod text that carries the id replaces it.
 pub(crate) const SAVE_TO_PC: &str = "ID_HAILS_REPLAY_SAVE_TO_PC";
 pub(crate) const SAVED_POPUP: &str = "engine:replay.saved";
+/// Retail asks before saving (b387 row 2: title = the row, ID_REPLAY_EDITOR_POPUP_REPLAYSAVE, No / Yes; callback
+/// `82616000`: No closes back to the editor).
+pub(crate) const SAVE_CONFIRM_POPUP: &str = "engine:replay.save_confirm";
+
+pub(crate) fn save_confirm_popup() -> skate_core::fe_popup::PopupRequest {
+    skate_core::fe_popup::PopupRequest {
+        title: SAVE_TO_PC.into(),
+        description: "ID_REPLAY_EDITOR_POPUP_REPLAYSAVE".into(),
+        options: vec!["ID_COMMON_NO".into(), "ID_COMMON_YES".into()],
+        callback: SAVE_CONFIRM_POPUP.into(),
+        cancelable: true,
+        ..Default::default()
+    }
+}
 
 pub(crate) fn finished_popup() -> skate_core::fe_popup::PopupRequest {
     skate_core::fe_popup::PopupRequest {

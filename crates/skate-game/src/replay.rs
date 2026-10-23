@@ -929,7 +929,12 @@ pub(crate) fn controls(
     let pressed = pad.buttons & !replay.previous_buttons;
     let released = replay.previous_buttons & !pad.buttons;
     replay.previous_buttons = pad.buttons;
-    let effects = replay.editor.as_ref().is_some_and(|e| e.session.mode == skate_core::replay_edit::session::EditorMode::Effects);
+    // B / Back reach the Finished menu only in playback, the instant replay and the timeline (retail modes 1 / 5 / 6,
+    // `82614E58`, b555); the trim, key edit and effects modes ignore them (effects commits on B itself).
+    let finish_mode = replay.editor.as_ref().is_none_or(|e| {
+        use skate_core::replay_edit::session::EditorMode;
+        matches!(e.session.mode, EditorMode::Playback | EditorMode::Instant | EditorMode::Timeline)
+    });
     let menu_open = !crate::graphics_menu::gameplay_active(menu);
     // The quit warning's answer (No / Yes, Yes = 1).
     for (callback, choice) in std::mem::take(&mut popups.engine_choices) {
@@ -944,12 +949,17 @@ pub(crate) fn controls(
             replay.quit_pending = false;
             match choice {
                 0 => {
-                    if let Some(export) = export.as_mut() {
-                        export.choose();
-                    }
+                    popups.engine_requests.push(export_run::save_confirm_popup());
+                    replay.quit_pending = true;
                 }
                 1 => replay.exit(),
                 _ => {}
+            }
+        }
+        if callback == export_run::SAVE_CONFIRM_POPUP && replay.quit_pending {
+            replay.quit_pending = false;
+            if choice == 1 && let Some(export) = export.as_mut() {
+                export.choose();
             }
         }
         if callback == MARKER_POPUP {
@@ -992,7 +1002,7 @@ pub(crate) fn controls(
                 replay.quit_pending = false;
                 replay.exit();
             }
-        } else if (back || pressed & B != 0) && !effects {
+        } else if (back || pressed & B != 0) && finish_mode {
             replay.quit_on_release = true;
         }
         // Retail: B / Back opens the Finished menu or the quit warning (b387 / b389), raised once the button is up.
