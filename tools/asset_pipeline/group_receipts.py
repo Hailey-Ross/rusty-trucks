@@ -38,7 +38,37 @@ def files(root, group):
 
 
 def record(root, group):
-    return receipt(root, files(root, group))
+    files_ = receipt(root, files(root, group))
+    for name, item in files_.items():
+        item['mtime_ns'] = (root.resolve()/name).stat().st_mtime_ns
+    return files_
+
+
+def valid_group_receipt(root, files_):
+    """valid_receipt, but a file whose size and recorded modification time both match counts as unchanged without
+    reading it (user 2026-10-23: skip the re-hash). Hard links and copy2 keep the time, so an entry stays valid in the
+    next installation. Entries without a time are hashed and gain it when they match. Kept out of setup_state.py: that
+    file is part of the customiser's fingerprint."""
+    if not isinstance(files_, dict) or not files_:
+        return False
+    hashed = {}
+    try:
+        for name, item in files_.items():
+            path = (root/name).resolve()
+            if not path.is_relative_to(root.resolve()) or not path.is_file():
+                return False
+            status = path.stat()
+            if status.st_size != item['size']:
+                return False
+            if item.get('mtime_ns') != status.st_mtime_ns:
+                hashed[name] = item
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+    if hashed and not valid_receipt(root, hashed):
+        return False
+    for name in hashed:
+        hashed[name]['mtime_ns'] = (root/name).resolve().stat().st_mtime_ns
+    return True
 
 
 def damaged(root, marker, exclude=(), report=None):
@@ -51,7 +81,7 @@ def damaged(root, marker, exclude=(), report=None):
         # so setup's window shows which group it is on.
         if report:report(f'Checking your installed game files: {group} ({checked.index(group)+1} of {len(checked)})...')
         if group in saved:
-            if not valid_receipt(root, saved[group]):result.add(group)
+            if not valid_group_receipt(root, saved[group]):result.add(group)
         else:
             # Legacy packages have no receipts: require their declared roots
             # and verify the map checksums they already recorded. The runtime

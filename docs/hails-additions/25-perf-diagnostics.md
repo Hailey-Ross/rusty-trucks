@@ -353,6 +353,55 @@ combined, the pairs have to be recomputed for the combined tree (as for F + G).
   names the stage. Thresholds are env-tunable only; a mod-facing setter (and reset on mod disable) would
   need a writable frame-diagnostics section in the mod API.
 
+## Refresh Game Files: unchanged groups are linked, not copied or re-hashed (2026-10-23, USER-ASKS 285)
+
+- **Problem:** a refresh that rebuilds one group (2026-10-23: hud, for the minimap) took about 8 minutes on the desktop
+  HDD. The installation is 18.7 GB in 80,929 files (customisation 11.7 GB, audio 4.9 GB, maps 1.4 GB).
+- **Root cause** (`tools/asset_pipeline/install.py` `_install`, `group_receipts.damaged`):
+  1. `damaged()` re-read and SHA-256'd every file of every group not being rebuilt, on every refresh (~7 GB);
+  2. the new installation was then built by copying the previous one with `shutil.copy2`; only unchanged maps and
+     complete character sets were hard-linked, so audio, stock, living world, park layouts ... were full copies.
+  Measured on a bench copy (`.local/setup-speed/refresh_bench.py`, fork-local), cold disk, first run: the audio
+  check alone 175 s, the copy 158 s, the hud rebuild 38 s.
+- **Change:**
+  - A: the audio group's files (4.9 GB), when the refresh does not rebuild audio (just verified by `damaged()`), are
+    hard-linked into the new installation (`LINKED_GROUPS` / `unchanged` in `_install`), with the existing copy
+    fallback where links fail. First version linked every unchanged group: on the laptop (2026-10-23 15:16, a refresh
+    that also rebuilt maps with 8 DLC packs) the maps step rewrote core's `stock/dlc/*-collections.json` and the
+    living world's hand props in place, through the links into the published installation; the check below caught
+    it (10 files, refresh not published). Only groups that no other step writes are linked now (test
+    `test_only_groups_no_other_step_writes_are_linked`); the error lists every changed file. `shared_changed()`
+    compares every linked file's size and modification time before publishing; a step that wrote one in place
+    fails the refresh, the old installation stays published. `retained._write` (kept DLC side data) now swaps in a
+    new file instead of writing in place.
+  - B (user's decision 2026-10-23: "do B too, skip the rehash when size and mtime match"): group receipts record
+    `mtime_ns` (`group_receipts.record`); `valid_group_receipt` trusts a file whose size and time both match and
+    hashes the rest, adding the time to older entries. Accepted trade-off: a same-size change that keeps the
+    modification time is not noticed. The Rust readers of `outputs` use only `size` (`asset_check.rs`, `setup.rs`).
+  - B lives in `group_receipts.py`, not `setup_state.py`: `customiser_setup.fingerprint()` hashes `setup_state.py`,
+    and a first version there made the customiser build a whole new character generation (+8,294 files).
+- **Fingerprints:** all 7 group fingerprints and the customiser fingerprint are equal to the tools before the change,
+  so no installation rebuilds anything because of it.
+- **Equivalence:** base2 (old tools) and new2 (A + B) from the same bench state: 97,517 files each, all identical
+  except the 5 hud outputs, which differ between two old-tools runs as well (the hud export embeds per-run values
+  such as its temporary folder `sk8hud-*`); installation.json identical apart from `directory` and `mtime_ns`.
+- **Timing (warm cache, the user gaming during part of it, so indicative):** whole refresh 247.6 -> 209.7 s;
+  installed-file check 11.6 -> 6.4 s; delete of the old installation 26 -> 13 s. Cold, the check drops from minutes
+  (175 s for audio) to seconds, and the copy no longer moves the audio's 4.9 GB.
+- **Tests:** `tools/test_setup_shared_links.py` (in-place write caught, replaced / removed files pass, `_write` leaves
+  the old copy alone, receipt times: recorded, newer time hashed and caught, same size + time trusted, old entries
+  hashed and stamped); setup recovery / customiser / versions tests 26 OK. On the real bench installation
+  (`.local/setup-speed/rehash_check.py`): untouched passes without hashing (9.5 s), one byte changed in a 29 MB audio
+  file is caught, the original bytes with a new time pass, the file is restored.
+- **Launcher (C):** a working-tree version's build stamp now hashes only the exe's inputs (crates, vendor, Cargo.*,
+  .cargo, docs/images, maps), so a `tools\` edit no longer rebuilds the game (`tools/steam-launcher/launcher.ps1`).
+- **Left:** the copy step is now bound by the number of files (~97k hard links / copies on an HDD, ~95 s warm), not
+  by bytes. Avoiding a per-file rebuild of the whole tree would need a different publish design (not done; the
+  previous installation must stay intact while the game may still run from it). First-time setup not re-measured.
+- **Files:** `tools/asset_pipeline/install.py`, `retained.py`, `group_receipts.py`, `tools/test_setup_shared_links.py`,
+  `tools/steam-launcher/launcher.ps1`.
+
+
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 
 Status: done on `world/trace-all` (not yet played).

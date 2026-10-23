@@ -9,8 +9,11 @@ def _load(path):
 
 
 def _write(path,data,indent):
+    # A new file swapped in: the old one may be a hard link shared with the previous installation (install.py).
     path.parent.mkdir(parents=True,exist_ok=True)
-    path.write_text(json.dumps(data,indent=indent),encoding='utf-8')
+    temporary=path.with_name(path.name+'.tmp')
+    temporary.write_text(json.dumps(data,indent=indent),encoding='utf-8')
+    temporary.replace(path)
 
 
 def _copy(src,dst):
