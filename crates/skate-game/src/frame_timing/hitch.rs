@@ -169,6 +169,7 @@ fn log_hitch(
     physics: Option<Res<crate::physics::GamePhysics>>,
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     entities: Query<Entity>,
+    map: Option<Res<crate::map_transition::CurrentMap>>,
     mut state: Local<LogState>,
 ) {
     // `post_render` runs from the end of the last frame's Update to here; `pre_update` from here to this Update.
@@ -222,9 +223,18 @@ fn log_hitch(
     let mut au: Vec<(&str, u64)> = crate::game_audio::hitch_parts::NAMES.iter().copied().zip(audio_parts).filter(|(_, u)| *u >= 1000).collect();
     au.sort_by(|a, b| b.1.cmp(&a.1));
     let audio_line = au.iter().map(|(n, u)| format!("{n}:{:.1}", *u as f64 / 1000.0)).collect::<Vec<_>>().join(" ");
-    let slowest = STAGES.iter().zip(&stages).chain(PHASES.iter().zip(&phases)).max_by_key(|(_, u)| **u).map_or("", |(n, _)| n);
+    // Time no stage covers (research b552: most big hitches had ~33 ms there, so `slowest` named a small stage):
+    // fixed steps outside the three fixed stages (e.g. `modding::fixed`), and main-thread time outside the stages.
+    // `post_render` also holds the render / present wait, so it stays out of that sum: `update_other` is then the
+    // CPU part of it plus anything between the other stages.
+    let us = |ms: f32| (f64::from(ms) * 1000.0).max(0.0) as u64;
+    let fixed_other = us(closed.fixed_ms).saturating_sub(stages[F_INPUT] + stages[F_CONTROLS] + stages[F_PHYSICS]);
+    let update_other = us(closed.main_ms).saturating_sub(stages[..U_POST].iter().sum());
+    let others = [("fixed_other", fixed_other), ("update_other", update_other)];
+    let slowest = STAGES.iter().copied().zip(stages.iter().copied()).chain(PHASES.iter().copied().zip(phases.iter().copied())).chain(others)
+        .max_by_key(|(_, u)| *u).map_or("", |(n, _)| n);
     info!(
-        "FRAME_HITCH frame={} ms={:.1} median_ms={} main_ms={:.1} fixed_ms={:.1} steps={} wait_ms={:.1} audio_lock_ms={:.1} slowest={slowest} stages=[{}] phases=[{}] living_world=[{living_line}] audio_parts=[{audio_line}]{player} entities={} voices={} aems_instances={} suppressed={suppressed}",
+        "FRAME_HITCH frame={} ms={:.1} median_ms={} main_ms={:.1} fixed_ms={:.1} steps={} wait_ms={:.1} audio_lock_ms={:.1} slowest={slowest} map={} stages=[{}] fixed_other:{:.1} update_other:{:.1} phases=[{}] living_world=[{living_line}] audio_parts=[{audio_line}]{player} entities={} voices={} aems_instances={} suppressed={suppressed}",
         closed.frame,
         closed.ms,
         closed.median_ms.map_or("-".to_owned(), |m| format!("{m:.1}")),
@@ -233,7 +243,10 @@ fn log_hitch(
         closed.steps,
         (closed.ms - closed.main_ms).max(0.0),
         lock_us as f64 / 1000.0,
+        map.as_deref().map_or("-", |m| m.name.as_str()),
         fmt(&STAGES, &stages),
+        fixed_other as f64 / 1000.0,
+        update_other as f64 / 1000.0,
         fmt(&PHASES, &phases),
         entities.iter().count(),
         crate::game_audio::timing::LAST_BLOCK_VOICES.load(Ordering::Relaxed),
