@@ -988,6 +988,11 @@ Change (`crates/skate-game/src/system_timing.rs`, research b214 / b268 `.local/r
   console).
 - **Open:** whether the splash resize the user saw came from DPI or from the game's resolution settings is not
   proven; the next session with the splash says.
+- **Other platforms (2026-10-22, PR #52 review):** the splash links `user32` / `gdi32` / `kernel32` and the refresh
+  log's `local_stamp()` (`setup.rs`) links `kernel32`, which broke the link of Linux and macOS builds. `splash` is now
+  `#[cfg(windows)]` with a no-op stand-in module of the same calls (`show`, `close`, `stage`, `detail`, `warning`,
+  `active`) elsewhere, so a port can put its own screen behind them; `local_stamp()` keeps `GetLocalTime` on Windows
+  and builds the same stamp in UTC from `SystemTime` elsewhere (checked against Python's calendar over 20,000 times).
 
 ## An assets link to a removed installation repairs itself at start (2026-10-19)
 
