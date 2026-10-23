@@ -11,13 +11,14 @@ use super::{
 pub(crate) use settings::Settings;
 use skate_core::{
     air::trajectory::{Prediction, QueryResult},
-    physics::board_world::BoardWorld,
     player::offboard::{
         air_launch::Packet,
         air_selector::{self as core, Context, Frame, Vector, ledge},
         ground_query::GroundQueryScene,
     },
 };
+#[cfg(test)]
+use skate_core::physics::board_world::BoardWorld;
 pub(crate) struct AirSelector {
     pub core: core::Selector,
     pub settings: Settings,
