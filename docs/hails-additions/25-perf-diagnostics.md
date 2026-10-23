@@ -141,6 +141,14 @@ Measurements so far (headless, 2026-10-08, optimised test build):
 - **Change (2026-10-23):** the line adds `map=`, `fixed_other` (fixed-step time outside the three fixed stages, where
   `modding::fixed` runs) and `update_other` (main-thread time outside the stages before `post_render`, so the CPU
   part of `post_render` plus gaps); `slowest=` considers both. `post_render` minus `wait_ms` is its CPU share.
+- **Transform propagation spikes (research b554, `.local/research/b554-transform-propagation.md`):** in the one
+  desktop session with SYSTEM_TIMING (2026-10-20), 42 of 48 hitches of 25 ms or more share their second with a
+  single `propagate_parent_transforms` run of at least half the hitch (median 29.5 ms, mean cost 0.36 ms per frame);
+  none of 30 laptop logs shows it. Likely Bevy's parallel propagation (workers spin until all finish, the waiting
+  thread runs other pool tasks) rather than work [inferred, no trace]. A start-up line `SKATE_THREADS logical=
+  compute= async_compute= io=` now records the machine's threads and Bevy's pool sizes (desktop 2026-10-23: 28 / 20 /
+  4 / 4). Fixes (a trace first, then serial propagation or fewer workers; `set_if_neq` on per-frame Transform writes):
+  todo `transform-propagation-spikes.md`.
 
 ### Scoring HUD asset churn (2026-10-08, branch `world/hud-hitch`)
 
