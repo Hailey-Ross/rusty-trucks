@@ -69,6 +69,10 @@ impl Default for MapTransition {
 }
 impl MapTransition {
     pub fn busy(&self) -> bool { !matches!(self.phase, Phase::Idle) }
+    /// The map being loaded, until it is committed (the audio reads its zone beds ahead, `map_audio`).
+    pub(crate) fn loading(&self) -> Option<&Entry> {
+        match &self.phase { Phase::Requested(entry) | Phase::Loading { entry, .. } => Some(entry), _ => None }
+    }
     pub fn request(&mut self, entry: Entry) {
         if !self.busy() { self.phase = Phase::Requested(entry); }
     }

@@ -53,7 +53,7 @@ the lows and the hitch count are what describe stutter; a mean cannot.
     - Why not `Time<Real>`'s delta: with pipelined rendering it comes from the render thread and lags the main
       loop by a frame; a first version paired it with the CPU split and produced rows with `main_ms` >
       `frame_ms` (smoke run). With the own clock every row satisfies `main_ms <= frame_ms`.
-  - `show` (`Last`): the overlay (top right): `FRAME ms / fps` over the last 0.25 s, `1% low`, `0.1% low`,
+  - `show` (`Last`): the overlay (top left since 2026-10-23: the HUD minimap owns the top right): `FRAME ms / fps` over the last 0.25 s, `1% low`, `0.1% low`,
     `worst 5 s`, `hitches`, `CPU main / physics`, and an 80-bar graph (4 s; green ≤ 16.7 ms, yellow above, red =
     hitch). Text updates at 4 Hz, the graph at 10 Hz; hidden = no UI work.
   - `SKATE_FPS_LOG` still prints the old `SKATE_FPS_SAMPLE` lines.
@@ -401,6 +401,33 @@ combined, the pairs have to be recomputed for the combined tree (as for F + G).
 - **Files:** `tools/asset_pipeline/install.py`, `retained.py`, `group_receipts.py`, `tools/test_setup_shared_links.py`,
   `tools/steam-launcher/launcher.ps1`.
 
+
+## Map switch: the next map's ambience beds are read while it loads (2026-10-23, USER-ASKS 293)
+
+- **Problem:** desktop session 2026-10-23 16:55 (hails-additions 068db3be): the user felt a stutter at the Challenge
+  Map switch University -> DownTown (17:10:54). The log: the commit frame took 498 ms (main 437 ms) while the loading
+  overlay was still held, then a 199 ms render wait; the overlay dropped right after (`PC_OVERLAY status: Loaded
+  DownTown` at 54.886), and every later frame was normal. So the loading screen froze for about 0.7 s at its end.
+- **Root cause (part of it):** the commit frame read the first ambience bed on the game thread (`ambience` 172.6 ms,
+  `file_read` 161.1 ms): `ambience::update` asked the read-ahead worker for the map's zone beds only in the new
+  map's first frame, and `Library::clip` falls back to a game-thread read for a file not read yet. The rest of that
+  frame: `retail_character::load` 115 ms, `living_world::early_load_for_map` 89 ms, `peds::early_load_ped_data`
+  84 ms, `vehicles::load_traffic_data` 27 ms, `scoring_hud::reset` 21 ms (SYSTEM_TIMING); the render wait is the new
+  map's textures (`prepare_assets<GpuImage>` 295 ms) and meshes (`allocate_and_free_meshes` 197 ms).
+- **Change:** `map_audio::read_ahead_next_map` builds the loading map's audio (`MapTransition::loading`, the same
+  `build` with its sidecar definition) and queues its zone beds on the worker as soon as the load starts. The bytes
+  are the same and the bed starts in the same frame; only when the file is read moves. A map whose `.skate` AUDO tag
+  names another district (known only after the load) reads the guess and its own beds as before.
+- **Not changed (decided with the user):** holding the overlay longer: both slow frames were already behind it.
+- **Verification:** muted run (`.local/tools/frame-time-run.ps1`, University, `SKATE_MAP_SWITCH=25:DownTown`): the
+  read-ahead queued 6 beds 4.6 s before the commit (the same 6 the map keeps resident), no ambience file read at
+  the commit, the slowest switch frame 282 ms (render wait 222 ms, emitter banks 50 ms). The disk cache was warm
+  from the user's session, so the cold-disk gain is not measured yet. Test
+  `the_map_being_loaded_is_named_until_it_is_committed`; game_audio / map_transition / frame_timing tests 107 OK.
+- **Left:** move the other commit-frame loaders (character lighting, living world, peds, traffic) to the loader
+  thread; the emitter banks (`world_sources` bank_load 50 ms) could be read ahead the same way; the render upload.
+- **Frame-time overlay:** moved to the top left (user 2026-10-23: the HUD minimap owns the top right and the
+  overlay covered it), `frame_timing::spawn_overlay`.
 
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 
@@ -1119,7 +1146,7 @@ Change (`crates/skate-game/src/system_timing.rs`, research b214 / b268 `.local/r
 - **In game (user, 2026-10-19):** "add a warning to the bottom of the fps counter (when its shown) or in place of the
   fps counter (when its not shown) that is a clear, easy to read red warning box in the same style as the fps
   counter that warns an asset refresh is needed (use better wording)", then "not under, but below the fps counter
-  when shown". The frame-time counter and a red box share a top-right column (`frame_timing` `spawn_overlay`): the
+  when shown". The frame-time counter and a red box share a top-left column (top right until 2026-10-23, when the HUD minimap took that corner) (`frame_timing` `spawn_overlay`): the
   box sits below the counter, and a hidden counter takes no room, so the box then sits in its place. Same padding and
   font as the counter (and its Simple-mode size), dark red, white text:
   `GAME FILES NEED A REFRESH` / `Off until then: <features>` / `Launcher: Tools > Refresh Game Files (or Esc >
