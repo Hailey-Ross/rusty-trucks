@@ -14,7 +14,9 @@ $ErrorActionPreference = 'Stop'
 $fetchedFile = Join-Path $Folder 'fetched-issues.txt'
 $fetched = @{}
 if (Test-Path $fetchedFile) { foreach ($n in Get-Content $fetchedFile) { $fetched[$n] = $true } }
-$issues = @(& gh issue list --repo $Repo --state open --label session-report --limit 100 --json number,author | ConvertFrom-Json)
+# Through ForEach-Object: Windows PowerShell's ConvertFrom-Json returns an empty list as one object (the loop then ran
+# once with no number and gh failed, 2026-10-22).
+$issues = @(& gh issue list --repo $Repo --state open --label session-report --limit 100 --json number,author | ConvertFrom-Json | ForEach-Object { $_ } | Where-Object { $_.number })
 foreach ($issue in $issues | Where-Object { -not $fetched["$($_.number)"] }) {
     $view = & gh issue view $issue.number --repo $Repo --json body,comments | ConvertFrom-Json
     $text = (@($view.body) + @($view.comments | ForEach-Object { $_.body })) -join "`n"
@@ -41,8 +43,8 @@ foreach ($issue in $issues | Where-Object { -not $fetched["$($_.number)"] }) {
     if ($Close) { & gh issue close $issue.number --repo $Repo --comment 'Thanks, the session was fetched.' | Out-Null; Write-Host "Issue #$($issue.number): closed." }
 }
 
-$prs = & gh pr list --repo $Repo --state open --limit 100 --json number,headRefName | ConvertFrom-Json |
-    Where-Object { $_.headRefName -like 'session-logs/*' }
+$prs = @(& gh pr list --repo $Repo --state open --limit 100 --json number,headRefName | ConvertFrom-Json | ForEach-Object { $_ } |
+    Where-Object { $_.headRefName -like 'session-logs/*' })
 if (-not $prs) { Write-Host 'FETCH_DONE no session-log pull requests open.'; return }
 foreach ($pr in $prs) {
     $branch = $pr.headRefName

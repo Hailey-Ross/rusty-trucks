@@ -97,6 +97,7 @@ class BuildView {
             if (LastPreWait != null) { Note(LastPreWait); LastPreWait = null; }
             return true;
         }
+        if (raw.StartsWith("LAUNCHER_SELF\t")) return true;   // the start check's own markers (b522)
         if (raw.StartsWith("LAUNCHER_WAIT\t")) {
             var f = raw.Split('\t');
             if (f.Length > 4 && f[1] == "begin") { PreWait = "fetching " + f[3] + " from " + f[4]; PreWaitSince = DateTime.Now; }
@@ -108,7 +109,13 @@ class BuildView {
         if (raw.StartsWith("LAUNCHER_BUILD\tend\t")) { Active = false; Ended = true; End = DateTime.Now; Ok = raw.EndsWith("\t0"); Close(); return true; }
         if (!Active) return false;
         // launcher.ps1 names who holds the build folder (BUILDING-<id>.txt or a cargo process) before cargo blocks.
-        if (raw.StartsWith("LAUNCHER_BUILD\twait\t")) { var f = raw.Split('\t'); WaitWho = f.Length > 3 ? f[3] : null; Note("holder: " + WaitWho); return true; }
+        if (raw.StartsWith("LAUNCHER_BUILD\twait\t")) {
+            var f = raw.Split('\t'); WaitWho = f.Length > 3 ? f[3] : null; Note("holder: " + WaitWho);
+            // "hold": launcher.ps1 itself waits (the version's exe is running), so the card shows it as a wait (b521 4c).
+            if (f.Length > 4 && f[4] == "hold") { if (Waiting == null) { WaitSince = DateTime.Now; Note("waiting: " + WaitWho); } Waiting = WaitWho; }
+            return true;
+        }
+        if (raw.StartsWith("LAUNCHER_BUILD\twaitend")) { EndWait(); return true; }
         string c = Clean(raw);
         var m = Bar.Match(c);
         if (m.Success) { Done = int.Parse(m.Groups[1].Value); Total = int.Parse(m.Groups[2].Value); if (m.Groups[3].Success) Now = m.Groups[3].Value.Trim(); }
@@ -207,7 +214,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     public void Snapshot(string file, string screen, int w, int h) {
         MakeFonts(h);
         RefreshStatus();
-        if (screen == "checking") { starting = true; startSince = DateTime.Now.AddSeconds(-7); }
+        if (screen == "checking") { starting = true; selfFetching = true; startSince = DateTime.Now.AddSeconds(-7); }
         else pages.Push(MainPage());
         if (screen == "versions") pages.Push(VersionPage());
         if (screen == "tools") pages.Push(EntryPage("Tools", "tools"));
@@ -333,12 +340,43 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (child.HasExited) Close();
         return true;
     }
-    bool starting; DateTime startSince;
+    bool starting, skipArmed; DateTime startSince;
+    // The start check's process, whether its self-update fetch is done (LAUNCHER_SELF) and whether B skipped it.
+    readonly object startLock = new object(); Process startProc; volatile bool selfFetching, selfFetched, skipped;
     void Start() {
         Activate(); Native.Front(Handle);
-        starting = true; startSince = DateTime.Now; Invalidate();
-        Task.Run(() => { int c; Run("pending", out c); return c; })
+        starting = true; startSince = DateTime.Now; selfFetching = selfFetched = skipped = skipArmed = false; Invalidate();
+        Task.Run(() => RunPending(false))
             .ContinueWith(t => BeginInvoke((Action)(() => FinishStart(t.IsFaulted ? 0 : t.Result))));
+    }
+    // launcher.ps1 pending; killed by B during the fetch, it runs again without the self update so the rest still happens.
+    int RunPending(bool noSelf) {
+        var psi = Ps("pending");
+        if (noSelf) psi.EnvironmentVariables["SKATE_LAUNCHER_NO_SELF"] = "1";
+        int code;
+        using (var p = Process.Start(psi)) {
+            lock (startLock) startProc = p;
+            p.StandardInput.Close();
+            string line;
+            while ((line = p.StandardOutput.ReadLine()) != null) {
+                if (line.StartsWith("LAUNCHER_SELF\tfetching")) selfFetching = true;
+                else if (line.StartsWith("LAUNCHER_SELF\tfetched")) selfFetched = true;
+            }
+            p.WaitForExit(); code = p.ExitCode;
+            lock (startLock) startProc = null;
+        }
+        return skipped && !noSelf ? RunPending(true) : code;
+    }
+    // B during the self-update fetch: the first press arms, the second kills the check (never after the fetch, when files copy).
+    bool CanSkip() { return starting && selfFetching && !selfFetched && !skipped && (DateTime.Now - startSince).TotalSeconds >= 3; }
+    void SkipPress() {
+        if (!CanSkip()) return;
+        if (!skipArmed) { skipArmed = true; dirty = true; return; }
+        lock (startLock) {
+            if (startProc == null || selfFetched) return;
+            skipped = true;
+            try { Process.Start(new ProcessStartInfo("taskkill.exe", "/T /F /PID " + startProc.Id) { CreateNoWindow = true, UseShellExecute = false }); } catch { }
+        }
     }
     void FinishStart(int code) {
         starting = false;
@@ -598,6 +636,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (job != null && Form.ActiveForm == this && ((build.Waiting != null && !build.Ended) || build.FetchWaiting())) {
             ushort jb = Pad(); if ((jb & ~prevPad & B) != 0) CancelPress(); prevPad = jb; return;
         }
+        if (starting && Form.ActiveForm == this) { ushort sb = Pad(); if ((sb & ~prevPad & B) != 0) SkipPress(); prevPad = sb; return; }
         if (job != null || Form.ActiveForm != this) { prevPad = Pad(); return; }
         ushort b = Pad(), pressed = (ushort)(b & ~prevPad);
         if ((pressed & A) != 0) Act("ok", true);
@@ -620,6 +659,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     }
     protected override bool ProcessCmdKey(ref Message msg, Keys key) {
         if (job != null && ((build.Waiting != null && !build.Ended) || build.FetchWaiting()) && (key == Keys.Escape || key == Keys.Back)) { CancelPress(); return true; }
+        if (starting && (key == Keys.Escape || key == Keys.Back)) { SkipPress(); return true; }
         if (job == null) {
             switch (key) {
                 case Keys.Up: case Keys.W: Act("up", false); return true;
@@ -869,8 +909,9 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (pages.Count == 0) {
             if (starting) {
                 var el = DateTime.Now - startSince;
-                string text = "Checking for launcher updates..." + (el.TotalSeconds >= 3 ? " " + BuildView.Clock(el) : "");
+                string text = (skipped ? "Skipped the update check; finishing the start..." : "Checking for launcher updates...") + (el.TotalSeconds >= 3 ? " " + BuildView.Clock(el) : "");
                 Write(g, text, itemFont, Dim, new RectangleF(m, top, w - 2 * m, bottom - top), StringAlignment.Center, StringAlignment.Center, false);
+                if (CanSkip()) Write(g, skipArmed ? "B again to skip it" : "B: skip the update check", smallFont, Dim, new RectangleF(m, (top + bottom) / 2 + itemFont.Height, w - 2 * m, smallFont.Height * 1.4f), StringAlignment.Center, StringAlignment.Near, false);
             }
             g.Restore(content); return;
         }

@@ -333,8 +333,12 @@ function Self-Update([switch]$Force) {
     $keep = $env:GIT_TERMINAL_PROMPT; $env:GIT_TERMINAL_PROMPT = '0'
     try {
         if (-not (Test-Path (Join-Path $SelfGit 'HEAD'))) { & git init -q --bare $SelfGit 2>$null | Out-Null }
+        # A start check skipped with B (the window kills it during this fetch, b522) can leave a lock behind.
+        Get-ChildItem $SelfGit -Recurse -Filter *.lock -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-2) } | Remove-Item -ErrorAction SilentlyContinue
+        if ($env:SKATE_LAUNCHER_UI -eq '2') { Write-Host "LAUNCHER_SELF`tfetching" }
         & git -C $SelfGit -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch -q --depth 1 $SelfUrl "+refs/heads/$($SelfBranch):refs/heads/self" 2>$null | Out-Null
         $ok = $LASTEXITCODE -eq 0
+        if ($env:SKATE_LAUNCHER_UI -eq '2') { Write-Host "LAUNCHER_SELF`tfetched" }
     } finally { $env:GIT_TERMINAL_PROMPT = $keep }
     $sha = Fork-Commit
     if (-not $ok -or -not $sha) { $r = "Launcher update: could not reach $SelfUrl ($SelfBranch); kept the current launcher."; Self-Log $r; return $r }
@@ -488,6 +492,17 @@ function Ensure-Version($v) {
     if ($holder) {
         Write-Host "  Waiting: $holder."
         if ($ui) { Write-Host ("LAUNCHER_BUILD`twait`tbuild`t{0}" -f $holder) }
+    }
+    # The version's own exe running (a Refresh Game Files run, or that version's game) would fail the link: wait for it
+    # (USER-ASKS 72, research b521 4c).
+    $exeHeld = { @(Get-Process skate3rust -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }).Count -gt 0 }
+    if (& $exeHeld) {
+        $rm = Join-Path $StateDir 'REFRESHING.txt'
+        $what = if ((Test-Path $rm) -and ((Get-Content $rm -Raw).Trim() -eq $v.name)) { "the game files refresh of $($v.name) is using its exe" } else { "$($v.name) is running from its build folder" }
+        Write-Host "  Waiting: $what."
+        if ($ui) { Write-Host ("LAUNCHER_BUILD`twait`tbuild`t{0}`thold" -f $what) }
+        while (& $exeHeld) { Start-Sleep -Seconds 2 }
+        if ($ui) { Write-Host "LAUNCHER_BUILD`twaitend" }
     }
     $mark = Join-Path $StateDir ('BUILDING-' + $v.id + '.txt')
     $who = if ($ui) { 'window' } else { 'shell' }
@@ -979,7 +994,7 @@ if ($Entry -eq 'pending') {
     $cs = Join-Path $Here 'SkateLauncher.cs'; $exe = Join-Path $Here 'SkateLauncher.exe'; $old = Join-Path $Here 'SkateLauncher.old.exe'
     if (Test-Path $old) { Remove-Item $old -ErrorAction SilentlyContinue }
     $selfSaid = ''
-    if ((Setting 'self_update' $true) -ne $false -and (Running-Games).Count -eq 0) { $selfSaid = Self-Update }
+    if ((Setting 'self_update' $true) -ne $false -and $env:SKATE_LAUNCHER_NO_SELF -ne '1' -and (Running-Games).Count -eq 0) { $selfSaid = Self-Update }
     # A pulled or patched launcher updates its own exe too: SkateLauncher.cs newer than SkateLauncher.exe = build it again.
     if (-not (Test-Path $SelfRestart) -and (Test-Path $cs) -and (Test-Path $exe) -and (Get-Item $cs).LastWriteTime -gt (Get-Item $exe).LastWriteTime) {
         if (Rebuild-LauncherExe) { Set-Content -Path $SelfRestart -Value 'local' -Encoding ASCII }

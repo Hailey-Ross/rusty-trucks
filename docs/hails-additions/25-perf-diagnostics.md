@@ -1188,7 +1188,13 @@ Per-system wall time of the game audio's frame systems, summed per frame and rea
 - **Start:** the window shows at once with `Checking for launcher updates...` (a clock after 3 s) while
   `launcher.ps1 pending` (self update, assets links, the session check) runs in the background; what follows is
   unchanged (restart after an update first, then the menu or the direct entry). It used to run before the window
-  existed, so a slow self-update fetch looked like a frozen start. Not done: skipping the check with B (b522: needs
-  a kill-safe marker after the fetch and git lock cleanup).
-- **Checks:** snapshots `fetching` and `checking` (new screens) and `job` / `main` unchanged; csc and the PowerShell
+  existed, so a slow self-update fetch looked like a frozen start. B skips it, only while its self-update fetch runs
+  (launcher.ps1 prints `LAUNCHER_SELF fetching` / `fetched` around the fetch; B twice kills the check and runs it again
+  without the self update, `SKATE_LAUNCHER_NO_SELF=1`, so the session check and the stale PLAYING.txt clear still run;
+  never after the fetch, when files copy). Lock files older than 2 minutes in the self-update git folder are removed
+  before the fetch.
+- **A build while its own exe runs:** a Refresh Game Files run (or that version's game) holds `bin\skate3rust.exe`, so
+  the link would fail; the build now waits for it (`LAUNCHER_BUILD wait ... hold`, the WAITING card with B to cancel)
+  and says which one holds it.
+- **Checks:** compiled 2026-10-22 (csc clean); snapshots `fetching` and `checking` (new screens) and `job` / `main` unchanged; csc and the PowerShell
   parser clean. Not tested live (a worktree launcher shares the real state folder and its start check can self-update).
