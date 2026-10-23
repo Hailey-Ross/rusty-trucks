@@ -21,7 +21,7 @@ pub(crate) struct ReplayJoints(pub Vec<Entity>);
 pub(super) fn plugin(app: &mut App) {
     app.init_resource::<LiveState>().add_systems(
         PostUpdate,
-        (tag_actors, refresh_joints, record, drop_ghosts, play_back).chain().before(bevy::transform::TransformSystems::Propagate),
+        (tag_actors, refresh_joints, record, drop_ghosts, play_back, apply_view).chain().before(bevy::transform::TransformSystems::Propagate),
     );
 }
 
@@ -264,7 +264,7 @@ fn play_back(
     for (entity, actor, list) in &actors {
         let (_, live_visibility) = keep(saved, entity, &transforms, &visibility);
         let sample = replay.world.sample(actor.id, time);
-        let shown = sample.as_ref().is_some_and(|p| !p.hidden);
+        let shown = sample.as_ref().is_some_and(|p| !p.hidden) && replay.view.shows(actor.id >> 56);
         if let Ok(mut v) = visibility.get_mut(entity) {
             *v = if shown { live_visibility.filter(|v| *v != Visibility::Hidden).unwrap_or(Visibility::Inherited) } else { Visibility::Hidden };
         } else if !shown {
@@ -281,5 +281,101 @@ fn play_back(
                 *t = transform(p);
             }
         }
+    }
+}
+
+/// What [`apply_view`] changed, to put back.
+#[derive(Default)]
+struct ViewApplied {
+    player: Option<(Entity, Option<Visibility>)>,
+    map: Vec<(Entity, Option<Visibility>)>,
+    clear: Option<ClearColor>,
+}
+
+/// The film pack's replay mode on the player and the world (b557, `827F9D40` / `827FEFD0`): "player visible" off hides
+/// the player's root; greenscreen hides everything the map owns (not its lights, so the characters stay lit) and
+/// clears to the greenscreen colour. Put back when the mode changes or the replay closes.
+fn apply_view(
+    replay: Res<Replay>,
+    mut state: Local<ViewApplied>,
+    players: Query<Entity, With<crate::world::PlayerRoot>>,
+    map: Query<Entity, (With<crate::map_render::MapEntity>, Without<ChildOf>, Without<DirectionalLight>, Without<PointLight>, Without<SpotLight>)>,
+    mut visibility: Query<&mut Visibility>,
+    clear: Option<ResMut<ClearColor>>,
+    mut commands: Commands,
+) {
+    let Some(mut clear) = clear else { return };
+    let view = if replay.active { replay.view } else { super::ReplayViewMode::default() };
+    let mut hide = |entity: Entity, visibility: &mut Query<&mut Visibility>| -> Option<Visibility> {
+        let old = visibility.get(entity).ok().copied();
+        match visibility.get_mut(entity) {
+            Ok(mut v) => *v = Visibility::Hidden,
+            Err(_) => {
+                commands.entity(entity).insert(Visibility::Hidden);
+            }
+        }
+        old
+    };
+    if !view.player && state.player.is_none() {
+        if let Some(entity) = players.iter().next() {
+            state.player = Some((entity, hide(entity, &mut visibility)));
+        }
+    }
+    if view.greenscreen && state.clear.is_none() {
+        state.clear = Some(clear.clone());
+        let [r, g, b] = view.greenscreen_colour;
+        clear.0 = Color::srgb(r, g, b);
+        state.map = map.iter().map(|e| (e, hide(e, &mut visibility))).collect();
+    }
+    let mut restore = |entity: Entity, old: Option<Visibility>, visibility: &mut Query<&mut Visibility>| match (old, visibility.get_mut(entity)) {
+        (Some(old), Ok(mut v)) => *v = old,
+        (None, Ok(_)) => {
+            commands.entity(entity).remove::<Visibility>();
+        }
+        _ => {}
+    };
+    if view.player && let Some((entity, old)) = state.player.take() {
+        restore(entity, old, &mut visibility);
+    }
+    if !view.greenscreen && let Some(old) = state.clear.take() {
+        *clear = old;
+        for (entity, old) in std::mem::take(&mut state.map) {
+            restore(entity, old, &mut visibility);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Greenscreen hides the map (not its lights) and clears green; "player visible" off hides the player; both come
+    /// back when the mode is off again (b557).
+    #[test]
+    fn replay_mode_hides_the_world_and_the_player_and_puts_them_back() {
+        let mut app = App::new();
+        app.init_resource::<Replay>().insert_resource(ClearColor(Color::BLACK)).add_systems(Update, apply_view);
+        let world = app.world_mut();
+        let player = world.spawn((crate::world::PlayerRoot, Visibility::Inherited)).id();
+        let level = world.spawn((crate::map_render::MapEntity, Visibility::Visible)).id();
+        let sky = world.spawn(crate::map_render::MapEntity).id();
+        let sun = world.spawn((crate::map_render::MapEntity, DirectionalLight::default(), Visibility::Inherited)).id();
+        {
+            let mut replay = world.resource_mut::<Replay>();
+            replay.active = true;
+            replay.view.toggle(0);
+            replay.view.toggle(1);
+        }
+        app.update();
+        let w = app.world();
+        let vis = |e: Entity| w.get::<Visibility>(e).copied();
+        assert_eq!((vis(player), vis(level), vis(sky), vis(sun)), (Some(Visibility::Hidden), Some(Visibility::Hidden), Some(Visibility::Hidden), Some(Visibility::Inherited)));
+        assert_eq!(w.resource::<ClearColor>().0, Color::srgb(0.0, 1.0, 0.0));
+        app.world_mut().resource_mut::<Replay>().view = super::super::ReplayViewMode::default();
+        app.update();
+        let w = app.world();
+        let vis = |e: Entity| w.get::<Visibility>(e).copied();
+        assert_eq!((vis(player), vis(level), vis(sky)), (Some(Visibility::Inherited), Some(Visibility::Visible), None));
+        assert_eq!(w.resource::<ClearColor>().0, Color::BLACK);
     }
 }

@@ -738,3 +738,87 @@ fn the_finished_menu_offers_save_to_pc_and_exit() {
     tick(&mut app, 0);
     assert!(!app.world().resource::<Replay>().active);
 }
+
+/// The film pack (its look screen): X opens its Finished menu (Save, photo, replay mode, resets), the replay mode
+/// popup toggles and stays up, a reset's No reopens the menu, B goes straight to the quit warning, and closing the
+/// replay puts the replay mode back (b387 / b557).
+#[test]
+fn the_film_pack_finished_menu_works_as_retail() {
+    use crate::input::ControllerInput;
+    use crate::popup_host::PopupMods;
+    use skate_core::input::xbox::XboxState;
+    let mut app = App::new();
+    app.init_resource::<Replay>()
+        .init_resource::<ControllerInput>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
+        .init_resource::<Time<Real>>()
+        .init_resource::<PopupMods>()
+        .init_resource::<export_run::ReplayExport>()
+        .insert_resource(ReplayLookScreen(true))
+        .add_message::<crate::ui_audio::FrontendSound>()
+        .add_systems(Update, controls);
+    let tick = |app: &mut App, buttons| {
+        app.world_mut().resource_mut::<ControllerInput>().sample_raw_for_test(XboxState { buttons, triggers: [0; 2], left: [0; 2], right: [0; 2] });
+        app.world_mut().resource_mut::<Time<Real>>().advance_by(std::time::Duration::from_secs_f64(1. / 60.));
+        app.world_mut().run_schedule(Update);
+    };
+    let pop = |app: &mut App| app.world_mut().resource_mut::<PopupMods>().engine_requests.pop().unwrap();
+    let choose = |app: &mut App, callback: &str, choice: i32| {
+        app.world_mut().resource_mut::<PopupMods>().engine_choices.push((callback.into(), choice));
+        tick(app, 0);
+    };
+    for i in 0..400 {
+        app.world_mut().resource_mut::<Replay>().record(pose(i as f32), 1. / 60., false);
+    }
+    app.world_mut().resource_mut::<Replay>().enter();
+    app.world_mut().resource_mut::<PopupMods>().stage_ready = true;
+    {
+        let mut replay = app.world_mut().resource_mut::<Replay>();
+        replay.editor = editor::Editor::open(0.0, 6.0, Default::default());
+        replay.editor.as_mut().unwrap().session.mode = skate_core::replay_edit::session::EditorMode::Timeline;
+    }
+    tick(&mut app, X);
+    tick(&mut app, 0);
+    let menu = pop(&mut app);
+    assert_eq!(menu.callback, FILM_MENU_POPUP);
+    assert_eq!(menu.options, film_menu_rows(true).into_iter().map(String::from).collect::<Vec<_>>());
+    // Replay mode: a toggle stays up; cancel closes.
+    choose(&mut app, FILM_MENU_POPUP, 2);
+    assert_eq!(pop(&mut app).callback, REPLAY_MODE_POPUP);
+    choose(&mut app, REPLAY_MODE_POPUP, 0);
+    assert_eq!(pop(&mut app).callback, REPLAY_MODE_POPUP);
+    assert!(app.world().resource::<Replay>().view.greenscreen);
+    choose(&mut app, REPLAY_MODE_POPUP, skate_core::fe_popup::CHOICE_CANCEL);
+    assert!(app.world().resource::<PopupMods>().engine_requests.is_empty());
+    // Reset Timeline: No reopens the Finished menu.
+    tick(&mut app, X);
+    tick(&mut app, 0);
+    pop(&mut app);
+    choose(&mut app, FILM_MENU_POPUP, 4);
+    assert_eq!(pop(&mut app).description, "ID_REPLAY_EDITOR_RESET_TIMELINE_CONFRIM");
+    choose(&mut app, RESET_POPUP, 0);
+    assert_eq!(pop(&mut app).callback, FILM_MENU_POPUP);
+    choose(&mut app, FILM_MENU_POPUP, skate_core::fe_popup::CHOICE_CANCEL);
+    // B: the quit warning, not the Finished menu; Yes closes and the replay mode is back to the defaults.
+    tick(&mut app, B);
+    tick(&mut app, 0);
+    assert_eq!(pop(&mut app).callback, QUIT_POPUP);
+    choose(&mut app, QUIT_POPUP, 1);
+    let replay = app.world().resource::<Replay>();
+    assert!(!replay.active && replay.view == ReplayViewMode::default());
+}
+
+/// Characters follow "skaters visible"; everything else hides under greenscreen (`827F9D40`, b557).
+#[test]
+fn replay_mode_flags_pick_what_draws() {
+    let mut view = ReplayViewMode::default();
+    assert!((0..=5).all(|kind| view.shows(kind)));
+    view.toggle(0);
+    assert!(view.shows(0) && view.shows(1) && !view.shows(2) && !view.shows(3) && !view.shows(5));
+    view.toggle(2);
+    assert!(!view.shows(0) && !view.shows(1));
+    view.toggle(1);
+    assert!(!view.player);
+}

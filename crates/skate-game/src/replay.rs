@@ -46,6 +46,111 @@ fn photo_popup() -> skate_core::fe_popup::PopupRequest {
     }
 }
 
+/// The film pack's Finished menu (b387 rows 2..6, b557): X opens it on the timeline; B goes to the quit warning.
+const FILM_MENU_POPUP: &str = "engine:replay.film_menu";
+const REPLAY_MODE_POPUP: &str = "engine:replay.replay_mode";
+const RESET_POPUP: &str = "engine:replay.reset";
+const TAKE_PHOTO_ROW: &str = "ID_REPLAYEDITOR_TAKE_PHOTO";
+const REPLAY_MODE_ROW: &str = "ID_REPLAY_EDITOR_REPLAY_MODE";
+const RESET_CHANNEL_ROW: &str = "ID_REPLAY_EDITOR_RESET_TIMELINE_CURRENT_CHANNEL";
+const RESET_ALL_ROW: &str = "ID_REPLAY_EDITOR_RESET_TIMELINE";
+/// The replay mode popup's toggles in retail order (`82615728`): greenscreen, player visible, skaters visible.
+const REPLAY_MODE_ROWS: [&str; 3] = [
+    "ID_REPLAY_EDITOR_REPLAY_MODE_GREENSCREEN",
+    "ID_REPLAY_EDITOR_REPLAY_MODE_PLAYER_VISIBLE",
+    "ID_REPLAY_EDITOR_REPLAY_MODE_SKATERS_VISIBLE",
+];
+
+/// The film menu's rows (data, chosen by id): our Save to PC in retail's Save slot when the exporter is there, then
+/// Take Photo, Replay Mode and the two resets (retail shows the last three only offline, which ours always is).
+fn film_menu_rows(export: bool) -> Vec<&'static str> {
+    let mut rows = Vec::new();
+    if export {
+        rows.push(export_run::SAVE_TO_PC);
+    }
+    rows.extend([TAKE_PHOTO_ROW, REPLAY_MODE_ROW, RESET_CHANNEL_ROW, RESET_ALL_ROW]);
+    rows
+}
+
+fn film_menu_popup(export: bool) -> skate_core::fe_popup::PopupRequest {
+    skate_core::fe_popup::PopupRequest {
+        title: "ID_REPLAYEDITOR_TITLE".into(),
+        description: "#".into(),
+        options: film_menu_rows(export).into_iter().map(Into::into).collect(),
+        callback: FILM_MENU_POPUP.into(),
+        cancelable: true,
+        ..Default::default()
+    }
+}
+
+fn replay_mode_popup() -> skate_core::fe_popup::PopupRequest {
+    skate_core::fe_popup::PopupRequest {
+        title: REPLAY_MODE_ROW.into(),
+        description: REPLAY_MODE_ROW.into(),
+        options: REPLAY_MODE_ROWS.iter().map(|r| (*r).into()).collect(),
+        callback: REPLAY_MODE_POPUP.into(),
+        cancelable: true,
+        ..Default::default()
+    }
+}
+
+/// A reset's confirm (b387 rows 5 / 6: No reopens the Finished menu, Yes resets).
+fn reset_popup(all: bool) -> skate_core::fe_popup::PopupRequest {
+    skate_core::fe_popup::PopupRequest {
+        title: (if all { RESET_ALL_ROW } else { RESET_CHANNEL_ROW }).into(),
+        description: (if all { "ID_REPLAY_EDITOR_RESET_TIMELINE_CONFRIM" } else { "ID_REPLAY_EDITOR_RESET_TIMELINE_CURRENT_CHANNEL_CONFIRM" }).into(),
+        options: vec!["ID_COMMON_NO".into(), "ID_COMMON_YES".into()],
+        callback: RESET_POPUP.into(),
+        cancelable: true,
+        ..Default::default()
+    }
+}
+
+/// The film pack's replay mode (b557: retail renderer flags +0x347AC / +0x347B4 / +0x347B0, set only through events
+/// 0x6BD9CB5A / 0xF81BE84E / 0x02217C9B): local view state, back to the defaults when the replay closes (`82610828`).
+/// Greenscreen draws only the characters over a flat colour; the other two hide the player or every other character.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ReplayViewMode {
+    pub greenscreen: bool,
+    pub player: bool,
+    pub skaters: bool,
+    /// The greenscreen clear colour (retail's value at the renderer's +0x7DF0 is not read yet; data).
+    pub greenscreen_colour: [f32; 3],
+}
+
+impl Default for ReplayViewMode {
+    fn default() -> Self {
+        Self { greenscreen: false, player: true, skaters: true, greenscreen_colour: [0.0, 1.0, 0.0] }
+    }
+}
+
+impl ReplayViewMode {
+    /// One toggle of the replay mode popup (retail flips the flag: new = old == 0).
+    pub(crate) fn toggle(&mut self, row: usize) {
+        match row {
+            0 => self.greenscreen = !self.greenscreen,
+            1 => self.player = !self.player,
+            2 => self.skaters = !self.skaters,
+            _ => return,
+        }
+        info!("REPLAY_VIEW greenscreen={} player={} skaters={}", self.greenscreen, self.player, self.skaters);
+    }
+
+    /// Whether an actor of `kind` (the top byte of its replay id) is drawn: characters (NPC skaters 0, peds 1) follow
+    /// the skaters flag, everything else is hidden under greenscreen (`827F9D40`, b557).
+    pub(crate) fn shows(&self, kind: u64) -> bool {
+        if kind <= 1 { self.skaters } else { !self.greenscreen }
+    }
+}
+
+/// Which film popup is waiting for its answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FilmAsk {
+    Menu,
+    ReplayMode,
+    Reset { all: bool },
+}
+
 fn photo_saved_popup() -> skate_core::fe_popup::PopupRequest {
     skate_core::fe_popup::PopupRequest {
         title: "ID_REPLAYEDITOR_TAKE_PHOTO".into(),
@@ -212,6 +317,10 @@ pub(crate) struct Replay {
     camera_owner: Option<String>,
     /// The quit warning is up (waiting for its answer).
     quit_pending: bool,
+    /// A film pack popup waiting for its answer.
+    film_ask: Option<FilmAsk>,
+    /// The film pack's replay mode (greenscreen, player / skaters visible).
+    pub(crate) view: ReplayViewMode,
     /// A marker delete / drop waiting for its confirm popup.
     marker_ask: Option<MarkerAsk>,
     /// B / Back asked for the quit warning; it opens when the button is released.
@@ -472,6 +581,8 @@ impl Replay {
         self.editor = None;
         self.marker_ask = None;
         self.quit_pending = false;
+        self.film_ask = None;
+        self.view = ReplayViewMode::default();
         self.quit_on_release = false;
         self.playing = false;
         self.free_camera = None;
@@ -931,6 +1042,8 @@ pub(crate) fn controls(
     replay.previous_buttons = pad.buttons;
     // B / Back reach the Finished menu only in playback, the instant replay and the timeline (retail modes 1 / 5 / 6,
     // `82614E58`, b555); the trim, key edit and effects modes ignore them (effects commits on B itself).
+    // The film pack's screen (its look channels): B goes to the quit warning, X opens its Finished menu (b387 / b557).
+    let film = look_screen.as_ref().is_some_and(|s| s.0);
     let finish_mode = replay.editor.as_ref().is_none_or(|e| {
         use skate_core::replay_edit::session::EditorMode;
         matches!(e.session.mode, EditorMode::Playback | EditorMode::Instant | EditorMode::Timeline)
@@ -960,6 +1073,58 @@ pub(crate) fn controls(
             replay.quit_pending = false;
             if choice == 1 && let Some(export) = export.as_mut() {
                 export.choose();
+            }
+        }
+        if callback == FILM_MENU_POPUP && replay.film_ask == Some(FilmAsk::Menu) {
+            replay.film_ask = None;
+            let rows = film_menu_rows(export.is_some());
+            match usize::try_from(choice).ok().and_then(|i| rows.get(i)).copied() {
+                Some(export_run::SAVE_TO_PC) => {
+                    popups.engine_requests.push(export_run::save_confirm_popup());
+                    replay.quit_pending = true;
+                }
+                Some(TAKE_PHOTO_ROW) => {
+                    // The same take photo as the base game's X (`826147C8`, b557).
+                    replay.playing = false;
+                    replay.photo = Photo::Confirm;
+                    popups.engine_requests.push(photo_popup());
+                }
+                Some(REPLAY_MODE_ROW) => {
+                    popups.engine_requests.push(replay_mode_popup());
+                    replay.film_ask = Some(FilmAsk::ReplayMode);
+                }
+                Some(RESET_CHANNEL_ROW) | Some(RESET_ALL_ROW) => {
+                    let all = rows.get(choice as usize) == Some(&RESET_ALL_ROW);
+                    popups.engine_requests.push(reset_popup(all));
+                    replay.film_ask = Some(FilmAsk::Reset { all });
+                }
+                _ => {}
+            }
+        }
+        // The replay mode popup stays up after a toggle (`82615728`); cancel closes it.
+        if callback == REPLAY_MODE_POPUP && replay.film_ask == Some(FilmAsk::ReplayMode) {
+            match usize::try_from(choice).ok().filter(|&i| i < REPLAY_MODE_ROWS.len()) {
+                Some(row) => {
+                    replay.view.toggle(row);
+                    popups.engine_requests.push(replay_mode_popup());
+                }
+                None => replay.film_ask = None,
+            }
+        }
+        if callback == RESET_POPUP && let Some(FilmAsk::Reset { all }) = replay.film_ask {
+            replay.film_ask = None;
+            match choice {
+                1 => {
+                    if let Some(editor) = replay.editor.as_mut() {
+                        editor.reset_channels(all);
+                    }
+                    info!("REPLAY_EDITOR reset {}", if all { "timeline" } else { "channel" });
+                }
+                0 => {
+                    popups.engine_requests.push(film_menu_popup(export.is_some()));
+                    replay.film_ask = Some(FilmAsk::Menu);
+                }
+                _ => {}
             }
         }
         if callback == MARKER_POPUP {
@@ -1002,7 +1167,7 @@ pub(crate) fn controls(
                 replay.quit_pending = false;
                 replay.exit();
             }
-        } else if (back || pressed & B != 0) && finish_mode {
+        } else if (back || pressed & B != 0) && finish_mode && replay.film_ask.is_none() {
             replay.quit_on_release = true;
         }
         // Retail: B / Back opens the Finished menu or the quit warning (b387 / b389), raised once the button is up.
@@ -1011,7 +1176,7 @@ pub(crate) fn controls(
             if popups.stage_ready {
                 // With the exporter: the Finished menu (Save to PC / Exit); without it retail's quit warning (not
                 // signed in, b387).
-                popups.engine_requests.push(if export.is_some() { export_run::finished_popup() } else { quit_popup() });
+                popups.engine_requests.push(if export.is_some() && !film { export_run::finished_popup() } else { quit_popup() });
                 replay.quit_pending = true;
             } else {
                 replay.exit();
@@ -1050,8 +1215,17 @@ pub(crate) fn controls(
     if keys.just_pressed(KeyCode::KeyC) {
         replay.toggle_camera();
     }
-    // Retail: X takes a photo (CanSaveMedia; ours: always on PC, with the retail screen); P on the keyboard.
-    if (pressed & X != 0 || keys.just_pressed(KeyCode::KeyP)) && retail_ui.as_ref().is_some_and(|r| r.0) {
+    let x = pressed & X != 0 || keys.just_pressed(KeyCode::KeyP);
+    // The film pack: X opens its Finished menu (b387); in its effects menu X commits a soft key (editor_controls).
+    if film && x {
+        if finish_mode && replay.film_ask.is_none() && popups.stage_ready {
+            replay.playing = false;
+            popups.engine_requests.push(film_menu_popup(export.is_some()));
+            replay.film_ask = Some(FilmAsk::Menu);
+            return;
+        }
+    } else if x && retail_ui.as_ref().is_some_and(|r| r.0) {
+        // Retail: X takes a photo (CanSaveMedia; ours: always on PC, with the retail screen); P on the keyboard.
         replay.playing = false;
         replay.photo = Photo::Confirm;
         popups.engine_requests.push(photo_popup());

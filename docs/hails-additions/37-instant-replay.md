@@ -128,10 +128,22 @@ Test: the leash keeps a camera inside 40 m and pulls a far one onto the sphere.
 - **Save asks first:** retail's Save row confirms (title = the row, ID_REPLAY_EDITOR_POPUP_REPLAYSAVE "Save Replay?",
   No / Yes; callback `82616000`, main checked: No skips the save and closes). Ours exported at once; now Save to PC
   asks the same and No returns to the editor.
-- **Not yet:** the film pack's Finished variant (B straight to the quit warning, X opens the menu with Save, Take
-  photo, Replay mode toggles, Reset channel / timeline; b387 rows 1..7) and Upload.
+- **Film pack Finished menu (research b557, main checked the reset calls and the exit's three events):** with the film
+  pack's screen, B goes straight to the quit warning and X on the timeline opens its menu (in its effects menu X still
+  commits a soft key): Save to PC (with the Save Replay? confirm), Take Photo (the same flow as the base X), Replay
+  Mode, Reset Timeline Current Channel, Reset Timeline. Replay Mode is a popup of three toggles that stays up
+  (`82615728`): greenscreen (only characters drawn over a flat colour: everything the map owns hides except its
+  lights, the clear colour turns green; retail's exact colour at the renderer's +0x7DF0 is not read, so it is data),
+  player visible (the player's root), skaters visible (NPC skaters and peds; cars and props hide only under
+  greenscreen). They are local view state (`Replay::view`) and go back to the defaults when the replay closes
+  (`82610828`). The resets (`82C7F728`) ask No / Yes (No reopens the menu) and clear every key of the current channel
+  or of all channels (the camera channel: back to the recorded camera); playhead, channel and clip heads stay.
+- **Not yet:** Upload (no service); a Lua hook for the replay mode flags; retail's greenscreen colour value and its
+  other render switches (fog / light blends, one full-screen pass) beyond hiding the world.
 - **Tests:** `the_finished_menu_offers_save_to_pc_and_exit` (trim ignores B, the Save confirm), `camera_keys_hold_cut_and_blend`
-  (Game key). Not play-tested.
+  (Game key), `the_film_pack_finished_menu_works_as_retail`, `replay_mode_flags_pick_what_draws`,
+  `replay_mode_hides_the_world_and_the_player_and_puts_them_back`, `reset_timeline_clears_the_channel_or_all`. Not
+  play-tested.
 
 ## Camera key edit rates (2026-10-23, research b549)
 

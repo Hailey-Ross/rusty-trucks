@@ -34,6 +34,8 @@ pub(crate) const CHANNELS: [(&str, &[usize]); 7] = [
     ("ID_REPLAYEDITOR_CHANNEL_TINT", &[12]),
 ];
 const TINT_LANES: [Lane; 4] = [Lane::TintR, Lane::TintG, Lane::TintB, Lane::TintA];
+/// Each channel's lanes (the camera channel's keys are the camera keys).
+const CHANNEL_LANES: [&[Lane]; 7] = [&[], &[Lane::Speed], &[Lane::Shake], &[Lane::Brightness], &[Lane::Contrast], &[Lane::Saturation], &TINT_LANES];
 
 pub(crate) struct Editor {
     pub session: EditorSession,
@@ -311,8 +313,25 @@ impl Editor {
     /// The lanes of the Create pack's active channel (1 speed .. 6 the four tint components); none on the camera
     /// channel or without the pack.
     pub fn channel_lanes(&self, channels: bool) -> &'static [Lane] {
-        const LANES: [&[Lane]; 7] = [&[], &[Lane::Speed], &[Lane::Shake], &[Lane::Brightness], &[Lane::Contrast], &[Lane::Saturation], &TINT_LANES];
-        if channels { LANES[self.channel % 7] } else { &[] }
+        if channels { CHANNEL_LANES[self.channel % CHANNEL_LANES.len()] } else { &[] }
+    }
+
+    /// The film pack's Reset Timeline (b557, `82C7F728`): every key of the current channel, or of every channel, goes
+    /// (the camera channel's keys: back to the recorded camera); the playhead, the channel and the clip heads stay.
+    pub fn reset_channels(&mut self, all: bool) {
+        let channels: Vec<usize> = if all { (0..CHANNEL_LANES.len()).collect() } else { vec![self.channel % CHANNEL_LANES.len()] };
+        for channel in channels {
+            if channel == 0 {
+                self.cameras.clear();
+                self.editing = None;
+                self.free_height = Default::default();
+            }
+            for &lane in CHANNEL_LANES[channel] {
+                for clip in 0..self.edit.clips.len() {
+                    let _ = self.edit.reset_lane(clip, lane);
+                }
+            }
+        }
     }
 
     /// D-pad Down released (b461 / b462): a hard key at the cursor (82C7F610, 82835F08): docs/hails-additions/37-instant-replay.md#drop-marker
@@ -702,6 +721,30 @@ mod tests {
     /// The film pack's lane channels (b461 / b462): D-pad Down puts a hard key on the active lane only; A in the
     /// timeline is refused on it and snaps to a soft key; A in a segment cut on both sides writes it, X adds a soft
     /// key, X on shake does nothing; D-pad Up deletes on the lane.
+    /// The film pack's Reset Timeline (b557): the current channel's keys go (cameras for channel 0), or every channel's;
+    /// the clip heads stay.
+    #[test]
+    fn reset_timeline_clears_the_channel_or_all() {
+        use bevy::prelude::Transform;
+        let mut e = Editor::open(0.0, 30.0, EditLimits::default()).unwrap();
+        let (root, view) = (Transform::IDENTITY, Transform::from_xyz(0.0, 2.0, 5.0));
+        assert!(e.pick_camera(1, 5.0, &view, &root).is_some());
+        e.cycle_channel();
+        e.drop_marker(10.0, true).unwrap();
+        e.live[Lane::Speed.index()] = 50;
+        assert!(e.commit_pack(20.0, true));
+        let heads = e.heads();
+        // Current channel (speed): its keys go, the camera key stays.
+        e.reset_channels(false);
+        assert!(e.edit.clips[e.clip].markers[Lane::Speed.index()].is_empty() && e.speed(25.0) == 1.0);
+        assert_eq!(e.cameras.len(), 1);
+        // All channels: the camera key goes too; the heads and the channel stay.
+        e.drop_marker(12.0, true).unwrap();
+        e.reset_channels(true);
+        assert!(e.cameras.is_empty() && e.edit.clips[e.clip].markers.iter().all(|m| m.is_empty()));
+        assert_eq!((e.heads(), e.channel), (heads, 1));
+    }
+
     #[test]
     fn pack_lane_channels_drop_commit_and_delete_on_their_lane() {
         let mut e = Editor::open(0.0, 30.0, EditLimits::default()).unwrap();
