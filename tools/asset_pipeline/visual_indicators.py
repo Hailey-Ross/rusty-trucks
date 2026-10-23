@@ -85,6 +85,40 @@ def indicators(collections):
     return out
 
 
+STYLE_FIELDS = dict(width_a='Hash_284E9294277D21DC', width_b='Hash_A6313118DF989363', samples='Hash_4FFE9C7FA608319C',
+                    passes='Hash_445E0BFC57EC196B', three_strips='Hash_5D92E494915216BD', fade='Hash_51573D0DA2F211E1')
+
+
+# The `visualindicators` row names (skatercollections summary report); unnamed rows keep their hashes.
+STYLE_NAMES = ('default', 'clintjammie', 'gates', 'lesswiggle', 'non_fade', 'smallarrow', 'smallarrow_nonfade', 'trail')
+
+
+def style_names():
+    """{'Hash_%016X': name} for the known style rows (so mods can name them)."""
+    return {'Hash_%016X' % key_hash(n): n for n in STYLE_NAMES}
+
+
+def styles(collections):
+    """{visualindicators key: {width, samples, passes, three_strips, fade, fade_alpha}}: the fields the draw reads
+    (research b534); fade = graph row 1 (x points), fade_alpha = row 2."""
+    cls = key_hash('visualindicators')
+    out = {}
+    for (row_cls, key), row in collections.rows.items():
+        if row_cls != cls:
+            continue
+        fields, _ = collections.resolve(cls, key)
+        raw = {n: bytes.fromhex(fields[key_hash(h)]['data']) for n, h in STYLE_FIELDS.items() if key_hash(h) in fields}
+        if set(raw) != set(STYLE_FIELDS):
+            continue
+        graph = struct.unpack('>12f', raw['fade'][:48])
+        out[row['key']] = dict(width=[struct.unpack('>f', raw['width_a'][:4])[0], struct.unpack('>f', raw['width_b'][:4])[0]],
+                               samples=struct.unpack('>H', raw['samples'][:2])[0],
+                               passes=struct.unpack('>H', raw['passes'][:2])[0],
+                               three_strips=raw['three_strips'][:1] not in (b'', b'\0'),
+                               fade=list(graph[4:8]), fade_alpha=list(graph[8:12]))
+    return out
+
+
 def export(game_root, collections, output, report=print):
     """Writes `output` and returns the indicator keys it holds."""
     from tools.owned_game.big import BigArchive
@@ -93,11 +127,16 @@ def export(game_root, collections, output, report=print):
     if entry is None:
         raise ValueError(ARENA + ' missing')
     splines = parse_splines(archive.read(entry))
-    rows = indicators(collections if isinstance(collections, Collections) else Collections(collections))
+    collections = collections if isinstance(collections, Collections) else Collections(collections)
+    rows = indicators(collections)
+    named = style_names()
+    for row in rows.values():
+        row['style'] = named.get(row['style'], row['style'])
+    found = {named.get(k, k): v for k, v in styles(collections).items()}
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps({'format': FORMAT, 'version': VERSION, 'splines': splines, 'indicators': rows}),
-                      encoding='utf-8')
+    output.write_text(json.dumps({'format': FORMAT, 'version': VERSION, 'splines': splines, 'indicators': rows,
+                                  'styles': found}), encoding='utf-8')
     missing = sorted(k for k, r in rows.items() if r['spline'] and r['spline'] not in splines)
     report(f'Visual indicators: {len(rows)} rows, {len(splines)} splines'
            + (f'; splines missing for {", ".join(missing)}' if missing else ''))

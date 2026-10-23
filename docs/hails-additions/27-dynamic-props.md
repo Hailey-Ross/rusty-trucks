@@ -898,6 +898,26 @@ is not exported. Not seen in game yet.
 29 live within 90 m of the spawn after the fill, 757 dormant and out of the obstacle list; 300 m away 29 culled and 8
 spawned; a prop moved 2 m comes back at its authored pose).
 
+## Census camera and hand prop release from the tick (2026-10-22)
+
+- **Problem:** two fixed-step systems read poses drawn in `Update` (interpolated with the overstep, propagated in
+  `PostUpdate`), so their result depended on the frame sequence (research b531 section 5.3):
+  `dmo_stream::stream_dmos` took the census camera from any `Camera3d`'s `GlobalTransform`;
+  `ped_hand_props::sync_hand_props` took the throw release test position and the released body's start pose from the
+  held prop's `GlobalTransform` (the hand as drawn, one frame behind when a frame runs two steps).
+- **Root cause:** retail runs the census, the ped hands and the camera in the same 30 Hz frame, so both read that
+  tick's state. Ours split simulation (fixed) and drawing (frame).
+- **Change:** the census view uses the tick's camera, `CameraRuntime::presentation_frame()` (position and `At`, the
+  same frame `presentation::capture` stores; manual cam applied). The hand prop pose is the ped's tick `Transform`
+  times the hand bone from `ped_globals(.., ahead = 0, ..)` times the record offset, the pose `present_ped_pose` draws
+  at zero overstep. The drawn model is used only for the collision shape relative to its own root, which does not
+  depend on the pose.
+- **Files:** `crates/skate-game/src/living_world/dmo_stream.rs`, `ped_hand_props.rs`, `peds.rs` (`PedPuppet.followers`
+  visible to the crate).
+- **Effect:** a census pass or a throw differs from before by at most one frame of camera or hand motion; the result
+  is now the same for any frame rate (the prerequisite for the fixed-step identity test, b531 section 6).
+- **Verification:** `cargo test -p skate-game` 906 passed, 0 failed (assets installed, dc2813f3); not seen in game yet.
+
 ## DMO streaming: one collision rebuild per pass (2026-10-13)
 
 - **Problem:** the first streaming pass on DownTown took 412 ms (`FRAME_HITCH ... dmo_stream:412.4`; research

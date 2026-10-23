@@ -580,12 +580,27 @@ The prompt is retail's action overlay (`actionoverlay2`, template 59 SignUpHUD, 
   the armed teleporters (map, layout and mod changes respawn them), at anchor + Offset in the anchor's frame (the
   layout loader `827AB790` applies Offset that way; the challenge path is inferred to match), hidden beyond 400 m.
   `SKATE_VISUAL_INDICATORS map= shown=` logs each respawn.
-- **Not retail yet (ours, constants in `visual_indicators.rs`):** the ribbon width (0.06 m), colour (yellow), samples
-  per segment, and the icon turning about the vertical to face the camera. Retail's draw goes through an interface
-  at manager+0x2234 whose implementation (and with it any spin, pulse, trace-in animation, the `visualindicators`
-  style floats and the textures in `visual_indicators_sk82_Textures.rx2`) is not read yet; next Ghidra step: that
-  interface's vtable and the 300-slot pool `82D5D2B8` feeds.
-- **Mods:** `indicator="<ribbon_indicator key>"` and `indicator_position={x,y,z}` on `sdk.triggers.teleporter`
+- **The draw [code + data], research b534 (2026-10-22):** the interface at manager+0x2234 is only an entry pool; each
+  frame `827AA388` -> `82D5D478` keeps at most 22 entries within the 400 m cull and the 22 `SplineIndicator::VisualIndicator`
+  objects draw them (update `827B1B70`, draw `827B2200`, facing `827B1A00`) from the `visualindicators` style row the
+  `ribbon_indicator` row names (teleporters: `smallarrow`). Full width 0.5 * (A + B) (fields 284E / A631; smallarrow
+  0.175, default 0.35), samples per segment = field 4FFE capped at 10, and with bool 5D92 set three crossed strips with
+  fixed edge offsets along local z, y and x (else one strip with its second edge shifted by (2h, 2h, 0)). Facing: a
+  yaw-only billboard along the camera's flattened view axis (screen-parallel), not toward the camera position. Fade:
+  graph 51573D row 1 (x points): in from x0 to x1, out from x2 to x3, hidden beyond x3 (smallarrow 4.23 m, 13.36 m,
+  100 m, 100 m: gone up close and past 100 m). No spin, bob or trace-in; the wiggle and flicker are off for smallarrow.
+- **Change (2026-10-22):** setup exports `styles` (width terms, samples, passes, three-strip flag, fade x points and
+  row 2) per `visualindicators` row, the eight known rows by name (`smallarrow`, `gates`, ...); the engine builds the
+  strips, billboards and fades per icon (one material each, alpha blended) from the row, and falls back to the
+  `default` row's values for installs without the export.
+- **Not retail yet:** the colour (our yellow, `COLOR`) and texture (retail's are in a shader or
+  `visual_indicators_sk82_Textures.rx2`, not read); the billboard flag (Spline +0x96A, set by `827B0490`, not read;
+  inferred on); the fade ramps are linear and graph row 2 is unused (shader not read); the 22-entry cap, passes,
+  wiggle, flicker and the x10 draw distance flag are not modelled; the snapshot may keep only the anchor's translation
+  (inferred, ours applies Offset in the anchor's frame).
+- **Mods:** `indicator="<ribbon_indicator key>"`, `indicator_position={x,y,z}` and `indicator_style="<visualindicators row>"` on `sdk.triggers.teleporter`
   (`sdk/ENGINE_API.md`); the icon goes with the teleporter.
-- **Tests:** `test_visual_indicators.py` (spline layout, the bank chain), `visual_indicators.rs` tests (one icon per
-  locator, Offset in the anchor frame, ribbon geometry).
+- **Tests:** `test_visual_indicators.py` (spline layout, the bank chain, style rows with inheritance),
+  `visual_indicators.rs` tests (one icon per locator, Offset in the anchor frame, three strips / one strip and the
+  samples cap, the fade window). Captured 2026-10-22: the University icon at 15 m; University to Stadium loads
+  Stadium - Full (`MegaPark_Fullpark`, 450 pieces).

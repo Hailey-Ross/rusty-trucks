@@ -66,7 +66,7 @@ pub(crate) fn stream_dmos(
     observers: Res<super::LivingWorldObservers>,
     config: Option<Res<crate::config::Config>>,
     map: Option<Res<crate::map_transition::CurrentMap>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    camera: Option<Res<crate::camera::CameraRuntime>>,
     mut physics: Option<ResMut<crate::physics::GamePhysics>>,
     mut st: ResMut<DmoStreamState>,
 ) {
@@ -106,7 +106,8 @@ pub(crate) fn stream_dmos(
         core.range = range;
         core.weights = weights;
     }
-    let camera = cameras.iter().next().map(|t| (t.translation().to_array(), t.forward().as_vec3().to_array()));
+    // The tick's camera (as retail's same-frame census), not the interpolated drawn one.
+    let camera = camera.as_ref().and_then(|c| c.presentation_frame()).map(|f| ([f.position[0], f.position[1], f.position[2]], f.basis.columns[2]));
     let views: Vec<(Observer, DmoView)> = observers
         .observers
         .iter()
