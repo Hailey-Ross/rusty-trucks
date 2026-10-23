@@ -508,9 +508,12 @@ fn retail_quit_warning_and_minimum_length() {
     assert!(app.world().resource::<Replay>().active, "No stays in the replay");
     tick(&mut app, SELECT);
     tick(&mut app, 0);
-    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((QUIT_POPUP.into(), 1));
+    // Another system's answer stays queued for it (the teleporter's Yes was lost, session 2026-10-23).
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices
+        .extend([(QUIT_POPUP.into(), 1), ("engine:teleporter".into(), 1)]);
     tick(&mut app, 0);
     assert!(!app.world().resource::<Replay>().active, "Yes leaves");
+    assert_eq!(app.world().resource::<crate::popup_host::PopupMods>().engine_choices, [("engine:teleporter".to_owned(), 1)]);
 }
 
 #[test]

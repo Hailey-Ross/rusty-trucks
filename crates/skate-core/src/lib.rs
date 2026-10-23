@@ -40,3 +40,7 @@ pub mod living_world;
 pub mod triggers;
 pub mod trick_guide;
 pub mod video_calibration;
+pub mod spawn_skater;
+pub mod free_skate_options;
+pub mod indicator_trail;
+pub mod minimap;

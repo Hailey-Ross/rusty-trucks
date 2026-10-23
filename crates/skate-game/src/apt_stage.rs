@@ -1331,6 +1331,70 @@ unhandled: {:?}", game.calls, stage.unhandled());
         }
     }
 
+    /// SpawnSkater (FE 62, template 107) in Free Play mode: the movie reads the mode and the rows through
+    /// `SkaterSpawner` (SetState 1), every call is answered, and A on the first pickable row asks to become that skater.
+    /// Data-gated (a set with cas/spawnskater).
+    #[test]
+    fn retail_spawn_skater_screen_lists_skaters_and_picks_one() {
+        use skate_core::spawn_skater::{Action, Entry, Group, Mode, Skater, SpawnSkater};
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/cas/spawnskater") {
+            eprintln!("skipped: menu set without spawnskater");
+            return;
+        }
+        let assets = crate::apt_imports::main_checkout().join("assets");
+        let (data, loaded) = crate::retail_menus::read(&assets);
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        let entry = |k: &str| Entry { skater: Skater::Character(k.into()), label: format!("#{k}") };
+        let groups = [
+            Group { id: "you".into(), header: "ID_FREESKATE_YOU_HEADER".into(), modes: vec![Mode::Freeskate], entries: vec![Entry { skater: Skater::Own, label: "#You".into() }] },
+            Group { id: "pros".into(), header: "ID_CIC_PRO_SKATERS".into(), modes: vec![Mode::Freeskate], entries: vec![entry("danny_way"), entry("jerry_hsu")] },
+        ];
+        game.spawn_skater.screen = SpawnSkater::open(Mode::Freeskate, &groups, Vec::new());
+        game.spawn_skater.open = true;
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("SpawnSkater".into())], &mut game).unwrap();
+        for (name, i) in [("AptNext", "2"), ("AptPrevious", "3"), ("AptMisc", "5"), ("AptUp", "12"), ("AptDown", "13")] {
+            stage.call_path("_level0._root.RegisterAptInputEnum", vec![Value::Text(name.into()), Value::Text(i.into())], &mut game).unwrap();
+        }
+        let args = ["source/screens/cas/spawnskater.swf", "screen", "0", "SpawnSkater"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", args, &mut game).unwrap();
+        let step = |stage: &mut Stage, game: &mut crate::crossbar_host::FrontEnd, frames: usize| {
+            for frame in 0..frames {
+                if let Err(e) = stage.update(16.0, &movies, game) {
+                    let traces = stage.take_traces();
+                    panic!("frame {frame}: {e}\ncalls: {:?}\ntraces (last 40): {:?}", game.calls, &traces[traces.len().saturating_sub(40)..]);
+                }
+            }
+        };
+        step(&mut stage, &mut game, 120);
+        let id = game.calls.iter().find_map(|c| c.strip_prefix("Game.OnScreenLoaded(")).map(|c| c.trim_end_matches(')').to_owned()).expect("the movie loaded");
+        stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(id.clone()), Value::Text("1".into())], &mut game).unwrap();
+        step(&mut stage, &mut game, 30);
+        eprintln!("game calls: {:?}", game.calls);
+        let unanswered: Vec<&String> = game.calls.iter().filter(|c| c.starts_with("SkaterSpawner.") || c.starts_with("Game.OnMenu")).collect();
+        assert!(unanswered.is_empty(), "SpawnSkater calls nobody answered: {unanswered:?}");
+        stage.call_path("_global.ScreenManager.UpdateInput", vec![Value::Text(id.clone()), Value::Text("2".into()), Value::Text("0".into())], &mut game).unwrap();
+        step(&mut stage, &mut game, 10);
+        assert!(game.spawn_skater.actions.contains(&Action::SetPlayer(Skater::Own)), "actions {:?}, calls: {:?}", game.spawn_skater.actions, game.calls);
+        assert!(stage.draw(|key, movie| set.scene(key, movie)).is_ok());
+    }
+
     /// The text viewer (FE 3, template 28 ToSScreen) with our licenses: the movie loads, SetState(1) reads the words
     /// through `tos` (GetNumWords, GetWordRange) and every `tos` call is answered. Data-gated (a set with nucleus_tos).
     #[test]

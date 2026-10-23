@@ -215,6 +215,10 @@ pub struct FrontEnd<'a> {
     pub tos: crate::extras_host::TosHost,
     /// The credits FE 25's `FECredits` object (extras_host).
     pub credits: crate::extras_host::CreditsHost,
+    /// FE 62 SpawnSkater's `SkaterSpawner` object (spawn_skater_host).
+    pub spawn_skater: crate::spawn_skater_host::SpawnSkaterHost,
+    /// FE 34 FreeSkateOption's object (free_skate_options_host).
+    pub free_skate: crate::free_skate_options_host::FreeSkateOptionsHost,
     /// The image slots (`Game.ImageRenderer_*`, one global manager across screens).
     pub image_slots: crate::image_renderer_host::ImageSlots,
     /// The popup host (FE screen 29): the shown popup and the choices made.
@@ -249,6 +253,8 @@ impl<'a> FrontEnd<'a> {
             extras: Default::default(),
             tos: Default::default(),
             credits: Default::default(),
+            spawn_skater: Default::default(),
+            free_skate: Default::default(),
             image_slots: Default::default(),
             popup: Default::default(),
             signup_title: None,
@@ -258,7 +264,7 @@ impl<'a> FrontEnd<'a> {
 
 impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     fn objects(&self) -> Vec<String> {
-        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos", "FECredits"]
+        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos", "FECredits", "SkaterSpawner", "FreeSkateOption"]
             .map(String::from)
             .to_vec()
     }
@@ -305,6 +311,12 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
             if let Some(value) = self.credits.call(self.language, method, &args) {
                 return Ok(value);
             }
+        }
+        if let Some(value) = self.free_skate.call(object, method) {
+            return Ok(value);
+        }
+        if let Some(value) = self.spawn_skater.call(vm, object, method, &args)? {
+            return Ok(value);
         }
         // The Extras rows and its picker callbacks (only while FE 18 is on top).
         if let Some(value) = (object == "Game").then(|| self.extras.call(method, &args)).flatten() {

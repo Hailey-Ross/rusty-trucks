@@ -834,6 +834,8 @@ impl Plugin for LivingWorldPlugin {
             )
             .add_message::<crate::extras_host::CheatChanged>()
             .add_systems(Update, (apply_cheats, log_zombie_mode).chain())
+            .add_message::<crate::spawn_skater_host::SpawnSkaterRequest>()
+            .add_systems(Update, apply_called_skaters)
             .add_systems(Update, (opt_ins::log_opt_ins, crate::physics::grab_view::visualize_grabs))
             .init_resource::<preload::LivingWorldPreload>()
             .add_systems(Startup, preload::take_models_hold)
@@ -849,6 +851,24 @@ impl Plugin for LivingWorldPlugin {
 /// The Extras cheat code (`zombie`, retail id 5) toggles zombie mode for the session (b304: retail keeps it on the
 /// simulation, not in the profile; medium confidence), through the same flag `SKATE_ZOMBIE`, the overlay opt-in and mods
 /// write.
+/// FE 62 Call Skater: calls and dismisses go to the population's companion slots (host-side; research b563).
+fn apply_called_skaters(mut requests: MessageReader<crate::spawn_skater_host::SpawnSkaterRequest>, mut population: ResMut<PopulationState>) {
+    use skate_core::spawn_skater::{Action, Skater};
+    for r in requests.read() {
+        match &r.0 {
+            Action::Call(Skater::Character(key)) => {
+                let outcome = population.world.call_skater(key);
+                info!("LIVING_WORLD call skater {key}: {outcome:?}");
+            }
+            Action::Dismiss(Skater::Character(key)) => {
+                let freed = population.world.dismiss_skater(key);
+                info!("LIVING_WORLD dismiss skater {key}: {}", if freed { "freed" } else { "not called" });
+            }
+            _ => {}
+        }
+    }
+}
+
 fn apply_cheats(mut changed: MessageReader<crate::extras_host::CheatChanged>, mut settings: ResMut<LivingWorldSettings>) {
     for c in changed.read() {
         if c.id == "zombie" && settings.zombie != c.on {

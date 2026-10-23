@@ -21,6 +21,7 @@ const LB: u16 = 0x0100;
 const DPAD_UP: u16 = 0x0001;
 const DPAD_DOWN: u16 = 0x0002;
 /// The quit warning's callback id (engine popup channel, `popup_host::PopupMods`).
+const REPLAY_POPUP_PREFIX: &str = "engine:replay.";
 const QUIT_POPUP: &str = "engine:replay.quit";
 const PHOTO_POPUP: &str = "engine:replay.photo";
 const PHOTO_DONE_POPUP: &str = "engine:replay.photo_saved";
@@ -1049,8 +1050,12 @@ pub(crate) fn controls(
         matches!(e.session.mode, EditorMode::Playback | EditorMode::Instant | EditorMode::Timeline)
     });
     let menu_open = !crate::graphics_menu::gameplay_active(menu);
+    // Only the replay's own answers: other engine popups (the teleporter's confirm) are read by their systems.
+    let (ours, others) = std::mem::take(&mut popups.engine_choices).into_iter()
+        .partition::<Vec<_>, _>(|(callback, _)| callback.starts_with(REPLAY_POPUP_PREFIX));
+    popups.engine_choices = others;
     // The quit warning's answer (No / Yes, Yes = 1).
-    for (callback, choice) in std::mem::take(&mut popups.engine_choices) {
+    for (callback, choice) in ours {
         if callback == QUIT_POPUP && replay.quit_pending {
             replay.quit_pending = false;
             if choice == 1 {

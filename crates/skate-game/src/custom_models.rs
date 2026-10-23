@@ -132,6 +132,16 @@ impl CustomModels {
         self.just_opened = true;
         self.dirty = true;
     }
+    /// The selectable characters: (entry id, display name, roster key and category for retail pros / IP).
+    pub(crate) fn roster(&self) -> impl Iterator<Item = (&str, &str, Option<(&str, &str)>)> {
+        self.entries.iter().map(|e| (e.id.as_str(), e.name.as_str(), e.native.as_ref().map(|n| (n.key.as_str(), n.category.as_str()))))
+    }
+    /// Swap the player to an entry (by id or roster key); false when there is none.
+    pub(crate) fn request_character(&mut self, id_or_key: &str) -> bool {
+        let Some(e) = self.entries.iter().find(|e| e.id == id_or_key || e.native.as_ref().is_some_and(|n| n.key == id_or_key)) else { return false };
+        self.request = Some(Some(e.id.clone()));
+        true
+    }
     pub fn request_stock(&mut self) {
         self.request = Some(None);
     }

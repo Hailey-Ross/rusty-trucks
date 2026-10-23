@@ -28,7 +28,7 @@ pub const FORMAT: &str = "skate3-menu-movies";
 /// Largest mod movie file accepted (the biggest retail menu movie is well below this).
 pub const MAX_MOD_MOVIE_BYTES: u64 = 16 << 20;
 /// Menu manifest version setup writes; history of what each version added: docs/hails-additions/31-retail-menus.md#menu-manifest-versions
-pub const VERSION: u64 = 13;
+pub const VERSION: u64 = 14;
 /// Oldest manifest version this engine reads and what older sets lack: docs/hails-additions/31-retail-menus.md#oldest-menu-manifest
 pub const OLDEST_VERSION: u64 = 5;
 /// Texture key prefix of a named runtime image (`Game.ImageRenderer_Load`): `image/<image_key>`.

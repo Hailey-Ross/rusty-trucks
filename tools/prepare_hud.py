@@ -55,7 +55,9 @@ def font_mapping(collections: Path, cache: AssetCache) -> dict:
 # The scoring HUD (trick display) and the central message HUD (`hudcentral`: the chase "ZAP!" / "BAM!" lines and other
 # centre-screen messages, retail `826B4FC0` -> `82663F38`), each as runtime/<file> in the same format.
 MOVIES = (("data/fe/source/screens/hud2/trickdisplay2", "trickdisplay.json"),
-          ("data/fe/source/screens/hud2/hudcentral", "hudcentral.json"))
+          ("data/fe/source/screens/hud2/hudcentral", "hudcentral.json"),
+          # The HUD minimap's frame (template 53 MiniMap, research b568); the map picture is drawn by the engine.
+          ("data/fe/source/screens/hud2/hudminimap", "hudminimap.json"))
 
 
 def prepare(game: Path, output: Path, collections: Path):
@@ -70,7 +72,9 @@ def prepare_movie(output: Path, cache, mappings, collections: Path, name: str, f
     bundle = cache.load_bundle(name)
     apt_path = output / "raw" / (name + ".apt")
     const_path = apt_path.with_suffix('.const')
-    actions = Actions(apt_path.read_bytes(), const_path.read_bytes())
+    from prepare_menu_movies import PLACE_HAS_CLIP_ACTIONS, clip_actions
+    apt_bytes = apt_path.read_bytes()
+    actions = Actions(apt_bytes, const_path.read_bytes())
     blocks = {}
     for c in bundle['characters'].values():
         for f in c.get('frames', []):
@@ -79,6 +83,12 @@ def prepare_movie(output: Path, cache, mappings, collections: Path, name: str, f
                     offset = control.get('actions_offset', 0)
                     if offset:
                         blocks[str(offset)] = actions.stream(offset)
+                # Placement clip events (the minimap's frame has one), as the menu movies export them.
+                elif control['type_name'] in ('place_object2', 'place_object3') \
+                        and control.get('flags', 0) & PLACE_HAS_CLIP_ACTIONS and control.get('actions_offset', 0):
+                    control['clip_actions'] = clip_actions(apt_bytes, control['actions_offset'])
+                    for event in control['clip_actions']:
+                        blocks[str(event['actions_offset'])] = actions.stream(event['actions_offset'])
     shapes = {}
     fonts = {}
     for c in bundle['characters'].values():
