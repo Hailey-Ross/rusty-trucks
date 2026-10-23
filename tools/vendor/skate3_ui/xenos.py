@@ -9,6 +9,7 @@ from .binary import FormatError, align
 
 
 XENOS_FORMATS = {
+    4: "R5G6B5",
     6: "A8R8G8B8",
     18: "DXT1",
     19: "DXT3",
@@ -89,6 +90,8 @@ def _layout(fetch: FetchConstant) -> tuple[int, int]:
         return 4, 16
     if fetch.format_code == 6:
         return 1, 4
+    if fetch.format_code == 4:
+        return 1, 2
     raise FormatError(f"unsupported Xbox texture format {fetch.format_name}")
 
 
@@ -249,6 +252,12 @@ def decode_rgba(data: bytes, fetch: FetchConstant) -> bytes:
         for offset in range(0, len(output), 4):
             blue, green, red, alpha = linear[offset : offset + 4]
             output[offset : offset + 4] = bytes((red, green, blue, alpha))
+        return bytes(output)
+    if fetch.format_code == 4:
+        output = bytearray(fetch.width * fetch.height * 4)
+        for pixel in range(fetch.width * fetch.height):
+            value = struct.unpack_from("<H", linear, pixel * 2)[0]
+            output[pixel * 4 : pixel * 4 + 4] = bytes((*_expand_565(value), 255))
         return bytes(output)
     raise FormatError(f"unsupported Xbox texture format {fetch.format_name}")
 

@@ -69,7 +69,28 @@ struct File {
     indicators: HashMap<String, Indicator>,
     #[serde(default)]
     styles: HashMap<String, Style>,
+    #[serde(default)]
+    colours: HashMap<String, Colour>,
+    /// Folder under `private/` holding the textures as PNGs.
+    #[serde(default)]
+    textures: Option<String>,
 }
+
+/// A `ribbon_spline_colour` row (b535 `827AEF08`): the front and background pass textures and the tint.
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct Colour {
+    pub front: String,
+    pub background: String,
+    #[serde(default = "white")]
+    pub tint: [f32; 4],
+}
+
+fn white() -> [f32; 4] {
+    [1.0; 4]
+}
+
+/// Teleporter requests name no colour (-1, b533), which retail resolves to this row.
+const DEFAULT_COLOUR: &str = "default";
 
 /// A teleporter's indicator: the `ribbon_indicator` key and its anchor (the challenge's locator matrix).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
@@ -81,6 +102,9 @@ pub(crate) struct Placement {
     /// A `visualindicators` row in place of the indicator row's own (mods).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
+    /// A `ribbon_spline_colour` row (mods; retail teleporters use `default`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<String>,
 }
 
 #[derive(Resource, Default)]
@@ -89,15 +113,21 @@ pub(crate) struct VisualIndicators {
     splines: HashMap<String, Spline>,
     indicators: HashMap<String, Indicator>,
     styles: HashMap<String, Style>,
+    colours: HashMap<String, Colour>,
+    textures: Option<String>,
     meshes: HashMap<(String, String), Handle<Mesh>>,
-    shown: Vec<(String, Option<String>, [[f32; 4]; 4])>,
+    shown: Vec<Placement>,
 }
 
+/// One icon: the billboard root; its pass children carry [`IndicatorPass`].
 #[derive(Component)]
 pub(crate) struct IndicatorMarker {
     style: Style,
-    material: Handle<StandardMaterial>,
+    passes: Vec<(Handle<StandardMaterial>, [f32; 4], bool)>,
 }
+
+#[derive(Component)]
+pub(crate) struct IndicatorPass;
 
 pub(crate) fn install(app: &mut App) {
     app.init_resource::<VisualIndicators>().add_systems(Update, (sync, face_camera).chain());
@@ -114,14 +144,14 @@ fn load(assets: &Path) -> Result<File, String> {
 }
 
 /// The armed teleporters' indicators, one per anchor locator (retail keeps the first entry per locator, b533).
-pub(crate) fn wanted(placements: &[&Placement]) -> Vec<(String, Option<String>, [[f32; 4]; 4])> {
+pub(crate) fn wanted(placements: &[&Placement]) -> Vec<Placement> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for p in placements {
         if !p.locator.is_empty() && !seen.insert(p.locator.clone()) {
             continue;
         }
-        out.push((p.key.clone(), p.style.clone(), p.matrix));
+        out.push((*p).clone());
     }
     out
 }
@@ -137,14 +167,15 @@ pub(crate) fn position(matrix: &[[f32; 4]; 4], offset: [f32; 3]) -> Vec3 {
 /// one strip: the second edge shifted by (2h, 2h, 0). Double-sided through the material.
 pub(crate) fn ribbon(spline: &Spline, style: &Style) -> Mesh {
     let samples = style.samples.clamp(1, MAX_SAMPLES) as usize;
-    let mut points: Vec<Vec3> = Vec::new();
-    for [c3, c2, c1, c0] in &spline.segments {
+    // With each point its spline parameter in segment units (b534's vertex t), the texture's u.
+    let mut points: Vec<(Vec3, f32)> = Vec::new();
+    for (s, [c3, c2, c1, c0]) in spline.segments.iter().enumerate() {
         for i in 0..=samples {
             let t = i as f32 / samples as f32;
             let p = |k: usize| c3[k] * t * t * t + c2[k] * t * t + c1[k] * t + c0[k];
             let point = Vec3::new(p(0), p(1), p(2));
-            if points.last().is_none_or(|last| last.distance(point) > 1e-4) {
-                points.push(point);
+            if points.last().is_none_or(|(last, _)| last.distance(point) > 1e-4) {
+                points.push((point, s as f32 + t));
             }
         }
     }
@@ -154,12 +185,14 @@ pub(crate) fn ribbon(spline: &Spline, style: &Style) -> Mesh {
     } else {
         vec![(Vec3::ZERO, Vec3::new(2.0 * h, 2.0 * h, 0.0))]
     };
-    let (mut positions, mut indices) = (Vec::new(), Vec::new());
+    let (mut positions, mut uvs, mut indices) = (Vec::new(), Vec::new(), Vec::new());
     for (a, b) in edges {
         let first = positions.len() as u32;
-        for (i, &p) in points.iter().enumerate() {
+        for (i, &(p, t)) in points.iter().enumerate() {
             positions.push((p + a).to_array());
             positions.push((p + b).to_array());
+            // v across the strip: the textures are bands, dark at both edges (b535).
+            uvs.extend_from_slice(&[[t, 0.0], [t, 1.0]]);
             if i > 0 {
                 let v = first + (i as u32) * 2;
                 indices.extend_from_slice(&[v - 2, v - 1, v, v - 1, v + 1, v]);
@@ -170,6 +203,7 @@ pub(crate) fn ribbon(spline: &Spline, style: &Style) -> Mesh {
     Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
         .with_inserted_indices(bevy::mesh::Indices::U32(indices))
 }
 
@@ -180,6 +214,7 @@ fn sync(
     teleporters: Res<crate::teleporters::Teleporters>,
     map: Res<crate::map_transition::CurrentMap>,
     config: Res<crate::config::Config>,
+    server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     markers: Query<Entity, With<IndicatorMarker>>,
@@ -191,6 +226,8 @@ fn sync(
                 state.splines = file.splines;
                 state.indicators = file.indicators;
                 state.styles = file.styles;
+                state.colours = file.colours;
+                state.textures = file.textures;
             }
             Err(e) => info!("SKATE_VISUAL_INDICATORS none ({e})"),
         }
@@ -204,10 +241,10 @@ fn sync(
         commands.entity(e).despawn();
     }
     let mut spawned = 0;
-    for (key, style_override, matrix) in &wanted {
-        let Some(indicator) = state.indicators.get(key).filter(|i| i.enabled).cloned() else { continue };
+    for placement in &wanted {
+        let Some(indicator) = state.indicators.get(&placement.key).filter(|i| i.enabled).cloned() else { continue };
         let Some(spline_id) = indicator.spline.clone() else { continue };
-        let style_key = style_override.clone().or(indicator.style.clone()).unwrap_or_default();
+        let style_key = placement.style.clone().or(indicator.style.clone()).unwrap_or_default();
         let style = state.styles.get(&style_key).cloned().unwrap_or_default();
         let mesh = match state.meshes.get(&(spline_id.clone(), style_key.clone())) {
             Some(mesh) => mesh.clone(),
@@ -218,16 +255,34 @@ fn sync(
                 mesh
             }
         };
-        // One material per icon: its fade is per icon.
-        let material = materials.add(StandardMaterial {
-            base_color: Color::srgba(COLOR[0], COLOR[1], COLOR[2], 0.0),
-            alpha_mode: AlphaMode::Blend,
-            unlit: true,
-            cull_mode: None,
-            ..default()
-        });
-        commands.spawn((IndicatorMarker { style, material: material.clone() }, Mesh3d(mesh), MeshMaterial3d(material),
-            Transform::from_translation(position(matrix, indicator.offset)), Visibility::Hidden));
+        // Retail's two passes (b535 `827AFC80`): the background texture, then the front one. Blend modes inferred
+        // (background alpha, front additive) until b536; materials per icon as the fade is per icon.
+        let colour = state.colours.get(placement.colour.as_deref().unwrap_or(DEFAULT_COLOUR)).cloned();
+        let layers: Vec<(Option<String>, [f32; 4], bool)> = match (colour, state.textures.as_deref()) {
+            (Some(c), Some(folder)) => vec![
+                (Some(format!("private/{folder}/{}.png", c.background)), c.tint, false),
+                (Some(format!("private/{folder}/{}.png", c.front)), c.tint, true),
+            ],
+            _ => vec![(None, [COLOR[0], COLOR[1], COLOR[2], 1.0], false)],
+        };
+        let passes: Vec<(Handle<StandardMaterial>, [f32; 4], bool)> = layers.into_iter().map(|(texture, tint, additive)| {
+            let material = materials.add(StandardMaterial {
+                base_color: Color::srgba(0.0, 0.0, 0.0, 0.0),
+                base_color_texture: texture.map(|path| server.load(path)),
+                alpha_mode: if additive { AlphaMode::Add } else { AlphaMode::Blend },
+                // The front pass sorts after the background one at the same distance.
+                depth_bias: if additive { 1.0 } else { 0.0 },
+                unlit: true,
+                cull_mode: None,
+                ..default()
+            });
+            (material, tint, additive)
+        }).collect();
+        let root = commands.spawn((IndicatorMarker { style, passes: passes.clone() },
+            Transform::from_translation(position(&placement.matrix, indicator.offset)), Visibility::Hidden)).id();
+        for (material, ..) in passes {
+            commands.spawn((IndicatorPass, Mesh3d(mesh.clone()), MeshMaterial3d(material), Transform::default(), ChildOf(root)));
+        }
         spawned += 1;
     }
     info!("SKATE_VISUAL_INDICATORS map={} shown={spawned}", map.name);
@@ -250,11 +305,15 @@ fn face_camera(
         let distance = camera.translation().distance(t.translation);
         let alpha = if distance < DRAW_DISTANCE { marker.style.alpha(distance) } else { 0.0 };
         visibility.set_if_neq(if alpha > 0.0 { Visibility::Visible } else { Visibility::Hidden });
-        if let Some(m) = materials.get(&marker.material)
-            && m.base_color.alpha() != alpha
-            && let Some(m) = materials.get_mut(&marker.material)
-        {
-            m.base_color.set_alpha(alpha);
+        for (material, tint, additive) in &marker.passes {
+            // Additive light fades by its colour, the blended pass by its alpha.
+            let k = if *additive { alpha } else { 1.0 };
+            let want = Color::srgba(tint[0] * k, tint[1] * k, tint[2] * k, (tint[3] * alpha).min(1.0));
+            if materials.get(material).is_some_and(|m| m.base_color != want)
+                && let Some(m) = materials.get_mut(material)
+            {
+                m.base_color = want;
+            }
         }
     }
 }
@@ -266,7 +325,7 @@ mod tests {
     fn placement(locator: &str, x: f32) -> Placement {
         let mut matrix = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
         matrix[3] = [x, 0.0, 0.0, 1.0];
-        Placement { key: "teleport".into(), locator: locator.into(), matrix, style: None }
+        Placement { key: "teleport".into(), locator: locator.into(), matrix, style: None, colour: None }
     }
 
     #[test]
@@ -274,7 +333,7 @@ mod tests {
         let (a, b, c) = (placement("loc_a", 1.0), placement("loc_a", 2.0), placement("loc_b", 3.0));
         let wanted = wanted(&[&a, &b, &c]);
         assert_eq!(wanted.len(), 2);
-        assert_eq!(wanted[0].2[3][0], 1.0);
+        assert_eq!(wanted[0].matrix[3][0], 1.0);
     }
 
     /// smallarrow (teleporters): fades in from 4.23 m to 13.36 m, gone beyond 100 m.

@@ -119,6 +119,47 @@ def styles(collections):
     return out
 
 
+TEXTURES = 'data/content/textures/vitextures.rx2'
+COLOUR_FIELDS = dict(front='Hash_8E38A3CD0186F8DA', background='Hash_FF4DCA217E05B9BC', tint='Hash_E4F3418597AACAA5')
+
+
+def colours(collections):
+    """{ribbon_spline_colour key: {front, background, tint}}: the textures (names without `.Texture`) the two draw
+    passes bind and the tint (research b535, `827AEF08`)."""
+    cls = key_hash('ribbon_spline_colour')
+    out = {}
+    for (row_cls, key), row in collections.rows.items():
+        if row_cls != cls:
+            continue
+        fields, _ = collections.resolve(cls, key)
+        get = lambda n: fields.get(key_hash(COLOUR_FIELDS[n]), {}).get('data')
+        if not get('front') or not get('background'):
+            continue
+        tint = get('tint')
+        out[row['key']] = dict(front=get('front').removesuffix('.Texture'), background=get('background').removesuffix('.Texture'),
+                               tint=list(struct.unpack('>4f', bytes.fromhex(tint)[:16])) if tint else [1.0, 1.0, 1.0, 1.0])
+    return out
+
+
+def write_textures(data, folder):
+    """Every texture of vitextures.rx2 (indicator and volume textures) as PNGs in `folder`; returns their names."""
+    import tempfile
+    from tools.vendor.skate3_ui.rw4 import read_textures
+    from tools.vendor.skate3_ui.xenos import FetchConstant, decode_rgba, write_png
+    folder.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as scratch:
+        source = Path(scratch) / 'vitextures.rx2'
+        source.write_bytes(data)
+        _, textures = read_textures(source)
+    names = []
+    for texture in textures:
+        name = texture.name.removesuffix('.Texture')
+        fetch = FetchConstant(**{k: texture.metadata[k] for k in FetchConstant.__dataclass_fields__ if k in texture.metadata})
+        write_png(folder / f'{name}.png', fetch.width, fetch.height, decode_rgba(texture.data, fetch))
+        names.append(name)
+    return names
+
+
 def export(game_root, collections, output, report=print):
     """Writes `output` and returns the indicator keys it holds."""
     from tools.owned_game.big import BigArchive
@@ -135,9 +176,15 @@ def export(game_root, collections, output, report=print):
     found = {named.get(k, k): v for k, v in styles(collections).items()}
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    boot = BigArchive(Path(game_root) / 'data/big/miscboot.big')
+    entry = next((e for e in boot.entries if e.path.replace('\\', '/').lower() == TEXTURES), None)
+    if entry is None:
+        raise ValueError(TEXTURES + ' missing')
+    textures = write_textures(boot.read(entry), output.parent / 'visual-indicators')
     output.write_text(json.dumps({'format': FORMAT, 'version': VERSION, 'splines': splines, 'indicators': rows,
-                                  'styles': found}), encoding='utf-8')
+                                  'styles': found, 'colours': colours(collections),
+                                  'textures': 'visual-indicators'}), encoding='utf-8')
     missing = sorted(k for k, r in rows.items() if r['spline'] and r['spline'] not in splines)
-    report(f'Visual indicators: {len(rows)} rows, {len(splines)} splines'
+    report(f'Visual indicators: {len(rows)} rows, {len(splines)} splines, {len(textures)} textures'
            + (f'; splines missing for {", ".join(missing)}' if missing else ''))
     return sorted(rows)

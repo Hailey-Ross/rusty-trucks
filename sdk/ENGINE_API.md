@@ -115,7 +115,7 @@ see `docs/hails-additions/24-trigger-volumes.md`).
   screen. An exit's optional `world` names a skate.Park world on that map (`dist_megapark_full` = Stadium - Full): the map
   loads with that world's layout, as retail's park teleporters do. A `key` equal to a retail teleporter's id (`tele_world_to_stadium`) replaces it on that map;
   `indicator="teleport"` gives it Skate 3's floating icon (any `ribbon_indicator` row key), anchored at
-  `indicator_position={x,y,z}` (default: the volume's centre) plus the row's offset, and `indicator_style="smallarrow"` picks another `visualindicators` look (`default`, `gates`, `trail`, `non_fade`, `lesswiggle`, `smallarrow_nonfade`, `clintjammie`); without `indicator` it has none
+  `indicator_position={x,y,z}` (default: the volume's centre) plus the row's offset, and `indicator_style="smallarrow"` picks another `visualindicators` look (`default`, `gates`, `trail`, `non_fade`, `lesswiggle`, `smallarrow_nonfade`, `clintjammie`) and `indicator_colour="red"` its colour (`default` = blue, `blue`, `red`, `green`, `yellow`, `orange`, `purple`, `domination`); without `indicator` it has none
   (a retail teleporter replaced by key keeps no icon unless the mod names one).
   `sdk.triggers.teleporter(key)` removes it. Every use posts `{name="teleporter_used", teleporter=,
   exit=<1-based>, body="player"}`. Mod teleporters go when the mod stops and on a map change (re-add
