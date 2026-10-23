@@ -2716,11 +2716,14 @@ mod tests {
                     users.entry((a.min(b), a.max(b))).or_default().push((t, e));
                 }
             }
-            // (1) Edges with more than two live users.
-            let mut multi = HashMap::new();
+            // (1) Edges with more than two live users. Retail pairs them greedily and leaves the rest 0x9A (cosine 1, not
+            // convex, research b547), so only those where a user carries a convex code over 3 degrees can catch.
+            let convex = |&(t, e): &(usize, usize)| flags[t] & (0x20 << e) != 0 && cosines[t][e] < 0.99863;
+            let (mut multi, mut multi_convex) = (HashMap::new(), HashMap::new());
             for ((a, _), list) in &users {
                 if list.len() > 2 {
-                    *multi.entry(cell(positions[*a])).or_insert(0) += 1;
+                    let into = if list.iter().any(convex) { &mut multi_convex } else { &mut multi };
+                    *into.entry(cell(positions[*a])).or_insert(0) += 1;
                 }
             }
             // (2) Unjoined floor edges beside another unjoined floor edge.
@@ -2775,10 +2778,11 @@ mod tests {
             }
             let count = |h: &HashMap<[i32; 3], usize>| h.values().sum::<usize>();
             println!(
-                "{layout}: pieces {} triangles {} dropped {} | multi-user edges {} | unjoined floor edges beside another {} | flat-floor ridges {}",
-                pieces.ranges.len(), points.len(), dropped.iter().filter(|&&d| d).count(), count(&multi), gap_edges, count(&ridges)
+                "{layout}: pieces {} triangles {} dropped {} | multi-user edges {} (convex over 3 deg {}) | unjoined floor edges beside another {} | flat-floor ridges {}",
+                pieces.ranges.len(), points.len(), dropped.iter().filter(|&&d| d).count(), count(&multi) + count(&multi_convex),
+                count(&multi_convex), gap_edges, count(&ridges)
             );
-            if !multi.is_empty() { println!("  multi: {}", top(&multi)); }
+            if !multi_convex.is_empty() { println!("  multi convex: {}", top(&multi_convex)); }
             if !gaps.is_empty() { println!("  gaps: {}", top(&gaps)); }
             if !ridges.is_empty() { println!("  ridges: {}", top(&ridges)); }
         }
