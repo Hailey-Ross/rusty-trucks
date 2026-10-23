@@ -23,6 +23,8 @@ VERSION = 1
 TRIGGER = 'Hash_DA9330F647B19DF2'   # Sk8::Challenge::tTriggerVolumeInstanceID
 EXITS = 'Hash_E7D448870EC1A6E9'     # Sk8::Challenge::tWorldLocationID[]
 TITLE = 'Hash_E2A50788B6C20C92'     # the challenge's title text id (bank row)
+LOCATOR = 'Hash_F1C6D5FA4A23951E'   # the challenge's locator (bank row, a string): its visual indicator's anchor (b533)
+INDICATOR = 'Hash_284B07325D587CC4' # RefSpec -> ribbon_indicator row (bank row, inherited from the group, b532)
 LOCAL = 'data/db/challenge_local_data/'
 BANKS = 'data/db/challengebanks/'
 MISSIONS = 'data/content/missions/'
@@ -57,6 +59,28 @@ def parse_exits(items, binary):
     return out
 
 
+CHALLENGE = 'Hash_A4F35B159D7432B5'  # the challenge bank class
+
+
+def indicator(bank_rows, challenge, ribbons, locate):
+    """The challenge's visual indicator {key, locator, matrix} through its bank row's parent chain, None when it has
+    none, or the reason (a string) when its locator does not resolve to one matrix (retail 82D53F70, research b533)."""
+    fields, key, seen = {}, challenge.casefold(), set()
+    while key and key not in seen and (CHALLENGE, key) in bank_rows:
+        seen.add(key)
+        parent, own = bank_rows[CHALLENGE, key]
+        for name, value in own.items():
+            fields.setdefault(name, value)
+        key = parent.casefold()
+    if 'indicator' not in fields or not fields.get('locator'):
+        return None
+    matrices = locate(fields['locator'])
+    if len({json.dumps(m) for m in matrices}) != 1:
+        return f'locator {fields["locator"]}: {len(matrices)} records'
+    return dict(key=ribbons.get(fields['indicator'], 'Hash_%016X' % fields['indicator']), locator=fields['locator'],
+                matrix=matrices[0])
+
+
 def _sources(game_root, dlc_bigs):
     """Every archive that may hold teleporter data: the disc's db.big and missions.big, then the packs' BIGs."""
     from tools.owned_game.big import BigArchive
@@ -78,12 +102,13 @@ def export(game_root, converted, dlc_vaults, dlc_bigs, work, output, text=None, 
     text = text or {}
     names = (Path(__file__).resolve().parent / 'names.txt').read_text(encoding='utf-8').splitlines()
     collections = Collections(merged(converted, list(dlc_vaults)))
-    worlds = {}
+    worlds, world_names = {}, {}
     for (cls, key), row in collections.rows.items():
         if cls == key_hash('world'):
             stream = collections.resolve('world', key)[0].get(key_hash('WorldStream'))
             if stream:
                 worlds[key] = stream['data']
+                world_names[key] = row['key']
     records = all_locators(game_root, dlc_vaults)
 
     local, banks, hulls = {}, [], {}
@@ -109,15 +134,22 @@ def export(game_root, converted, dlc_vaults, dlc_bigs, work, output, text=None, 
             stem.with_suffix(suffix).write_bytes(archive.read(entry))
         return convert(schema / 'data/db/skaterschema', stem, names), vault(stem)[1]
 
-    titles = {}
+    titles, bank_rows = {}, {}
     for _, archive, vlt_entry, bin_entry in banks:
-        converted_bank, _ = read_vault(archive, vlt_entry, bin_entry, 'banks')
+        converted_bank, bank_binary = read_vault(archive, vlt_entry, bin_entry, 'banks')
         for row in converted_bank['collections']:
             title = row['fields'].get(TITLE)
             if title and title.get('data') and not title['data'].startswith('#'):
                 titles.setdefault(row['key'].casefold(), title['data'])
+            fields = {}
+            if row['fields'].get(LOCATOR, {}).get('data'):
+                fields['locator'] = cstring(bank_binary, int(row['fields'][LOCATOR]['data'], 16)).decode('utf-8')
+            if row['fields'].get(INDICATOR, {}).get('data'):
+                fields['indicator'] = struct.unpack_from('>Q', bytes.fromhex(row['fields'][INDICATOR]['data']), 8)[0]
+            bank_rows.setdefault((row['class'], row['key'].casefold()), (row['parent'], fields))
+    ribbons = {k: r['key'] for (c, k), r in collections.rows.items() if c == key_hash('ribbon_indicator')}
 
-    result, skipped, unreadable = [], [], []
+    result, skipped, unreadable, no_marker = [], [], [], []
     for challenge, (source, archive, vlt_entry, bin_entry) in sorted(local.items()):
         try:
             data, binary = read_vault(archive, vlt_entry, bin_entry, 'local')
@@ -141,7 +173,8 @@ def export(game_root, converted, dlc_vaults, dlc_bigs, work, output, text=None, 
                 matrices = records.get((stream.casefold(), locator), [])
                 if len({json.dumps(m) for m in matrices}) != 1:
                     raise ValueError(f'exit locator {locator} in {stream}: {len(matrices)} records')
-                exits.append(dict(map=label_of(stream), district=stream, locator=locator, matrix=matrices[0]))
+                # The exit's world row (a skate.Park exit names its Full world, `dist_megapark_full`: research b532).
+                exits.append(dict(map=label_of(stream), district=stream, world=world_names[world], locator=locator, matrix=matrices[0]))
             if not exits:
                 raise ValueError('no exits')
             volume = None
@@ -158,9 +191,14 @@ def export(game_root, converted, dlc_vaults, dlc_bigs, work, output, text=None, 
             skipped.append(f'{challenge} ({error})')
             continue
         title_id = titles.get(challenge.casefold())
+        marker = indicator(bank_rows, challenge, ribbons, lambda name: records.get((district.casefold(), name), []))
+        if isinstance(marker, str):
+            no_marker.append(f'{challenge} ({marker})')
+            marker = None
         result.append(dict(id=challenge, source=source, map=label_of(district), district=district,
                            volume_name=volume_name, volume_id='%016x' % instance, volume=volume,
-                           title_id=title_id, title=text.get(title_id) if title_id else None, exits=exits))
+                           title_id=title_id, title=text.get(title_id) if title_id else None, exits=exits,
+                           indicator=marker))
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps({'format': FORMAT, 'version': VERSION, 'teleporters': result}, indent=1),
@@ -168,6 +206,7 @@ def export(game_root, converted, dlc_vaults, dlc_bigs, work, output, text=None, 
     tele = [c for c in unreadable if c.startswith('tele')]
     report(f'Teleporters: {len(result)} on {len({t["map"] for t in result})} maps'
            + (f'; left out: {", ".join(skipped)}' if skipped else '')
+           + (f'; no indicator: {", ".join(no_marker)}' if no_marker else '')
            + (f'; {len(unreadable)} other challenge vaults unreadable' if unreadable else '')
            + (f' (named like teleporters: {", ".join(tele)})' if tele else ''))
     return result

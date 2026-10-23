@@ -642,6 +642,15 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             except CONTENT_ERRORS as error:
                 (stage/'assets/private/teleporters.json').unlink(missing_ok=True)
                 note(private/'map-status'/'teleporters-availability.json','Teleporters',error,report=report)
+            # Challenge visual indicators (visual_indicators.py, research b532 / b533): the teleporters' floating icons.
+            try:
+                from .visual_indicators import export as write_indicators
+                from .dlc import merged
+                write_indicators(game_root,merged(converted,list(dlc_vaults)),stage/'assets/private/visual-indicators.json',report)
+                (private/'map-status'/'visual-indicators-availability.json').unlink(missing_ok=True)
+            except CONTENT_ERRORS as error:
+                (stage/'assets/private/visual-indicators.json').unlink(missing_ok=True)
+                note(private/'map-status'/'visual-indicators-availability.json','Visual indicators',error,report=report)
             # skate.Park layouts (park_layout.py, research b424 / b425 / b431): the pieces each park world places on
             # its stream, from the disc and the packs (a pack's recipe, models and textures after the disc's).
             try:
