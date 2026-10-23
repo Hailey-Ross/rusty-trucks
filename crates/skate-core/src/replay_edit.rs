@@ -507,6 +507,19 @@ impl ReplayEdit {
         Ok(())
     }
 
+    /// The film pack's timeline reset of one lane (b557, `82C7F728`): every key goes and the lane is back to a fresh
+    /// clip's state (retail re-inserts one base key at the start); the clip's heads stay.
+    pub fn reset_lane(&mut self, clip: usize, lane: Lane) -> Result<(), EditError> {
+        let default = self.limits.lanes[lane.index()].default;
+        let c = self.clips.get_mut(clip).ok_or(EditError::NoClip)?;
+        let l = lane.index();
+        c.markers[l].clear();
+        c.values[l] = default;
+        c.ends[l] = default;
+        c.set[l] = false;
+        Ok(())
+    }
+
     /// The film pack's form of that reset (b460): only the segment in effect at `frame` takes the lane default (the
     /// setter's single write); no key is removed.
     pub fn reset_at(&mut self, clip: usize, lane: Lane, frame: u32) -> Result<(), EditError> {
