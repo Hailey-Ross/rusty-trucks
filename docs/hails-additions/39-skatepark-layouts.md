@@ -374,6 +374,17 @@ Asset-gated report tests in `skate_world.rs` (run with `-- --ignored --nocapture
   3465 per layout (not yet classified: overlapping pieces that are not exactly back to back, or a piece's own
   non-manifold edges). Joined convex ridges over 3 degrees between near-flat floors: 16 to 1337 per layout (many can
   be real geometry, such as mellow ramp lips).
+- **Edges with 3 or more users [code], research b547 (2026-10-23):** retail has no special case. Every pass works per
+  triangle and edge; candidates are the live opposite-wound users; the pairing (82875B20 / 82875CA8) is greedy best
+  score in the sorted-table order (a tie keeps the old pair, a displaced triangle is re-paired only by a later one);
+  leftovers get 0x9A (cosine 1, not convex: face contacts only, nothing to catch on); only the exact back-to-back cull
+  (828755B8) removes faces and nothing welds edges or splits T-junctions. Ours matches (`skate_world.rs` cull, pairing
+  and `fused_edge_byte`, main checked the thresholds and the 0x9A path). So these edges are not faults in themselves:
+  the audit now counts those where a user carries a convex code over 3 degrees, the only ones that can catch. Report of
+  2026-10-23 (multi-user edges, of them convex over 3 degrees): Downtown_Fullpark 936 / 156, Downtown_Nightpark 3465 /
+  734, Industrial 807 / 147, MegaPark 1078 / 317, Starter 161 / 37, ZenPlaza_Full 1494 / 255, backlot_full 1811 / 515,
+  startpark_progression 617 / 86 (stable across runs). Whether retail's runtime gives those the same codes would need
+  a recomp trace at one of them (as the toe trace, doc 39 "Ground plane pass").
 - Play test 2026-10-21 23:07 (laptop, build db1cd1e5): "stadium full seams are WAY better" (one bail in about 70 s
   against 4 in 25 s on the big ramp before) and "backlot collision is way better".
 
