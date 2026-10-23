@@ -458,10 +458,13 @@ function Ensure-Version($v) {
     if ($v.dev) {
         # A working-tree build: the commit plus a hash of the uncommitted changes, so editing the tree rebuilds it.
         # Hashed as raw bytes by git (diff written to a file), so the console code page cannot change it.
-        $null = Invoke-Git $d diff --quiet HEAD
+        # Only the exe's inputs (cargo + build.rs, docs/images for the icon, maps for include_bytes): a tools\ edit (setup,
+        # Python) is read from the checkout at run time and no longer rebuilds (2026-10-23).
+        $inputs = @('--', 'crates', 'vendor', 'Cargo.toml', 'Cargo.lock', '.cargo', 'docs/images', 'maps')
+        $null = Invoke-Git $d diff --quiet HEAD @inputs
         if ($LASTEXITCODE -eq 1) {
             $tmp = [IO.Path]::GetTempFileName()
-            $null = Invoke-Git $d diff --binary "--output=$tmp" HEAD
+            $null = Invoke-Git $d diff --binary "--output=$tmp" HEAD @inputs
             $hash = "$(Invoke-Git $d hash-object $tmp)".Trim()
             Remove-Item $tmp -ErrorAction SilentlyContinue
             if ($hash.Length -ge 12) { $head = "$head+$($hash.Substring(0, 12))" }
