@@ -130,6 +130,15 @@ Measurements so far (headless, 2026-10-08, optimised test build):
 - So the player's physics, animation graphs, scoring and player audio are not the cause. Not measurable
   headlessly: the frame-side animation present / skinning, the camera, the HUD render and the renderer;
   the `FRAME_HITCH` line separates those in the next session.
+- **Log survey 2026-10-23 (research b552, `.local/research/b552-airborne-frame-hitch.md`):** 92 session logs
+  (desktop and laptop, none malformed), 12,237 in-play hitch lines: 3.4 % airborne at every size threshold, no
+  cluster at a trick start; in the 36 trace-all frames.tsv files about 2,600 flip landings show the same frame times
+  in the last 0.5 s of air as on the approach (8.70 / 8.65 ms mean, p99 16.4 / 16.6 ms). So no session so far shows
+  an air-specific cost; the Hawaiian Dream report (USER-ASKS 265) has no log yet. The survey found `slowest=` often
+  wrong: much of a big hitch sat in no stage, and `post_render` also holds the render / present wait.
+- **Change (2026-10-23):** the line adds `map=`, `fixed_other` (fixed-step time outside the three fixed stages, where
+  `modding::fixed` runs) and `update_other` (main-thread time outside the stages before `post_render`, so the CPU
+  part of `post_render` plus gaps); `slowest=` considers both. `post_render` minus `wait_ms` is its CPU share.
 
 ### Scoring HUD asset churn (2026-10-08, branch `world/hud-hitch`)
 
