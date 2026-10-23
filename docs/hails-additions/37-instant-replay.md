@@ -118,6 +118,21 @@ Retail's replay free camera is pulled back when it is farther than 40 m from the
 back onto the 40 m sphere around the player's recorded position at the cursor after each move.
 Test: the leash keeps a camera inside 40 m and pulls a far one onto the sphere.
 
+## Editor buttons and the Finished menu as retail (2026-10-23, research b555 / b387, USER-ASKS 271)
+
+- **A on a Game camera key** opens nothing (`82612C28`: kind >= 3 returns; main checked `cmplwi r3,3; bge` to the
+  epilogue). Ours opened its key edit; `Editor::reopen_at` now returns None and leaves the edited key alone.
+- **B / Back** raise the Finished menu only in playback, the instant replay and the timeline (retail modes 1 / 5 / 6,
+  `82614E58`); trim and the key edit modes ignore them (the effects menu commits on B). Ours raised it in every mode
+  but the effects menu.
+- **Save asks first:** retail's Save row confirms (title = the row, ID_REPLAY_EDITOR_POPUP_REPLAYSAVE "Save Replay?",
+  No / Yes; callback `82616000`, main checked: No skips the save and closes). Ours exported at once; now Save to PC
+  asks the same and No returns to the editor.
+- **Not yet:** the film pack's Finished variant (B straight to the quit warning, X opens the menu with Save, Take
+  photo, Replay mode toggles, Reset channel / timeline; b387 rows 1..7) and Upload.
+- **Tests:** `the_finished_menu_offers_save_to_pc_and_exit` (trim ignores B, the Save confirm), `camera_keys_hold_cut_and_blend`
+  (Game key). Not play-tested.
+
 ## Camera key edit rates (2026-10-23, research b549)
 
 - **Retail [code + data]:** the editor screen reads the pad, not the camera: `82610F18` per edit mode writes the

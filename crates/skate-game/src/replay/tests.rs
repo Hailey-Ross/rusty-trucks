@@ -702,6 +702,16 @@ fn the_finished_menu_offers_save_to_pc_and_exit() {
     }
     app.world_mut().resource_mut::<Replay>().enter();
     app.world_mut().resource_mut::<crate::popup_host::PopupMods>().stage_ready = true;
+    // B in the trim mode (retail mode 2) is ignored: no Finished menu (only modes 1 / 5 / 6 raise it, b555).
+    {
+        let mut replay = app.world_mut().resource_mut::<Replay>();
+        replay.editor = editor::Editor::open(0.0, 6.0, Default::default());
+        replay.editor.as_mut().unwrap().session.mode = skate_core::replay_edit::session::EditorMode::Trim;
+    }
+    tick(&mut app, B);
+    tick(&mut app, 0);
+    assert!(app.world().resource::<crate::popup_host::PopupMods>().engine_requests.is_empty());
+    app.world_mut().resource_mut::<Replay>().editor = None;
     tick(&mut app, B);
     tick(&mut app, 0);
     let request = app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_requests.pop().unwrap();
@@ -710,6 +720,18 @@ fn the_finished_menu_offers_save_to_pc_and_exit() {
     app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((export_run::FINISHED_POPUP.into(), skate_core::fe_popup::CHOICE_CANCEL));
     tick(&mut app, 0);
     assert!(app.world().resource::<Replay>().active);
+    // Save asks first (retail b387 row 2: Save Replay? No / Yes); No goes back to the editor.
+    tick(&mut app, B);
+    tick(&mut app, 0);
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_requests.clear();
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((export_run::FINISHED_POPUP.into(), 0));
+    tick(&mut app, 0);
+    let confirm = app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_requests.pop().unwrap();
+    assert_eq!((confirm.callback.as_str(), confirm.description.as_str()), (export_run::SAVE_CONFIRM_POPUP, "ID_REPLAY_EDITOR_POPUP_REPLAYSAVE"));
+    app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((export_run::SAVE_CONFIRM_POPUP.into(), 0));
+    tick(&mut app, 0);
+    assert!(app.world().resource::<Replay>().active && !app.world().resource::<Replay>().quit_pending);
+    assert!(!app.world().resource::<export_run::ReplayExport>().busy());
     tick(&mut app, B);
     tick(&mut app, 0);
     app.world_mut().resource_mut::<crate::popup_host::PopupMods>().engine_choices.push((export_run::FINISHED_POPUP.into(), 1));
