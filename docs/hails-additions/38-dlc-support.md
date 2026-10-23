@@ -150,7 +150,7 @@ data. Open: no recomp trace confirms retail plays the SkateSchool bed there.
 ## Open questions
 
 - Answered 2026-10-20 (user): converted DLC maps stay when the DLC folder is removed, until a refresh sees the packs
-  again.
+  again; since 2026-10-22 their teleporters, layouts, unlocks and audio stay too ("Kept DLC maps keep their side data").
 - Answered since: display names ("DLC maps in the map lists", "DLC location names in the menus"), teleport volumes
   ("Teleporters (disc and DLC maps)") and `.ems` audio ("DLC map audio"); see those sections.
 - Still open: the movie's own constants for kUpdateMode / kRefreshTint / kReplayMode_* (from our export of
@@ -345,9 +345,10 @@ Change:
   (`82706F50`: matrix, slot, IsOnBoard), the load chain `82707BE0` -> `82707CB0` -> `82707D70` -> `82707F08` ->
   `827080A0` streams the exit area, then `827070C0` posts cMsgTeleport (0x8FCDC5E2 {matrix, IsOnBoard,
   IsSessionMarkerTeleport}), the same event as a same-world teleport; no velocity anywhere on the path. Ours already
-  matches (`challenge_map.rs` `travel_ex(request.transform, None, request.on_board)` after the map load). Open: who
-  turns cMsgTeleport into the skater move (likely retail Lua); whether our placement can run before the exit area's
-  collision exists. (Answered 2026-10-21: `travel_ex` did reset twice; it moves once now, "One move per teleport".)
+  matches (`challenge_map.rs` `travel_ex(request.transform, None, request.on_board)` after the map load). Answered
+  since: cMsgTeleport -> listener `82899560` -> lockstep packet 5 -> handler `82597A70` case 5 (ground fit-up, then the
+  entity's placement; research b474); our placement waits for the whole map's physics before the move (research
+  b469, by code); `travel_ex` reset twice and moves once now ("One move per teleport", 2026-10-21).
   Moddable next: per exit `on_board` / arrival velocity on `sdk.triggers.teleporter` (`TeleporterOptions`, vm.rs:77).
 - D-pad Up glyph (research b452, 2026-10-21): the Teleport state sets no button type; the movie's own data does.
   [data] `mSignup.mButtonItem` (a `button_item2`) has a Construct clip action setting `mButtonImage = "DPad_Up"`, and
