@@ -860,7 +860,8 @@ conditions in the offer scan. Game: the request carries the record bools; the th
 `sync_hand_props` clears the request bit on the create attempt, releases the held object as a prop created mid-game
 (doc 27 "Props created mid-game": collision from the model's meshes, its model detached from the hand and following the
 body), keeps the link until the unlink box, refuses creates past 49 live released props and culls released props beyond
-100 m of every observer. Logs: `PED_HAND_PROP ... throw clip`, `... released body=.. velocity=..`, `... unlinked`,
+100 m of every observer. The release test and the body's start pose use the tick's hand pose, not the drawn one
+(doc 27 "Census camera and hand prop release from the tick"). Logs: `PED_HAND_PROP ... throw clip`, `... released body=.. velocity=..`, `... unlinked`,
 `... culled`, `... not created (pool full | no model)`.
 
 **NOT RETAIL YET / open.** The release frame: retail compares a clip time query (skeleton +17936 vfunc +36) with the

@@ -5,12 +5,43 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Our ribbon look until retail's draw code is read (b533 open items): width in metres, colour, samples per segment.
-const WIDTH: f32 = 0.06;
+/// NOT RETAIL: retail's colour / texture come from a shader or texture not read yet (b534 section 3).
 const COLOR: [f32; 3] = [1.0, 0.85, 0.2];
-const SAMPLES: usize = 6;
+/// Retail caps the samples per spline segment at 10 (`827B0BA8`, b534).
+const MAX_SAMPLES: u16 = 10;
 /// Retail draws an indicator only within 400 m of the query point (`82D4F8A8`, constant 0x820C6AF0).
 pub(crate) const DRAW_DISTANCE: f32 = 400.0;
+
+/// A `visualindicators` row as the draw reads it (setup visual_indicators.py `styles`, research b534).
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct Style {
+    /// Width terms A, B: full ribbon width 0.5 * (A + B).
+    pub width: [f32; 2],
+    pub samples: u16,
+    /// Three crossed strips (local z, y, x) instead of one diagonal strip.
+    pub three_strips: bool,
+    /// Fade graph x points: fade in from [0] to [1], out from [2] to [3], hidden beyond [3].
+    pub fade: [f32; 4],
+}
+
+impl Default for Style {
+    /// Retail's `default` row, for installs that predate the style export.
+    fn default() -> Self {
+        Self { width: [0.4, 0.3], samples: 10, three_strips: true, fade: [0.0, 8.306_189, 94.299_67, 100.0] }
+    }
+}
+
+impl Style {
+    /// Opacity at `distance` from the camera (`827B1B70` fade window, linear ramps assumed, b534); 0 = hidden.
+    pub(crate) fn alpha(&self, distance: f32) -> f32 {
+        let [x0, x1, x2, x3] = self.fade;
+        if distance > x3 {
+            return 0.0;
+        }
+        let ramp = |from: f32, to: f32| if to > from { ((distance - from) / (to - from)).clamp(0.0, 1.0) } else if distance >= from { 1.0 } else { 0.0 };
+        ramp(x0, x1).min(1.0 - if x3 > x2 { ramp(x2, x3) } else { 0.0 })
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct Spline {
@@ -26,6 +57,8 @@ pub(crate) struct Indicator {
     pub spline: Option<String>,
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub style: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -34,6 +67,8 @@ struct File {
     version: u32,
     splines: HashMap<String, Spline>,
     indicators: HashMap<String, Indicator>,
+    #[serde(default)]
+    styles: HashMap<String, Style>,
 }
 
 /// A teleporter's indicator: the `ribbon_indicator` key and its anchor (the challenge's locator matrix).
@@ -43,6 +78,9 @@ pub(crate) struct Placement {
     #[serde(default)]
     pub locator: String,
     pub matrix: [[f32; 4]; 4],
+    /// A `visualindicators` row in place of the indicator row's own (mods).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
 }
 
 #[derive(Resource, Default)]
@@ -50,13 +88,16 @@ pub(crate) struct VisualIndicators {
     loaded: bool,
     splines: HashMap<String, Spline>,
     indicators: HashMap<String, Indicator>,
-    meshes: HashMap<String, Handle<Mesh>>,
-    material: Option<Handle<StandardMaterial>>,
-    shown: Vec<(String, [[f32; 4]; 4])>,
+    styles: HashMap<String, Style>,
+    meshes: HashMap<(String, String), Handle<Mesh>>,
+    shown: Vec<(String, Option<String>, [[f32; 4]; 4])>,
 }
 
 #[derive(Component)]
-pub(crate) struct IndicatorMarker;
+pub(crate) struct IndicatorMarker {
+    style: Style,
+    material: Handle<StandardMaterial>,
+}
 
 pub(crate) fn install(app: &mut App) {
     app.init_resource::<VisualIndicators>().add_systems(Update, (sync, face_camera).chain());
@@ -73,14 +114,14 @@ fn load(assets: &Path) -> Result<File, String> {
 }
 
 /// The armed teleporters' indicators, one per anchor locator (retail keeps the first entry per locator, b533).
-pub(crate) fn wanted(placements: &[&Placement]) -> Vec<(String, [[f32; 4]; 4])> {
-    let mut out: Vec<(String, [[f32; 4]; 4])> = Vec::new();
+pub(crate) fn wanted(placements: &[&Placement]) -> Vec<(String, Option<String>, [[f32; 4]; 4])> {
+    let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for p in placements {
         if !p.locator.is_empty() && !seen.insert(p.locator.clone()) {
             continue;
         }
-        out.push((p.key.clone(), p.matrix));
+        out.push((p.key.clone(), p.style.clone(), p.matrix));
     }
     out
 }
@@ -91,30 +132,38 @@ pub(crate) fn position(matrix: &[[f32; 4]; 4], offset: [f32; 3]) -> Vec3 {
     row(3) + row(0) * offset[0] + row(1) * offset[1] + row(2) * offset[2]
 }
 
-/// The spline as a flat ribbon in its own x / y plane (z = 0), double-sided through the material.
-pub(crate) fn ribbon(spline: &Spline, width: f32) -> Mesh {
-    let mut points: Vec<Vec2> = Vec::new();
+/// The spline as retail's strips (`827B0BA8` / `827B2200`, b534): per strip the sampled points with a fixed edge
+/// offset each side in the icon's frame, half width h = 0.25 * (A + B). Three strips: offsets along z, y and x;
+/// one strip: the second edge shifted by (2h, 2h, 0). Double-sided through the material.
+pub(crate) fn ribbon(spline: &Spline, style: &Style) -> Mesh {
+    let samples = style.samples.clamp(1, MAX_SAMPLES) as usize;
+    let mut points: Vec<Vec3> = Vec::new();
     for [c3, c2, c1, c0] in &spline.segments {
-        for i in 0..=SAMPLES {
-            let t = i as f32 / SAMPLES as f32;
+        for i in 0..=samples {
+            let t = i as f32 / samples as f32;
             let p = |k: usize| c3[k] * t * t * t + c2[k] * t * t + c1[k] * t + c0[k];
-            let point = Vec2::new(p(0), p(1));
+            let point = Vec3::new(p(0), p(1), p(2));
             if points.last().is_none_or(|last| last.distance(point) > 1e-4) {
                 points.push(point);
             }
         }
     }
+    let h = 0.25 * (style.width[0] + style.width[1]);
+    let edges: Vec<(Vec3, Vec3)> = if style.three_strips {
+        vec![(Vec3::new(0.0, 0.0, -h), Vec3::new(0.0, 0.0, h)), (Vec3::new(0.0, -h, 0.0), Vec3::new(0.0, h, 0.0)), (Vec3::new(-h, 0.0, 0.0), Vec3::new(h, 0.0, 0.0))]
+    } else {
+        vec![(Vec3::ZERO, Vec3::new(2.0 * h, 2.0 * h, 0.0))]
+    };
     let (mut positions, mut indices) = (Vec::new(), Vec::new());
-    for (i, &p) in points.iter().enumerate() {
-        let before = points[i.saturating_sub(1)];
-        let after = points[(i + 1).min(points.len() - 1)];
-        let d = (after - before).normalize_or_zero();
-        let n = Vec2::new(-d.y, d.x) * width * 0.5;
-        positions.push([p.x + n.x, p.y + n.y, 0.0]);
-        positions.push([p.x - n.x, p.y - n.y, 0.0]);
-        if i > 0 {
-            let b = (i as u32) * 2;
-            indices.extend_from_slice(&[b - 2, b - 1, b, b - 1, b + 1, b]);
+    for (a, b) in edges {
+        let first = positions.len() as u32;
+        for (i, &p) in points.iter().enumerate() {
+            positions.push((p + a).to_array());
+            positions.push((p + b).to_array());
+            if i > 0 {
+                let v = first + (i as u32) * 2;
+                indices.extend_from_slice(&[v - 2, v - 1, v, v - 1, v + 1, v]);
+            }
         }
     }
     let normals = vec![[0.0, 0.0, 1.0]; positions.len()];
@@ -141,6 +190,7 @@ fn sync(
             Ok(file) => {
                 state.splines = file.splines;
                 state.indicators = file.indicators;
+                state.styles = file.styles;
             }
             Err(e) => info!("SKATE_VISUAL_INDICATORS none ({e})"),
         }
@@ -153,45 +203,58 @@ fn sync(
     for e in &markers {
         commands.entity(e).despawn();
     }
-    let material = state.material.get_or_insert_with(|| materials.add(StandardMaterial {
-        base_color: Color::srgb(COLOR[0], COLOR[1], COLOR[2]),
-        unlit: true,
-        cull_mode: None,
-        ..default()
-    })).clone();
     let mut spawned = 0;
-    for (key, matrix) in &wanted {
+    for (key, style_override, matrix) in &wanted {
         let Some(indicator) = state.indicators.get(key).filter(|i| i.enabled).cloned() else { continue };
         let Some(spline_id) = indicator.spline.clone() else { continue };
-        let mesh = match state.meshes.get(&spline_id) {
+        let style_key = style_override.clone().or(indicator.style.clone()).unwrap_or_default();
+        let style = state.styles.get(&style_key).cloned().unwrap_or_default();
+        let mesh = match state.meshes.get(&(spline_id.clone(), style_key.clone())) {
             Some(mesh) => mesh.clone(),
             None => {
                 let Some(spline) = state.splines.get(&spline_id) else { continue };
-                let mesh = meshes.add(ribbon(spline, WIDTH));
-                state.meshes.insert(spline_id.clone(), mesh.clone());
+                let mesh = meshes.add(ribbon(spline, &style));
+                state.meshes.insert((spline_id.clone(), style_key.clone()), mesh.clone());
                 mesh
             }
         };
-        commands.spawn((IndicatorMarker, Mesh3d(mesh), MeshMaterial3d(material.clone()),
-            Transform::from_translation(position(matrix, indicator.offset)), Visibility::Visible));
+        // One material per icon: its fade is per icon.
+        let material = materials.add(StandardMaterial {
+            base_color: Color::srgba(COLOR[0], COLOR[1], COLOR[2], 0.0),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        });
+        commands.spawn((IndicatorMarker { style, material: material.clone() }, Mesh3d(mesh), MeshMaterial3d(material),
+            Transform::from_translation(position(matrix, indicator.offset)), Visibility::Hidden));
         spawned += 1;
     }
     info!("SKATE_VISUAL_INDICATORS map={} shown={spawned}", map.name);
     state.shown = wanted;
 }
 
-/// The draw distance (retail), and ours until the draw code is read (b533): the flat icon turns about the vertical to
-/// face the camera.
+/// Per viewing camera (`827B1A00`, b534): a yaw-only billboard whose local z is the camera's flattened view axis
+/// reversed (screen-parallel), then the style's distance fade; hidden beyond the request cull or the fade's end.
 fn face_camera(
     cameras: Query<&GlobalTransform, With<crate::camera::GameplayCamera>>,
-    mut markers: Query<(&mut Transform, &mut Visibility), With<IndicatorMarker>>,
+    mut markers: Query<(&IndicatorMarker, &mut Transform, &mut Visibility)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let Some(camera) = cameras.iter().next().map(|c| c.translation()) else { return };
-    for (mut t, mut visibility) in &mut markers {
-        let to = camera - t.translation;
-        visibility.set_if_neq(if to.length_squared() < DRAW_DISTANCE * DRAW_DISTANCE { Visibility::Visible } else { Visibility::Hidden });
-        if to.x.abs() + to.z.abs() > 1e-3 {
-            t.rotation = Quat::from_rotation_y(to.x.atan2(to.z));
+    let Some(camera) = cameras.iter().next() else { return };
+    let back = -camera.forward().as_vec3();
+    for (marker, mut t, mut visibility) in &mut markers {
+        if back.x.abs() + back.z.abs() > 1e-6 {
+            t.rotation = Quat::from_rotation_y(back.x.atan2(back.z));
+        }
+        let distance = camera.translation().distance(t.translation);
+        let alpha = if distance < DRAW_DISTANCE { marker.style.alpha(distance) } else { 0.0 };
+        visibility.set_if_neq(if alpha > 0.0 { Visibility::Visible } else { Visibility::Hidden });
+        if let Some(m) = materials.get(&marker.material)
+            && m.base_color.alpha() != alpha
+            && let Some(m) = materials.get_mut(&marker.material)
+        {
+            m.base_color.set_alpha(alpha);
         }
     }
 }
@@ -203,7 +266,7 @@ mod tests {
     fn placement(locator: &str, x: f32) -> Placement {
         let mut matrix = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
         matrix[3] = [x, 0.0, 0.0, 1.0];
-        Placement { key: "teleport".into(), locator: locator.into(), matrix }
+        Placement { key: "teleport".into(), locator: locator.into(), matrix, style: None }
     }
 
     #[test]
@@ -211,7 +274,20 @@ mod tests {
         let (a, b, c) = (placement("loc_a", 1.0), placement("loc_a", 2.0), placement("loc_b", 3.0));
         let wanted = wanted(&[&a, &b, &c]);
         assert_eq!(wanted.len(), 2);
-        assert_eq!(wanted[0].1[3][0], 1.0);
+        assert_eq!(wanted[0].2[3][0], 1.0);
+    }
+
+    /// smallarrow (teleporters): fades in from 4.23 m to 13.36 m, gone beyond 100 m.
+    #[test]
+    fn fade_window() {
+        let s = Style { width: [0.2, 0.15], samples: 10, three_strips: true, fade: [4.234_528, 13.355_05, 100.0, 100.0] };
+        assert_eq!(s.alpha(2.0), 0.0);
+        assert!((s.alpha(8.795) - 0.5).abs() < 1e-3);
+        assert_eq!(s.alpha(50.0), 1.0);
+        assert_eq!(s.alpha(100.0), 1.0);
+        assert_eq!(s.alpha(100.5), 0.0);
+        let d = Style::default();
+        assert!((d.alpha(97.15) - 0.5).abs() < 1e-3);
     }
 
     #[test]
@@ -225,9 +301,18 @@ mod tests {
     fn ribbon_follows_the_spline() {
         // One straight segment from (0, 0) to (0, 1): c1 = (0, 1), c0 = 0.
         let spline = Spline { segments: vec![[[0.0; 3], [0.0; 3], [0.0, 1.0, 0.0], [0.0; 3]]] };
-        let mesh = ribbon(&spline, 0.1);
+        let style = Style { width: [0.2, 0.15], samples: 10, three_strips: true, fade: [0.0, 0.0, 100.0, 100.0] };
+        let mesh = ribbon(&spline, &style);
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
-        assert_eq!(p.len(), (SAMPLES + 1) * 2);
-        assert!((p[0][0].abs() - 0.05).abs() < 1e-6 && p.last().unwrap()[1] == 1.0);
+        // Three strips of 11 point pairs; full width 0.5 * (A + B) = 0.175 along z, then y, then x.
+        assert_eq!(p.len(), 3 * 11 * 2);
+        assert!((p[0][2] + 0.0875).abs() < 1e-6 && (p[1][2] - 0.0875).abs() < 1e-6);
+        assert!((p[22][1] + 0.0875).abs() < 1e-6 && (p[44][0] + 0.0875).abs() < 1e-6);
+        assert_eq!(p[21][1], 1.0);
+        let one = ribbon(&spline, &Style { three_strips: false, samples: 40, ..style });
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(q)) = one.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
+        // One strip, samples capped at 10, second edge shifted by (2h, 2h, 0).
+        assert_eq!(q.len(), 11 * 2);
+        assert!((q[1][0] - 0.175).abs() < 1e-6 && (q[1][1] - 0.175).abs() < 1e-6);
     }
 }

@@ -2,7 +2,8 @@ import struct
 import unittest
 
 from .teleporters import CHALLENGE, indicator
-from .visual_indicators import SPLINES, parse_splines
+from .environment import Collections
+from .visual_indicators import SPLINES, STYLE_FIELDS, parse_splines, styles
 
 
 def arena(segments):
@@ -38,6 +39,20 @@ class VisualIndicatorTests(unittest.TestCase):
         self.assertEqual(found, dict(key='teleport', locator='tele_world_to_stadium_origin_locator_01', matrix=matrix))
         self.assertIsNone(indicator(rows, 'teleports', {}, lambda name: [matrix]))  # the group has no locator
         self.assertIsInstance(indicator(rows, 'tele_world_to_stadium', {}, lambda name: []), str)
+
+    def test_style_rows_give_the_draw_fields_with_inheritance(self):
+        graph = struct.pack('>12f', 0, 0, 100, 1, 4.25, 13.5, 100, 100, 0, 1, 1, 0).hex()
+        base = {STYLE_FIELDS['width_a']: struct.pack('>f', 0.2).hex(), STYLE_FIELDS['width_b']: struct.pack('>f', 0.15).hex(),
+                STYLE_FIELDS['samples']: '000A', STYLE_FIELDS['passes']: '0001', STYLE_FIELDS['three_strips']: '01000000',
+                STYLE_FIELDS['fade']: graph}
+        rows = [dict({'class': 'visualindicators', 'key': 'default', 'parent': '', 'fields': {k: {'data': v} for k, v in base.items()}}),
+                dict({'class': 'visualindicators', 'key': 'gates', 'parent': 'default', 'fields': {STYLE_FIELDS['samples']: {'data': '0004'}}})]
+        found = styles(Collections({'collections': rows}))
+        self.assertEqual(found['gates']['samples'], 4)
+        self.assertTrue(found['gates']['three_strips'])
+        self.assertAlmostEqual(found['default']['width'][1], 0.15, places=6)
+        self.assertEqual(found['default']['fade'], [4.25, 13.5, 100.0, 100.0])
+        self.assertEqual(found['default']['fade_alpha'], [0.0, 1.0, 1.0, 0.0])
 
 
 if __name__ == '__main__':

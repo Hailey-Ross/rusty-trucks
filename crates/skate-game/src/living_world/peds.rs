@@ -1395,7 +1395,7 @@ pub(crate) struct PedPuppet {
     pub(crate) scene: Option<Entity>,
     pub(crate) bindings: Option<crate::animation::AnimationStatus>,
     /// Rig bones without clip data: (bone, rig parent, bind offset from the parent, native space).
-    followers: Vec<(usize, usize, Mat4)>,
+    pub(crate) followers: Vec<(usize, usize, Mat4)>,
     lods: Vec<(Entity, u8)>,
     lod: u8,
     /// Bone-local basis of this GLB's joint frames relative to the rig's ([`ped_bone_basis`]).

@@ -510,7 +510,7 @@ impl NpcStanceTrack {
 }
 
 /// Attribute names of a `+`-joined clip over `previous_time..time` (parts back to back).
-pub(crate) fn sequence_attributes(clip: &str, previous_time: f32, time: f32, clip_data: impl Fn(&str) -> Option<(f32, Vec<(String, f32, f32)>)>) -> Vec<String> {
+pub(crate) fn sequence_attributes<N: AsRef<str>>(clip: &str, previous_time: f32, time: f32, clip_data: impl Fn(&str) -> Option<(f32, Vec<(N, f32, f32)>)>) -> Vec<String> {
     let mut out = Vec::new();
     let mut offset = 0.0f32;
     let mut parts = clip.split('+').peekable();
@@ -523,7 +523,7 @@ pub(crate) fn sequence_attributes(clip: &str, previous_time: f32, time: f32, cli
         if reached && !left {
             let p = (previous_time - offset).clamp(0.0, length);
             let t = (time - offset).clamp(0.0, length);
-            out.extend(attributes.iter().filter(|(_, b, e)| skate_core::living_world::stance::attribute_in_window(*b, *e, length, p, t)).map(|(n, ..)| n.clone()));
+            out.extend(attributes.iter().filter(|(_, b, e)| skate_core::living_world::stance::attribute_in_window(*b, *e, length, p, t)).map(|(n, ..)| n.as_ref().to_owned()));
         }
         if !reached {
             break;
@@ -545,11 +545,11 @@ pub(crate) fn track_stance(
     let lines = npc_lines(&state);
     let events = StanceEvents::with_overrides(&settings.skater_stance_events);
     let skater = skater.as_deref();
-    let clip_data = |part: &str| -> Option<(f32, Vec<(String, f32, f32)>)> {
+    let clip_data = |part: &str| -> Option<(f32, Vec<(&str, f32, f32)>)> {
         let k = skater?;
         let length = k.animation.evaluator.clip_length(part).ok()?;
         let meta = k.animation.motion.animation.metadata().clip(part).ok()?;
-        Some((length, meta.attributes.iter().map(|a| (a.name.clone(), f32::from_bits(a.begin_bits), f32::from_bits(a.end_bits))).collect()))
+        Some((length, meta.attributes.iter().map(|a| (a.name.as_str(), f32::from_bits(a.begin_bits), f32::from_bits(a.end_bits))).collect()))
     };
     for (npc, replay, puppet, mut track) in &mut npcs {
         let style = puppet.map_or_else(|| crate::custom_models::native_animation_style(&npc.character), |p| p.style);
@@ -1465,6 +1465,10 @@ pub(crate) fn log_backwards(state: Res<PopulationState>, npcs: Query<(&NpcSkater
     let lines = npc_lines(&state);
     last.retain(|id, _| npcs.iter().any(|(n, _, _)| n.id == *id));
     for (npc, replay, sim) in &npcs {
+        // Rate limit first: it does not depend on the text, so only a due NPC formats a line.
+        if !last.get(&npc.id).is_none_or(|t| tick < *t || tick >= t + BACKWARDS_LOG_TICKS) {
+            continue;
+        }
         // A simulated NPC is drawn from its body, never from the cursor's sample (b352).
         let text = if let Some(sim) = sim {
             super::npc_sim::backwards_line(npc.id, &npc.character, sim)
@@ -1476,11 +1480,8 @@ pub(crate) fn log_backwards(state: Res<PopulationState>, npcs: Query<(&NpcSkater
             backwards_line(npc.id, &npc.character, line, &replay.cursor, s)
         };
         let Some(text) = text else { continue };
-        let due = last.get(&npc.id).is_none_or(|t| tick < *t || tick >= t + BACKWARDS_LOG_TICKS);
-        if due {
-            last.insert(npc.id, tick);
-            warn!("{text}");
-        }
+        last.insert(npc.id, tick);
+        warn!("{text}");
     }
 }
 

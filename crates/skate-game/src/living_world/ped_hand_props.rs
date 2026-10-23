@@ -192,7 +192,7 @@ pub(crate) fn sync_hand_props(
     globals: Query<&GlobalTransform>,
     children: Query<&Children>,
     mesh_parts: Query<(&Mesh3d, &GlobalTransform)>,
-    mut peds: Query<(Entity, &super::peds::Pedestrian, &super::peds::PedBody, &mut super::peds::PedMind, Option<&super::peds::PedPuppet>, Option<&HeldHandProp>, Option<&ReleasedHandProp>)>,
+    mut peds: Query<(Entity, &super::peds::Pedestrian, &super::peds::PedBody, &mut super::peds::PedMind, Option<&super::peds::PedPuppet>, Option<&HeldHandProp>, Option<&ReleasedHandProp>, &Transform)>,
     mut world_key: Local<Option<(String, u64)>>,
 ) {
     let tick = state.world.tick();
@@ -209,7 +209,8 @@ pub(crate) fn sync_hand_props(
         *world_key = data.loaded_for.clone();
     }
     let s = settings.ped_brain.values.hand_prop;
-    for (e, ped, body, mut mind, puppet, held, linked) in &mut peds {
+    let hand_bone = data.rig.names.iter().position(|n| n.eq_ignore_ascii_case(HAND_PROP_BONE));
+    for (e, ped, body, mut mind, puppet, held, linked, ped_transform) in &mut peds {
         let mind = &mut *mind;
         // The tazer's clip-driven states (`82E3ED50`): drawn near the draw clip's end, put away (and the "tazr" prop
         // deleted) near the holster clip's end.
@@ -218,7 +219,12 @@ pub(crate) fn sync_hand_props(
             mind.brain.update_tazer_clip(&settings.ped_brain.values, body.plugin_motion.tazer_played, left);
         }
         if let Some(h) = held {
-            let at = globals.get(h.entity).ok().map(|g| g.translation().to_array());
+            // The tick's hand pose (present_ped_pose with no overstep), not the interpolated drawn one.
+            let followers = puppet.map_or(&[][..], |p| &p.followers[..]);
+            let pose = hand_bone
+                .and_then(|i| super::peds::ped_globals(&data.rig, body, &*data, 0.0, followers)?.get(i).copied())
+                .map(|bone| Transform::from_matrix(ped_transform.to_matrix() * bone * h.local));
+            let at = pose.map(|p| p.translation.to_array());
             // A throw's release, or a litter drop (`82E3ED50`: timer 34 after HandPropLitter).
             let thrown = at.and_then(|at| mind.brain.update_hand_prop_release(&s, at)).or_else(|| mind.brain.update_litter());
             if let Some(velocity) = thrown.or(mind.hand_prop_release.take()) {
@@ -226,7 +232,7 @@ pub(crate) fn sync_hand_props(
                 // The held frames keep their hand-space track on a hidden copy; the dropped prop starts its own (b453).
                 crate::replay::keep_model(&mut commands, h.entity);
                 let room = released.0.len() < s.max_live;
-                let id = physics.as_deref_mut().and_then(|p| release(&mut commands, p, h, velocity, &globals, &children, &mesh_parts, &meshes, room));
+                let id = physics.as_deref_mut().and_then(|p| release(&mut commands, p, h, pose, velocity, &globals, &children, &mesh_parts, &meshes, room));
                 match id {
                     Some(id) => {
                         released.0.push((id, h.entity));
@@ -375,6 +381,7 @@ fn release(
     commands: &mut Commands,
     physics: &mut crate::physics::GamePhysics,
     held: &HeldHandProp,
+    pose: Option<Transform>,
     velocity: [f32; 3],
     globals: &Query<&GlobalTransform>,
     children: &Query<&Children>,
@@ -385,8 +392,10 @@ fn release(
     if !room {
         return None;
     }
-    let root = globals.get(held.entity).ok()?.compute_transform();
-    let to_local = |p: Vec3| root.rotation.inverse() * (p - root.translation);
+    // Shape from the drawn model relative to its own root; pose from the tick.
+    let drawn = globals.get(held.entity).ok()?.compute_transform();
+    let root = pose?;
+    let to_local = |p: Vec3| drawn.rotation.inverse() * (p - drawn.translation);
     let mut local = Vec::new();
     for part in children.iter_descendants(held.entity) {
         let Ok((mesh, gt)) = mesh_parts.get(part) else { continue };
