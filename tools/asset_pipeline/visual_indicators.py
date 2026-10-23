@@ -86,7 +86,8 @@ def indicators(collections):
 
 
 STYLE_FIELDS = dict(width_a='Hash_284E9294277D21DC', width_b='Hash_A6313118DF989363', samples='Hash_4FFE9C7FA608319C',
-                    passes='Hash_445E0BFC57EC196B', three_strips='Hash_5D92E494915216BD', fade='Hash_51573D0DA2F211E1')
+                    passes='Hash_445E0BFC57EC196B', three_strips='Hash_5D92E494915216BD', fade='Hash_51573D0DA2F211E1',
+                    intensity_front='Hash_031DE0F2619E2697', intensity_background='Hash_1643BB6ADCDC41AD')
 
 
 # The `visualindicators` row names (skatercollections summary report); unnamed rows keep their hashes.
@@ -99,8 +100,9 @@ def style_names():
 
 
 def styles(collections):
-    """{visualindicators key: {width, samples, passes, three_strips, fade, fade_alpha}}: the fields the draw reads
-    (research b534); fade = graph row 1 (x points), fade_alpha = row 2."""
+    """{visualindicators key: {width, samples, passes, three_strips, fade, fade_alpha, intensity}}: the fields the draw
+    reads (research b534); fade = graph row 1 (x points), fade_alpha = row 2, intensity = shader `i_intensity` (front,
+    background; b536)."""
     cls = key_hash('visualindicators')
     out = {}
     for (row_cls, key), row in collections.rows.items():
@@ -115,7 +117,9 @@ def styles(collections):
                                samples=struct.unpack('>H', raw['samples'][:2])[0],
                                passes=struct.unpack('>H', raw['passes'][:2])[0],
                                three_strips=raw['three_strips'][:1] not in (b'', b'\0'),
-                               fade=list(graph[4:8]), fade_alpha=list(graph[8:12]))
+                               fade=list(graph[4:8]), fade_alpha=list(graph[8:12]),
+                               intensity=[struct.unpack('>f', raw['intensity_front'][:4])[0],
+                                          struct.unpack('>f', raw['intensity_background'][:4])[0]])
     return out
 
 
@@ -141,8 +145,10 @@ def colours(collections):
     return out
 
 
-def write_textures(data, folder):
-    """Every texture of vitextures.rx2 (indicator and volume textures) as PNGs in `folder`; returns their names."""
+def write_textures(data, folder, sqrt_alpha=()):
+    """Every texture of vitextures.rx2 (indicator and volume textures) as PNGs in `folder`; returns their names.
+    Textures named in `sqrt_alpha` (the background pass's) store sqrt(alpha): `spline_darkenPS` takes the square
+    root of tex.a * intensity * fade (b536), which the engine's material can then do as a plain product."""
     import tempfile
     from tools.vendor.skate3_ui.rw4 import read_textures
     from tools.vendor.skate3_ui.xenos import FetchConstant, decode_rgba, write_png
@@ -155,7 +161,10 @@ def write_textures(data, folder):
     for texture in textures:
         name = texture.name.removesuffix('.Texture')
         fetch = FetchConstant(**{k: texture.metadata[k] for k in FetchConstant.__dataclass_fields__ if k in texture.metadata})
-        write_png(folder / f'{name}.png', fetch.width, fetch.height, decode_rgba(texture.data, fetch))
+        rgba = bytearray(decode_rgba(texture.data, fetch))
+        if name in sqrt_alpha:
+            rgba[3::4] = bytes(round((a / 255) ** 0.5 * 255) for a in rgba[3::4])
+        write_png(folder / f'{name}.png', fetch.width, fetch.height, bytes(rgba))
         names.append(name)
     return names
 
@@ -180,9 +189,11 @@ def export(game_root, collections, output, report=print):
     entry = next((e for e in boot.entries if e.path.replace('\\', '/').lower() == TEXTURES), None)
     if entry is None:
         raise ValueError(TEXTURES + ' missing')
-    textures = write_textures(boot.read(entry), output.parent / 'visual-indicators')
+    rows_colour = colours(collections)
+    textures = write_textures(boot.read(entry), output.parent / 'visual-indicators',
+                              {c['background'] for c in rows_colour.values()})
     output.write_text(json.dumps({'format': FORMAT, 'version': VERSION, 'splines': splines, 'indicators': rows,
-                                  'styles': found, 'colours': colours(collections),
+                                  'styles': found, 'colours': rows_colour,
                                   'textures': 'visual-indicators'}), encoding='utf-8')
     missing = sorted(k for k, r in rows.items() if r['spline'] and r['spline'] not in splines)
     report(f'Visual indicators: {len(rows)} rows, {len(splines)} splines, {len(textures)} textures'
