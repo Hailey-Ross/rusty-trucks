@@ -255,13 +255,13 @@ impl Editor {
     }
 
     /// The key edit controls on the key being edited.
-    pub fn edit_key(&mut self, input: super::camera_key::CameraInput, dt: f32) {
+    pub fn edit_key(&mut self, input: super::camera_key::CameraInput, root: Option<&bevy::prelude::Transform>, dt: f32) {
         let rules = self.camera_rules;
         if self.free_height.0 != self.editing {
             self.free_height = (self.editing, Default::default());
         }
         if let Some(k) = self.editing.and_then(|i| self.cameras.get_mut(i)) {
-            super::camera_key::edit(&mut k.camera, &mut k.lens, &mut self.free_height.1, input, &rules, dt);
+            super::camera_key::edit(&mut k.camera, &mut k.lens, &mut self.free_height.1, input, &rules, root, dt);
         }
     }
 

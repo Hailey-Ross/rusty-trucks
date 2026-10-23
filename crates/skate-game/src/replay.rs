@@ -676,7 +676,7 @@ fn editor_controls(
                 height: dpad(DPAD_UP, DPAD_DOWN),
                 zoom: dpad(DPAD_RIGHT, DPAD_LEFT),
             };
-            editor.edit_key(input, dt);
+            editor.edit_key(input, view_root.as_ref().map(|(_, root)| root), dt);
             // Leaving a key edit runs the base game's commit too (`82508930` leave states 7..10 -> `82507438(E, 0)`,
             // b462); it lands only when no camera key is under the cursor.
             if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {

@@ -129,9 +129,16 @@ Test: the leash keeps a camera inside 40 m and pulls a far one onto the sphere.
 - **Ours before:** distance and free moves were 0.2 x stick, free turn had half the slope, free height moved 0.2 x
   input per frame with no easing and no range.
 - **Change:** `camera_key::edit` uses those rates (CameraRules gains the free turn scale and the height step / cap /
-  decay, all data); the editor keeps the eased height per edited key. Tripod still edits only its look lift: retail
-  also feeds it yaw, pitch and distance, but how the tripod camera turns them into a pose (`82C82E40`) is unread.
-- **Test:** `free_camera_rates_follow_the_editor_constants`. Not play-tested.
+  decay, all data); the editor keeps the eased height per edited key.
+- **Tripod [code], research b550:** `82C82A50` stores v = eye - look as yaw / pitch / distance; `82C82E40` with the
+  camera's pivot byte set (Follow and Tripod) rebuilds eye = look + v, so the sticks orbit the eye around the look
+  point and distance moves it along the sight line (the lens is the zoom); with the byte clear (Free) the eye is the
+  pivot. Tripod differs from Follow only in its eye space (world, not riding the skater). Ours edited only the
+  Tripod's look lift; now `edit` orbits its world eye around the skater root raised by the look height with the
+  Follow caps (the editor passes the root at the cursor). Ours re-derives v every frame (whether retail does while
+  the target moves is open).
+- **Tests:** `free_camera_rates_follow_the_editor_constants`, `tripod_orbits_its_eye_around_the_look_point`. Not
+  play-tested.
 
 ### The replay cameras do not pass through walls (2026-10-21, research b449)
 
