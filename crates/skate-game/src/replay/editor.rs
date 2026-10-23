@@ -59,6 +59,8 @@ pub(crate) struct Editor {
     pub cameras: Vec<CamKey>,
     pub editing: Option<usize>,
     pub camera_rules: super::camera_key::CameraRules,
+    /// The free camera's eased height for the key being edited (reset when another key is edited).
+    free_height: (Option<usize>, super::camera_key::FreeHeight),
 }
 
 /// The two marker kinds retail's delete asks about (b407, `82508D88`): 1 a clip marker (a hard key), 2 a key marker
@@ -112,7 +114,7 @@ impl Editor {
         let mut session = EditorSession::instant();
         session.mode = EditorMode::Timeline;
         let live = edit.limits.lanes.map(|s| s.default);
-        Some(Self { session, edit, clip, row: 0, channel: 0, tint: 0, live, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default() })
+        Some(Self { session, edit, clip, row: 0, channel: 0, tint: 0, live, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default(), free_height: Default::default() })
     }
 
     pub fn frame(&self, time: f64) -> u32 {
@@ -255,8 +257,11 @@ impl Editor {
     /// The key edit controls on the key being edited.
     pub fn edit_key(&mut self, input: super::camera_key::CameraInput, dt: f32) {
         let rules = self.camera_rules;
+        if self.free_height.0 != self.editing {
+            self.free_height = (self.editing, Default::default());
+        }
         if let Some(k) = self.editing.and_then(|i| self.cameras.get_mut(i)) {
-            super::camera_key::edit(&mut k.camera, &mut k.lens, input, &rules, dt);
+            super::camera_key::edit(&mut k.camera, &mut k.lens, &mut self.free_height.1, input, &rules, dt);
         }
     }
 

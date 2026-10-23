@@ -118,6 +118,21 @@ Retail's replay free camera is pulled back when it is farther than 40 m from the
 back onto the 40 m sphere around the player's recorded position at the cursor after each move.
 Test: the leash keeps a camera inside 40 m and pulls a far one onto the sphere.
 
+## Camera key edit rates (2026-10-23, research b549)
+
+- **Retail [code + data]:** the editor screen reads the pad, not the camera: `82610F18` per edit mode writes the
+  values, `82509558` hands them to the camera, `82C826D0` integrates them (angles in 16-bit units, pitch +-85 degrees).
+  Per console frame: Follow / Tripod turn clamp(2.5 s, 3) degrees, distance -clamp(s, 0.2) (no scale: full speed at
+  20 % stick) in 0.5..1000, look lift 0.01 in +-1; Free turn clamp(5 s, 1.6) degrees, move clamp(s, 0.2) m per axis
+  in the yaw frame, height eased (velocity += 0.015, capped 0.2, applied, then x0.6: 0.0375 m per frame held; offset
+  +-10 m); lens 0.5 in 24..75. Main checked the 0.015 load (0x820D0190 in `82610F18`).
+- **Ours before:** distance and free moves were 0.2 x stick, free turn had half the slope, free height moved 0.2 x
+  input per frame with no easing and no range.
+- **Change:** `camera_key::edit` uses those rates (CameraRules gains the free turn scale and the height step / cap /
+  decay, all data); the editor keeps the eased height per edited key. Tripod still edits only its look lift: retail
+  also feeds it yaw, pitch and distance, but how the tripod camera turns them into a pose (`82C82E40`) is unread.
+- **Test:** `free_camera_rates_follow_the_editor_constants`. Not play-tested.
+
 ### The replay cameras do not pass through walls (2026-10-21, research b449)
 
 Problem: the free camera and the editor's Follow / Tripod / Free cameras flew through walls and the ground.
