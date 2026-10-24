@@ -198,8 +198,31 @@ between two runs of the unchanged pipeline (a second baseline): 40 files that ar
 (map `.skate` files, park layouts and props, the customiser set id in paths, a few HUD / menu manifests that hash
 their temporary sources). The other 18,828 are byte-identical, including all audio and every menu movie texture.
 
+**Second pass (2026-10-24, USER-ASKS 308 / 309):**
+- **One core budget** (user: "uses 75% of the cores leaving headroom for the user"): `setup_budget.cores()` = 75% of
+  the CPUs the process may run on (`os.process_cpu_count`), `SKATE_SETUP_CORES` overrides. Every pool derives from it:
+  map jobs up to 3 (half the budget, memory permitting), the customiser's worker processes a quarter (1..8), the
+  threads inside a map job what is left over 3 jobs, audio decodes a quarter (they run beside the maps), archive
+  extraction and receipt hashing up to 8 / 16. On the 28-CPU desktop: budget 21, customiser 5, 5 threads per map job.
+- **The map jobs start right after the core stage** (with the movable-object catalog and the map starts): they read
+  only the disc, the starts and the catalog and write only their own files, so they run beside the HUD, environment,
+  audio and living world; each map is validated once the validator runs, as before. A failure in a later stage cancels
+  the queued jobs and waits for the running ones. The hand props (they need the living world's tables) follow the
+  living world as before; a hand prop failure no longer deletes the catalog under the running map jobs.
+- **The living world runs in its own process** (`stage_job.py`, the same stage function) beside the audio; its
+  progress lines reach the setup window, its log lines the setup log.
+- **Archive extraction** (`BigArchive.extract_entries`) checks every entry first, in order, then reads, decompresses
+  (native RefPack) and writes on threads; **receipt hashing** (`group_receipts.record`, 19 GB) runs on threads
+  (20.7 s of the old run's end).
+- **Result:** 189.5 s to 135.3 s (from the first baseline: 228.3 s, -41%). The maps now finish at 72 s; the customiser
+  (library 57 s, roster 20 s; it starts once the validator runs, at 50 s) is the critical path, ending at 131 s.
+- **Identity:** the same 18,868 files; the differing ones are the run-to-run set (maps, park layouts, props, the
+  customiser set id, HUD / menu manifests) plus the customiser's `*-complete.json` records, whose `version` is the
+  customiser's pipeline fingerprint (it covers `customisation_workers.py`, changed here) and `timings.json`.
+
 **Open:** the 40 run-to-run differences are pre-existing (not caused here); making them reproducible would let the
-identity check cover them too. The customiser library (41 s) and the map stage are the next candidates.
+identity check cover them too. Next candidate: start the customiser right after the character stage (it reads only
+stock, the default skater and the disc).
 
 ## Fingerprints
 

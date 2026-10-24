@@ -37,8 +37,21 @@ def files(root, group):
     return result
 
 
+def _receipt(root, paths):
+    """setup_state.receipt (the same entries in the same order) with the files hashed on the setup's threads
+    (hashlib releases the GIL; a 19 GB installation took 20 s on one thread)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from .setup_budget import cores
+    from .setup_state import sha
+    root = root.resolve()
+    paths = [p for p in sorted({p.resolve() for p in paths}) if p.is_file()]
+    with ThreadPoolExecutor(max(1, min(16, cores()))) as pool:
+        digests = list(pool.map(sha, paths))
+    return {p.relative_to(root).as_posix(): {'size': p.stat().st_size, 'sha256': d} for p, d in zip(paths, digests)}
+
+
 def record(root, group):
-    files_ = receipt(root, files(root, group))
+    files_ = _receipt(root, files(root, group))
     for name, item in files_.items():
         item['mtime_ns'] = (root.resolve()/name).stat().st_mtime_ns
     return files_

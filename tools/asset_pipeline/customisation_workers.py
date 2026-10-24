@@ -14,8 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 def customiser_workers():
-    """Bounded share of the machine: a quarter of logical CPUs, 1..8 processes."""
-    return max(1, min(8, (os.cpu_count() or 2) // 4))
+    """Bounded share of the machine (setup_budget.customiser_workers: a quarter of the setup's core budget, 1..8)."""
+    from tools.asset_pipeline.setup_budget import customiser_workers as budget
+    return budget()
 
 
 def run_parallel(arguments, workers):
