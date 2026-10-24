@@ -794,6 +794,9 @@ pub(crate) fn advance(
                 despawns.write(LivingWorldDespawn(r));
             }
             if index.0.remove(&id).is_some() {
+                // A simulated skater's body back to the pool, as `apply_records` does (that path no longer finds it in
+                // the index): dropped, the next switch to physics loaded one on the game thread (140 ms, 2026-10-23).
+                commands.queue(move |world: &mut World| super::npc_sim::pool_from(world, e));
                 crate::replay::retire(&mut commands, e);
                 events.write(NpcSkaterEvent::Despawned { id, reason: DespawnReason::External });
                 info!("NPC_SKATER_DESPAWN #{} reason faded out left {}", id.serial, index.0.len());
