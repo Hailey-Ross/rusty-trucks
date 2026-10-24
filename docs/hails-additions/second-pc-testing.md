@@ -410,6 +410,69 @@ replay editor (A in the replay) Y to cycle the Create pack's channels. Send the 
 
 The packages are your own purchases: they stay in the share and on your PCs, never in a repository or a release.
 
+## Setup speed test (2026-10-24)
+
+The main PC made the full setup export faster in several passes the same day (doc 08
+[Export speed pass](08-setup-performance.md#export-speed-pass-2026-10-24-user-asks-305)): one core budget (75% of
+the CPUs), map jobs from the start, the living world, the HUD / menu movies and the character customiser in their own
+processes (the customiser right after the character stage), the post-map exports beside the maps. On the 28-thread
+desktop: 228 s to about 85 s, with the same output. The laptop checks the same on slower hardware: how much faster,
+that the output is still the same, and how many customiser workers suit it.
+
+**Skills to install** (published copies in `tools/claude-skills/`, see its README; restart Claude Code after):
+
+```bash
+mkdir -p .claude/skills
+cp -r tools/claude-skills/setup-bench tools/claude-skills/optimisation tools/claude-skills/regression-check       tools/claude-skills/build-and-run tools/claude-skills/asset-setup .claude/skills/
+```
+
+`setup-bench` is the method (its tool `tools/setup_bench.py`); `optimisation` and `regression-check` are the rules
+(same output, measure first); `build-and-run` builds the exe and the native RefPack DLL; `asset-setup` if the disc
+source needs fixing.
+
+**Prepare** (Git Bash; one setup at a time, no game or other build running; about 19 GB per run, each install is
+deleted right after it is hashed, so about 25 GB free on a local drive is enough):
+1. Get updates from the fork as normal (`hails-additions`) and build (`scripts/Build.ps1`), so `bin\skate3rust.exe`
+   and `target
+ativeefpack.dll` are current. Without the DLL the setup runs RefPack in pure Python (about 10x
+   slower) and the timing is not what users get.
+2. `<bench>` = a new folder on that local drive. Snapshots of the two pipelines:
+   `git archive 30f19a4e | tar -x -C <bench>/before` (hails-additions before the customiser and post-map passes)
+   and `git archive origin/hails-additions | tar -x -C <bench>/after`; copy `target/native/refpack.dll` into
+   `<bench>/before/target/native/` and `<bench>/after/target/native/`.
+3. Copy `bin/skate3rust.exe` with every `bin/bevy_dylib-*.dll` and `bin/std-*.dll` into `<bench>` (every run uses
+   that one exe).
+
+**Run** (each in the background, wait for it to end, then delete its install folder `<bench>/<label>`):
+
+```bash
+export SKATE_REPORT_CHILD=1   # a failing headless game run never opens a crash report window
+T=<bench>/after/tools/claude-skills/setup-bench/tools/setup_bench.py
+cd <bench>/before && py -3.13 $T --checkout <bench>/before --base <bench>/before1 --game-exe <bench>/skate3rust.exe    --source <disc>/default.xex --label before1
+```
+
+Order: `before1`, `after1`, `before2`, `after2` (`after2` with `--no-hash`). Then the customiser worker count on the
+`after` snapshot, two runs each with `--no-hash`: `SKATE_SETUP_CUSTOMISER_WORKERS=<n>` for n = the default (the
+setup log's library / roster lines show nothing about it: it is a quarter of 75% of the CPUs, 1 to 8), twice the
+default, and 2 if the default is 1. The desktop's result for 5 vs 8 was within its noise (doc 08 "Customiser worker
+count").
+
+**Compare** (skill setup-bench step 5): normalise the customiser set id
+(`sed -E 's#customisation/sets/[^/]+/#customisation/sets/ID/#'`), sort; the path lists of `before1`, `before2`,
+`after1` must be equal, and every file that differs between `before1` and `after1` must also differ between `before1`
+and `before2` (the desktop: 41 such files, all run-to-run: maps, park layouts, props, the set id, HUD / menu manifests,
+the customiser's `*-complete.json` and `timings.json`). An extra file is a finding: name it.
+
+**Note for each run** (from `<label>-timing.log`): total seconds; whether it has the line "Preparing the character
+customiser alongside the other stages" (it needs 2 GiB + 3 GiB x (map workers + 2) of free memory; without it the
+customiser runs the older way, beside or after the maps: then say how much memory was free); the times of
+"Converting N maps with W workers", "Converted N/N maps", "Character library: prepared in", "Character roster:
+prepared in" and DONE; any `Traceback`, "Customiser worker N failed" or crash report.
+
+**Send back** to `<share>\<LAPTOP NAME>\setup-bench-<yyyymmdd-hhmm>\`: every `*-timing.log`, `*-stdout.log` and
+`*-hashes.tsv`, and `setup-bench.notes.log`: the machine (CPU, threads, RAM, disk), the table of runs, the identity
+result and anything odd. The main PC watches the share for it. Then delete `<bench>`.
+
 ## Moving the ISO
 
 A FAT32 flash drive cannot hold a file over 4 GB, whatever its free space. Format it as exFAT (Explorer: right-click
