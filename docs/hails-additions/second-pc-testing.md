@@ -491,6 +491,26 @@ Identity as before (`before1` vs `after1`; `sets/<id>/roster-complete.json` is e
 customiser fingerprint). Send the `*-timing.log`, `*-hashes.tsv` and `setup-bench.notes.log` to
 `<share>\<LAPTOP NAME>\budget-bench-<yyyymmdd-hhmm>\`, then delete the scratch folder.
 
+Result (laptop, 2026-10-24 16:00): 964fb5bc 153.2 s mean, after 143.6 s (-6%), same files. The steps before the maps
+(no customiser code yet) took about 8.0 s instead of 5.8 s in the setup speed test that morning, so the laptop ran
+about 35% slower that afternoon; comparing 964fb5bc with the morning's 5b16a77b numbers is therefore not fair.
+The next test compares all three versions in one session.
+
+## Same-session version test (2026-10-24)
+
+Three versions of the setup scripts in one sitting, alternating, so a slower machine state hits all of them alike.
+Same bench layout as above, three snapshots: `git archive 5b16a77b` as `<bench>/v1`, `git archive 964fb5bc` as
+`<bench>/v2`, `git archive origin/hails-additions` as `<bench>/v3` (each with `target/native/refpack.dll`; one exe
+copy for all). Before starting: plugged in, the same Windows power mode throughout (note which), nothing else running.
+Run in this order: `v1a`, `v2a`, `v3a`, `v1b`, `v2b`, `v3b`, all with `--no-hash` except `v3a` (its file count
+should stay 18,868). Do NOT set `SKATE_SETUP_CUSTOMISER_WORKERS` or `SKATE_SETUP_CORES`. If
+`py -3.13` has no numpy, add `--python <your checkout>\.local\versions\hails-additions\.local\venv-setup\Scripts\python.exe`.
+
+Note per run: total, when "Converting 10 maps" appeared (the machine-state check: it should be about the same in all
+six), the "CPU budget" line (v3), the 10th map, "Character library" and "Character roster". Send the `*-timing.log`
+files, `v3a-hashes.tsv` and `setup-bench.notes.log` to `<share>\<LAPTOP NAME>\version-bench-<yyyymmdd-hhmm>\`, then
+delete the scratch folder.
+
 ## Moving the ISO
 
 A FAT32 flash drive cannot hold a file over 4 GB, whatever its free space. Format it as exFAT (Explorer: right-click
