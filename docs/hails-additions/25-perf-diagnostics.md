@@ -965,6 +965,14 @@ play is no longer a hitch (none of frames 3 to 182 is over the hitch threshold; 
 fix alone, 1718 ms before both). Left in the first second: GPU uploads (`allocate_and_free_meshes` and
 `prepare_assets<GpuImage>`, one run of about 115 ms each; research b231) and `modding::fixed` 52 ms.
 
+Follow-up (2026-10-23, USER-ASKS 295): a 146 ms frame in University (desktop session 18:25) was a skater loaded on the
+game thread (`NPC_SKATER_SIM_LOAD ... 139.9 ms`) because the pool was empty: a simulated NPC that faded out at a
+dead end (`npc_skaters.rs`, "reason faded out") was retired without returning its body (`apply_records`, which
+returns it, no longer found it in the index), and a failed respawn (`npc_sim.rs`) dropped its body too. Both now
+call `pool_from`, as the physics-error hand-back does. Check run (muted, University, 3 min, NPC physics on): 24
+switches to physics, only the pool's 3 loads (on the loader thread); no fade-out happened in it, so the fade path
+itself is not play-tested yet.
+
 ## The living world's models load behind the loading screen (2026-10-18)
 
 Problem: ped, car, NPC skater and hand prop models were loaded when the first of each spawned, in the first seconds

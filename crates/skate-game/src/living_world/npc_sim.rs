@@ -918,7 +918,8 @@ pub(crate) fn simulate(
                             }
                             Err(error) => {
                                 warn!("NPC_SKATER_SIM #{} {}: respawn failed, back to replay: {error}", npc.id.serial, npc.character);
-                                commands.entity(e).remove::<NpcSim>();
+                                // Back to the pool like the physics-error hand-back (dropped, the next switch loads one here).
+                                commands.queue(move |world: &mut World| pool_from(world, e));
                                 count -= 1;
                             }
                         }
