@@ -43,6 +43,15 @@ def _positive(name, environ=None):
 
 
 def _cpu_count():
+    if os.name == 'nt':
+        # Python's process_cpu_count ignores the affinity on Windows.
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.GetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+        mask, system = ctypes.c_size_t(), ctypes.c_size_t()
+        if kernel32.GetProcessAffinityMask(kernel32.GetCurrentProcess(), ctypes.byref(mask), ctypes.byref(system)) and mask.value:
+            return bin(mask.value).count('1')
     counter = getattr(os, 'process_cpu_count', None) or os.cpu_count
     return counter() or 1
 

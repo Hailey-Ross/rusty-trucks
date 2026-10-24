@@ -326,7 +326,32 @@ customiser fingerprint, so every install redoes the customiser once).
 - `setup_bench.py` (`.local/perf-bench`, published copy `tools/claude-skills/setup-bench/tools`) now reruns itself in
   a setup venv (`.local/venv-setup` of the checkout or a parent, or `.local/versions/hails-additions`) when the
   Python it was started with has no numpy / Pillow (the laptop's system Python 3.13 failed in extract_default_skater).
-  An install folder was about 4.9 GB on the laptop (desktop bench installs include more).
+  An install folder was about 4.9 GB on the laptop (desktop bench installs include more). A snapshot outside a
+  checkout finds none of those (laptop, 2026-10-24 16:00), so it also takes `--python <python with numpy>`.
+
+### Laptop result and a laptop-shaped desktop run (2026-10-24 16:00 to 16:50)
+
+- **Laptop** (Ryzen 9 8945HS, 8C/16T; second-pc-testing.md "Machine-aware budget test"): 964fb5bc 150.0 / 156.3 s,
+  current 145.2 / 141.9 s (-6%); "CPU budget: 11 of 16 (8%)" and "12 of 16 (1%)"; roster 51 s -> 26 / 42 s once it
+  takes the maps' cores. Same 18,868 files; before1 vs after1 41 differences, before1 vs before2 40, the extra one
+  `sets/<id>/roster-complete.json` (the customiser fingerprint).
+- The laptop's 964fb5bc (153 s) looked slower than its morning 5b16a77b (137 s), as if the library on the workers
+  (ddf2231a) slowed its maps. Not so: the steps before the maps, which run none of that code, took 7.7 to 8.2 s in
+  the afternoon against 5.8 s in the morning, so the laptop itself ran about 35% slower. A same-session test of all
+  three versions is queued (second-pc-testing.md "Same-session version test").
+- **Desktop pinned to 16 CPUs** (8 P-cores with hyperthreading, `.local/perf-bench/with_affinity.py 0xFFFF`) and
+  `SKATE_SETUP_CORES=12` (the laptop's budget), two runs each:
+
+| version | total s | 10th map | library | roster |
+|---|---|---|---|---|
+| 5b16a77b | 99.5 / 98.6 | 70.4 / 69.6 | 58.6 / 58.2 | 28.5 / 27.8 |
+| 964fb5bc (library on the workers) | 89.1 / 89.9 | 71.3 / 71.5 | 47.1 / 47.4 | 29.0 / 29.4 |
+| daf26d34 (load budget, customiser grows) | 83.2 / 82.9 | 72.2 / 72.0 | 47.1 / 47.0 | 23.3 / 22.9 |
+
+  -16% in all on a laptop-sized budget; the maps end about 2 s later than on 5b16a77b.
+- **Fix:** Python's `os.process_cpu_count()` ignores the CPU affinity on Windows (it said 28 in the pinned process),
+  so the budget ignored it too ("21 of 28"). `setup_budget._cpu_count` now counts the affinity mask
+  (`GetProcessAffinityMask`); pinned to 16 it reports "CPU budget: 12 of 16".
 
 ## Fingerprints
 
