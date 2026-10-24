@@ -1,7 +1,7 @@
 //! Transactional world replacement: prepare without mutating the live session,
 //! then commit at a schedule boundary with gameplay suspended.
 use bevy::prelude::*;
-use std::{path::PathBuf, sync::{Arc, atomic::{AtomicU8, Ordering}}, thread::JoinHandle, time::Instant};
+use std::{path::PathBuf, sync::{Arc, OnceLock, atomic::{AtomicU8, Ordering}}, thread::JoinHandle, time::Instant};
 use crate::{config::Config, map_library::Entry, map_render::PreparedScene,
     physics::{GamePhysics, PlayerControls, SkaterRuntime}};
 
@@ -53,12 +53,15 @@ struct PreparedWorld {
     difficulty: crate::difficulty::Difficulty,
     /// The mods' dynamics ground for the new map, built here so the switch does not build it on the game thread.
     mod_ground: Result<skate_dynamics::GroundCollider, String>,
+    /// The new map's living world, ped, traffic and character lighting data (`map_read_ahead`).
+    game_data: crate::map_read_ahead::MapData,
 }
 
 enum Phase {
     Idle,
     Requested(Entry),
-    Loading { entry: Entry, progress: Arc<AtomicU8>, job: JoinHandle<Result<PreparedWorld, String>> },
+    /// `spawn`: the new map's spawn point, set once the loader has read the map (the audio reads its banks ahead).
+    Loading { entry: Entry, progress: Arc<AtomicU8>, spawn: Arc<OnceLock<[f32; 3]>>, job: JoinHandle<Result<PreparedWorld, String>> },
     // Let extraction see the committed scene before releasing the pause menu.
     Publishing { frames: u8, notice: String },
 }
@@ -72,6 +75,10 @@ impl MapTransition {
     /// The map being loaded, until it is committed (the audio reads its zone beds ahead, `map_audio`).
     pub(crate) fn loading(&self) -> Option<&Entry> {
         match &self.phase { Phase::Requested(entry) | Phase::Loading { entry, .. } => Some(entry), _ => None }
+    }
+    /// The spawn point of the map being loaded, once the loader has read it.
+    pub(crate) fn loading_spawn(&self) -> Option<[f32; 3]> {
+        match &self.phase { Phase::Loading { spawn, .. } => spawn.get().copied(), _ => None }
     }
     pub fn request(&mut self, entry: Entry) {
         if !self.busy() { self.phase = Phase::Requested(entry); }
@@ -137,10 +144,13 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
     let graphs = world.resource::<crate::graph_runtime::StockGraphs>().clone();
     let source = world.resource::<SkaterRuntime>().animation.source.clone();
     let preferences = world.resource::<PlayerControls>().preferences;
+    let nav_rules = world.get_resource::<crate::living_world::peds::PedNavSettings>().map(|n| n.rules.clone());
     let mut scene = PreparedScene::new(world);
     let selected = entry.clone();
     let progress = Arc::new(AtomicU8::new(0));
     let stage = progress.clone();
+    let spawn = Arc::new(OnceLock::new());
+    let spawn_known = spawn.clone();
     let job = std::thread::Builder::new().name("map-loader".into()).spawn(move || {
         let _span = info_span!("load_map_transition").entered();
         let started = Instant::now();
@@ -156,12 +166,16 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
         let validation_time = validation_started.elapsed();
         let triggers = crate::trigger_volumes::TriggerVolumes::load_or_warn(selected.path.as_deref(), map.as_ref());
         let metadata = CurrentMap::from_package(selected.path, map.as_ref());
+        let _ = spawn_known.set(metadata.spawn);
         let retail = map.as_ref().is_some_and(|m| crate::retail_render::RetailScene::for_map(m));
         // Both builders only read the decoded package. Reserve render handles
         // on a second worker while the first constructs fresh simulation state;
         // neither publishes to the live world until both have succeeded.
-        let (physics, skater, controls, camera, mod_ground, simulation_time, render_time) =
+        let (physics, skater, controls, camera, mod_ground, game_data, simulation_time, render_time) =
             std::thread::scope(|scope| -> Result<_, String> {
+                let game_data = std::thread::Builder::new().name("map-data-reader".into())
+                    .spawn_scoped(scope, || crate::map_read_ahead::read(&root, &metadata.name, metadata.path.as_deref(), retail, nav_rules))
+                    .map_err(|e| format!("Could not start the map data reader: {e}"))?;
                 let rendering = std::thread::Builder::new().name("map-render-loader".into())
                     .spawn_scoped(scope, || {
                         let render_started = Instant::now();
@@ -193,17 +207,18 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
                 // render work or reserved scene can outlive a failed request.
                 let render_time = rendering.join()
                     .map_err(|_| "Map render preparation failed unexpectedly".to_string())?;
+                let game_data = game_data.join().unwrap_or_default();
                 let (physics, skater, controls, camera, mod_ground) = simulation?;
-                Ok((physics, skater, controls, camera, mod_ground, simulation_time, render_time))
+                Ok((physics, skater, controls, camera, mod_ground, game_data, simulation_time, render_time))
             })?;
         eprintln!("MAP_LOAD_TIMING name={:?} read_ms={} validation_ms={} simulation_ms={} render_ms={} prepare_ms={} parallel=true",
             metadata.name, read_time.as_millis(), validation_time.as_millis(),
             simulation_time.as_millis(), render_time.as_millis(), started.elapsed().as_millis());
         // Drop the decoded package on this worker. Physics and rendering now
         // own their data; retaining it would double large-city CPU memory.
-        Ok(PreparedWorld { map_fingerprint, scene, physics, skater, controls, camera, metadata, retail, triggers, difficulty, mod_ground })
+        Ok(PreparedWorld { map_fingerprint, scene, physics, skater, controls, camera, metadata, retail, triggers, difficulty, mod_ground, game_data })
     }).map_err(|e| format!("Could not start map loader: {e}"))?;
-    Ok(Phase::Loading { entry, progress, job })
+    Ok(Phase::Loading { entry, progress, spawn, job })
 }
 
 fn poll(world: &mut World) {
@@ -268,6 +283,8 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
         *transform = root_transform;
     }
     world.insert_resource(crate::modding::PreparedGround { generation: prepared.metadata.generation, ground: Some(prepared.mod_ground) });
+    world.insert_resource(crate::map_read_ahead::PreparedMapData::new(
+        prepared.metadata.name.clone(), prepared.metadata.generation, prepared.metadata.path.clone(), prepared.game_data));
     world.insert_resource(prepared.physics);
     world.insert_resource(prepared.skater);
     world.insert_resource(prepared.controls);

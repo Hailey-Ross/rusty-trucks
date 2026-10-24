@@ -134,16 +134,20 @@ const TRICK_GUIDE_ITEM: &str = "TrickGuide";
 const APT_NEXT: u32 = 2;
 /// The fader bit screen changes hold (sub_825E6B30 / sub_825E6BF8 bit 0).
 const FADE_SCREEN: u32 = 0;
+/// The fader bit the player skater swap holds (0x89 state 82706938: 825E6B30 bit 7, b562).
+const FADE_SWAP: u32 = 7;
 /// Trick Guide state 4 (0x82619A20): updates before it releases the fade and takes input (S+336 > 10).
 const TRICK_GUIDE_FADE_IN_TICKS: u32 = 11;
 
 /// What runs when the screen is black (the fade hold's callback).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum FadeAction {
     /// Crossbar TrickGuide callback 0x8261CDD8: push the screen.
     Push(usize),
     /// Screen 14 back callback 0x82618EF0: close it.
     Close(usize),
+    /// FE 62 flow 0x89 callback 82706AE8: unload and load the player skater (b562).
+    SetPlayer(skate_core::spawn_skater::Skater),
 }
 const CROSSBAR_ENUMS: [&str; 6] =
     ["RefreshMenu", "RefreshOption", "InitialiseMenu", "InitialiseSubOption", "InitSubOptionOnlineTeam", "RefreshDLCBanner"];
@@ -207,6 +211,9 @@ struct MenuStage {
     spawn_skater_id: i32,
     spawn_skater: crate::spawn_skater_host::SpawnSkaterHost,
     spawn_skater_mode: skate_core::spawn_skater::Mode,
+    /// Flow 0x89: the skater to load now that the screen is black, then whether its load is still running.
+    swap_due: Option<skate_core::spawn_skater::Skater>,
+    swap_loading: bool,
     /// FE 34's AS id and its `FreeSkateOption` host.
     free_skate_id: i32,
     free_skate: crate::free_skate_options_host::FreeSkateOptionsHost,
@@ -645,6 +652,8 @@ fn setup(
                 spawn_skater_id: as_id(SPAWN_SKATER),
                 spawn_skater: Default::default(),
                 spawn_skater_mode: Default::default(),
+                swap_due: None,
+                swap_loading: false,
                 free_skate_id: as_id(FREE_SKATE),
                 free_skate: Default::default(),
                 image_slots: Default::default(),
@@ -1415,8 +1424,36 @@ fn update(
                 }
             }
             for action in ms.fade.tick() {
-                run_fade_action(&mut ms.stack, action);
+                if let Some(skater) = run_fade_action(&mut ms.stack, action) {
+                    ms.swap_due = Some(skater);
+                }
             }
+        }
+        // 0x89 at black: unload and load the player (callback 82706AE8); when the load is done (or failed: the
+        // library keeps a character), exit (827064D8) closes FE 62 and releases the fader.
+        if let Some(skater) = ms.swap_due.take() {
+            use skate_core::spawn_skater::{Action, Skater};
+            spawner_out.write(crate::spawn_skater_host::SpawnSkaterRequest(Action::SetPlayer(skater.clone())));
+            if let Some(c) = characters.as_mut() {
+                match &skater {
+                    Skater::Own => c.request_stock(),
+                    Skater::Character(id) => {
+                        if !c.request_character(id) {
+                            warn!("RETAIL_MENUS spawn skater: no character {id}");
+                        }
+                    }
+                }
+            }
+            ms.swap_loading = true;
+        }
+        if ms.swap_loading && !characters.as_ref().is_some_and(|c| c.swapping()) {
+            ms.swap_loading = false;
+            info!("RETAIL_MENUS spawn skater: swap done, closing FE 62");
+            for s in [spawn, pause].into_iter().flatten() {
+                ms.stack.request(Layer::Main, Request::Close { screen: s });
+            }
+            let params = ms.fade_params;
+            ms.fade.release(FADE_SWAP, false, &params);
         }
         if before != ms.fade.alpha && (ms.fade.alpha == 0.0 || ms.fade.alpha == 1.0) {
             info!("RETAIL_MENUS fade {}", if ms.fade.alpha == 1.0 { "black" } else { "clear" });
@@ -1645,7 +1682,7 @@ fn update(
             set_state(&mut ms.stage, ms.spawn_skater_id, state, &mut fe)?;
         }
         for action in std::mem::take(&mut fe.spawn_skater.actions) {
-            use skate_core::spawn_skater::{Action, Skater};
+            use skate_core::spawn_skater::Action;
             info!("RETAIL_MENUS spawn skater {action:?}");
             match action {
                 Action::Close => {
@@ -1665,22 +1702,12 @@ fn update(
                     });
                     ms.popup_dirty = true;
                 }
-                // FlowMessage 0x89 (82705E88, b562): fade, reload the player record, close FE 62. NOT RETAIL YET: no fade,
-                // the pause menu closes with it (inferred: Free Play resumes).
+                // FlowMessage 0x89 (82705E88, state 82706938, b562): hold the fader (bit 7); at black the callback swaps
+                // the skater (below). NOT RETAIL YET (inferred): the pause menu closes with FE 62 (Free Play resumes).
                 Action::SetPlayer(skater) => {
-                    spawner_out.write(crate::spawn_skater_host::SpawnSkaterRequest(Action::SetPlayer(skater.clone())));
-                    if let Some(c) = characters.as_mut() {
-                        match &skater {
-                            Skater::Own => c.request_stock(),
-                            Skater::Character(id) => {
-                                if !c.request_character(id) {
-                                    warn!("RETAIL_MENUS spawn skater: no character {id}");
-                                }
-                            }
-                        }
-                    }
-                    for s in [spawn, pause].into_iter().flatten() {
-                        ms.stack.request(Layer::Main, Request::Close { screen: s });
+                    let params = ms.fade_params;
+                    if let Some(FadeAction::SetPlayer(now)) = ms.fade.hold(FADE_SWAP, Some(FadeAction::SetPlayer(skater)), false, &params) {
+                        ms.swap_due = Some(now);
                     }
                 }
                 // Flow 0x8A: the Free Play options FE 34 over FE 62.
@@ -2146,11 +2173,14 @@ fn open_screen_on(stage: &mut Stage, path: &str, layer: &str, template: &str, fe
     Ok(())
 }
 
-fn run_fade_action(stack: &mut FeStack, action: FadeAction) {
+/// Runs a screen action; a skater swap is returned for the caller that owns the character library.
+fn run_fade_action(stack: &mut FeStack, action: FadeAction) -> Option<skate_core::spawn_skater::Skater> {
     match action {
         FadeAction::Push(screen) => stack.request(Layer::Main, Request::push(screen)),
         FadeAction::Close(screen) => stack.request(Layer::Main, Request::Close { screen }),
+        FadeAction::SetPlayer(skater) => return Some(skater),
     }
+    None
 }
 
 /// The Trick Guide's queued screen states (its picker callbacks post them from inside a movie call), in order; the

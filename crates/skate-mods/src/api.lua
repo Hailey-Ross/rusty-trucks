@@ -553,6 +553,12 @@ function sdk.volumes.read(key)
     return (owners[sdk.mod_id] or {})[key]
 end
 
+-- HUD minimap icons (fe_map_icons record names, default "race_gate" as retail's script icons; doc 31 "HUD minimap").
+sdk.minimap = { version = 1 }
+function sdk.minimap.icon(key, options) submit{kind="minimap_icon",key=key,options=options} end
+function sdk.minimap.remove(key) submit{kind="minimap_remove",key=key} end
+function sdk.minimap.show(shown) submit{kind="minimap_show",shown=shown and true or false} end
+
 -- Named trigger volumes (retail map volumes, custom-map volumes, mod volumes).
 -- Events arrive in on_event: {name="trigger_entered"|"trigger_exited", body=..., volume=...}.
 sdk.triggers = { version = 1 }

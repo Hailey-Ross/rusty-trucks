@@ -679,7 +679,8 @@ fn render_hud(
         .is_none_or(|v| skate_core::menu_values::number(&v) != 0.0);
     let minimap_draws = match hud.minimap.as_mut() {
         Some(m) if !m.failed => {
-            let shown = skate_core::minimap::visible(!hidden, 3, setting);
+            // A minimap element hidden by retail's hide message (ours: a mod, `sdk.minimap.show`) stays hidden.
+            let shown = skate_core::minimap::visible(!hidden, 3, setting) && icons.element_shown();
             let changed = m.runtime.shown() != shown;
             // The needle turns with the heading-up map (82665848). NOT RETAIL YET: world north taken as +z.
             let north = skate_core::minimap::needle_degrees(&heading.needle);
@@ -703,7 +704,7 @@ fn render_hud(
     if !minimap_draws.is_empty() {
         // The icon groups in order (826656F8 -> 8268CB40), then the needle on top (82665848).
         let rules = skate_core::minimap::IconRules::default();
-        for icon in icons.groups.values().flatten() {
+        for icon in icons.icons() {
             let key = format!("minimap:{}", icon.texture);
             let Some((c, a)) = hud.textures.contains_key(&key).then(|| skate_core::minimap::place(icon, heading.player, &heading.heading, &rules)).flatten() else { continue };
             let v = |i: usize, u: f32, w: f32| apt_scene::Vertex { position: c[i], uv: [u, w] };

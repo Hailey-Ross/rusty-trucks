@@ -451,6 +451,16 @@ fn prefetch_world_banks(p: &mut WorldPrefetch, native: &mut Native, library: &Li
     }
 }
 
+/// The world banks for the map being loaded (path `map`), queued on the prefetch worker while the
+/// living world publishes here (a map change unloads them; [`prefetch_world_banks`] then finds them
+/// requested). Returns how many were queued.
+pub(super) fn read_ahead_banks(native: &mut Native, library: &Library, map: &std::path::Path) -> usize {
+    if !requested() || !prefetch_on() {
+        return 0;
+    }
+    TRAFFIC_BANKS.iter().chain(PED_BANKS).filter(|stem| library.bank_source(stem).is_ok_and(|source| native.prefetch.request_next(map, source))).count()
+}
+
 #[derive(Resource)]
 pub(crate) struct WorldHost {
     /// None: not tried yet; Some(false): some world banks are missing (warned once).

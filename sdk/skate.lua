@@ -450,6 +450,15 @@ function sdk.volumes.remove(key) end
 ---@return {position:Vec3,size:Vec3,rotation:Quat,inside:string[]}|nil point overlaps, not physical collisions
 function sdk.volumes.read(key) end
 
+sdk.minimap = {}
+---@param key string
+---@param options {position:Vec3, icon?:string, angle?:number, scale?:number, fade?:boolean, max_distance?:number, colour?:{[1]:number,[2]:number,[3]:number,[4]:number}}
+function sdk.minimap.icon(key, options) end
+---@param key string
+function sdk.minimap.remove(key) end
+---@param shown boolean false hides the HUD minimap while this mod is enabled
+function sdk.minimap.show(shown) end
+
 ---@class TriggerVolume
 ---@field id string retail instance id (16 hex digits), custom-map id or "mod:<mod>:<key>"
 ---@field name string short name, e.g. "tut_sksc_reset_vol01"

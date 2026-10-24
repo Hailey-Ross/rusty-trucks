@@ -125,11 +125,49 @@ impl Runtime {
     }
 }
 
-/// The minimap's icon groups (retail MiniMapManager groups, drawn in this order), by group id; engine systems and mods
-/// fill them.
+/// The minimap's icon groups (retail MiniMapManager groups), by group id; engine systems and mods fill them. Drawn in
+/// the order the groups were first added, as retail's group list (82644BB0 appends, b571).
 #[derive(bevy::prelude::Resource, Default)]
 pub(crate) struct MinimapIcons {
-    pub groups: std::collections::BTreeMap<String, Vec<skate_core::minimap::Icon>>,
+    groups: Vec<(String, Vec<skate_core::minimap::Icon>)>,
+    /// Who hides the minimap element (retail's show / hide messages, group E of b574; mods: `sdk.minimap.show`).
+    hidden_by: std::collections::BTreeSet<String>,
+}
+
+impl MinimapIcons {
+    /// Replaces a group's icons; a new group goes after the existing ones.
+    pub(crate) fn set(&mut self, group: &str, icons: Vec<skate_core::minimap::Icon>) {
+        match self.groups.iter_mut().find(|(g, _)| g == group) {
+            Some((_, old)) => *old = icons,
+            None => self.groups.push((group.to_owned(), icons)),
+        }
+    }
+
+    pub(crate) fn remove(&mut self, group: &str) {
+        self.groups.retain(|(g, _)| g != group);
+    }
+
+    pub(crate) fn set_hidden(&mut self, by: &str, hidden: bool) {
+        if hidden {
+            self.hidden_by.insert(by.to_owned());
+        } else {
+            self.hidden_by.remove(by);
+        }
+    }
+
+    pub(crate) fn hidden_by(&self) -> impl Iterator<Item = &str> {
+        self.hidden_by.iter().map(String::as_str)
+    }
+
+    /// The minimap element is not hidden by anyone (it still follows `skate_core::minimap::visible`).
+    pub(crate) fn element_shown(&self) -> bool {
+        self.hidden_by.is_empty()
+    }
+
+    /// Every icon, groups in draw order.
+    pub(crate) fn icons(&self) -> impl Iterator<Item = &skate_core::minimap::Icon> {
+        self.groups.iter().flat_map(|(_, icons)| icons)
+    }
 }
 
 /// The called skaters' group (FE 62 Call Skater; retail adds AI slots with +0x7A set, 8254E540, b565): `mini_skater` at
@@ -154,7 +192,7 @@ pub(crate) fn called_skater_icons(
             colour: [1.0; 4],
         })
         .collect();
-    icons.groups.insert("called_skaters".into(), group);
+    icons.set("called_skaters", group);
 }
 
 /// The map's heading (skate_core::minimap::Heading) stepped at the console's HUD rate from the player's motion.

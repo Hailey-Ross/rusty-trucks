@@ -632,7 +632,7 @@ fn load_for_map(
     despawns: MessageWriter<LivingWorldDespawn>,
     audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
 ) {
-    install_for_map(&config, &map, &settings, state, despawns, audio);
+    install_for_map(&config, &map, &settings, state, despawns, audio, None);
 }
 
 /// Behind the loading screen: the game window is not shown yet, or a map switch has not unpaused the game. Virtual
@@ -650,6 +650,7 @@ fn load_inputs(settings: &LivingWorldSettings) -> (u64, bool, bool) {
     (settings.seed, settings.enabled, settings.pedestrians.enabled)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn early_load_for_map(
     config: Res<crate::config::Config>,
     map: Res<crate::map_transition::CurrentMap>,
@@ -658,8 +659,9 @@ fn early_load_for_map(
     despawns: MessageWriter<LivingWorldDespawn>,
     audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
     mut early: ResMut<EarlyLoad>,
+    prepared: Option<ResMut<crate::map_read_ahead::PreparedMapData>>,
 ) {
-    if install_for_map(&config, &map, &settings, state, despawns, audio) {
+    if install_for_map(&config, &map, &settings, state, despawns, audio, prepared) {
         early.0 = Some(((map.name.clone(), map.generation), load_inputs(&settings)));
     }
 }
@@ -725,6 +727,7 @@ fn install_for_map(
     mut state: ResMut<PopulationState>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
     audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
+    prepared: Option<ResMut<crate::map_read_ahead::PreparedMapData>>,
 ) -> bool {
     let key = (map.name.clone(), map.generation);
     if state.loaded_for.as_ref() == Some(&key) {
@@ -735,7 +738,7 @@ fn install_for_map(
             despawns.write(LivingWorldDespawn(r));
         }
     }
-    let data = load_data(&config.asset_root, &map.name);
+    let data = prepared.and_then(|mut p| p.take_living(&key)).unwrap_or_else(|| load_data(&config.asset_root, &map.name));
     info!("LIVING_WORLD data {}", data.status);
     // NPC skaters will publish board audio and speech here: let the world banks decode early.
     if let Some(mut audio) = audio {

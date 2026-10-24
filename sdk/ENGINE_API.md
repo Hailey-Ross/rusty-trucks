@@ -71,6 +71,20 @@ inside it. This is a point overlap query, not a collider or a skater hull test.
 Boxes belong to their creating mod, max 32 per mod; remove with
 `sdk.volumes.remove(key)`. Changes become observable on the next snapshot.
 
+## Minimap icons (`sdk.minimap`, version 1)
+
+`sdk.minimap.icon(key, {position={x,y,z}, icon="race_gate", angle=0, scale=1, fade=true, max_distance=nil,
+colour={r,g,b,a}})` creates or moves an icon on the in-game HUD minimap. `icon` is a fe_map_icons record name (the
+disc's `race_gate`, `skater`, `teleport`, `pro`, ...; its texture and max distance come from that record); it defaults
+to `race_gate`, as retail's own script icons do. `max_distance` overrides the record's (0 = the minimap's 1000).
+Each mod's icons are one group, drawn after the groups added before it. Icons belong to their mod, max 32 per mod,
+and go when the mod is disabled; remove one with `sdk.minimap.remove(key)`. Local display only: in a session each
+peer's mods place their own icons.
+
+`sdk.minimap.show(false)` hides the HUD minimap (retail's minimap show / hide messages); `sdk.minimap.show(true)`
+takes the mod's hide back. It never shows a minimap the player turned off in Game Settings or one the HUD hides; while
+any mod hides it, it stays hidden. A disabled mod's hide goes with it.
+
 ## Trigger volumes (`sdk.triggers`, capability `triggers` 1)
 
 The engine tracks the map's named trigger volumes the way retail Skate 3 does:

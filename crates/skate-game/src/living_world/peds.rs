@@ -651,10 +651,11 @@ pub(super) fn load_ped_data(
         }
     }
     let (Some(config), Some(map)) = (config, map) else { return };
-    load_ped_data_for_map(&config, &map, &mut data, audio, &settings, &nav);
+    load_ped_data_for_map(&config, &map, &mut data, audio, &settings, &nav, None);
 }
 
 /// Behind the loading screen (`super::behind_loading_gate`): the same load, so the first fixed tick finds it done.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn early_load_ped_data(
     config: Res<crate::config::Config>,
     map: Res<crate::map_transition::CurrentMap>,
@@ -662,13 +663,15 @@ pub(super) fn early_load_ped_data(
     audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
     settings: Res<LivingWorldSettings>,
     nav: Res<PedNavSettings>,
+    prepared: Option<ResMut<crate::map_read_ahead::PreparedMapData>>,
 ) {
-    if load_ped_data_for_map(&config, &map, &mut data, audio, &settings, &nav) {
+    let ready = prepared.and_then(|mut p| p.take_peds(&(map.name.clone(), map.generation), &nav.rules));
+    if load_ped_data_for_map(&config, &map, &mut data, audio, &settings, &nav, ready) {
         data.skip_arms_once = true;
     }
 }
 
-/// Load the map's ped data unless it is loaded already; true when it loaded.
+/// Load the map's ped data unless it is loaded already (`ready`: read ahead for this map); true when it loaded.
 fn load_ped_data_for_map(
     config: &crate::config::Config,
     map: &crate::map_transition::CurrentMap,
@@ -676,21 +679,33 @@ fn load_ped_data_for_map(
     audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
     settings: &LivingWorldSettings,
     nav: &PedNavSettings,
+    ready: Option<PedData>,
 ) -> bool {
     let key = (map.name.clone(), map.generation);
     if data.loaded_for.as_ref() == Some(&key) {
         return false;
     }
+    let mut loaded = ready.unwrap_or_else(|| prepare(&config.asset_root, &map.name, &nav.rules));
+    loaded.loaded_for = Some(key);
+    if let Some(mut audio) = audio {
+        audio.expected |= settings.enabled && settings.pedestrians.enabled && loaded.ready();
+    }
+    *data = loaded;
+    true
+}
+
+/// A map's ped data from the files (no game state; also run on the map loader thread, `map_read_ahead`).
+pub(crate) fn prepare(asset_root: &std::path::Path, map_name: &str, rules: &NavRules) -> PedData {
     // Where the first fixed tick after a map switch goes (low-end PCs: 141 ms here on the desktop, 2026-10-17).
     let t0 = std::time::Instant::now();
     // Parsed once for every reader below (1.8 MB; the eleven readers parsed it again each before, about 85 ms on the
     // desktop). A reader given none reads it itself, so a missing or broken file reports the same errors as before.
-    let tables = std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).map_err(|e| e.to_string()));
-    let mut loaded = PedData::load_with(&config.asset_root, tables.as_ref().ok());
+    let tables = std::fs::read(asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).map_err(|e| e.to_string()));
+    let mut loaded = PedData::load_with(asset_root, tables.as_ref().ok());
     let t_data = t0.elapsed();
-    loaded.load_nav(&config.asset_root, &map.name, &nav.rules);
+    loaded.load_nav(asset_root, map_name, rules);
     let t_nav = t0.elapsed();
-    match super::ped_graph::PedGraph::load(&config.asset_root, super::ped_graph::AI_GRAPH) {
+    match super::ped_graph::PedGraph::load(asset_root, super::ped_graph::AI_GRAPH) {
         Ok(graph) => {
             let pending = graph.pending();
             info!(
@@ -701,7 +716,7 @@ fn load_ped_data_for_map(
                 pending.keys().cloned().collect::<Vec<_>>().join(", ")
             );
             loaded.graph = Some(Arc::new(graph));
-            match super::ped_graph::PedGraph::load(&config.asset_root, super::ped_graph::CONVERSATION_GRAPH) {
+            match super::ped_graph::PedGraph::load(asset_root, super::ped_graph::CONVERSATION_GRAPH) {
                 Ok(g) => {
                     info!("PED_GRAPH conversation plugin: {} behaviours, {} conditions; not ported yet: {:?}", g.behaviors.len(), g.conditions.len(), g.pending().keys().collect::<Vec<_>>());
                     loaded.conversation_graph = Some(Arc::new(g));
@@ -741,12 +756,12 @@ fn load_ped_data_for_map(
         Err(error) => warn!("PED_MOOD tables not loaded (no mood reactions): {error}"),
     }
     let t_tables = t0.elapsed();
-    match super::ped_plugins::PluginData::load_with(&config.asset_root, tables.as_ref().ok()) {
+    match super::ped_plugins::PluginData::load_with(asset_root, tables.as_ref().ok()) {
         Ok(mut p) => {
             // The map's DMO hotpoint props (benches, bins, newspaper boxes) beside the placed waypoint groups.
-            let seats = super::ped_plugins::map_props(&config.asset_root, &map.name);
-            info!("PED_PLUGINS {}: {} hotpoint props ({} seats)", map.name, seats.len(), seats.iter().filter(|s| s.class == "waypoint_sit").count());
-            p.placed.entry(map.name.clone()).or_default().extend(seats);
+            let seats = super::ped_plugins::map_props(asset_root, map_name);
+            info!("PED_PLUGINS {}: {} hotpoint props ({} seats)", map_name, seats.len(), seats.iter().filter(|s| s.class == "waypoint_sit").count());
+            p.placed.entry(map_name.to_owned()).or_default().extend(seats);
             info!(
                 "PED_PLUGINS {} prop classes ({} with descriptors), {} ped types with plugin_odds, placed props {:?}",
                 p.classes.len(),
@@ -758,7 +773,7 @@ fn load_ped_data_for_map(
             for (class, c) in &p.classes {
                 let Some(d) = c.descriptor.as_ref().filter(|d| !d.graph.is_empty() && class != "waypoint_conversation") else { continue };
                 let relative = format!("private/stock/data/{}", d.graph.replace('\\', "/").trim_end_matches(".xml").to_string() + ".stategraph");
-                match super::ped_graph::PedGraph::load(&config.asset_root, &relative) {
+                match super::ped_graph::PedGraph::load(asset_root, &relative) {
                     Ok(g) => {
                         info!("PED_GRAPH plugin {class}: {} behaviours, {} conditions; not ported yet: {:?}", g.behaviors.len(), g.conditions.len(), g.pending().keys().collect::<Vec<_>>());
                         loaded.plugin_graphs.insert(class.clone(), Arc::new(g));
@@ -771,7 +786,7 @@ fn load_ped_data_for_map(
         Err(error) => warn!("PED_PLUGINS not loaded (no plugin props): {error}"),
     }
     let t_plugins = t0.elapsed();
-    match super::ped_hand_props::HandPropData::load_with(&config.asset_root, tables.as_ref().ok()) {
+    match super::ped_hand_props::HandPropData::load_with(asset_root, tables.as_ref().ok()) {
         Ok(h) => {
             info!("PED_HAND_PROPS {} records, {} with models", h.props.len(), h.props.values().filter(|p| p.glb.is_some()).count());
             loaded.hand_props = Arc::new(h);
@@ -782,15 +797,10 @@ fn load_ped_data_for_map(
     let t_end = t0.elapsed();
     info!(
         "PED_DATA_LOAD {}: {:.1} ms (bodies {:.1}, nav {:.1}, graphs {:.1}, tables {:.1}, plugins {:.1}, hand props {:.1})",
-        map.name, t_end.as_secs_f64() * 1000.0, t_data.as_secs_f64() * 1000.0, ms(t_data, t_nav), ms(t_nav, t_graphs), ms(t_graphs, t_tables), ms(t_tables, t_plugins), ms(t_plugins, t_end)
+        map_name, t_end.as_secs_f64() * 1000.0, t_data.as_secs_f64() * 1000.0, ms(t_data, t_nav), ms(t_nav, t_graphs), ms(t_graphs, t_tables), ms(t_tables, t_plugins), ms(t_plugins, t_end)
     );
     info!("LIVING_WORLD {}", loaded.status);
-    loaded.loaded_for = Some(key);
-    if let Some(mut audio) = audio {
-        audio.expected |= settings.enabled && settings.pedestrians.enabled && loaded.ready();
-    }
-    *data = loaded;
-    true
+    loaded
 }
 
 /// Spawn and despawn ped entities from the population's records.

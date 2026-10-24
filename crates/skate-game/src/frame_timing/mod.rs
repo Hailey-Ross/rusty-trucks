@@ -21,6 +21,7 @@
 //! so gameplay is identical with the readout and the log on or off.
 pub(crate) mod hitch;
 pub(crate) mod log;
+mod render_split;
 pub(crate) mod stats;
 
 use bevy::app::{RunFixedMainLoop, RunFixedMainLoopSystems};
@@ -314,6 +315,7 @@ impl Plugin for FrameTimingPlugin {
             .add_systems(bevy::app::FixedFirst, count_fixed_step)
             .add_systems(Last, (record, show).chain());
         hitch::register(app);
+        render_split::register(app);
     }
 }
 
