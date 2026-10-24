@@ -546,6 +546,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         # only their maps, props and status files: they start here and run beside the HUD, environment, audio and
         # living world stages; each map is validated further down, once the validator runs (doc 08 "Export speed pass").
         map_run=None
+        workers=map_workers() if 'maps' in groups else 0
         if 'maps' in groups:
             from .optional_content import CONTENT_ERRORS, note
             report('Preparing authored movable-object models')
@@ -576,7 +577,6 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 starts={}
                 report(f'Authored map starts unavailable ({error}); using geometric spawns')
             (work/'map-starts.json').write_text(json.dumps(starts),encoding='utf-8')
-            workers=map_workers()
             report(f'Converting {len(jobs)} maps with {workers} workers')
             def map_job(job):
                 result=work/(job['label']+'.json')
@@ -590,7 +590,17 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             # remain queued behind a string of small parks.
             futures={pool.submit(map_job,j):j for j in sorted(jobs,key=lambda j:-j['archive'].stat().st_size)}
             map_run=(pool,futures)
+        customiser=None  # Background customiser beside the other stages
         try:
+            # As its own process (stage_job.py) the customiser needs nothing from the stages below (it reads only stock,
+            # default-skater and disc data and writes only assets/private/customisation): it starts here, with one more
+            # memory slot than beside the maps alone (doc 08 "Export speed pass").
+            # customiser_setup.install's finalize is customiser_setup.prepare(game_root, stage/'assets'); not edited
+            # there, since every customis*.py is in the customiser's fingerprint (gotchas "FINGERPRINT TRAP").
+            if (finalize and getattr(finalize,'__module__','').endswith('customiser_setup')
+                    and overlap_customiser(workers+1)):
+                report('Preparing the character customiser alongside the other stages')
+                customiser=Background(lambda:run_stage('customiser',game_root,stage,work,log,report),'customiser')
             if 'environment' in groups:
                 exports.environment(game_root,stage,work,report,log,converted,game_exe,dlc_vaults)
                 # The unlock lines of the player's DLC packages (b458: retail's second unlock list; the Challenge Map shows
@@ -627,7 +637,6 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             if hud_job is not None:hud_job.join()
             report('Validating skater, input and animation data')
             validator=start_validator(game_exe,stage/'assets',log,report)
-            customiser=None  # Background customiser when overlapped with the map stage
             def validate(request):
                 """Today's checks raise (map rejected); new findings come back as warnings."""
                 nonlocal validator
@@ -647,7 +656,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 # The customiser reads only stock, default-skater and disc data (all
                 # prepared above) and writes only assets/private/customisation, so it
                 # runs beside the map jobs instead of after them.
-                if finalize and overlap_customiser(workers):
+                if finalize and customiser is None and overlap_customiser(workers):
                     report('Preparing the character customiser alongside the maps')
                     customiser=Background(lambda:finalize(stage),'customiser')
                 completed={}
@@ -673,6 +682,8 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             if map_run is not None:
                 # Stop the queued map jobs and let the running ones end before the stage is cleaned up.
                 map_run[0].shutdown(wait=True,cancel_futures=True)
+            # A customiser process writes into the stage too: let it end first (its own error is secondary here).
+            if customiser is not None:customiser.thread.join()
             raise
         if 'maps' in groups:
             catalog=[completed[j['label']] for j in jobs if j['label'] in completed]
