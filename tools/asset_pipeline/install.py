@@ -591,6 +591,8 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             futures={pool.submit(map_job,j):j for j in sorted(jobs,key=lambda j:-j['archive'].stat().st_size)}
             map_run=(pool,futures)
         customiser=None  # Background customiser beside the other stages
+        customiser_process=False  # it runs as its own process (not an in-process thread)
+        post,post_result=None,{}  # Background post-map exports
         try:
             # As its own process (stage_job.py) the customiser needs nothing from the stages below (it reads only stock,
             # default-skater and disc data and writes only assets/private/customisation): it starts here, with one more
@@ -601,6 +603,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                     and overlap_customiser(workers+1)):
                 report('Preparing the character customiser alongside the other stages')
                 customiser=Background(lambda:run_stage('customiser',game_root,stage,work,log,report),'customiser')
+                customiser_process=True
             if 'environment' in groups:
                 exports.environment(game_root,stage,work,report,log,converted,game_exe,dlc_vaults)
                 # The unlock lines of the player's DLC packages (b458: retail's second unlock list; the Challenge Map shows
@@ -659,6 +662,58 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 if finalize and customiser is None and overlap_customiser(workers):
                     report('Preparing the character customiser alongside the maps')
                     customiser=Background(lambda:finalize(stage),'customiser')
+                def post_maps():
+                    """Map names, teleporters, visual indicators and park layouts: they read only the disc, the collections
+                    and the packs (whose map BIGs are already copied whole) and write only their own files."""
+                    # Each map's Skate 3 name for the lists (map_names.py; user 2026-10-20: retail names for every map).
+                    try:
+                        from .map_names import names as map_names,disc_language
+                        text=disc_language(game_root,work/'map-names')
+                        for archive in sorted({j['archive'] for j in dlc_jobs}):
+                            for label,value in dlc_packages.language(BigArchive(archive)).items():text.setdefault(label,value)
+                        named=map_names(converted,dlc_vaults,text)
+                    except CONTENT_ERRORS as error:
+                        named={}
+                        report(f'Map names unavailable ({error}); the lists show file names')
+                    # Teleporters (teleporters.py, research b420 / b421): the disc's and the packs' teleport challenges per map.
+                    try:
+                        from .teleporters import export as write_teleporters
+                        bigs=dlc_packages.extract_bigs(dlc_folder,work/'dlc',lambda paths:any(p.lower().startswith(('data/db/challenge','data/content/missions/')) for p in paths)) if dlc_jobs else []
+                        write_teleporters(game_root,converted,dlc_vaults,bigs,work/'teleporters',stage/'assets/private/teleporters.json',text if named else None,report)
+                        # A success clears an older failure's note (it was copied forward and reported again at every refresh).
+                        (private/'map-status'/'teleporters-availability.json').unlink(missing_ok=True)
+                    except CONTENT_ERRORS as error:
+                        (stage/'assets/private/teleporters.json').unlink(missing_ok=True)
+                        note(private/'map-status'/'teleporters-availability.json','Teleporters',error,report=report)
+                    # Challenge visual indicators (visual_indicators.py, research b532 / b533): the teleporters' floating icons.
+                    try:
+                        from .visual_indicators import export as write_indicators
+                        from .dlc import merged
+                        write_indicators(game_root,merged(converted,list(dlc_vaults)),stage/'assets/private/visual-indicators.json',report)
+                        (private/'map-status'/'visual-indicators-availability.json').unlink(missing_ok=True)
+                    except CONTENT_ERRORS as error:
+                        (stage/'assets/private/visual-indicators.json').unlink(missing_ok=True)
+                        note(private/'map-status'/'visual-indicators-availability.json','Visual indicators',error,report=report)
+                    # skate.Park layouts (park_layout.py, research b424 / b425 / b431): the pieces each park world places on
+                    # its stream, from the disc and the packs (a pack's recipe, models and textures after the disc's).
+                    try:
+                        from .park_layout import Sources,export as write_park_layouts,world_layouts,teleporter_roles
+                        from .dlc import merged
+                        from .environment import Collections
+                        park_bigs=dlc_packages.extract_bigs(dlc_folder,work/'dlc',lambda paths:any(p.lower().startswith(('data/skatepark/','data/content/recipe/','data/content/static/')) for p in paths)) if dlc_jobs else []
+                        sources=Sources([BigArchive(game_root/'data/big/miscload.big'),BigArchive(game_root/'data/big/miscboot.big'),BigArchive(game_root/'data/content/parkassets.big'),*map(BigArchive,park_bigs)])
+                        shutil.rmtree(stage/'assets/private/park-layouts',ignore_errors=True)
+                        park_rows=Collections(merged(converted,list(dlc_vaults)))
+                        write_park_layouts(sources,world_layouts(park_rows),stage/'assets/private/park-layouts',report,teleporter_roles(park_rows))
+                        (private/'map-status'/'park-layouts-availability.json').unlink(missing_ok=True)
+                    except CONTENT_ERRORS as error:
+                        shutil.rmtree(stage/'assets/private/park-layouts',ignore_errors=True)
+                        note(private/'map-status'/'park-layouts-availability.json','skate.Park layouts',error,report=report)
+                    return named
+                # Beside the map wait below when no in-process customiser thread runs (park layouts use NumPy; two
+                # threads in NumPy crashed, gotchas 2026-10-24); joined before the map catalog (doc 08 "Export speed pass").
+                if customiser is None or customiser_process:
+                    post=Background(lambda:post_result.update(named=post_maps()),'post-maps')
                 completed={}
                 pool,futures=map_run
                 with pool:
@@ -684,7 +739,9 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 map_run[0].shutdown(wait=True,cancel_futures=True)
             # A customiser process writes into the stage too: let it end first (its own error is secondary here).
             if customiser is not None:customiser.thread.join()
+            if post is not None:post.thread.join()
             raise
+        if post is not None:post.join()
         if 'maps' in groups:
             catalog=[completed[j['label']] for j in jobs if j['label'] in completed]
             if previous:
@@ -707,52 +764,9 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 for old in json.loads((previous[0]/'maps.json').read_text()):
                     if old['path'] not in valid_paths:(stage/old['path']).unlink(missing_ok=True)
             if not catalog:raise RuntimeError('No playable map could be prepared or recovered. Restore at least one worldDIST_*.big archive beside default.xex and retry; the previous installation has been kept.')
-            # Each map's Skate 3 name for the lists (map_names.py; user 2026-10-20: retail names for every map).
-            try:
-                from .map_names import names as map_names,disc_language
-                text=disc_language(game_root,work/'map-names')
-                for archive in sorted({j['archive'] for j in dlc_jobs}):
-                    for label,value in dlc_packages.language(BigArchive(archive)).items():text.setdefault(label,value)
-                named=map_names(converted,dlc_vaults,text)
-            except CONTENT_ERRORS as error:
-                named={}
-                report(f'Map names unavailable ({error}); the lists show file names')
+            named=post_result['named'] if post is not None else post_maps()
             for item in catalog:
                 if item['name'] in named:item.update(display=named[item['name']]['name'],name_id=named[item['name']]['name_id'])
-            # Teleporters (teleporters.py, research b420 / b421): the disc's and the packs' teleport challenges per map.
-            try:
-                from .teleporters import export as write_teleporters
-                bigs=dlc_packages.extract_bigs(dlc_folder,work/'dlc',lambda paths:any(p.lower().startswith(('data/db/challenge','data/content/missions/')) for p in paths)) if dlc_jobs else []
-                write_teleporters(game_root,converted,dlc_vaults,bigs,work/'teleporters',stage/'assets/private/teleporters.json',text if named else None,report)
-                # A success clears an older failure's note (it was copied forward and reported again at every refresh).
-                (private/'map-status'/'teleporters-availability.json').unlink(missing_ok=True)
-            except CONTENT_ERRORS as error:
-                (stage/'assets/private/teleporters.json').unlink(missing_ok=True)
-                note(private/'map-status'/'teleporters-availability.json','Teleporters',error,report=report)
-            # Challenge visual indicators (visual_indicators.py, research b532 / b533): the teleporters' floating icons.
-            try:
-                from .visual_indicators import export as write_indicators
-                from .dlc import merged
-                write_indicators(game_root,merged(converted,list(dlc_vaults)),stage/'assets/private/visual-indicators.json',report)
-                (private/'map-status'/'visual-indicators-availability.json').unlink(missing_ok=True)
-            except CONTENT_ERRORS as error:
-                (stage/'assets/private/visual-indicators.json').unlink(missing_ok=True)
-                note(private/'map-status'/'visual-indicators-availability.json','Visual indicators',error,report=report)
-            # skate.Park layouts (park_layout.py, research b424 / b425 / b431): the pieces each park world places on
-            # its stream, from the disc and the packs (a pack's recipe, models and textures after the disc's).
-            try:
-                from .park_layout import Sources,export as write_park_layouts,world_layouts,teleporter_roles
-                from .dlc import merged
-                from .environment import Collections
-                park_bigs=dlc_packages.extract_bigs(dlc_folder,work/'dlc',lambda paths:any(p.lower().startswith(('data/skatepark/','data/content/recipe/','data/content/static/')) for p in paths)) if dlc_jobs else []
-                sources=Sources([BigArchive(game_root/'data/big/miscload.big'),BigArchive(game_root/'data/big/miscboot.big'),BigArchive(game_root/'data/content/parkassets.big'),*map(BigArchive,park_bigs)])
-                shutil.rmtree(stage/'assets/private/park-layouts',ignore_errors=True)
-                park_rows=Collections(merged(converted,list(dlc_vaults)))
-                write_park_layouts(sources,world_layouts(park_rows),stage/'assets/private/park-layouts',report,teleporter_roles(park_rows))
-                (private/'map-status'/'park-layouts-availability.json').unlink(missing_ok=True)
-            except CONTENT_ERRORS as error:
-                shutil.rmtree(stage/'assets/private/park-layouts',ignore_errors=True)
-                note(private/'map-status'/'park-layouts-availability.json','skate.Park layouts',error,report=report)
         # DLC maps kept without their folder keep their teleporters, layouts, rows, unlocks and audio (USER-ASKS 259).
         if previous and not dlc_identity:
             from .retained import carry,kept_dlc_maps
