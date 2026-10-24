@@ -334,6 +334,27 @@ fn prefetch_near(state: &mut State, native: &mut Native, library: &Library, ear:
     }
 }
 
+/// The emitter banks of the map being loaded (its emitter `records`, its path `map`) within
+/// [`AHEAD`] of its spawn point, nearest first, queued on the prefetch worker; the same banks and
+/// order the listener's first frame there asks for (`prefetch_near`). Returns how many were queued.
+///
+/// [`AHEAD`]: super::native::prefetch::AHEAD
+pub(super) fn read_ahead_banks<'a>(records: impl Iterator<Item = &'a super::library::EmitterRecord>, library: &Library, native: &mut Native, map: &std::path::Path, spawn: Vec3) -> usize {
+    use super::native::prefetch::AHEAD;
+    let mut near: Vec<(f32, &str)> = Vec::new();
+    for r in records {
+        let Some(bank) = r.bank.as_deref().filter(|b| r.kind == 1 && r.flags == 0 && native.has_bank(library, b) && !native.kept_across_maps(b)) else { continue };
+        let d = Vec3::from(r.position).distance(spawn) - Vec3::from(r.extent).max_element();
+        match near.iter_mut().find(|(_, b)| *b == bank) {
+            Some(n) => n.0 = n.0.min(d),
+            None => near.push((d, bank)),
+        }
+    }
+    near.retain(|(d, _)| *d <= AHEAD);
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    near.into_iter().filter(|(_, stem)| library.bank_source(stem).is_ok_and(|source| native.prefetch.request_next(map, source))).count()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update(
     mut state: Local<State>,
@@ -386,7 +407,11 @@ pub(super) fn update(
             }
         }
         if map_changed {
-            native.unload_map_banks();
+            if runtime_changed {
+                native.unload_map_banks();
+            } else {
+                native.change_map(map.path.as_deref());
+            }
         }
         let stem = audio.stem.as_str();
         // Retail's emitter system loads every file of the map's database entry and dispatches by
@@ -416,7 +441,8 @@ pub(super) fn update(
             };
             state.emitter_bank.push(b);
         }
-        state.bank_status = vec![BankStatus::Idle; state.banks.len()];
+        // Banks read ahead during the map's load are requested already (and dropped when left behind).
+        state.bank_status = state.banks.iter().map(|b| if native.prefetch.contains(b) { BankStatus::Requested } else { BankStatus::Idle }).collect();
         state.map_len = state.emitters.len();
         state.dynamic.clear();
         state.map = Some(identity);
@@ -608,6 +634,52 @@ mod tests {
     /// emitter in turn. Each frame's `prefetch_near` only queues / drops decodes: the runtime's
     /// banks, evaluator random state and blocks stay untouched; requested = the banks within
     /// `AHEAD` m that are not loaded; far away everything is dropped. Prints its cost per call.
+    /// A district's emitter banks read ahead for a spawn point (data-gated) are the banks the
+    /// listener's first frame there asks for, and at the map change they are its requested banks.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn banks_read_ahead_for_the_spawn_are_the_first_frames_banks() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
+        let records: Vec<_> = super::super::map_audio::tests::old_ems_files("DownTown").iter().flat_map(|f| library.emitters(f)).collect();
+        let map = std::path::Path::new("maps/DownTown.skate");
+        let mut checked = 0;
+        for r in records.iter().filter(|r| r.kind == 1 && r.bank.is_some()).step_by(25) {
+            let spawn = Vec3::from(r.position);
+            // The first frame's requests without a read-ahead.
+            let mut state = State::default();
+            for r in &records {
+                let Some(bank) = r.bank.clone().filter(|b| r.kind == 1 && r.flags == 0 && native.has_bank(&library, b)) else { continue };
+                let s = r.scalars;
+                state.emitters.push(Emitter {
+                    shape: Shape { position: Vec3::from(r.position), extent: Vec3::from(r.extent), forward: Vec3::new(s[1], s[2], s[3]), core: s[0] },
+                    volume: r.volume, falloff: r.falloff, bank: bank.clone(), patch: r.patch,
+                });
+                let b = state.banks.iter().position(|x| *x == bank).unwrap_or_else(|| {
+                    state.banks.push(bank);
+                    state.banks.len() - 1
+                });
+                state.emitter_bank.push(b);
+            }
+            state.bank_status = vec![BankStatus::Idle; state.banks.len()];
+            native.change_map(None);
+            prefetch_near(&mut state, &mut native, &library, spawn);
+            let mut first: Vec<String> = native.prefetch.stems().map(str::to_owned).filter(|s| !native.kept_across_maps(s)).collect();
+            first.sort();
+            native.change_map(None);
+            let queued = read_ahead_banks(records.iter().copied(), &library, &mut native, map, spawn);
+            native.change_map(Some(map));
+            let mut ahead: Vec<String> = native.prefetch.stems().map(str::to_owned).collect();
+            ahead.sort();
+            assert_eq!(ahead, first, "spawn {spawn}");
+            assert_eq!(queued, ahead.len());
+            checked += 1;
+        }
+        native.change_map(None);
+        assert!(checked > 3, "{checked} spawn points");
+    }
+
     #[test]
     #[ignore = "needs the private install data"]
     fn the_prefetch_follows_the_listener_and_touches_no_runtime_state() {

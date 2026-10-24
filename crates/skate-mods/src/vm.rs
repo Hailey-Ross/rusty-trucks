@@ -175,6 +175,56 @@ pub struct VolumeOptions {
     pub opacity: f32,
 }
 
+/// A mod's HUD minimap icon (`sdk.minimap.icon`): a fe_map_icons record at a world position.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MinimapIconOptions {
+    pub position: [f32; 3],
+    /// The fe_map_icons record name; retail's script icons default to `race_gate` (82849B78, b571).
+    #[serde(default = "minimap_icon")]
+    pub icon: String,
+    /// Radians, map up = north.
+    #[serde(default)]
+    pub angle: f32,
+    #[serde(default = "minimap_scale")]
+    pub scale: f32,
+    /// Fades out with distance as retail's icons do.
+    #[serde(default = "minimap_fade")]
+    pub fade: bool,
+    /// Overrides the record's max distance.
+    #[serde(default)]
+    pub max_distance: Option<f32>,
+    #[serde(default = "minimap_colour")]
+    pub colour: [f32; 4],
+}
+
+fn minimap_icon() -> String {
+    "race_gate".into()
+}
+fn minimap_scale() -> f32 {
+    1.0
+}
+fn minimap_fade() -> bool {
+    true
+}
+fn minimap_colour() -> [f32; 4] {
+    [1.0; 4]
+}
+
+impl MinimapIconOptions {
+    pub fn validate(&self) -> bool {
+        self.position.iter().all(|v| v.is_finite() && v.abs() <= 100_000.)
+            && !self.icon.is_empty()
+            && self.icon.len() <= 64
+            && self.angle.is_finite()
+            && self.scale.is_finite()
+            && self.scale > 0.0
+            && self.scale <= 10.0
+            && self.max_distance.is_none_or(|d| d.is_finite() && d >= 0.0)
+            && self.colour.iter().all(|v| v.is_finite() && (0. ..=1.).contains(v))
+    }
+}
+
 fn volume_color() -> [f32; 3] {
     [0.2, 0.85, 1.0]
 }
@@ -646,6 +696,16 @@ pub enum Command {
     VolumeRemove {
         key: String,
     },
+    MinimapIcon {
+        key: String,
+        options: MinimapIconOptions,
+    },
+    MinimapRemove {
+        key: String,
+    },
+    MinimapShow {
+        shown: bool,
+    },
     TriggerBox {
         key: String,
         options: TriggerBoxOptions,
@@ -1041,6 +1101,9 @@ impl Command {
             Self::SessionTeleport { peer, options } => valid_peer(peer) && options.validate(),
             Self::VolumeBox { key, options } => crate::schema::valid_id(key) && options.validate(),
             Self::VolumeRemove { key } => crate::schema::valid_id(key),
+        Self::MinimapIcon { key, options } => crate::schema::valid_id(key) && options.validate(),
+        Self::MinimapRemove { key } => crate::schema::valid_id(key),
+        Self::MinimapShow { .. } => true,
             Self::TriggerBox { key, options } => crate::schema::valid_id(key) && options.validate(),
             Self::TriggerTeleporter { key, options } => {
                 crate::schema::valid_id(key) && options.as_ref().is_none_or(TeleporterOptions::validate)
@@ -1177,6 +1240,9 @@ fn command_kind(command: &Command) -> &'static str {
         Command::SessionTeleport { .. } => "session_teleport",
         Command::VolumeBox { .. } => "volume_box",
         Command::VolumeRemove { .. } => "volume_remove",
+        Command::MinimapIcon { .. } => "minimap_icon",
+        Command::MinimapRemove { .. } => "minimap_remove",
+        Command::MinimapShow { .. } => "minimap_show",
         Command::TriggerBox { .. } => "trigger_box",
         Command::TriggerRemove { .. } => "trigger_remove",
         Command::TriggerTeleporter { .. } => "trigger_teleporter",

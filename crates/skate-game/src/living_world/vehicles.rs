@@ -399,8 +399,24 @@ fn car_transform(net: &RoadNetwork, car: &Car) -> Transform {
     Transform::from_translation(Vec3::from_array(frame.position)).with_rotation(car_rotation(frame.forward))
 }
 
+/// The car data files (also read ahead on the map loader thread, `map_read_ahead`).
+pub(crate) fn read_vehicle_data(asset_root: &std::path::Path) -> VehicleData {
+    let dir = asset_root.join("private/living_world");
+    let tables = std::fs::read(dir.join("tables.json")).ok();
+    std::fs::read(dir.join("vehicles.json"))
+        .ok()
+        .and_then(|b| parse_vehicle_data(&b, tables.as_deref()).map_err(|e| warn!("LIVING_WORLD traffic: {e}")).ok())
+        .unwrap_or_default()
+}
+
 /// Load the car data when the world changes.
-pub(crate) fn load_traffic_data(mut commands: Commands, config: Res<crate::config::Config>, map: Res<crate::map_transition::CurrentMap>, mut traffic: ResMut<TrafficState>) {
+pub(crate) fn load_traffic_data(
+    mut commands: Commands,
+    config: Res<crate::config::Config>,
+    map: Res<crate::map_transition::CurrentMap>,
+    mut traffic: ResMut<TrafficState>,
+    prepared: Option<ResMut<crate::map_read_ahead::PreparedMapData>>,
+) {
     let key = (map.name.clone(), map.generation);
     if traffic.loaded_for.as_ref() == Some(&key) {
         return;
@@ -410,12 +426,7 @@ pub(crate) fn load_traffic_data(mut commands: Commands, config: Res<crate::confi
         commands.entity(e).despawn();
     }
     traffic.cars.clear();
-    let dir = config.asset_root.join("private/living_world");
-    let tables = std::fs::read(dir.join("tables.json")).ok();
-    traffic.data = std::fs::read(dir.join("vehicles.json"))
-        .ok()
-        .and_then(|b| parse_vehicle_data(&b, tables.as_deref()).map_err(|e| warn!("LIVING_WORLD traffic: {e}")).ok())
-        .unwrap_or_default();
+    traffic.data = prepared.and_then(|mut p| p.take_traffic(&key)).unwrap_or_else(|| read_vehicle_data(&config.asset_root));
     traffic.clock = traffic.data.timings.map(SignalClock::new);
     traffic.last_tick = None;
     traffic.loaded_for = Some(key);

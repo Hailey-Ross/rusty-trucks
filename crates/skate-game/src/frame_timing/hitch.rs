@@ -184,6 +184,7 @@ fn log_hitch(
     let lock_us = crate::game_audio::timing::FRAME_GAME_LOCK_US.swap(0, Ordering::Relaxed);
     let living = crate::living_world::timing::take();
     let audio_parts = crate::game_audio::hitch_parts::take();
+    let render = super::render_split::take();
     let closed = timing.closed();
     if closed.frame == 0 || !config.is_hitch(closed.ms, closed.median_ms) {
         return;
@@ -234,7 +235,7 @@ fn log_hitch(
     let slowest = STAGES.iter().copied().zip(stages.iter().copied()).chain(PHASES.iter().copied().zip(phases.iter().copied())).chain(others)
         .max_by_key(|(_, u)| *u).map_or("", |(n, _)| n);
     info!(
-        "FRAME_HITCH frame={} ms={:.1} median_ms={} main_ms={:.1} fixed_ms={:.1} steps={} wait_ms={:.1} audio_lock_ms={:.1} slowest={slowest} map={} stages=[{}] fixed_other:{:.1} update_other:{:.1} phases=[{}] living_world=[{living_line}] audio_parts=[{audio_line}]{player} entities={} voices={} aems_instances={} suppressed={suppressed}",
+        "FRAME_HITCH frame={} ms={:.1} median_ms={} main_ms={:.1} fixed_ms={:.1} steps={} wait_ms={:.1} audio_lock_ms={:.1} slowest={slowest} map={} stages=[{}] fixed_other:{:.1} update_other:{:.1} phases=[{}] living_world=[{living_line}] audio_parts=[{audio_line}] render=[{}]{player} entities={} voices={} aems_instances={} suppressed={suppressed}",
         closed.frame,
         closed.ms,
         closed.median_ms.map_or("-".to_owned(), |m| format!("{m:.1}")),
@@ -248,6 +249,7 @@ fn log_hitch(
         fixed_other as f64 / 1000.0,
         update_other as f64 / 1000.0,
         fmt(&PHASES, &phases),
+        super::render_split::format(&render),
         entities.iter().count(),
         crate::game_audio::timing::LAST_BLOCK_VOICES.load(Ordering::Relaxed),
         crate::game_audio::timing::LAST_BLOCK_INSTANCES.load(Ordering::Relaxed),

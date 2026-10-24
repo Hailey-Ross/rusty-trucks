@@ -425,9 +425,69 @@ combined, the pairs have to be recomputed for the combined tree (as for F + G).
   from the user's session, so the cold-disk gain is not measured yet. Test
   `the_map_being_loaded_is_named_until_it_is_committed`; game_audio / map_transition / frame_timing tests 107 OK.
 - **Left:** move the other commit-frame loaders (character lighting, living world, peds, traffic) to the loader
-  thread; the emitter banks (`world_sources` bank_load 50 ms) could be read ahead the same way; the render upload.
+  thread (done 2026-10-24, next section); the emitter banks (`world_sources` bank_load 50 ms) could be read ahead the
+  same way; the render upload.
 - **Frame-time overlay:** moved to the top left (user 2026-10-23: the HUD minimap owns the top right and the
   overlay covered it), `frame_timing::spawn_overlay`.
+
+## Map switch: game data read on the loader thread (2026-10-24, USER-ASKS 299)
+
+- **Problem:** the map switch's commit frame in the 2026-10-23 16:55 session (previous section) also ran four game-data
+  loaders on the game thread: `retail_character::load` 115 ms, `living_world::early_load_for_map` 89 ms,
+  `peds::early_load_ped_data` 84 ms, `vehicles::load_traffic_data` 27 ms. All of it was file reads and parsing; only
+  the install into the world needs the game thread.
+- **Change:** each loader is split into a pure read (`living_world::load_data`, `peds::prepare`,
+  `vehicles::read_vehicle_data`, `retail_character::read`) and its install. The map loader thread
+  (`map_transition::start`) runs the four reads on their own scoped threads beside the physics and render builds
+  (`map_read_ahead::read`) and the commit hands the result over as `PreparedMapData`, keyed by the new map's name and
+  generation (lighting by its path). Each loader takes its part only for its own map, once; otherwise (startup, a
+  test world, a reader that panicked) it reads the files itself as before. Same functions, same inputs: the installed
+  data is the same, only the thread that reads it moves.
+- **Moddability:** the ped nav rules are captured when the load starts; when a mod changed them before the commit,
+  the read-ahead peds are dropped and the loader reads them with the current rules, so a mod's rules always apply.
+  The data stays the files the content layer resolves; nothing new is hard-coded.
+- **Tests:** `map_read_ahead::tests` (a part goes only to its map and generation, once; peds only with the same nav
+  rules); living_world, map_transition, retail_character and frame_timing tests.
+- **Open:** measure the commit frame in a switch run (`.local/tools/frame-time-run.ps1`, `SKATE_MAP_SWITCH`). The
+  emitter banks and the render upload: next two sections.
+
+## Map switch: sound banks read during the load (2026-10-24, USER-ASKS 301)
+
+- **Problem:** the switch run of 2026-10-23 (two sections up) still loaded sound banks in the new map's first frames
+  (`bank_load` 50 ms): a map change unloads every map bank and forgets the prefetch (`Native::unload_map_banks`), so the
+  emitter banks near the spawn and the world (traffic / ped) banks were asked for only once the new map was live and
+  then needed at once (`Prefetch::take` found them queued and the game thread loaded them).
+- **Change:** the map loader publishes the new map's spawn point as soon as it has read the map
+  (`MapTransition::loading_spawn`). `map_audio::read_ahead_next_map` then queues on the prefetch worker, as the next
+  map's banks (`Prefetch::request_next`): the emitter banks within `AHEAD` of the spawn, nearest first
+  (`emitters::read_ahead_banks`, the same selection `prefetch_near` makes for a listener there), and the world banks
+  while the living world publishes (`world_sources::read_ahead_banks`). At that map's change `Native::change_map`
+  unloads the old map's banks as before and the queued banks become the requested ones (`Prefetch::change_map`, only
+  for the map path they were read for); the emitters mark them requested so they are dropped when left behind. A load
+  that fails leaves nothing queued (`drop_next` once the transition is idle); a content change or restart forgets
+  them (`Prefetch::clear`).
+- **Same outcome:** only the read and decode move. `Runtime::load_bank` still runs in `ensure_bank` at the first use,
+  in the same order, with the data `BankSource::load` gives on either thread (test
+  `prefetched_banks_are_identical_and_not_decoded_at_the_start`).
+- **Moddability:** the banks come from the map's emitter records (disc files, the map's own definition, mods) and the
+  install's world bank list, as before; nothing new is hard-coded.
+- **Tests:** `prefetch::tests::banks_read_ahead_for_a_map_are_taken_over_only_at_its_change`;
+  `emitters::tests::banks_read_ahead_for_the_spawn_are_the_first_frames_banks` (DownTown, data-gated: for spawn
+  points across the district the queued banks are exactly the first frame's requests); the emitter, world source and
+  installed map transition tests.
+- **Open:** measure the commit frame in a switch run (`.local/tools/frame-time-run.ps1`, `SKATE_MAP_SWITCH`).
+
+## Map switch: the render upload (2026-10-24, USER-ASKS 301)
+
+- **Size:** the installed transition test now prints what the render world uploads after a commit: University
+  990 MB of textures (RGBA8 arrays with full mip chains, `retail_render::upload_page`) and 153 MB of vertices;
+  BlackBoxPark 56 MB / 1 MB (`LIFECYCLE_CHECK ... image_mb mesh_vertex_mb`). The 2026-10-23 switch's render frame
+  (`prepare_assets<GpuImage>` 295 ms, `allocate_and_free_meshes` 197 ms) is that copy. The map images and meshes are
+  `RENDER_WORLD` only, so extraction moves them (no clone on the main thread) and nothing is copied twice.
+- **Not changed (needs a decision):** the copy can only be spread over frames. Uploading during the load means both
+  maps' textures in video memory at once (about 2.2 GB for two districts); uploading after the commit in slices means
+  the new map appears piece by piece behind the progress overlay, which does not cover the screen. Compressing the
+  textures would change how they look.
 
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 
@@ -1213,6 +1273,24 @@ A frame is a hitch when it took longer than `factor` x its expected time (the ov
 Observation only: the marker systems write only [`HitchSpans`] and read clocks; the phase timers are relaxed atomics around the physics phases. Gameplay is identical with or without it.
 
 Thresholds are data ([`HitchConfig`], defaults below), overridable without a rebuild through `SKATE_FRAME_HITCH` (`off`, or `factor=2,floor_ms=50,interval_s=0.5`).
+
+### Render side split
+
+(2026-10-24, USER-ASKS 299; todo `render-stall-attribution.md`.) Session 2026-10-23 13:39 had a 701.8 ms hitch with `wait_ms=699.1 slowest=post_render` (bench grind at University) and nothing in the log said what the render thread did. Bevy renders frame N-1 on its own thread while the main thread runs frame N; the main thread's end-of-frame extract waits for it, so a slow render frame shows up as `wait_ms` / `post_render`.
+
+`frame_timing/render_split.rs` adds `render=[...]` to every `FRAME_HITCH` line, summed over the render frames that finished since the previous main frame (normally one, the frame the main thread waited for):
+
+- `frames`, `frame_ms` (render schedule wall time), `max_frame_ms`;
+- `prep_ms`: extract commands to the end of `Prepare` (asset preparation, views, queue, sort, buffers and bind groups);
+- `graph_ms`: the `Render` set, which is the pipeline queue (`PipelineCache::process_queue`) plus the render graph, submit and present;
+- `pipelines_new` (pipelines added to the cache), `pipelines_compiling` (most in the `Creating` state at once), `pipelines_done` (compiles finished);
+- `meshes`, `mesh_kb` (vertex bytes), `image_kb`: assets extracted for upload that frame.
+
+A stall with a large `graph_ms` and pipelines compiling or done is a first-use pipeline compile; a large `prep_ms` with `mesh_kb` / `image_kb` is an upload; a large `graph_ms` with neither is a GPU or present wait (then `SKATE_PERF_GPU=1` for pass times).
+
+Always on and observation only: five marker systems on the edges of Bevy's chained render sets (`ExtractCommands`, `Prepare` / `Render`, `Cleanup`), so they add no ordering between render systems (unlike the opt-in `SKATE_PERF_RENDER` split in `performance.rs`, whose inner markers can). The markers write only their own render-world resource and relaxed atomics; pipeline states are counted only while the cache has waiting pipelines or grew.
+
+Open: the main thread's own extract time is still inside `wait_ms` (no marker in `ExtractSchedule`); the bench stall's cause needs a session with this line.
 
 ## Code reference: trace_all.rs
 

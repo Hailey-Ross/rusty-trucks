@@ -27,6 +27,7 @@ mod updater;
 mod map_library;
 mod map_render;
 mod map_transition;
+mod map_read_ahead;
 mod difficulty;
 mod custom_difficulty;
 mod graph_host;

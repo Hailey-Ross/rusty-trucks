@@ -145,6 +145,10 @@ impl CustomModels {
     pub fn request_stock(&mut self) {
         self.request = Some(None);
     }
+    /// A requested swap has not finished (loaded, failed or timed out) yet.
+    pub(crate) fn swapping(&self) -> bool {
+        self.request.is_some() || self.pending.is_some()
+    }
 }
 pub(crate) fn library_path() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")

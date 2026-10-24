@@ -18,6 +18,7 @@ mod camera_stream;
 pub(crate) use participation::{player_suspended, peer_suspended};
 mod session;
 mod volumes;
+mod minimap;
 mod world_audio;
 pub(crate) mod world_tuning;
 mod triggers;
@@ -86,6 +87,8 @@ pub(crate) struct Mods {
     skater_remote: BTreeMap<u64, observation::WireObs>,
     pending_remote_teleport: Option<skate_mods::TeleportOptions>,
     volumes: BTreeMap<(String, String), volumes::Volume>,
+    /// `sdk.minimap` icons by (mod, key).
+    minimap: BTreeMap<(String, String), skate_core::minimap::Icon>,
     /// The last `MODS_BUSY` reason logged.
     logged_busy: Option<&'static str>,
     pub(crate) custom_menus: BTreeMap<(String,String), skate_mods::extensions::MenuOptions>,
@@ -924,6 +927,7 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     mods.skater_remote.clear();
     mods.pending_remote_teleport = None;
     volumes::clear(world, mods);
+    minimap::clear(world, mods);
     triggers::clear(world);
     capture::clear(world);
     clear_camera_angle(world, None);
@@ -967,6 +971,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         world_props::clear_owner(world, id);
         if let Some(mut replay) = world.get_resource_mut::<crate::replay::Replay>() { replay.clear_owner(id); }
         volumes::clear_owner(world, mods, id);
+        minimap::clear_owner(world, mods, id);
         triggers::clear_owner(world, id);
         capture::clear_owner(world, id);
         clear_camera_angle(world, Some(id));
@@ -1050,6 +1055,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             world_props::clear_owner(world, &id);
             if let Some(mut replay) = world.get_resource_mut::<crate::replay::Replay>() { replay.clear_owner(&id); }
             volumes::clear_owner(world, mods, &id);
+            minimap::clear_owner(world, mods, &id);
             triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
             clear_camera_angle(world, Some(&id));
@@ -1086,6 +1092,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             world_props::clear_owner(world, &id);
             if let Some(mut replay) = world.get_resource_mut::<crate::replay::Replay>() { replay.clear_owner(&id); }
             volumes::clear_owner(world, mods, &id);
+            minimap::clear_owner(world, mods, &id);
             triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
             clear_camera_angle(world, Some(&id));
@@ -1580,6 +1587,9 @@ fn apply_one(
         Command::SessionTeleport { peer, options } => session::teleport(world, mods, &peer, options)?,
         Command::VolumeBox { key, options } => volumes::set(world, mods, id, key, options)?,
         Command::VolumeRemove { key } => volumes::remove(world, mods, id, &key),
+        Command::MinimapIcon { key, options } => minimap::set(world, mods, id, key, options)?,
+        Command::MinimapRemove { key } => minimap::remove(world, mods, id, &key),
+        Command::MinimapShow { shown } => minimap::show(world, id, shown),
         Command::TriggerBox { key, options } => triggers::set_box(world, id, key, options)?,
         Command::TriggerRemove { key } => triggers::remove_box(world, id, &key),
         Command::TriggerTeleporter { key, options } => triggers::set_teleporter(world, id, key, options)?,
@@ -2049,6 +2059,7 @@ impl Mods {
             skater_remote: BTreeMap::new(),
             pending_remote_teleport: None,
             volumes: BTreeMap::new(),
+            minimap: BTreeMap::new(),
             logged_busy: None,
             custom_menus: BTreeMap::new(),
             suspended_by: BTreeSet::new(),

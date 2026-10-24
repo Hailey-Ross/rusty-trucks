@@ -639,18 +639,32 @@ impl Native {
 
     /// Unload every bank but the utility and the player's (map change); forget the prefetched ones.
     pub(crate) fn unload_map_banks(&mut self) {
-        self.map_epoch += 1;
         self.prefetch.clear();
+        self.unload_runtime_map_banks();
+    }
+
+    /// [`Native::unload_map_banks`] for a change to the map at `map`: the banks read ahead for it
+    /// during its load stay prefetched (`Prefetch::change_map`).
+    pub(crate) fn change_map(&mut self, map: Option<&std::path::Path>) {
+        self.prefetch.change_map(map);
+        self.unload_runtime_map_banks();
+    }
+
+    /// A bank a map change keeps loaded: the utility banks, the player's and the overlays' preloaded ones.
+    pub(crate) fn kept_across_maps(&self, stem: &str) -> bool {
+        stem == "emitter_utility" || stem == skate_audio::player::seams::UTILITY_BANK || super::player_audio::BANKS.contains(&stem) || super::player_audio::OPTIONAL_BANKS.iter().any(|b| b.contains(&stem))
+            || self.resident.iter().any(|r| r == stem)
+    }
+
+    fn unload_runtime_map_banks(&mut self) {
+        self.map_epoch += 1;
         let Ok(mut runtime) = self.shared.lock() else { return };
-        let resident = &self.resident;
-        self.banks.retain(|stem, id| {
-            let keep = stem == "emitter_utility" || stem == skate_audio::player::seams::UTILITY_BANK || super::player_audio::BANKS.contains(&stem.as_str()) || super::player_audio::OPTIONAL_BANKS.iter().any(|b| b.contains(&stem.as_str()))
-                || resident.iter().any(|r| r == stem);
-            if !keep {
-                runtime.unload_bank(*id);
+        let gone: Vec<String> = self.banks.keys().filter(|stem| !self.kept_across_maps(stem)).cloned().collect();
+        for stem in gone {
+            if let Some(id) = self.banks.remove(&stem) {
+                runtime.unload_bank(id);
             }
-            keep
-        });
+        }
     }
 
     pub(crate) fn has_bank(&self, library: &Library, stem: &str) -> bool {

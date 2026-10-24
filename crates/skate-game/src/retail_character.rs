@@ -133,11 +133,48 @@ struct OriginalCharacterMaterial {
     material: Handle<StandardMaterial>,
     layers: Option<RenderLayers>,
 }
+/// A map's character lighting files, read off the game thread at a map switch (`map_read_ahead`).
+pub(crate) struct PreparedLighting {
+    data: LightingData,
+    probes: Irradiance,
+    light: Vec4,
+}
+
+/// Reads the map's lighting; `Err(Some)` is a warning to log, `Err(None)` a silent skip.
+pub(crate) fn read(root: &std::path::Path, map_path: &std::path::Path) -> Result<PreparedLighting, Option<String>> {
+    let path = root.join("private/character-lighting.json");
+    let mut data = std::fs::read(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|b| serde_json::from_slice::<LightingData>(&b).map_err(|e| e.to_string()))
+        .map_err(Some)?;
+    data.native = std::fs::read(crate::customiser_parts::asset_directory(root).join("native-lighting.json"))
+        .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let name = map_path.file_stem().unwrap_or_default().to_string_lossy();
+    let overlay = root.join("private/native-lighting").join(format!("{name}.irradiance"));
+    let probe_path = if overlay.is_file() { overlay } else { map_path.with_extension("irradiance") };
+    let probes = std::fs::read(probe_path)
+        .map_err(|e| e.to_string())
+        .and_then(|b| Irradiance::parse(&b))
+        .map_err(|e| Some(format!("spatial data unavailable: {e}")))?;
+    let sky: serde_json::Value = std::fs::read(root.join("private/native-skies").join(format!("{name}.json")))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or_else(|| Some("missing authored light direction".to_owned()))?;
+    let sun = sky["environment"]["sun_direction"].as_array().filter(|s| s.len() == 3).ok_or(None)?;
+    let mut light = Vec4::new(0., 0., 0., 2.5); // Existing retail scene exposure.
+    for i in 0..3 {
+        light[i] = sun[i].as_f64().ok_or(None)? as f32;
+    }
+    Ok(PreparedLighting { data, probes, light })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn load(mut commands: Commands, config: Res<crate::config::Config>, sources: Query<Entity, With<ShadowSource>>, mut shadow: ResMut<crate::retail_render::FrameStateData>,
     retail: Res<crate::retail_render::RetailScene>,
     originals: Query<(Entity, &OriginalCharacterMaterial)>,
     cameras: Query<(Entity, &RenderLayers), With<crate::camera::GameplayCamera>>,
     mut customiser: ResMut<Assets<crate::customiser_material::SkaterMaterial>>,
+    prepared: Option<ResMut<crate::map_read_ahead::PreparedMapData>>,
 ) {
     for (_, material) in customiser.iter_mut() { material.extension.retail.light = Vec4::ZERO; }
     commands.remove_resource::<Lighting>();
@@ -162,66 +199,16 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>, sources: Que
     let Some(map_path) = &config.map_path else {
         return;
     };
-    let path = config.asset_root.join("private/character-lighting.json");
-    let mut data = match std::fs::read(&path)
-        .map_err(|e| e.to_string())
-        .and_then(|b| serde_json::from_slice::<LightingData>(&b).map_err(|e| e.to_string()))
-    {
-        Ok(data) => data,
-        Err(e) => {
+    let ready = prepared.and_then(|mut p| p.take_lighting(map_path));
+    let PreparedLighting { data, probes, light } = match ready.unwrap_or_else(|| read(&config.asset_root, map_path)) {
+        Ok(lighting) => lighting,
+        Err(Some(e)) => {
             warn!("SKATE_CHARACTER_LIGHTING: {e}");
             return;
         }
+        Err(None) => return,
     };
-    data.native = std::fs::read(crate::customiser_parts::asset_directory(&config.asset_root).join("native-lighting.json"))
-        .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let name = map_path.file_stem().unwrap_or_default().to_string_lossy();
-    let overlay = config
-        .asset_root
-        .join("private/native-lighting")
-        .join(format!("{name}.irradiance"));
-    let probe_path = if overlay.is_file() {
-        overlay
-    } else {
-        map_path.with_extension("irradiance")
-    };
-    let probes = match std::fs::read(probe_path)
-        .map_err(|e| e.to_string())
-        .and_then(|b| Irradiance::parse(&b))
-    {
-        Ok(probes) => probes,
-        Err(e) => {
-            warn!("SKATE_CHARACTER_LIGHTING: spatial data unavailable: {e}");
-            return;
-        }
-    };
-    let sky_path = config
-        .asset_root
-        .join("private/native-skies")
-        .join(format!("{name}.json"));
-    let sky: serde_json::Value = match std::fs::read(sky_path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-    {
-        Some(sky) => sky,
-        None => {
-            warn!("SKATE_CHARACTER_LIGHTING: missing authored light direction");
-            return;
-        }
-    };
-    let Some(sun) = sky["environment"]["sun_direction"].as_array() else {
-        return;
-    };
-    if sun.len() != 3 {
-        return;
-    }
-    let mut light = Vec4::new(0., 0., 0., 2.5); // Existing retail scene exposure.
-    for i in 0..3 {
-        let Some(v) = sun[i].as_f64() else {
-            return;
-        };
-        light[i] = v as f32;
-    }
     info!("SKATE_CHARACTER_LIGHTING: loaded authored {name} irradiance and character parameters");
     spawn_shadow_sources(&mut commands, light.truncate());
     commands.insert_resource(Lighting {

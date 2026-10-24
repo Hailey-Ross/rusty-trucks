@@ -49,6 +49,7 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     world.init_resource::<Assets<Image>>();
     world.init_resource::<Assets<StandardMaterial>>();
     world.init_resource::<Assets<crate::retail_render::WorldMaterial>>();
+    world.init_resource::<Assets<crate::retail_sky::SkyMaterial>>();
     world.init_resource::<Assets<bevy::render::storage::ShaderStorageBuffer>>();
     let character = world.spawn((crate::world::PlayerRoot, Transform::default())).id();
     let mut initial = PreparedScene::new(&world);
@@ -99,7 +100,10 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
             assert_eq!(world.resource::<Assets<bevy::render::storage::ShaderStorageBuffer>>().len(), 0);
             assert_eq!(world.query_filtered::<Entity, With<crate::map_render::MapEntity>>().iter(&world).count(), procedural_entities);
         }
-        eprintln!("LIFECYCLE_CHECK generation={} map={file:?} triangles={triangles} entities={} meshes={} images={}",
+        // The bytes the render world uploads after the commit (doc 25, "Map switch: the render upload").
+        let image_mb = world.resource::<Assets<Image>>().iter().map(|(_, i)| i.data.as_ref().map_or(0, Vec::len)).sum::<usize>() >> 20;
+        let mesh_mb = world.resource::<Assets<Mesh>>().iter().map(|(_, m)| m.get_vertex_size() as usize * m.count_vertices()).sum::<usize>() >> 20;
+        eprintln!("LIFECYCLE_CHECK generation={} map={file:?} triangles={triangles} entities={} meshes={} images={} image_mb={image_mb} mesh_vertex_mb={mesh_mb}",
             iteration + 1, world.query_filtered::<Entity, With<crate::map_render::MapEntity>>().iter(&world).count(), world.resource::<Assets<Mesh>>().len(), world.resource::<Assets<Image>>().len());
     }
     let missing = Entry { label: "missing".into(), path: Some(root.join("nonexistent-transition-check.skate")), world: None };

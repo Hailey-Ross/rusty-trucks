@@ -277,29 +277,45 @@ pub(super) fn update(
 /// worker, so the first bed is not read on the game thread in the map's first frame (161 ms, desktop session
 /// 2026-10-23). Only when the bytes arrive changes. The `.skate` AUDO tag is known only after the load, so a map that
 /// names another district there reads the sidecar's guess and its own beds as before.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn read_ahead_next_map(
     transition: Option<Res<crate::map_transition::MapTransition>>,
     library: Option<ResMut<Library>>,
+    native: Option<ResMut<super::native::Native>>,
+    owners: Option<Res<super::world_sources::WorldOwners>>,
     config: Res<crate::config::Config>,
     mut requested: Local<Option<Option<std::path::PathBuf>>>,
+    // The next map's audio until its sound banks are queued (that waits for its spawn point).
+    mut banks: Local<Option<(std::path::PathBuf, MapAudio)>>,
 ) {
     let Some(entry) = transition.as_deref().and_then(|t| t.loading()) else {
         *requested = None;
+        *banks = None;
+        // A load that ended without its map change (failed) leaves no banks queued; a committed one handed them over.
+        if let Some(mut native) = native.filter(|_| transition.as_deref().is_none_or(|t| !t.busy())) {
+            native.prefetch.drop_next();
+        }
         return;
     };
-    if requested.as_ref() == Some(&entry.path) {
-        return;
-    }
     let Some(mut library) = library else { return };
-    *requested = Some(entry.path.clone());
-    let stem = entry.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("").to_owned();
-    if stem.is_empty() {
-        return;
+    if requested.as_ref() != Some(&entry.path) {
+        *requested = Some(entry.path.clone());
+        *banks = None;
+        let stem = entry.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("").to_owned();
+        if stem.is_empty() {
+            return;
+        }
+        let next = build(&stem, own_definition_at(None, entry.path.as_deref()), &library, retail(&config.asset_root));
+        let files = library.zone_bed_files(next.region_tile_keys(&library, "audio_ambience"));
+        library.warm_files(files.iter());
+        info!("AUDIO_AMBIENCE beds read ahead for the next map {stem}: {}", files.len());
+        *banks = entry.path.clone().map(|path| (path, next));
     }
-    let next = build(&stem, own_definition_at(None, entry.path.as_deref()), &library, retail(&config.asset_root));
-    let files = library.zone_bed_files(next.region_tile_keys(&library, "audio_ambience"));
-    library.warm_files(files.iter());
-    info!("AUDIO_AMBIENCE beds read ahead for the next map {stem}: {}", files.len());
+    let (Some(spawn), Some(mut native)) = (transition.as_deref().and_then(|t| t.loading_spawn()), native) else { return };
+    let Some((path, next)) = banks.take() else { return };
+    let emitters = super::emitters::read_ahead_banks(next.records(&library).map(|(_, r)| r), &library, &mut native, &path, Vec3::from(spawn));
+    let world = if owners.is_some_and(|o| o.expected) { super::world_sources::read_ahead_banks(&mut native, &library, &path) } else { 0 };
+    info!("AUDIO_BANKS read ahead for the next map {}: {emitters} emitter banks near the spawn, {world} world banks", path.display());
 }
 
 #[cfg(test)]
