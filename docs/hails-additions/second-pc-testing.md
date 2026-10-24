@@ -423,7 +423,7 @@ that the output is still the same, and how many customiser workers suit it.
 
 ```bash
 mkdir -p .claude/skills
-cp -r tools/claude-skills/setup-bench tools/claude-skills/optimisation tools/claude-skills/regression-check       tools/claude-skills/build-and-run tools/claude-skills/asset-setup .claude/skills/
+cp -r tools/claude-skills/setup-bench tools/claude-skills/optimisation tools/claude-skills/regression-check tools/claude-skills/build-and-run tools/claude-skills/asset-setup .claude/skills/
 ```
 
 `setup-bench` is the method (its tool `tools/setup_bench.py`); `optimisation` and `regression-check` are the rules
@@ -448,7 +448,7 @@ ativeefpack.dll` are current. Without the DLL the setup runs RefPack in pure Py
 ```bash
 export SKATE_REPORT_CHILD=1   # a failing headless game run never opens a crash report window
 T=<bench>/after/tools/claude-skills/setup-bench/tools/setup_bench.py
-cd <bench>/before && py -3.13 $T --checkout <bench>/before --base <bench>/before1 --game-exe <bench>/skate3rust.exe    --source <disc>/default.xex --label before1
+cd <bench>/before && py -3.13 $T --checkout <bench>/before --base <bench>/before1 --game-exe <bench>/skate3rust.exe --source <disc>/default.xex --label before1
 ```
 
 Order: `before1`, `after1`, `before2`, `after2` (`after2` with `--no-hash`). Then the customiser worker count on the
