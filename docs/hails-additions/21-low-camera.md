@@ -132,3 +132,25 @@ Tests:
   setting.
 - `IsInObserverMode` also forces the low graph in retail; our condition maps it to the subject's special-effect flag
   (unchanged by this work).
+
+## Camera slow motion is not applied (2026-10-23, USER-ASKS 294)
+
+- **Problem:** desktop session 2026-10-23 17:57 (hails-additions 28181a30), MegaPark full: "significant lag while
+  jumping the mega ramp", "the rendering slowed down mid jump". The user, asked whether retail slows down there:
+  "IT DOESN'T HAPPEN IN RETAIL".
+- **Evidence:** the air 17:03:27.9 to 17:03:31.5 (3.6 s): the game drew 210+ frames a second throughout, but the
+  simulation ran 39 and 48 ticks a second (FIXED_TIMING, `FixedMain::run_fixed_main` x39 / x48): slow motion.
+- **Cause:** the stock camera graph's `SlowMotionController` (settings `slowmotion_controller` / `default`,
+  `fps_at_scale_one`) sends simulation-rate requests on a long air; `physics::frame::advance` applied them to the
+  tick timer (`SimulationClock`, ported from `Simulation::OnRequestSetSimRate` 82857EC8). Upstream code since
+  a47da5bb (2026-09-06). Retail does not slow down on the mega ramp, so a retail condition that keeps these requests
+  out (or makes them inert) is missing from the port; not found yet.
+- **Change:** the requests are logged (`CAMERA_SLOW_MOTION begin` / `end` in `camera/graph.rs`, `CAMERA_SLOW_MOTION
+  request ... (not applied)` in `physics/frame.rs`) and no longer change the tick rate. The clock and its tests stay
+  for the port.
+- **Tests:** camera 38, physics 222 OK; the data-gated
+  `stock_skater_startup_builds_the_graphs_and_physical_body_from_the_same_rig` now expects the normal period after a
+  request (it then stops at tick 600 on "Canonical world has no authored query metadata", a test-world limit
+  unrelated to the clock).
+- **Open:** find where retail drops the request (recomp hook on 82857EC8 during a mega ramp air: called or not, with
+  which timestep), then port that condition instead of this switch.
