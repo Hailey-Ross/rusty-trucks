@@ -433,8 +433,7 @@ source needs fixing.
 **Prepare** (Git Bash; one setup at a time, no game or other build running; about 19 GB per run, each install is
 deleted right after it is hashed, so about 25 GB free on a local drive is enough):
 1. Get updates from the fork as normal (`hails-additions`) and build (`scripts/Build.ps1`), so `bin\skate3rust.exe`
-   and `target
-ativeefpack.dll` are current. Without the DLL the setup runs RefPack in pure Python (about 10x
+   and `target\native\refpack.dll` are current. Without the DLL the setup runs RefPack in pure Python (about 10x
    slower) and the timing is not what users get.
 2. `<bench>` = a new folder on that local drive. Snapshots of the two pipelines:
    `git archive 30f19a4e | tar -x -C <bench>/before` (hails-additions before the customiser and post-map passes)
@@ -472,6 +471,25 @@ prepared in" and DONE; any `Traceback`, "Customiser worker N failed" or crash re
 **Send back** to `<share>\<LAPTOP NAME>\setup-bench-<yyyymmdd-hhmm>\`: every `*-timing.log`, `*-stdout.log` and
 `*-hashes.tsv`, and `setup-bench.notes.log`: the machine (CPU, threads, RAM, disk), the table of runs, the identity
 result and anything odd. The main PC watches the share for it. Then delete `<bench>`.
+
+## Machine-aware budget test (2026-10-24)
+
+The laptop's setup speed test showed its customiser running on alone for about 28 s with 3 workers after the maps
+ended (6 workers were 11% faster), while on the desktop more workers only slowed the maps. Now the setup measures
+the CPU load when it starts and the customiser's workers grow into the maps' cores once the maps end (doc 08
+"Machine-aware budget"). The desktop is unchanged (78 s, its maps end last); this test shows the laptop's gain.
+
+Same setup as the setup speed test above (skills, `<bench>`, the exe and `refpack.dll`, `SKATE_REPORT_CHILD=1`), with
+two snapshots: `git archive 964fb5bc` (before; the version the laptop measured) as `<bench>/before` and
+`git archive origin/hails-additions` as `<bench>/after`. Run `before1`, `after1`, `before2`, `after2` (the last
+three may use `--no-hash` except `after1`). Do NOT set `SKATE_SETUP_CUSTOMISER_WORKERS`: it fixes the worker count
+and switches the growth off. If `py -3.13` has no numpy, `setup_bench.py` now reruns itself in the setup venv.
+
+Note for each run: total, "CPU budget" line (after only), when the 10th map converted, "Character library" and
+"Character roster" lines, and whether "Preparing the character customiser alongside the other stages" appeared.
+Identity as before (`before1` vs `after1`; `sets/<id>/roster-complete.json` is expected to differ: it records the
+customiser fingerprint). Send the `*-timing.log`, `*-hashes.tsv` and `setup-bench.notes.log` to
+`<share>\<LAPTOP NAME>\budget-bench-<yyyymmdd-hhmm>\`, then delete the scratch folder.
 
 ## Moving the ISO
 
