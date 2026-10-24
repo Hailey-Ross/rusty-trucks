@@ -502,7 +502,7 @@ About 6 us per frame, 0.04 % of a 16.7 ms frame and inside the run-to-run spread
 
 ### GPU queries sampled (`SKATE_PERF_GPU_EVERY`)
 
-Status: done in the `world/living-world` worktree (2026-10-08), uncommitted, not yet played.
+Status: done (2026-10-08), committed 8f126813.
 
 Problem: after a trace-all session (University, 2026-10-08 09:58) the user said "ooooof the fps and lag on the trace all is ROUGH." The perf report showed every window at a 33.6 ms median (p95 about 34.6 ms) with the main schedule at about 9 ms, physics about 3 ms, render CPU about 3 ms and the GPU passes about 9.5 ms in total. The suspect was the per-pass GPU timestamp and pipeline statistics queries that `SKATE_PERF_GPU` adds (Bevy `RenderDiagnosticsPlugin`) on every pass of every frame.
 
