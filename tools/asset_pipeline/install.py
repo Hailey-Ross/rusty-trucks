@@ -387,6 +387,19 @@ def install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None)
 
 
 def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None):
+    # The core budget follows how busy the machine is when setup starts (setup_budget.measure_load); both entry
+    # points (install() and customiser_setup.install) come through here.
+    from .setup_budget import measure_load,MAPS_DONE
+    measured='SKATE_SETUP_MEASURED_CORES' in os.environ
+    measure_load(report)
+    try:
+        return _install_stages(iso,base,game_exe,report,game_root,refresh,finalize)
+    finally:
+        os.environ.pop(MAPS_DONE,None)
+        if not measured:os.environ.pop('SKATE_SETUP_MEASURED_CORES',None)
+
+
+def _install_stages(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None):
     from .versions import fingerprints, changed_groups, installed, GROUPS
     from .group_receipts import damaged, record
     from .setup_state import atomic_json
@@ -590,6 +603,10 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             # remain queued behind a string of small parks.
             futures={pool.submit(map_job,j):j for j in sorted(jobs,key=lambda j:-j['archive'].stat().st_size)}
             map_run=(pool,futures)
+        # Customiser workers take the map jobs' cores once those end (setup_budget.customiser_limit).
+        from .setup_budget import MAPS_DONE
+        maps_done=work/'maps-done';os.environ[MAPS_DONE]=str(maps_done)
+        if map_run is None:maps_done.touch()
         customiser=None  # Background customiser beside the other stages
         customiser_process=False  # it runs as its own process (not an in-process thread)
         post,post_result=None,{}  # Background post-map exports
@@ -733,6 +750,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                         (private/'map-status'/(completed[label]['name']+'-availability.json')).unlink(missing_ok=True)
                         record_validation(private,completed[label],checked,report)
                         report(f"Converted {len(completed)}/{len(jobs)} maps: {completed[label]['name']}")
+                maps_done.touch()
         except BaseException:
             if map_run is not None:
                 # Stop the queued map jobs and let the running ones end before the stage is cleaned up.

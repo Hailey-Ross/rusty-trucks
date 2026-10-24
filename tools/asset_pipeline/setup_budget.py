@@ -42,23 +42,86 @@ def _positive(name, environ=None):
     return number if number >= 1 else None
 
 
+def _cpu_count():
+    counter = getattr(os, 'process_cpu_count', None) or os.cpu_count
+    return counter() or 1
+
+
 def cores(cpu_count=None, environ=None):
-    """The CPUs setup may keep busy: 75% of the ones this process may run on (its affinity), at least 1."""
+    """The CPUs setup may keep busy: 75% of the ones this process may run on (its affinity), less what other programs
+    were using when setup started (`measure_load`), at least a quarter of them."""
     override = _positive('SKATE_SETUP_CORES', environ)
     if override:
         return override
-    if cpu_count is None:
-        counter = getattr(os, 'process_cpu_count', None) or os.cpu_count
-        cpu_count = counter() or 1
-    return max(1, cpu_count * 3 // 4)
+    measured = _positive('SKATE_SETUP_MEASURED_CORES', environ) if cpu_count is None else None
+    if measured:
+        return measured
+    return max(1, (cpu_count or _cpu_count()) * 3 // 4)
+
+
+def _system_times():
+    """(idle, total) CPU time of the whole machine (Windows GetSystemTimes), or None."""
+    if os.name != 'nt':
+        return None
+    import ctypes
+    idle, kernel, user = (ctypes.c_ulonglong() for _ in range(3))
+    if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+        return None
+    return idle.value, kernel.value + user.value  # kernel time includes idle time
+
+
+def load_budget(cpu_count, busy):
+    """The budget for a machine whose other programs keep `busy` (0..1) of its CPUs busy (user 2026-10-24: gauge the
+    threads from how busy the host is): 75% minus the busy CPUs, never under a quarter."""
+    return max(max(1, cpu_count // 4), cpu_count * 3 // 4 - int(cpu_count * busy))
+
+
+def measure_load(report=None, seconds=0.5, environ=None):
+    """Sample the machine's CPU load once when setup starts and fix the budget for the whole setup (its child
+    processes inherit SKATE_SETUP_MEASURED_CORES). No-op with SKATE_SETUP_CORES or an earlier measurement."""
+    environ = os.environ if environ is None else environ
+    if _positive('SKATE_SETUP_CORES', environ) or _positive('SKATE_SETUP_MEASURED_CORES', environ):
+        return
+    import time
+    first = _system_times()
+    if first is None:
+        return
+    time.sleep(seconds)
+    second = _system_times()
+    total = second[1] - first[1]
+    busy = 1 - (second[0] - first[0]) / total if total > 0 else 0.0
+    count = _cpu_count()
+    budget = load_budget(count, min(1.0, max(0.0, busy)))
+    environ['SKATE_SETUP_MEASURED_CORES'] = str(budget)
+    if report:
+        report(f'CPU budget: {budget} of {count} logical CPUs (other programs used {busy:.0%})')
 
 
 def customiser_workers(cpu_count=None, environ=None):
-    """Customiser worker processes (they run beside the map jobs)."""
+    """Customiser worker processes while the maps convert beside them."""
     override = _positive('SKATE_SETUP_CUSTOMISER_WORKERS', environ)
     if override:
         return min(override, 32)
     return max(1, min(8, cores(cpu_count, environ) // 4))
+
+
+MAPS_DONE = 'SKATE_SETUP_MAPS_DONE'
+WORKER_MEMORY = 2 * 1024**3
+
+
+def customiser_limit(workers, running=0, environ=None):
+    """How many customiser workers may run now: `workers` while the maps convert, then the cores the maps released
+    (the budget less one for the setup itself), as far as free memory allows beside the `running` ones (doc 08
+    "Customiser worker share").
+    The maps-done marker is a file install.py names in SKATE_SETUP_MAPS_DONE and creates when the map jobs end."""
+    environ = os.environ if environ is None else environ
+    marker = environ.get(MAPS_DONE)
+    if _positive('SKATE_SETUP_CUSTOMISER_WORKERS', environ) or not marker or not os.path.exists(marker):
+        return workers
+    from .install import available_memory
+    available = available_memory()
+    spare = 32 if available is None else max(0, (available - 2 * 1024**3) // WORKER_MEMORY)
+    return max(workers, min(16, cores(environ=environ) - 1, max(workers, running) + spare))
 
 
 def extract_threads(cpu_count=None, environ=None):
