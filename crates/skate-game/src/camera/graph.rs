@@ -107,6 +107,8 @@ impl Host for CameraHost<'_> {
             Behavior::Print(text) => bevy::log::warn!("Stock camera graph: {text}"),
             Behavior::SlowMotion => {
                 let (instance, request) = SlowMotionController::begin(self.slow_motion_settings);
+                // A session log must tell retail's big-air slow motion from a stutter (session 2026-10-23, MegaPark).
+                bevy::log::info!("CAMERA_SLOW_MOTION begin timestep={:.4}", request.timestep);
                 self.slow_motion[id] = Some(instance);
                 self.rates.push(request);
             }
@@ -120,7 +122,10 @@ impl Host for CameraHost<'_> {
         }
     }
     fn end(&mut self, id: usize, _: [u32; 6], _: &Frame) {
-        if self.slow_motion[id].take().is_some() { self.rates.push(SlowMotionController::end()); }
+        if self.slow_motion[id].take().is_some() {
+            bevy::log::info!("CAMERA_SLOW_MOTION end");
+            self.rates.push(SlowMotionController::end());
+        }
     }
     fn hook(&mut self, _: usize, _: &Frame) { unreachable!("camera hooks rejected during load") }
     fn release(&mut self, _: u32) {}
