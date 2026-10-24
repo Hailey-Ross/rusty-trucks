@@ -299,7 +299,30 @@ customiser fingerprint, so every install redoes the customiser once).
   5, so more customiser workers only take threads from the map jobs (`job_threads` is the budget left after the
   customiser, over 3 jobs). Same files (0 outside the 41-file set).
 - **Conclusion:** no fixed share fits both (a quarter is right here, half is right on the laptop). What fits both is
-  giving the customiser the cores the maps release once they finish (open, USER-ASKS 325 alongside the CPU-load idea).
+  giving the customiser the cores the maps release once they finish (below).
+
+**Machine-aware budget: CPU load at start, customiser takes the maps' cores (2026-10-24, USER-ASKS 324, 325):**
+- **CPU load** (`setup_budget.measure_load`, called from `install._install`, the path both entry points take):
+  setup samples the machine's CPU time for 0.5 s (Windows `GetSystemTimes`, no new package) and fixes the budget for
+  the whole setup: 75% of the CPUs minus the ones other programs keep busy, never under a quarter
+  (`load_budget`; e.g. 28 CPUs idle: 21, 25% busy: 14). Child processes inherit it as
+  `SKATE_SETUP_MEASURED_CORES`; `SKATE_SETUP_CORES` still overrides. The setup log names it: "CPU budget: 20 of 28
+  logical CPUs (other programs used 5%)".
+- **Shared customiser pool** (`customisation_workers.run_shared`): the library warm-up (models in batches of 8,
+  textures in 32), the derived textures (32) and the roster (one character per batch) are lists of batches that
+  worker processes claim one by one (a file created exclusively per batch), so a worker started later joins the same
+  work. It starts `customiser_workers()` (a quarter of the budget); once the map jobs end (`install.py` creates the
+  `maps-done` marker named in `SKATE_SETUP_MAPS_DONE`, or at once when no maps convert)
+  `setup_budget.customiser_limit` allows up to the budget less one, at most 16, and only as many as free memory
+  allows (2 GiB per extra worker above a 2 GiB reserve). `SKATE_SETUP_CUSTOMISER_WORKERS` fixes the count (no growth).
+  Each worker parses the catalog and opens the disc archive once (a first version re-parsed `catalog.json` per model
+  batch: models took 25.8 s of worker time instead of 12.3 s).
+- **Desktop** (where the maps already end last, so no gain is expected): 78.1 / 77.2 s before, 78.2 s after (library
+  37.0 / 37.1 s before, 37.2 s after). Same 18,868 files; outside the run-to-run set only `sets/<id>/roster-complete.json`
+  differs (it records the customiser fingerprint, which this change alters). No asset group fingerprint changed
+  (`versions.fingerprints` before and after); the customiser's did (one customiser redo per install).
+- **Laptop:** the gain should show there (maps end about 103 s, the customiser ran on alone with 3 workers to about
+  131 s); measured with second-pc-testing.md "Machine-aware budget test".
 - `setup_bench.py` (`.local/perf-bench`, published copy `tools/claude-skills/setup-bench/tools`) now reruns itself in
   a setup venv (`.local/venv-setup` of the checkout or a parent, or `.local/versions/hails-additions`) when the
   Python it was started with has no numpy / Pillow (the laptop's system Python 3.13 failed in extract_default_skater).

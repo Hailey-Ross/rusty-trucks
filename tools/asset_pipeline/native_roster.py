@@ -225,7 +225,7 @@ def prepare(game,assets,library,collections,work,only=None,report_path=None):
     return report
 
 def prepare_parallel(game,assets,library,collections,work,workers):
-    """prepare() split over worker processes (customisation_workers.py --roster).
+    """prepare() split over worker processes (customisation_workers.run_shared, one character per batch).
 
     Characters write disjoint outputs (library/entries/<id>, work/<key>); shared
     work caches are written atomically. Reports are merged back into roster
@@ -236,16 +236,13 @@ def prepare_parallel(game,assets,library,collections,work,workers):
     # An empty `only` means "all" to prepare(): never hand a worker no keys.
     workers=min(workers,len(keys))
     if workers<2:return prepare(game,assets,library,collections,work)
-    from tools.asset_pipeline.customisation_workers import run_parallel
+    from tools.asset_pipeline.customisation_workers import batches,run_shared
     work.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='roster-workers-',dir=work) as tmp:
-        requests=[];reports=[]
-        for index in range(workers):
-            request=Path(tmp)/f'{index}.json';result=Path(tmp)/f'{index}-report.json'
-            request.write_text(json.dumps(dict(game=str(game),assets=str(assets),library=str(library),
-                collections=str(collections),work=str(work),only=keys[index::workers],report=str(result))))
-            requests.append(['--roster',request]);reports.append(result)
-        failures=[error for error in run_parallel(requests,workers) if error is not None]
+        work_items=batches('roster',keys,1)
+        failures,_=run_shared(dict(game=str(game),assets=str(assets),library=str(library),collections=str(collections),
+                                         work=str(work),reports=tmp),work_items,workers)
+        reports=[Path(tmp)/f'{index}.json' for index in range(len(work_items))]
         if failures or not all(r.is_file() for r in reports):
             return prepare(game,assets,library,collections,work)  # finishes whatever is missing
         merged={item['key']:item for r in reports for item in json.loads(r.read_text())}

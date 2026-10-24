@@ -88,13 +88,23 @@ def requested_textures(catalog):
                 if 'decal' in tex:tids.append(tex['decal'])
     return list(dict.fromkeys(tids))
 
+_texture_sources={}
+
+def texture_sources(config):
+    """The disc archive, its index and the RX2 parser, opened once per worker process."""
+    key=(config['game_root'],config['directory'])
+    if key not in _texture_sources:
+        from tools.extract_default_skater import import_rx2_parser
+        archive=BigArchive(Path(config['game_root'])/'data/content/createacharacter.big')
+        _texture_sources[key]=(archive,{e.path.lower():e for e in archive.entries},import_rx2_parser(ROOT/'tools/vendor/utt'))
+    return _texture_sources[key]
+
 def warm_textures(config,tids):
     """Worker body (customisation_workers.py): decode textures into decoded/
     exactly as prepare()'s texture() does. Failures are left for prepare()."""
-    from tools.extract_default_skater import import_rx2_parser,decode_texture
-    cache=Path(config['directory']);archive=BigArchive(Path(config['game_root'])/'data/content/createacharacter.big')
-    entries={e.path.lower():e for e in archive.entries}
-    parser=import_rx2_parser(ROOT/'tools/vendor/utt');decoded=cache/'decoded';decoded.mkdir(exist_ok=True)
+    from tools.extract_default_skater import decode_texture
+    cache=Path(config['directory']);archive,entries,parser=texture_sources(config)
+    decoded=cache/'decoded';decoded.mkdir(exist_ok=True)
     for tid in tids:
         src=decoded/(tid+'.png')
         if src.exists():continue
@@ -152,14 +162,18 @@ def base_recipe():
 def library_models(catalog):
     return [(part['slot'],model) for part in catalog['components'] if part['slot']!='Misc' for model in part['models']]
 
-def warm_models(config,keys):
+_library_models={}
+
+def warm_models(config,keys,convert=None):
     """Worker body (customisation_workers.py): convert these library models.
     Failures are left for prepare(), which converts again and records the error."""
-    catalog=json.loads((Path(config['directory'])/'catalog.json').read_text());keys=set(keys)
-    convert=ModelConverter(config)
-    for slot,model in library_models(catalog):
-        if model['id'] not in keys:continue
-        try:convert(slot,model['id'],next(l for l in model['lods'] if l['index']==0),'.warm.tmp')
+    directory=config['directory']
+    if directory not in _library_models:  # parsed once per worker process, not per batch
+        _library_models[directory]={m['id']:(slot,m) for slot,m in library_models(json.loads((Path(directory)/'catalog.json').read_text()))}
+    models=_library_models[directory];convert=convert or ModelConverter(config)
+    for key in keys:
+        slot,model=models[key]
+        try:convert(slot,key,next(l for l in model['lods'] if l['index']==0),'.warm.tmp')
         except CONTENT_ERRORS:pass
 
 def warm_up(config,workers):
@@ -173,18 +187,9 @@ def warm_up(config,workers):
     if workers<2:return set(),set()
     if len(tids)<2:tids=[]
     fresh={t for t in tids if not (cache/'source'/TEXTURE_PATH.format(t)).exists()}
-    import tempfile
-    from tools.asset_pipeline.customisation_workers import run_parallel
-    with tempfile.TemporaryDirectory(prefix='customiser-warm-') as tmp:
-        requests=[]
-        # Models first: they are the longer jobs, the textures fill in behind them.
-        for kind,items,mode in (('models',keys,'--warm-models'),('textures',tids,'--warm-textures')):
-            if not items:continue
-            for index in range(workers):
-                request=Path(tmp)/f'{kind}-{index}.json'
-                request.write_text(json.dumps({'config':config,kind:items[index::workers]}))
-                requests.append([mode,request])
-        run_parallel(requests,workers)  # a failed worker only leaves work for prepare()
+    from tools.asset_pipeline.customisation_workers import batches,run_shared
+    # Models first: they are the longer jobs, the textures fill in behind them.
+    run_shared({'config':config},batches('models',keys,8)+batches('textures',tids,32),workers)  # a failed worker only leaves work for prepare()
     return set(tids),fresh
 
 def derive(dest,kind,src,alpha_src=None):
@@ -239,15 +244,8 @@ def warm_derived(config,workers):
     cache=Path(config['directory']);textures=cache/'library'/'textures'
     jobs=[j for j in derived_jobs(json.loads((cache/'catalog.json').read_text()),cache/'library') if not (textures/(j[0]+'.png')).exists()]
     if workers<2 or len(jobs)<2:return set()
-    import tempfile
-    from tools.asset_pipeline.customisation_workers import run_parallel
-    with tempfile.TemporaryDirectory(prefix='customiser-derive-') as tmp:
-        requests=[]
-        for index in range(workers):
-            request=Path(tmp)/f'{index}.json'
-            request.write_text(json.dumps(dict(config=config,jobs=jobs[index::workers])))
-            requests.append(['--derive-textures',request])
-        run_parallel(requests,workers)
+    from tools.asset_pipeline.customisation_workers import batches,run_shared
+    run_shared({'config':config},batches('derive',jobs,32),workers)
     for leftover in textures.glob('*.part.png'):leftover.unlink()
     return {textures/(j[0]+'.png') for j in jobs if (textures/(j[0]+'.png')).exists()}
 
