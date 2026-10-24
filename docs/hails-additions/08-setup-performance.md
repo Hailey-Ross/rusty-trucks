@@ -264,6 +264,29 @@ differing files are the run-to-run set). The laptop measures the knob on slower 
 "Setup speed test"). Next candidate: the library's serial model loop (parallel over the workers; it changes the
 customiser fingerprint, so every install redoes the customiser once).
 
+**Customiser library over the workers (2026-10-24, USER-ASKS 322):**
+- **Where the time went** (timing probes in a bench copy only): the GLB conversion of the 480 models was about 12 s
+  serial, but the bigger serial part after the texture warm-up was the material loop's derived textures (normal maps,
+  roughness maps, diffuses with the alpha mask multiplied in): 10.8 s. The texture decode on the workers (2,921
+  textures) is about 20 s, and about 10 s comes before the library loop.
+- **Change** (`customisation_library.py`, `customisation_workers.py`): the model conversion is one `ModelConverter`
+  used by `prepare()` and by a new `--warm-models` worker job, which shares the warm-up pool with `--warm-textures`
+  (models first: 5 workers convert all 480 in 2.5 s). Then `--derive-textures` builds the derived textures the material
+  loop will ask for (`derived_jobs` follows that loop's rules: first use of a material wins, Hair keeps a separate
+  alpha, models without a GLB are skipped). `prepare()` still converts or derives whatever a worker left or failed
+  (and records the error as before), and deletes any derived file its loop did not ask for, so a failure in a worker
+  never changes the output. Workers publish through a temporary file and a rename. With one worker (low memory) nothing
+  changes.
+- **Result** (28-CPU desktop, 5 customiser workers): library 50.8 / 49.4 / 53.1 s -> 36.5 / 37.4 s (-27%); the roster
+  now ends at 66 to 68 s instead of 77 to 82 s; whole setup 80.9 / 86.1 s (111.3 s cold first run) -> 73.4 / 76.8 s.
+- **Identity:** the same 18,868 files in all five runs; against each baseline the only differing files are the 41 of
+  the run-to-run set. Tests: `test_customisation_workers.py` (the warm-up split, the derived-texture plan).
+- **Cost:** the customiser fingerprint changes, so every existing install redoes the customiser once on its next
+  refresh.
+- **Open:** the worker count stays a share of the machine (`setup_budget.customiser_workers`, a quarter of the core
+  budget, 1..8; memory scale-with-machine); the laptop's worker-count runs decide whether the share changes. The
+  docstring "a quarter" in `customisation_workers.py` matches `setup_budget.py` (the note above about it was stale).
+
 ## Fingerprints
 
 The stream change touches a file in the shared parser set, changing the
