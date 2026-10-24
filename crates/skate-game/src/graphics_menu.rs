@@ -823,11 +823,15 @@ pub(crate) fn interact(
     mut typing: MessageReader<bevy::input::keyboard::KeyboardInput>,
     (mut updater, mut audio, mut camera_angle, mut living, mut water_look): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>, ResMut<crate::camera::CameraAngleSettings>, ResMut<crate::living_world::LivingWorldSettings>, Option<ResMut<crate::water_look::WaterLookSettings>>),
     travel: Res<crate::teleport_menu::Travel>,
-    (mut mods, mut logged): (ResMut<crate::modding::ModMenu>, Local<Option<(bool, String, String)>>),
+    (mut mods, mut logged, cover): (ResMut<crate::modding::ModMenu>, Local<Option<(bool, String, String)>>, Option<Res<crate::map_transition::LoadingCover>>),
 ) {
     let wheel_notches: f32 = wheel.read().map(|e| if e.unit == MouseScrollUnit::Line { e.y } else { e.y / 40. }).sum();
     if transition.busy() {
-        menu.open = true;
+        // The retail loading screen (FE 52) covers a load started with the overlay closed; otherwise the overlay shows
+        // the progress.
+        if menu.open || !cover.is_some_and(|c| c.available) {
+            menu.open = true;
+        }
         time.pause();
         return;
     }

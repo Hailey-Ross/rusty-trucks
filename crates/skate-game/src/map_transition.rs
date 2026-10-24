@@ -75,6 +75,8 @@ impl Default for MapTransition {
 /// until it `covered` the screen (black or the screen up), at most [`COVER_WAIT`], so the world never changes in view.
 #[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LoadingCover {
+    /// The front end has its loading screen (the set has the movie): a load started with the PC overlay closed uses it.
+    pub available: bool,
     pub active: bool,
     pub covered: bool,
 }

@@ -7,6 +7,7 @@ overrides for people who want more or less.
 Overrides (environment variables, read when setup starts the work):
 - SKATE_SETUP_MAP_WORKERS=<n>  maps converted at once (default: see install.map_workers)
 - SKATE_SETUP_THREADS=<n>      threads inside one map job for compression (default: cpu/4, 2..6)
+- SKATE_SETUP_DECODE_WORKERS=<n>  audio banks / beds decoded at once (default: cpu/2, 2..6)
 - SKATE_SETUP_PRIORITY=below_normal|normal|idle   (default below_normal)
 
 Nothing here changes what setup writes, only how many things run at once and
@@ -45,6 +46,15 @@ def job_threads(cpu_count=None, environ=None):
         return min(override, 32)
     cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
     return max(2, min(6, cpus // 4))
+
+
+def decode_workers(cpu_count=None, environ=None):
+    """Audio decodes run at once (each a vgmstream process; the writes stay in order)."""
+    override = _positive('SKATE_SETUP_DECODE_WORKERS', environ)
+    if override:
+        return min(override, 32)
+    cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
+    return max(2, min(6, cpus // 2))
 
 
 def priority_class(environ=None):

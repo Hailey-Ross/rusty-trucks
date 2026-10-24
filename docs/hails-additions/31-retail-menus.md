@@ -1971,7 +1971,18 @@ pass and recomp timing run), `.local/research/b581-loading-screen-port.md` (port
 - **NOT RETAIL YET / open:** the console's FE update rate (30 or 60 a second: a fade of 0.83 or 0.40 s; `fe_fade`
   assumes 30); the RNG and its seed (ours: a per-boot LCG); where the "shown before" flags reset; the startup load
   (our splash covers it); the 65 stats labels; who re-holds black at the end of a load (ours: the sequence);
-  "Loading..." drawing (part of the movie, not checked on screen). Not yet run in the game (needs a window run).
+  "Loading..." drawing (see the game run below).
+- **Game run (2026-10-24, scripted `SKATE_MAP_SWITCH` BlackBoxPark -> University, the scratch menu set with the movie):**
+  request 39.03, black 39.86 (0.83 s, `fe_fade` at 30 updates), FE 52 open and its intro done at once (clear 40.03),
+  commit 43.51, slices done 43.98, black 44.96, close, clear 45.99 (`RETAIL_MENUS fade` / `open loading screen` log
+  lines). The screenshot 3.5 s in shows Coach Frank's panel with a disc line over the movie's own dark backdrop, laid
+  out like the recomp's screen (`.local/research/loading-screen/load1-coachfrank-panel.jpg`). Fixed on the way: the PC
+  overlay forced itself open on every transition, so the stage never saw a load without it; it now stays closed when
+  the front end has its loading screen (`LoadingCover::available`).
+- **Differences to the recomp shot (open):** "Loading..." sits about 130 px further right and dimmer (the movie's
+  `mLoading` clip; `Screen_EdgeOffset` is 0 in both); the blue spinner at the bottom right is missing (likely the main
+  table's `EnableLoadingTag` 825A9EC0 or another layer, not the tips movie); the body text reads bluer than the
+  recomp's.
 - **Moddability (next):** hint / coach lists and panel timing from data with mod overrides, a mod hold of the loading
   screen (like `StartupLoading::hold`), cleanup on mod disable; the movie is replaceable through the menu movie
   overrides.

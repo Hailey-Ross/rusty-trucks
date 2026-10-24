@@ -1489,7 +1489,7 @@ fn update(
                 }
             }
         }
-        let now = crate::map_transition::LoadingCover { active: ms.load.active(), covered: ms.load.covered() };
+        let now = crate::map_transition::LoadingCover { available: loader.is_some(), active: ms.load.active(), covered: ms.load.covered() };
         if *cover != now {
             *cover = now;
         }

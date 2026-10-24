@@ -105,6 +105,21 @@ def _decode(vgmstream: Path, directory: Path, names: list[str], log) -> None:
                 raise RuntimeError(f'vgmstream did not decode {directory.name}/{name}')
 
 
+# NumPy work (the downmix) runs on one thread at a time: its BLAS crashed with several threads in it at once.
+_NUMPY = __import__('threading').Lock()
+
+
+def _in_order(work, items):
+    """`work(item)` for every item on `setup_budget.decode_workers()` threads (the decodes are vgmstream processes);
+    the results in the items' order, the first failure (in that order) raised. Each item writes only its own files."""
+    from concurrent.futures import ThreadPoolExecutor
+    from .setup_budget import decode_workers
+    items = list(items)
+    with ThreadPoolExecutor(min(decode_workers(), max(1, len(items)))) as pool:
+        futures = [pool.submit(work, item) for item in items]
+        return [future.result() for future in futures]
+
+
 def _wav_info(path: Path) -> dict:
     with wave.open(str(path)) as source:
         return {'channels': source.getnchannels(), 'sample_rate': source.getframerate(),
@@ -1203,13 +1218,17 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     folder = work/'ambience'
     folder.mkdir()
     (output/'ambience').mkdir(parents=True)
-    for _, (name, (head_archive, head), (body_archive, body)) in sorted(beds.items()):
+    def bed(item):
+        name, (head_archive, head), (body_archive, body) = item
         (folder/(name + '.snr')).write_bytes(head_archive.read(head))
         (folder/(name + '.sns')).write_bytes(body_archive.read(body))
         _decode(vgmstream, folder, [name + '.snr'], log)
         decoded = folder/(name + '.snr.wav')
-        info = _stereo(decoded, output/'ambience'/(name + '.wav'))
+        with _NUMPY:
+            info = _stereo(decoded, output/'ambience'/(name + '.wav'))
         decoded.unlink()  # ~65 MB of five-channel PCM each
+        return name, info
+    for name, info in _in_order(bed, (b for _, b in sorted(beds.items()))):
         manifest['ambience'][name] = {'file': f'ambience/{name}.wav', **info}
 
     for kind, archive, suffix in (('grains', 'grains.big', '.grain'), ('wheels', 'wheels.big', '.snr')):
@@ -1272,13 +1291,13 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     manifest['world_tuning'] = world_tuning(collections, record_names, (private/'stock', game_root))
     report('Reading audio regions')
     manifest['regions'] = regions(game_root, work, dlc_jobs)
-    for bank in BANKS + tuple(sorted(placed - set(BANKS))):
-        if bank in by_name:
-            data = files.read(by_name[bank])
-        elif bank in pack_banks:
-            data = pack_banks[bank][0].read(pack_banks[bank][1])
-        else:
+    order = BANKS + tuple(sorted(placed - set(BANKS)))
+    for bank in order:
+        if bank not in by_name and bank not in pack_banks:
             raise KeyError(f'sound bank {bank} is missing from the disc')
+
+    def decode_bank(bank):
+        data = files.read(by_name[bank]) if bank in by_name else pack_banks[bank][0].read(pack_banks[bank][1])
         stem = Path(bank).stem
         folder = work/'banks'/stem
         folder.mkdir(parents=True)
@@ -1293,10 +1312,12 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
             target = target_folder/f'{index:04d}.wav'
             shutil.move(folder/f'{index:04d}.snr.wav', target)
             samples.append({'file': f'banks/{stem}/{index:04d}.wav', **_wav_info(target)})
+        # Retail's own layering/randomisation per sound (audio_formats.splc_patches).
+        return stem, samples, splc_patches(data) if data[:4] == b'SPLC' else None
+    for stem, samples, patches in _in_order(decode_bank, order):
         manifest['banks'][stem] = samples
-        if data[:4] == b'SPLC':
-            # Retail's own layering/randomisation per sound (audio_formats.splc_patches).
-            manifest['patches'][stem] = splc_patches(data)
+        if patches is not None:
+            manifest['patches'][stem] = patches
 
     report('Copying the AEMS banks and projects')
     manifest['aems'] = aems_files(files, output, BANKS + tuple(placed), {n: (lambda a=a, e=e: a.read(e)) for n, (a, e) in pack_banks.items()})
