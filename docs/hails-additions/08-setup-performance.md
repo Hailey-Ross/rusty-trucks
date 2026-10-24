@@ -235,10 +235,23 @@ their temporary sources). The other 18,828 are byte-identical, including all aud
 - **Identity:** the same 18,868 files; the 41 files that differ from the first baseline are exactly the 41 that differ
   between the two baselines.
 
+**Fourth pass (2026-10-24, USER-ASKS 314):**
+- **The post-map exports run beside the map wait** (`install.py` `post_maps`): map names, teleporters, visual
+  indicators and park layouts read only the disc, the collections and the packs (whose map BIGs `dlc.load` copied
+  whole before the map jobs started; `extract_bigs` keeps a file whose size matches) and write only their own files.
+  They run on a thread while the main thread waits on the map jobs and the validator (no NumPy there), joined before
+  the map catalog takes their names and before the kept DLC maps are carried over. Only when the customiser runs as
+  its own process: park layouts use NumPy, so beside the in-process customiser fallback they stay after the maps.
+- **Result:** two runs of the unchanged pipeline 102.6 s / 107.4 s, the change 97.9 s / 96.1 s (about -8 s, -7.6%).
+  The post-map exports now run 64 to 80 s, inside the map phase; the maps end later beside them (77 to 84 s) and the
+  customiser's roster (it ends at 92 to 93 s) is the critical path again.
+- **Identity:** the same 18,868 files; the 41 files that differ from the first baseline are exactly the 41 that differ
+  between the two baselines. No DLC on the bench machine, so the pack paths were checked by reading only.
+
 **Open:** the run-to-run differences are pre-existing (not caused here); making them reproducible would let the
-identity check cover them too. The critical path is now the main line: the maps finish at 71 s, then map names,
-teleporters, visual indicators and park layouts (about 18 s, they read only the disc and the collections) before the
-final validation; those are the next candidate.
+identity check cover them too. The customiser is the critical path (library 53 to 58 s, roster 20 to 24 s with 5
+worker processes beside the maps); when the in-process customiser fallback runs (low memory) it shares the process with
+the post-map exports' NumPy as before this pass. Next candidate: the customiser's tail once the maps are done.
 
 ## Fingerprints
 
