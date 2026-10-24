@@ -251,7 +251,18 @@ their temporary sources). The other 18,828 are byte-identical, including all aud
 **Open:** the run-to-run differences are pre-existing (not caused here); making them reproducible would let the
 identity check cover them too. The customiser is the critical path (library 53 to 58 s, roster 20 to 24 s with 5
 worker processes beside the maps); when the in-process customiser fallback runs (low memory) it shares the process with
-the post-map exports' NumPy as before this pass. Next candidate: the customiser's tail once the maps are done.
+the post-map exports' NumPy as before this pass. `customisation_workers.customiser_workers`'s docstring still says
+"a quarter" (the budget is in `setup_budget.py`); it is fixed with the next change that touches the customiser, since
+editing any `customis*.py` changes the customiser's fingerprint.
+
+**Customiser worker count (2026-10-24, USER-ASKS 315, not landed):** the library stage is a texture warm-up on worker
+processes, then one serial loop converting the 480 models; the roster splits over the workers. With
+`SKATE_SETUP_CUSTOMISER_WORKERS` on the unchanged pipeline (28-CPU desktop, default 5): 5 workers 84.7 / 86.3 s, 8
+workers 77.6 s, 10 workers 79.4 s. A default of 40% of the budget (8 here) then measured 86.9 / 81.1 s against 83.7 /
+89.3 s for the unchanged pipeline: within the noise, so it was not landed (output identical in both runs: the 41
+differing files are the run-to-run set). The laptop measures the knob on slower hardware (second-pc-testing.md
+"Setup speed test"). Next candidate: the library's serial model loop (parallel over the workers; it changes the
+customiser fingerprint, so every install redoes the customiser once).
 
 ## Fingerprints
 
