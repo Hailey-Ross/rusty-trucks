@@ -1395,6 +1395,74 @@ unhandled: {:?}", game.calls, stage.unhandled());
         assert!(stage.draw(|key, movie| set.scene(key, movie)).is_ok());
     }
 
+    /// The loading screen (FE 52, template 131 TipsLoader): the movie loads, a picked panel's state reaches it and every
+    /// `TipsLoader` call is answered. Data-gated (a set with screens/main/tiploader).
+    #[test]
+    fn retail_loading_screen_shows_a_tip() {
+        use skate_core::tips_loader::State;
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/main/tiploader") {
+            eprintln!("skipped: menu set without the loading screen");
+            return;
+        }
+        let assets = crate::apt_imports::main_checkout().join("assets");
+        let (data, loaded) = crate::retail_menus::read(&assets);
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        game.tips_loader.lines = skate_data::tips_loader::TipsLines {
+            coach: vec!["ID_TIPS_COACHFRANK_1".into(), "ID_TIPS_COACHFRANK_2".into()],
+            hints: vec![("ID_HINTS_TITLE_1".into(), "ID_HINTS_TEXT_1".into())],
+        };
+        game.tips_loader.open = true;
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("TipsLoader".into())], &mut game).unwrap();
+        let args = ["source/screens/main/tiploader.swf", "screen", "0", "TipsLoader"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", args, &mut game).unwrap();
+        let step = |stage: &mut Stage, game: &mut crate::crossbar_host::FrontEnd, frames: usize| {
+            for frame in 0..frames {
+                if let Err(e) = stage.update(16.0, &movies, game) {
+                    let traces = stage.take_traces();
+                    panic!("frame {frame}: {e}
+calls: {:?}
+traces (last 40): {:?}", game.calls, &traces[traces.len().saturating_sub(40)..]);
+                }
+            }
+        };
+        step(&mut stage, &mut game, 120);
+        let id = game.calls.iter().find_map(|c| c.strip_prefix("Game.OnScreenLoaded(")).map(|c| c.trim_end_matches(')').to_owned()).expect("the movie loaded");
+        for _ in 0..2 {
+            let available = game.tips_loader.available();
+            let mut seed = game.tips_loader.seed;
+            let state = game.tips_loader.tips.update(10.0, available, &mut || crate::tips_loader_host::lcg(&mut seed)).unwrap();
+            game.tips_loader.seed = seed;
+            assert!(matches!(state, State::Populate(_) | State::Outro(_)));
+            stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(id.clone()), Value::Text(state.code().to_string())], &mut game).unwrap();
+            step(&mut stage, &mut game, 30);
+        }
+        // SetState(1) asks every panel whether it is the picked one and fills that one; SetState(2) runs the outro.
+        let traces = stage.take_traces();
+        assert!(traces.iter().any(|t| t == "tiploader::UpdateCoachFrank( true true )"), "traces: {traces:?}");
+        assert!(traces.iter().any(|t| t == "tiploader::SetState( 2 )"), "traces: {traces:?}");
+        assert_eq!(game.tips_loader.asked.iter().filter(|m| *m == "GetCoachFrankText").count(), 1, "asked: {:?}", game.tips_loader.asked);
+        let unanswered: Vec<&String> = game.calls.iter().filter(|c| c.starts_with("TipsLoader.")).collect();
+        assert!(unanswered.is_empty(), "TipsLoader calls nobody answered: {unanswered:?}");
+        assert!(stage.draw(|key, movie| set.scene(key, movie)).is_ok());
+    }
+
     /// The text viewer (FE 3, template 28 ToSScreen) with our licenses: the movie loads, SetState(1) reads the words
     /// through `tos` (GetNumWords, GetWordRange) and every `tos` call is answered. Data-gated (a set with nucleus_tos).
     #[test]

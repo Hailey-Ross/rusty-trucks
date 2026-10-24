@@ -66,10 +66,21 @@ enum Phase {
     Publishing { frames: u8, notice: String },
 }
 #[derive(Resource)]
-pub(crate) struct MapTransition { phase: Phase }
+pub(crate) struct MapTransition { phase: Phase, cover_wait: Option<Instant> }
 impl Default for MapTransition {
-    fn default() -> Self { Self { phase: Phase::Idle } }
+    fn default() -> Self { Self { phase: Phase::Idle, cover_wait: None } }
 }
+
+/// The front end's loading screen for this load (`retail_menu_stage`, FE 52): while it is `active` the commit waits
+/// until it `covered` the screen (black or the screen up), at most [`COVER_WAIT`], so the world never changes in view.
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LoadingCover {
+    pub active: bool,
+    pub covered: bool,
+}
+
+/// A loading screen that does not cover in this time no longer holds the commit.
+const COVER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 impl MapTransition {
     pub fn busy(&self) -> bool { !matches!(self.phase, Phase::Idle) }
     /// The map being loaded, until it is committed (the audio reads its zone beds ahead, `map_audio`).
@@ -104,10 +115,12 @@ impl Plugin for MapTransitionPlugin {
         let current = CurrentMap::from_package(config.map_path.clone(), config.map.as_ref());
         app.insert_resource(current)
             .init_resource::<MapTransition>()
+            .init_resource::<LoadingCover>()
             .add_message::<WorldChanged>()
             .add_systems(PreUpdate, poll.in_set(MapTransitionSet).after(crate::graphics_menu::MenuInput)
                 .before(crate::input::poll_controllers))
             .add_systems(PreUpdate, scripted_switch.before(MapTransitionSet))
+            .add_systems(PreUpdate, crate::map_render::upload_slices.after(MapTransitionSet))
             .configure_sets(FixedUpdate, (
                 crate::app::SimulationSet::Input, crate::app::SimulationSet::Controls,
                 crate::app::SimulationSet::Physics,
@@ -221,10 +234,35 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
     Ok(Phase::Loading { entry, progress, spawn, job })
 }
 
+/// The loading screen (if any) covers the screen, or gave up.
+fn covered(world: &World) -> bool {
+    let cover = world.get_resource::<LoadingCover>().copied().unwrap_or_default();
+    if !cover.active || cover.covered {
+        return true;
+    }
+    let waited = world.resource::<MapTransition>().cover_wait.is_some_and(|t| t.elapsed() >= COVER_WAIT);
+    if waited {
+        warn!("MAP_TRANSITION the loading screen did not cover in {} s: committing", COVER_WAIT.as_secs());
+    }
+    waited
+}
+
 fn poll(world: &mut World) {
+    {
+        let finished = matches!(&world.resource::<MapTransition>().phase, Phase::Loading { job, .. } if job.is_finished());
+        let mut t = world.resource_mut::<MapTransition>();
+        if !finished {
+            t.cover_wait = None;
+        } else if t.cover_wait.is_none() {
+            t.cover_wait = Some(Instant::now());
+        }
+    }
+    let uploading = world.get_resource::<crate::map_render::MapAssets>().is_some_and(crate::map_render::MapAssets::uploading);
     let ready = match &world.resource::<MapTransition>().phase {
         Phase::Idle => false,
-        Phase::Loading { job, .. } => job.is_finished(),
+        Phase::Loading { job, .. } => job.is_finished() && covered(world),
+        // The new map's meshes and textures go in a slice per frame first (`map_render::upload_slices`).
+        Phase::Publishing { .. } => !uploading,
         _ => true,
     };
     if !ready { return; }
@@ -269,7 +307,7 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
     // All fallible decoding/validation/construction finished before this point.
     // No simulation system can observe a mixture of the two worlds.
     crate::map_render::MapAssets::retire(world);
-    prepared.scene.publish(world);
+    prepared.scene.publish_sliced(world);
     crate::camera::set_world_environment(world, prepared.retail);
     world.insert_resource(crate::retail_render::RetailScene(prepared.retail));
     info!("SKATE_TRIGGERS map={:?} volumes={} source={}", prepared.metadata.name, prepared.triggers.map.len(), prepared.triggers.origin);

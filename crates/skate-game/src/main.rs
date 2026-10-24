@@ -52,6 +52,7 @@ mod challenge_map_host;
 mod offline_profile_host;
 mod extras_host;
 mod spawn_skater_host;
+mod tips_loader_host;
 mod free_skate_options_host;
 mod hud_minimap;
 mod text_entry_ui;

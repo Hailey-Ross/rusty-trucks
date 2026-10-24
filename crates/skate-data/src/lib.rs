@@ -11,6 +11,7 @@ pub mod animation_frames;
 pub mod animation_metadata;
 pub mod collections;
 pub mod challenge_map;
+pub mod tips_loader;
 pub mod scoring;
 mod scoring_fields;
 pub mod attrib_hash;

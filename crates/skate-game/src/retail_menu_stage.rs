@@ -96,6 +96,10 @@ const EXTRAS_ITEM: &str = "Extras";
 /// and Call Skater pause items.
 const SPAWN_SKATER: &str = "SpawnSkater";
 const SPAWN_SKATER_PATH: &str = "cas/spawnskater.swf";
+/// The loading screen (template 131 TipsLoader, FE 52; research b581). Optional in the set.
+const TIPS_LOADER: &str = "TipsLoader";
+const TIPS_LOADER_PATH: &str = "main/tiploader.swf";
+const TIPS_LOADER_MOVIE: &str = "source/screens/main/tiploader";
 const SPAWN_SKATER_MOVIE: &str = "source/screens/cas/spawnskater";
 /// Its limit popup's callback (the choice changes nothing).
 const SPAWN_SKATER_POPUP: &str = "spawn_skater.limit";
@@ -136,6 +140,8 @@ const APT_NEXT: u32 = 2;
 const FADE_SCREEN: u32 = 0;
 /// The fader bit the player skater swap holds (0x89 state 82706938: 825E6B30 bit 7, b562).
 const FADE_SWAP: u32 = 7;
+/// The fader bit the game state's loading holds (sub_826E08A8 bit 2).
+const FADE_LOAD: u32 = 2;
 /// Trick Guide state 4 (0x82619A20): updates before it releases the fade and takes input (S+336 > 10).
 const TRICK_GUIDE_FADE_IN_TICKS: u32 = 11;
 
@@ -214,6 +220,12 @@ struct MenuStage {
     /// Flow 0x89: the skater to load now that the screen is black, then whether its load is still running.
     swap_due: Option<skate_core::spawn_skater::Skater>,
     swap_loading: bool,
+    /// FE 52's AS id, its `TipsLoader` host, the load sequence and whether the screen's intro is done / it closed.
+    tips_loader_id: i32,
+    tips_loader: crate::tips_loader_host::TipsLoaderHost,
+    load: skate_core::tips_loader::LoadScreen,
+    load_up: bool,
+    load_gone: bool,
     /// FE 34's AS id and its `FreeSkateOption` host.
     free_skate_id: i32,
     free_skate: crate::free_skate_options_host::FreeSkateOptionsHost,
@@ -654,6 +666,15 @@ fn setup(
                 spawn_skater_mode: Default::default(),
                 swap_due: None,
                 swap_loading: false,
+                tips_loader_id: as_id(TIPS_LOADER),
+                tips_loader: crate::tips_loader_host::TipsLoaderHost {
+                    lines: skate_data::collections::Collections::load(&config.asset_root).map(|c| skate_data::tips_loader::read(&c)).unwrap_or_default(),
+                    seed: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos() | 1),
+                    ..Default::default()
+                },
+                load: Default::default(),
+                load_up: false,
+                load_gone: false,
                 free_skate_id: as_id(FREE_SKATE),
                 free_skate: Default::default(),
                 image_slots: Default::default(),
@@ -726,7 +747,7 @@ fn update(
     ),
     // Challenge Map travel; cheats out, typed text in and the zombie flag the cheat toggles; FE 62's characters and
     // its requests out.
-    (mut travel, mut cheats_out, mut unlocks_out, mut typing, mut living, mut characters, mut spawner_out, population): (
+    (mut travel, mut cheats_out, mut unlocks_out, mut typing, mut living, mut characters, mut spawner_out, population, transition, mut cover): (
         ResMut<crate::challenge_map::ChallengeMapTravel>,
         MessageWriter<crate::extras_host::CheatChanged>,
         MessageWriter<crate::extras_host::UnlockGranted>,
@@ -735,6 +756,8 @@ fn update(
         Option<ResMut<crate::custom_models::CustomModels>>,
         MessageWriter<crate::spawn_skater_host::SpawnSkaterRequest>,
         Option<Res<crate::living_world::PopulationState>>,
+        Res<crate::map_transition::MapTransition>,
+        ResMut<crate::map_transition::LoadingCover>,
     ),
 ) {
     let ready = stage.as_ref().is_some_and(|s| !s.failed) && movies.is_some() && menus.is_some();
@@ -773,9 +796,11 @@ fn update(
         return;
     }
     let ms = &mut *ms;
-    // Retail Apt keys fired this frame (pad and keyboard); none while the PC overlay is open on top.
+    // The loading screen, when the set has its movie.
+    let loader = backdrop.index(crate::fe_backdrop::LOADING_SCREEN).filter(|_| movies.movies.contains_key(TIPS_LOADER_MOVIE));
+    // Retail Apt keys fired this frame (pad and keyboard); none while the PC overlay is open on top or a load runs.
     let mut fired = poll_keys(ms, &keys, time.delta_secs());
-    if overlay.as_ref().is_some_and(|o| o.open) {
+    if overlay.as_ref().is_some_and(|o| o.open) || ms.load.active() {
         fired.clear();
     }
     let mut fe = front_end(&menus, &ms.language, ms.crossbar.clone());
@@ -817,6 +842,7 @@ fn update(
     fe.spawn_skater.open = spawn.is_some() && ms.stack.top(Layer::Main) == spawn;
     fe.free_skate = std::mem::take(&mut ms.free_skate);
     fe.free_skate.open = free.is_some() && ms.stack.top(Layer::Main) == free;
+    fe.tips_loader = std::mem::take(&mut ms.tips_loader);
     // The on-screen keyboard (FE 46 on top): typed text and Escape (ours), once per frame; the pad keys go through the
     // key loop below.
     let entry_open = entry.is_some_and(|e| ms.stack.top(Layer::Main) == Some(e)) && text_entry.keyboard.is_some();
@@ -1279,6 +1305,21 @@ fn update(
                     fe.free_skate.open = false;
                     close(&mut ms.stage, ms.free_skate_id, &mut fe)?;
                 }
+                Effect::Open(i) if Some(i) == loader => {
+                    info!("RETAIL_MENUS open loading screen (FE {i})");
+                    fe.tips_loader.open = true;
+                    fe.tips_loader.tips.open();
+                    ms.load_up = false;
+                    ms.load_gone = false;
+                    open_screen(&mut ms.stage, TIPS_LOADER_PATH, TIPS_LOADER, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == loader => {
+                    info!("RETAIL_MENUS close loading screen (FE {i})");
+                    fe.tips_loader.open = false;
+                    ms.load_up = false;
+                    ms.load_gone = true;
+                    close(&mut ms.stage, ms.tips_loader_id, &mut fe)?;
+                }
                 Effect::Close(i) if Some(i) == spawn => {
                     info!("RETAIL_MENUS close SpawnSkater (FE {i})");
                     fe.spawn_skater.open = false;
@@ -1428,6 +1469,29 @@ fn update(
                     ms.swap_due = Some(skater);
                 }
             }
+            // The loading screen around a map load (game state 0x82707508; doc 31 "Loading screen"); a load started
+            // from the PC overlay keeps the overlay's progress text.
+            if let Some(l) = loader {
+                use skate_core::tips_loader::LoadStep;
+                let loading = transition.busy() && (ms.load.active() || !overlay.as_ref().is_some_and(|o| o.open));
+                match ms.load.update(loading, ms.fade.alpha >= 1.0, ms.load_up, ms.load_gone) {
+                    Some(LoadStep::HoldBlack) => {
+                        ms.fade.hold(FADE_LOAD, None, false, &params);
+                    }
+                    Some(LoadStep::Push) => ms.stack.request(Layer::Main, Request::push(l)),
+                    Some(LoadStep::ReleaseInstant) => ms.fade.release(FADE_LOAD, true, &params),
+                    Some(LoadStep::Close) => ms.stack.request(Layer::Main, Request::Close { screen: l }),
+                    Some(LoadStep::Release) => {
+                        ms.load_gone = false;
+                        ms.fade.release(FADE_LOAD, false, &params);
+                    }
+                    None => {}
+                }
+            }
+        }
+        let now = crate::map_transition::LoadingCover { active: ms.load.active(), covered: ms.load.covered() };
+        if *cover != now {
+            *cover = now;
         }
         // 0x89 at black: unload and load the player (callback 82706AE8); when the load is done (or failed: the
         // library keeps a character), exit (827064D8) closes FE 62 and releases the fader.
@@ -1661,6 +1725,23 @@ fn update(
                 ms.stack.ready(s);
             }
         }
+        // The loading screen: intro complete = up (the black goes at once); then a panel every 9.0 s (sub_82605CC0).
+        if let Some(l) = loader.filter(|l| ms.stack.top(Layer::Main) == Some(*l)) {
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({})", ms.tips_loader_id)) {
+                ms.stack.ready(l);
+                ms.load_up = true;
+            }
+            if ms.load_up {
+                let t = &mut fe.tips_loader;
+                let available = t.available();
+                let mut seed = t.seed;
+                let state = t.tips.update(time.delta_secs(), available, &mut || crate::tips_loader_host::lcg(&mut seed));
+                t.seed = seed;
+                if let Some(state) = state {
+                    set_state(&mut ms.stage, ms.tips_loader_id, state.code() as i32, &mut fe)?;
+                }
+            }
+        }
         // Free Play options: loaded -> every row refreshes and the selection shows (NOT RETAIL YET: the poster of the
         // first states is not read); intro complete = ready; then the key states.
         if let Some(f) = free.filter(|f| ms.stack.top(Layer::Main) == Some(*f)) {
@@ -1873,6 +1954,7 @@ fn update(
     ms.credits = std::mem::take(&mut fe.credits);
     ms.spawn_skater = std::mem::take(&mut fe.spawn_skater);
     ms.free_skate = std::mem::take(&mut fe.free_skate);
+    ms.tips_loader = std::mem::take(&mut fe.tips_loader);
     ms.image_slots = std::mem::take(&mut fe.image_slots);
     ms.popup = std::mem::take(&mut fe.popup);
     // A Challenge Map leaf the player picked goes through the registry: the engine's teleport handler queues the
@@ -2345,6 +2427,18 @@ fn render(
             .any(|p| d.texture.starts_with(p));
         !named || movies.image(&d.texture).is_some()
     });
+    // The loading screen hides the world behind it (black under the movie) from black until it fades back in.
+    if ms.load.covered() {
+        let v = |x: f32, y: f32| crate::apt_scene::Vertex { position: [x, y], uv: [0.0, 0.0] };
+        let (x0, y0, x1, y1) = (-1280.0, -720.0, 2560.0, 1440.0);
+        draws.insert(0, crate::apt_scene::Draw {
+            texture: String::new(),
+            vertices: vec![v(x0, y0), v(x1, y0), v(x1, y1), v(x0, y0), v(x1, y1), v(x0, y1)],
+            multiply: [0.0, 0.0, 0.0, 1.0],
+            add: [0.0; 4],
+            fill: crate::apt_scene::Fill::Solid,
+        });
+    }
     // The FE fader over everything (alpha 1 = black), past the stage edges for any aspect ratio.
     if ms.fade.alpha > 0.0 {
         let v = |x: f32, y: f32| crate::apt_scene::Vertex { position: [x, y], uv: [0.0, 0.0] };

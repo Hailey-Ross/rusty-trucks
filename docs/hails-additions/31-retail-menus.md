@@ -1931,6 +1931,51 @@ Research `.local/research/menus-m6/cameraman-mode.md`, `light-rigs.md` (agent; m
   a short recomp hook logging the binder constants (`sub_82CBBBF0` nis / `sub_82CBD050` default) with the setting on
   and off. Our characters use one fixed rig (`retail_character.rs`). Greyed until then.
 
+## Loading screen (FE 52)
+
+(2026-10-24, USER-ASKS 304: "begin research and porting the retail loading screen to be used as it would hide all
+loading shenanigans in the background". Research: `.claude/notes/fe-menus-re.md` "Loading screen" (2026-10-08 static
+pass and recomp timing run), `.local/research/b581-loading-screen-port.md` (port plan); claims below checked by main.)
+
+- **Retail [code / trace]:** loads run behind the tips loader, FE screen 52 (template 131 TipsLoader, movie
+  `screens/main/tiploader`, screen record key hash64("tiploader") `e1fa207da2bdf61a`, disc index 50). Order from the
+  recomp trace: the fader goes black (0.04 per FE update), the screen is pushed at black, the black goes at once when
+  it is up, one panel shows (9.0 s each, 0.5 s outro, then the next pick), and when the load is done the fader goes
+  black again, the screen closes, about 4 updates of black, then the fade back in. The panel pick (sub_82608598):
+  least shown first, then shown more, then shown before, then the one shown last; uniform within the group. Coach
+  Frank's line and the hint (sub_82605FA8 / sub_82606C98): uniform over every line but the previous one. Offline
+  panels: Coach Frank, Hint, and Stats when there are stats rows; Leaderboard, Feed and Reel need online data.
+- **Ours:**
+  - Setup exports the movie with the menu set (`tools/prepare_menu_movies.py` MENU_ROOTS; optional like the action
+    overlay, so the set version stays 14 and a set without it keeps the PC overlay's progress text). The vault
+    converter decodes the hints' (title, text) string pointers (`vlt.py`, `text_pairs`); the rest of the vault JSON is
+    byte-identical (checked against the installed one). Both need Refresh Game Files.
+  - `skate_core::tips_loader`: the panel pick, the line pick, the panel cycle (`Timing::RETAIL`) and the load
+    sequence (`LoadScreen`, steps HoldBlack / Push / ReleaseInstant / Close / Release, `BLACK_FRAMES` 4).
+  - `skate_data::tips_loader::read`: the `tips_loader/default` lines (20 Coach Frank ids in the record's order, 31
+    hint pairs).
+  - `tips_loader_host.rs`: the `TipsLoader` natives (`Is<X>Enabled` = the picked panel, `GetCoachFrankText`, `GetHint`,
+    `GetStats(n)`, empty online answers). Stats rows: none yet (the engine has no stats table, see Skate Profile), so
+    the Stats panel stays off, as retail with no stats.
+  - `retail_menu_stage.rs`: while a map transition runs (not one started from the PC overlay) the stage runs the load
+    sequence on fader bit 2 (sub_826E08A8's bit), pushes FE 52 at black, answers its intro, posts the panel states and
+    draws black under the movie while it covers. Keys are ignored while a load runs. `map_transition` waits with the
+    commit until the loading screen covers the screen (`LoadingCover`, at most 5 s), so the old world never changes in
+    view; the map's slice upload (doc 25) runs behind it.
+- **The movie in our VM:** SetState(1) asks every panel whether it is the picked one and fills that one
+  (`tiploader::UpdateCoachFrank( true true )` with `GetCoachFrankText`); SetState(2) runs the outro. The disassembly's
+  empty Populate branch (b581) was a disassembler gap.
+- **Tests:** `skate_core::tips_loader::tests` (5: line pick, panel buckets, Stats joining, cycle, load sequence);
+  `skate_data::tips_loader::tests::the_retail_tips` (data-gated); `apt_stage::tests::retail_loading_screen_shows_a_tip`
+  (data-gated: a set with the movie); the map transition tests.
+- **NOT RETAIL YET / open:** the console's FE update rate (30 or 60 a second: a fade of 0.83 or 0.40 s; `fe_fade`
+  assumes 30); the RNG and its seed (ours: a per-boot LCG); where the "shown before" flags reset; the startup load
+  (our splash covers it); the 65 stats labels; who re-holds black at the end of a load (ours: the sequence);
+  "Loading..." drawing (part of the movie, not checked on screen). Not yet run in the game (needs a window run).
+- **Moddability (next):** hint / coach lists and panel timing from data with mod overrides, a mod hold of the loading
+  screen (like `StartupLoading::hold`), cleanup on mod disable; the movie is replaceable through the menu movie
+  overrides.
+
 ## Startup loading screen (2026-10-15)
 
 **Problem.** Starting the game showed a window that sat frozen for about a minute (user: "Starting the game after a

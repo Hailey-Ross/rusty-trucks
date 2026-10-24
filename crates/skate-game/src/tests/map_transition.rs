@@ -74,6 +74,11 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
         assert!(Arc::ptr_eq(&prepared.skater.animation.source, &source));
         assert!(Arc::ptr_eq(&prepared.skater.animation.evaluator, &evaluator));
         commit(&mut world, prepared);
+        let mut slices = 0;
+        while world.resource::<crate::map_render::MapAssets>().uploading() {
+            bevy::ecs::system::RunSystemOnce::run_system_once(&mut world, crate::map_render::upload_slices).unwrap();
+            slices += 1;
+        }
         assert!(old.into_iter().all(|id| world.get_entity(id).is_err()));
         assert!(world.get_entity(character).is_ok());
         assert_eq!(world.resource::<CurrentMap>().generation, iteration as u64 + 1);
@@ -103,7 +108,7 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
         // The bytes the render world uploads after the commit (doc 25, "Map switch: the render upload").
         let image_mb = world.resource::<Assets<Image>>().iter().map(|(_, i)| i.data.as_ref().map_or(0, Vec::len)).sum::<usize>() >> 20;
         let mesh_mb = world.resource::<Assets<Mesh>>().iter().map(|(_, m)| m.get_vertex_size() as usize * m.count_vertices()).sum::<usize>() >> 20;
-        eprintln!("LIFECYCLE_CHECK generation={} map={file:?} triangles={triangles} entities={} meshes={} images={} image_mb={image_mb} mesh_vertex_mb={mesh_mb}",
+        eprintln!("LIFECYCLE_CHECK generation={} map={file:?} triangles={triangles} entities={} meshes={} images={} image_mb={image_mb} mesh_vertex_mb={mesh_mb} upload_slices={slices}",
             iteration + 1, world.query_filtered::<Entity, With<crate::map_render::MapEntity>>().iter(&world).count(), world.resource::<Assets<Mesh>>().len(), world.resource::<Assets<Image>>().len());
     }
     let missing = Entry { label: "missing".into(), path: Some(root.join("nonexistent-transition-check.skate")), world: None };
