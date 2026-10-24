@@ -352,6 +352,20 @@ customiser fingerprint, so every install redoes the customiser once).
 - **Fix:** Python's `os.process_cpu_count()` ignores the CPU affinity on Windows (it said 28 in the pinned process),
   so the budget ignored it too ("21 of 28"). `setup_budget._cpu_count` now counts the affinity mask
   (`GetProcessAffinityMask`); pinned to 16 it reports "CPU budget: 12 of 16".
+- **Laptop, same sitting** (2026-10-24 17:05 to 17:25, plugged in, power mode unchanged; second-pc-testing.md
+  "Same-session version test"), runs alternating:
+
+| version | totals s | mean | "Converting 10 maps" s | library | roster |
+|---|---|---|---|---|---|
+| 5b16a77b | 167.6 / 185.0 | 176.8 | 14.7 / 28.2 | 91.5 / 94.4 | 49.6 / 49.2 |
+| 964fb5bc | 150.1 / 161.9 | 156.7 | 14.1 / 20.7 | 73.5 / 76.2 | 50.6 / 51.1 |
+| a6ef8401 | 150.5 / 156.2 | 154.1 | 17.8 / 19.6 | 95.1 / 95.4 | 23.3 / 29.0 |
+
+  Same order as the desktop. The machine was not steady: the maps started at 14 to 28 s (9.4 to 10.5 s in the
+  morning), and the laptop's ASUS screensaver (rendering on its second screen while it sat idle) used about as much
+  CPU as VS Code. a6ef8401 measured that load ("CPU budget: 11 of 16 (11%)", "10 of 16 (16%)"), so its customiser
+  ran 2 workers instead of 3 beside the maps (library 95 s) and then grew once they ended (roster 23 / 29 s instead
+  of 50 s): it gave way to the other program and still finished first. 18,868 files; no worker failures.
 
 ## Fingerprints
 
