@@ -28,7 +28,7 @@
 - One problem per session if you can, with roughly when (minutes in) and where (map and spot). A short video helps a lot.
 - Report here: [**New test report**](https://github.com/Hailey-Ross/rusty-trucks/issues/new?title=Test%20report%3A%20&body=%2A%2ABuild%3A%2A%2A%20hails-additions%20rolling%20build%20%28number%20at%20the%20top%20of%20the%20release%29%0A%2A%2AMap%20and%20spot%3A%2A%2A%20%28for%20example%20DownTown%2C%20by%20the%20default%20spawn%2C%20near%20the%20road%20curb%29%0A%2A%2AWhat%20I%20did%3A%2A%2A%0A%2A%2AWhat%20happened%3A%2A%2A%0A%2A%2AWhat%20retail%20Skate%203%20does%20instead%3A%2A%2A%0A%2A%2AAbout%20when%20in%20the%20session%3A%2A%2A%20%28minutes%20in%2C%20or%20the%20time%20on%20your%20clock%29%0A%0AAttach%3A%0A-%20the%20session%20log%20logs%5Cgame-....stderr.log%20%28from%20PLAY-WITH-LOG.bat%29%0A-%20a%20crash%20report%20from%20%25LOCALAPPDATA%25%5CSkate3RustEngine%5CCrashReports%20if%20the%20game%20closed%0A-%20a%20short%20video%20if%20you%20have%20one%0A)
 
-**Please test:** the instant replay and its editor, DLC maps and teleporters (if you own the packs), peds and NPC skaters (anything floating, stuck or riding backwards), carrying props, and the retail menus.
+**Please test:** map switches and Challenge Map teleports (the new loading screen), Free Play's Spawn Skater and the minimap, the instant replay and its editor, DLC maps and teleporters (if you own the packs), peds and NPC skaters (anything floating, stuck or riding backwards), carrying props, and the retail menus.
 
 ## What's new
 
@@ -36,11 +36,13 @@ Everything below is ported from Skate 3's own code. Items marked "not play-teste
 
 - **Living world** (upstream #52): NPC skaters on Skate 3's recorded lines, pedestrians with their behaviours (benches, vending machines, phone calls, warnings, chases, tazers), traffic you can skitch and grind, and props you can push, carry and grab. Zombie Mode and NPC Skater Physics are opt-ins.
 - **Retail menus:** Skate 3's own pause menu, Game Settings (saved), Video Calibration, Trick Guide with its 3D demo, Extras with cheat codes, Skate Profile and the Challenge Map. `SKATE3_RETAIL_MENUS=0` turns them off.
+- **Free Play:** Spawn Skater (play as another skater, or call up to three who ride with you) and the Free Play options (traffic and pedestrian density, A.I. skaters); the HUD minimap from Skate 3's own movie with the called skaters' icons.
+- **Loading screen:** map switches and far Challenge Map teleports fade to black and show Skate 3's own tips screen (Coach Frank and the hints) while the new map loads behind it.
 - **Instant replay:** records the whole world for 90 seconds with sound, on Skate 3's own replay screen and controls; help, hide and photo; the editor with trim, markers, speed, shake and cameras; Save to PC renders an .mp4. Extended Replays (2 to 4 minutes, not retail) is in Esc > EXTRAS > Replay.
 - **Your DLC:** put your packages in a `dlc` folder next to `skate3rust.exe` (the game then offers Refresh Game Files), or use the launcher's Tools > Import DLC, which converts them at once: the DLC maps with their skies and ambience, the Challenge Map's DLC folders, skate.Park layouts, teleporters, and the Create pack's replay editor.
 - **World shading:** Skate 3's lightmaps and shader families for fences, signs, billboards, traffic lights and trees. Better Water (not retail) now covers fountains and the open sea; fountain basins take the Aletown canal's grey with more ripple.
-- **Performance:** loading happens behind the loading screen (the first frame went from 1.7 s to 0.6 s), steady play is cheaper, and maps no longer double their memory while loading (upstream #66 by JohnUzoka).
-- **Launcher and setup:** a proper launcher window, builds with progress, "play + trace all", a launcher-only download; setup installs its own Python packages.
+- **Performance:** loading happens behind the loading screen (the first frame went from 1.7 s to 0.6 s), steady play is cheaper, and maps no longer double their memory while loading (upstream #66 by JohnUzoka). A map switch reads the new map's data and sounds while it loads and uploads its textures in pieces, so the switch no longer freezes for half a second.
+- **Launcher and setup:** a proper launcher window, builds with progress, "play + trace all", a launcher-only download; setup installs its own Python packages. Setup is about 40% faster with the same converted files: it runs its stages side by side and uses up to 75% of your CPU cores, leaving the rest for you (`SKATE_SETUP_CORES=<n>` sets the number). Refresh Game Files only redoes what changed.
 - **Mods:** every new system has a Lua entry point (`sdk.world`, `sdk.menus`, `sdk.replay`, `sdk.triggers.teleporter` and more).
 - **Changes for everyone:** the Skyline example mod starts switched off (turn it on in the mod menu).
 
@@ -52,7 +54,8 @@ Already in upstream `main` (from this fork): the retail audio engine and audio m
 - **Pedestrians:** they walk through a prop you are holding; one model walks stiffly and one has a flat head.
 - **Cars** pop in and out instead of fading with distance.
 - **Carrying props:** stepping up curbs while dragging is not Skate 3's yet.
-- **Not ported yet:** the Challenge Map's challenge rows, the Free Play menu, the zombie cheat screen, the pros at their spots, the Object Dropper editor, peds watching you, multiplayer.
+- **Loading screen:** "Loading..." sits further right than in Skate 3 and the spinning icon in the corner is missing; loads started from the PC menu still show the PC menu's progress text.
+- **Not ported yet:** the Challenge Map's challenge rows (and the minimap's challenge icons), the zombie cheat screen, the pros at their spots, the Object Dropper editor, peds watching you, multiplayer.
 
 ## Credits
 
