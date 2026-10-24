@@ -511,6 +511,10 @@ six), the "CPU budget" line (v3), the 10th map, "Character library" and "Charact
 files, `v3a-hashes.tsv` and `setup-bench.notes.log` to `<share>\<LAPTOP NAME>\version-bench-<yyyymmdd-hhmm>\`, then
 delete the scratch folder.
 
+Result (laptop, 2026-10-24 17:25): means 176.8 s (5b16a77b), 156.7 s (964fb5bc), 154.1 s (a6ef8401), the same
+order as the desktop; 18,868 files. The maps started at 14 to 28 s, so the machine was not steady: the ASUS
+screensaver renders on the second screen when the laptop sits idle. Switch it off before the next timing test.
+
 ## Moving the ISO
 
 A FAT32 flash drive cannot hold a file over 4 GB, whatever its free space. Format it as exFAT (Explorer: right-click
