@@ -1134,7 +1134,7 @@ Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes 
   drops into water that is not deep enough for the deep-water plume, `water_splash.rs` spawns the same plume scaled
   by that share. It reads the effective look, so with Better Water off it is 0 and nothing changes. Mod patch key
   `shallow_splash` (0 to 2) in `skate-mods` presentation.
-- **Verification:** not built or tested yet (uncommitted at the time of writing); not play-tested.
+- **Verification:** committed and pushed with #52 (the full skate-game suite passes on every later push); not play-tested.
 - **Open:** the plume's look in a fountain is the deep-water one scaled down; tune from the next session.
 
 ## Better Water: calm swells on the open sea, 2026-10-19

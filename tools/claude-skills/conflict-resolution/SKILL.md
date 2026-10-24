@@ -43,6 +43,31 @@ Before committing: `git grep -n -E '^(<<<<<<<|>>>>>>>) '` must be empty; watch f
   branches you just moved (record them before merging). Read every hit: only same-line combinations and deliberate
   rewrites are allowed.
 - Run it from inside a worktree (outside a repo it sees no files; it exits 2 when it has no files).
+
+## 6. Patterns seen in real merges
+- **An auto-merged line can undo a conflict resolution.** Example: one branch moved `write()` in
+  `tools/asset_pipeline/map_writer.py` to compress extension blobs on a thread pool, another added an `extensions=`
+  parameter with `(tag, schema, payload)` triples. The auto-merged part kept the first branch's fixed
+  `extensions=[(b'WMET', ...)]` line, which silently overwrote the new parameter. Fix: build the records the second
+  branch's way, then pack them with the first branch's pool carrying the schema; check the output is byte-identical
+  to the unthreaded writer. Read the clean hunks next to every conflict, not only the conflict.
+- **Id clashes that are not text conflicts.** Settings menus with numbered rows (for example
+  `crates/skate-game/src/graphics_menu.rs`): two branches can each add a row with the same row id. Keep both rows,
+  give one a free id, and check every place the ids appear (section row lists, the spawn loop, `adjustable`, the
+  change handler, the save condition, labels, tests).
+- **Numbered docs:** two branches can add a doc with the same number. Check the next free number on every branch
+  that will meet before adding one.
+- **`mod` lines and registries:** keep both sides' `mod x;` lines and both sides' registry entries.
+- **Upstream API changes an older branch must adapt to** (semantic conflicts, the merge itself is clean):
+  - #57 (grind query box) replaced `BoardWorldVolume::linear_velocity` with
+    `motion: VolumeMotion { linear_velocity, angular_velocity, force_acceleration }`: create volumes with
+    `motion: VolumeMotion { linear_velocity: v, ..Default::default() }` and read `.motion.linear_velocity`.
+  - #59 (menus) made `apt_scene::Shape::texture` an `Option`:
+    `filter_map(|s| s.texture.as_ref().map(|t| t.rgba.clone()))`.
+  - #58 (see-through fences) changed the fog family test in `retail_world.wgsl`; keep its families when adding new
+    ones.
+  - When the target already carries a test that the incoming branch also adds, take one side: duplicate test
+    function names do not compile.
 - **Semantic conflicts** (merge is clean, build is not: one branch adds a parameter to a function, another adds a
   call with the old arity). When a reference already merges the same branches, list its merge-only fixes: every
   file whose reference history has only source-branch commits must be identical to ours:

@@ -36,7 +36,7 @@ asking for the task it describes, or by name (for example `/regression-check`).
 | `asset-setup` | Convert your own Skate 3 ISO / extracted disc into assets headlessly, refresh after converter changes, re-point the `assets` junction, diagnose spawns and invisible walls, repair the pro roster. |
 | `regression-check` | What to verify after converter, game code, input, water, audio, native dependency or performance changes: every-map spawn and collision baselines, test targets, smoke runs, fingerprint impact, "is this failure mine or upstream's". |
 | `vendor-patch` | Vendor and patch a crates.io dependency (Bevy, sdl3-sys) and handle native C/C++ dependencies in both CRT configurations. |
-| `make-mod` | Write and validate Lua API 2 mods, including the audio and world-audio mod APIs on the audio branches; moddability rules for engine features. |
+| `make-mod` | Write and validate Lua API 2 mods, including the audio and world-audio mod APIs; moddability rules for engine features. |
 | `prior-work-check` | Search upstream PRs/issues, forks and sibling projects before starting work. |
 | `conflict-resolution` | Merge branches without losing lines: reuse existing resolutions, hunk-level reuse, a lost-line checker, semantic-conflict detection, stacking conflicting PRs. |
 | `optimisation` | Performance work with proof of identical behaviour: measure first, byte-identical e2e hashes, an adversarial review checklist, worked examples from the native audio passes. |
@@ -48,6 +48,9 @@ asking for the task it describes, or by name (for example `/regression-check`).
 | `audio-tuning` | Turn a "this sounds wrong" report into a measured, mechanism-level fix: state logs, headless e2e replays, recomp comparisons, world audio checks, re-exporting audio. |
 | `audio-autotest` | The automated in-game check of the audio modding features (muted in the background, or audible for a listener). |
 | `living-world` | NPC skaters, pedestrians, traffic and movable objects ported from retail: scope, shared design, multiplayer-ready rules, testing. |
+| `retail-menus` | The retail front end on the engine's APT stage: pause menu, Game Settings, Trick Guide, Challenge Map, Extras, Skate Profile, Free Play, popups, the HUD minimap and the loading screen; exporting the menu movies, automated menu screenshots, reading a movie's code. |
+| `replay` | The instant replay and replay editor port: what is recorded, the editor model, retail's replay screens, Save to PC export, in-game test switches. |
+| `setup-bench` | Time a full asset setup and prove a setup / export script change keeps the converted files the same (snapshot, per-stage timings, sha256 manifest, comparison against a second unchanged run). |
 
 ## Helper scripts included
 
@@ -62,10 +65,11 @@ asking for the task it describes, or by name (for example `/regression-check`).
 | `audio-autotest/tools` | `audio_mod_autotest.ps1` (the autotest runner) |
 | `living-world/tools` | `render_glb.py` (offscreen render of a converted model) |
 | `ghidra/tools` | `decompile.ps1` (pseudocode for a batch of addresses), `ghidra_headless.ps1` (AnalyzeHeadless without the .bat), `scripts/DecompileAt.java` (the post-script) |
+| `retail-menus/tools` | `apt_dump.py` (an exported menu movie's actions as text, pool names resolved), `check_trick_clips.sh` (Trick Guide demo clips: names, decode, posture) |
+| `setup-bench/tools` | `setup_bench.py` (timed full setup into a scratch base plus a sha256 manifest of the install) |
 
 More general tools referenced by the skills (map/collision inspection, regression checks with baselines, recomp code
-search, vault inspection, setup equivalence) are in `tools/` of upstream PR #37 ("Tools: published research and
-regression helpers"); fetch that branch if it is not merged yet.
+search, vault inspection, setup equivalence) are in `tools/` (upstream PR #37, merged).
 
 ## Prerequisites
 

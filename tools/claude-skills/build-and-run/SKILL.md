@@ -73,10 +73,10 @@ notes file in your checkout.
 - Smoke test from an agent (opens a window briefly): start `bin\skate3rust.exe --assets "<repo>\assets"` with
   `SKATE3_MODS=<repo>\mods`, redirect stdout/stderr into `.local\`, stop it after about 15-25 s, then grep the log for
   `Controller`, `SDL`, `panic`, `ERROR`.
-- Audio branches: add `--mute` to automated smoke runs (silences game + mod audio); master volume defaults to 25 %
+- Audio (upstream main since PR #32): add `--mute` to automated smoke runs (silences game + mod audio); master volume defaults to 25 %
   (`settings\audio.json`). Launch long play sessions from Explorer/cmd rather than inside Windows Terminal (a
   Terminal crash kills the attached game). Audio iteration: skill `audio-tuning`.
-- Audio diagnostics switches (audio branches): `SKATE_AUDIO_TRACE`, `SKATE_AUDIO_TIMING`, `SKATE_AUDIO_STATE_LOG`,
+- Audio diagnostics switches: `SKATE_AUDIO_TRACE`, `SKATE_AUDIO_TIMING`, `SKATE_AUDIO_STATE_LOG`,
   `SKATE_AUDIO_SET`, `SKATE_AEMS_BANKS`, `SKATE_AUDIO_FMA`, plus world toggles `SKATE_AEMS_WORLD`,
   `SKATE_AEMS_WORLD_PREFETCH`, `SKATE_AEMS_NPC_SKATERS`.
 - Input backend: SDL3 by default; `SKATE3_INPUT=xinput` for the old XInput path. SDL hints can be set as env vars

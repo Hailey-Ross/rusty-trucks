@@ -1,6 +1,6 @@
 # 11 — Game audio (ambience, rolling, trick cues, footsteps, water)
 
-**Branch:** `gameplay/audio` (from `gameplay/water`; partly committed 2026-10-02; the world-audio work since then is uncommitted until the user's batch commit). Upstream form: `audio/retail-audio`, draft PR #32, marked Work in Progress. **Status:** implemented and tuned
+**Branch:** `gameplay/audio`, merged upstream as PR #32 on 2026-10-06 (upstream form `audio/retail-audio`; both branches gone). **Status:** implemented and tuned
 by ear over ~15 play sessions with the user (2026-10-01). Most cues are confirmed in play; the rest are marked
 **not yet confirmed** below. All sample choices are project choices, not retail event data.
 
@@ -3211,7 +3211,7 @@ Caveats:
    `sub_827A1B78` passes a table entry. The per-skater loop `sub_827A11B0` (return address `0x827A13FC`) passes a
    stack array (its `r1 + 1064 − 152`, stride 544), and `sub_827A1030` (return `0x827A10A0`) a single zeroed stack entry
    with r6 = 1. So the "local entry" test never held, BAILLOCAL never logged and no pass matched the local X. Entry
-   `+152` bit 31 is the r6 argument (in the loop: the skater's controller test). Fixed in the recomp (uncommitted): the
+   `+152` bit 31 is the r6 argument (in the loop: the skater's controller test). Fixed in the recomp (committed on research-hooks): the
    hook accepts only the loop's call (`lr == 0x827A13FC`) with bit 31 set, and a bail is active when the entry's bits
    or `+676` / `+677` of a GREC-local audio state are set. A rate-limited `BAILCAND` line (7 fields) shows the lookup's
    raw inputs (first 32 calls; each new X of the output pass), so a failed lookup is visible in the next trace.
@@ -3915,7 +3915,7 @@ skid updater `sub_824C7A20` reads `lbz 72` of `[owner+16]`; the eqchain / grain 
 The NPC's component has byte 72 = 0 but a non-zero byte after it, so the word test passed. The TREAT / SEAMPAT mask bit 2
 (state = GREC's last accepted state) alternated with the two owners, so it selected neither reliably.
 
-**Change (recomp research hooks only, `src/research/hooks_audio.cpp`, uncommitted).** All seven kinds now gate on the
+**Change (recomp research hooks only, `src/research/hooks_audio.cpp`, committed on research-hooks).** All seven kinds now gate on the
 byte `[[object+28]+72]` (local72, as COLLPOST). SKID keeps its last holder per owner; FIRSTHIT keeps its per-state slots.
 TREAT / SEAMPAT / SEAMHIT's last field: bit 4 = local72 (the gate), bit 1 = byte `[[object+16]+72]`, bit 2 = state equals
 GREC's local state. New kind `LOCALTEST` (category `audio`, ≤ 256 lines, 6 fields; `trace.py` FIELD_COUNTS): per hook and

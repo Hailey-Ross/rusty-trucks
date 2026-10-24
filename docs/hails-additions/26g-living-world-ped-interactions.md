@@ -2196,7 +2196,7 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Change:** on that drop, a ped still in the sit cycle marks its plugin motion run orphaned, the same path as a
   packet that ends mid-clip, so the hold releases and Sit2Stand plays (`PED_PLUGIN_MOTION ... seat dropped while
   seated, standing up`).
-- **Verification:** not built or tested yet (uncommitted at the time of writing); not play-tested.
+- **Verification:** committed and pushed with #52 (the full skate-game suite passes on every later push); not play-tested.
 
 ### Follow-up: the plugin graph ends its behaviours (2026-10-19)
 
