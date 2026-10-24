@@ -1,8 +1,8 @@
 # 8. Setup performance: duplicate stream copies and customiser overlap (PR G)
 
 Measured on a full setup (Windows 11, i7-14700KF, 28 threads, 3 map workers):
-466 s total before this change — stock data 20 s, maps 183 s (DownTown alone
-182 s), character customiser 226 s (run only after all maps), publish 24 s —
+466 s total before this change: stock data 20 s, maps 183 s (DownTown alone
+182 s), character customiser 226 s (run only after all maps), publish 24 s;
 with total CPU use around 10%.
 
 ## 1. Skip decoding identical copies of streamed assets
@@ -64,9 +64,10 @@ copies.
 
 `customiser_setup.install` passes the customiser to `install._install` as
 `finalize`, which ran after the whole map stage. It reads only stock data
-(core group), default-skater textures (character group) and the disc — all
-prepared before maps — and writes only `assets/private/customisation`. It
-launches no processes (so it cannot race `spawn()`'s process-wide DLL setting).
+(core group), default-skater textures (character group) and the disc, all
+prepared before maps, and writes only `assets/private/customisation`. It
+launched no processes then (it has since gained worker processes and, from the third pass of
+"Export speed pass", runs as its own process; `spawn()` now holds a lock around the DLL setting).
 
 ### Change
 
@@ -220,9 +221,24 @@ their temporary sources). The other 18,828 are byte-identical, including all aud
   customiser set id, HUD / menu manifests) plus the customiser's `*-complete.json` records, whose `version` is the
   customiser's pipeline fingerprint (it covers `customisation_workers.py`, changed here) and `timings.json`.
 
-**Open:** the 40 run-to-run differences are pre-existing (not caused here); making them reproducible would let the
-identity check cover them too. Next candidate: start the customiser right after the character stage (it reads only
-stock, the default skater and the disc).
+**Third pass (2026-10-24, USER-ASKS 312):**
+- **The customiser starts right after the character stage**, as its own process (`stage_job.py customiser`, the same
+  `customiser_setup.prepare`), so its NumPy work never shares a process with the in-process environment and audio
+  stages. It needs one more memory slot than beside the maps alone (`overlap_customiser(workers+1)`); without it the
+  customiser starts beside the maps or after them, as before. A failure in a later stage waits for the customiser
+  process before the stage is cleaned up. `customiser_setup.py` itself is unchanged (every `customis*.py` is in the
+  customiser's fingerprint, so editing it would make every install redo the customiser): `install.py` recognises its
+  finalize by module.
+- **Result:** 125.2 s / 125.4 s (two runs of the unchanged pipeline, today's machine state) to 94.3 s (-25%). The
+  customiser now runs 6.5 to about 88 s (library 51.4 s, roster 19.6 s, as before) and ends before the final validation;
+  the stages before the maps take 4 s longer beside it (46.3 to 50.7 s).
+- **Identity:** the same 18,868 files; the 41 files that differ from the first baseline are exactly the 41 that differ
+  between the two baselines.
+
+**Open:** the run-to-run differences are pre-existing (not caused here); making them reproducible would let the
+identity check cover them too. The critical path is now the main line: the maps finish at 71 s, then map names,
+teleporters, visual indicators and park layouts (about 18 s, they read only the disc and the collections) before the
+final validation; those are the next candidate.
 
 ## Fingerprints
 

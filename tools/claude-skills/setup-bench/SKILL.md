@@ -25,10 +25,11 @@ pass": the numbers, the identity proof and the lessons).
    copy `target/native/refpack.dll` to `<bench>/pristine/target/native/` (without it RefPack decodes in pure Python,
    about 10x slower, which is not what users get; `scripts/Build.ps1` builds it). For a change: a second snapshot with
    the changed `tools/` files copied over it.
-2. The game exe: copy `bin/skate3rust.exe` with every `bin/bevy_dylib-*.dll` and `bin/std-*.dll` (a dev build needs them
+2. The game exe: copy a current build's `bin/skate3rust.exe` (the checkout being benched, not an old one) with every `bin/bevy_dylib-*.dll` and `bin/std-*.dll` (a dev build needs them
    beside it) into `<bench>`; every run uses that same exe.
-3. Run from the snapshot (Git Bash), in the background (a few minutes):
-   `cd <bench>/pristine && py -3.13 tools/claude-skills/setup-bench/tools/setup_bench.py --checkout <bench>/pristine --base <bench>/base1 --game-exe <bench>/skate3rust.exe --source <disc>/default.xex --label base1`
+3. Run from the snapshot (Git Bash), in the background (a few minutes; `SKATE_REPORT_CHILD=1` keeps a failing headless
+   game run from opening a crash report window):
+   `export SKATE_REPORT_CHILD=1; cd <bench>/pristine && py -3.13 tools/claude-skills/setup-bench/tools/setup_bench.py --checkout <bench>/pristine --base <bench>/base1 --game-exe <bench>/skate3rust.exe --source <disc>/default.xex --label base1`
    It writes `<label>-timing.log` (seconds, progress line) and `<label>-hashes.tsv` (path, size, sha256). Add
    `-X faulthandler` after `py -3.13` when testing threading changes.
 4. A second baseline (`--base base2 --label base2`) for the noise set, then the change (`--label new1`).
