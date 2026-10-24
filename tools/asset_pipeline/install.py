@@ -21,7 +21,8 @@ def available_memory():
 def map_workers():
     # The districts are not equal: DownTown alone sets the map stage's length,
     # so more than three workers barely helps (SKATE_SETUP_MAP_WORKERS overrides).
-    count=min(3,max(1,(os.cpu_count() or 1)//2))
+    from .setup_budget import cores
+    count=min(3,max(1,cores()//2))
     available=available_memory()
     if available is not None:
         # Reserve memory for the desktop; each map and its loader can
@@ -174,6 +175,17 @@ def run(args,log,report):
         for line in process.stdout:
             log.write(line);log.flush()
         if process.wait():raise RuntimeError('Conversion failed. See '+str(log.name))
+
+def run_stage(name,game_root,stage,work,log,report):
+    """An in-process stage function in its own process (stage_job.py): its `REPORT` lines go to `report`, the rest to
+    the log, as when it ran here."""
+    child=spawn(task(TOOLS/'asset_pipeline/stage_job.py',name,'--game',game_root,'--stage',stage,'--work',work),
+                stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    with child as process:
+        for line in process.stdout:
+            if line.startswith('REPORT '):report(line[7:].rstrip('\n'))
+            else:log.write(line);log.flush()
+        if process.wait():raise RuntimeError(f'Setup stage {name} failed. See '+str(log.name))
 
 class MapValidator:
     """One `skate3rust --validate-maps` process (crates/skate-game/src/map_validation.rs).
@@ -530,60 +542,22 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 dlc_jobs,dlc_vaults=dlc_packages.load(dlc_folder,game_root,work)
             except DLC_ERRORS as error:
                 report(f'DLC maps unavailable ({error})')
-        if 'environment' in groups:
-            exports.environment(game_root,stage,work,report,log,converted,game_exe,dlc_vaults)
-            # The unlock lines of the player's DLC packages (b458: retail's second unlock list; the Challenge Map shows
-            # a hidden-flag location only when it is unlocked). No packages = an empty list (a fresh save's view).
-            from .optional_content import CONTENT_ERRORS as UNLOCK_ERRORS
-            target=stage/'assets/private/dlc-unlocks.json'
-            try:
-                lines=dlc_packages.unlocks(dlc_folder) if dlc_identity else []
-                target.parent.mkdir(parents=True,exist_ok=True)
-                target.write_text(json.dumps({'version':1,'unlocks':lines},indent=1),encoding='utf-8')
-            except UNLOCK_ERRORS as error:
-                report(f'DLC unlocks unavailable ({error})')
-        if 'audio' in groups:
-            exports.audio(game_root,stage,work,report,log,base/'tools',dlc_jobs,dlc_vaults)
-        if 'livingworld' in groups:
-            exports.livingworld(game_root,stage,work,report,log,converted)
+        # The map jobs (their own processes) read only the disc, the map starts and the movable-object catalog and write
+        # only their maps, props and status files: they start here and run beside the HUD, environment, audio and
+        # living world stages; each map is validated further down, once the validator runs (doc 08 "Export speed pass").
+        map_run=None
         if 'maps' in groups:
+            from .optional_content import CONTENT_ERRORS, note
             report('Preparing authored movable-object models')
             from .dynamic_props import prepare_catalog
-            from .optional_content import CONTENT_ERRORS, note
+            catalog_ok=True
             try:
                 prepare_catalog(game_root,work/'dmo')
                 (private/'native-props/props-availability.json').unlink(missing_ok=True)
-                # Ped hand props (DMO_Global templates) need the livingworld group's tables.json with dmo_models.
-                tables=private/'living_world/tables.json'
-                if tables.is_file() and 'dmo_models' in json.loads(tables.read_text(encoding='utf-8')).get('classes',{}):
-                    from .hand_props import export as write_hand_props
-                    props=write_hand_props(work/'dmo/catalog.json',private,report)['props']
-                    report(f"Hand props: {sum('file' in p for p in props.values())} of {len(props)} exported")
-                else:
-                    report('Hand props skipped: rerun the livingworld group (tables.json has no dmo_models)')
             except CONTENT_ERRORS as error:
+                catalog_ok=False
                 if (work/'dmo').exists():remove_intermediate(work/'dmo',work)
                 note(private/'native-props/props-availability.json','Movable props',error,report=report)
-        if hud_job is not None:hud_job.join()
-        report('Validating skater, input and animation data')
-        validator=start_validator(game_exe,stage/'assets',log,report)
-        customiser=None  # Background customiser when overlapped with the map stage
-        def validate(request):
-            """Today's checks raise (map rejected); new findings come back as warnings."""
-            nonlocal validator
-            if validator is not None:
-                try:result=validator.check(request)
-                except RuntimeError as error:
-                    report(f'{error}; validating with --check-assets per map')
-                    validator.close();validator=None
-                else:
-                    if not result['ok']:raise RuntimeError('Map validation failed: '+'; '.join(result['errors']))
-                    return result
-            target=['--test-world'] if request=='TEST_WORLD' else ['--map',request]
-            run([game_exe,'--assets',stage/'assets',*target,'--check-assets'],log,report)
-            return None
-        validate('TEST_WORLD')
-        if 'maps' in groups:
             # Map jobs: every disc worldDIST_<D>.big, then each district stream in the player's DLC packs (b415).
             jobs=[{'archive':a,'district':None,'label':a.stem.removeprefix('worldDIST_'),'source':None}
                   for a in (game_root/'data/content').glob('worldDIST_*.big')]
@@ -603,12 +577,6 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 report(f'Authored map starts unavailable ({error}); using geometric spawns')
             (work/'map-starts.json').write_text(json.dumps(starts),encoding='utf-8')
             workers=map_workers()
-            # The customiser reads only stock, default-skater and disc data (all
-            # prepared above) and writes only assets/private/customisation, so it
-            # runs beside the map jobs instead of after them.
-            if finalize and overlap_customiser(workers):
-                report('Preparing the character customiser alongside the maps')
-                customiser=Background(lambda:finalize(stage),'customiser')
             report(f'Converting {len(jobs)} maps with {workers} workers')
             def map_job(job):
                 result=work/(job['label']+'.json')
@@ -617,27 +585,96 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                     run(task(TOOLS/'asset_pipeline/map_job.py','--archive',job['archive'],'--stage',stage,
                              '--game-exe',game_exe,'--result',result,*named),map_log,report)
                 return json.loads(result.read_text(encoding='utf-8'))
-            completed={}
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                # Start the expensive districts together so one does not
-                # remain queued behind a string of small parks.
-                futures={pool.submit(map_job,j):j for j in sorted(jobs,key=lambda j:-j['archive'].stat().st_size)}
-                for future in as_completed(futures):
-                    label=futures[future]['label']
-                    try:
-                        completed[label]=future.result()
-                        # Validate while the remaining maps keep converting.
-                        checked=validate(stage/completed[label]['path'])
-                    except CONTENT_ERRORS as error:
-                        completed.pop(label,None)
-                        (maps/(label+'.skate')).unlink(missing_ok=True)
-                        props=private/'native-props'/(label+'.skate')
-                        if props.is_dir():remove_intermediate(props,private)
-                        note(private/'map-status'/(label+'-availability.json'),label,error,report=report)
-                        continue
-                    (private/'map-status'/(completed[label]['name']+'-availability.json')).unlink(missing_ok=True)
-                    record_validation(private,completed[label],checked,report)
-                    report(f"Converted {len(completed)}/{len(jobs)} maps: {completed[label]['name']}")
+            pool=ThreadPoolExecutor(max_workers=workers)
+            # Start the expensive districts together so one does not
+            # remain queued behind a string of small parks.
+            futures={pool.submit(map_job,j):j for j in sorted(jobs,key=lambda j:-j['archive'].stat().st_size)}
+            map_run=(pool,futures)
+        try:
+            if 'environment' in groups:
+                exports.environment(game_root,stage,work,report,log,converted,game_exe,dlc_vaults)
+                # The unlock lines of the player's DLC packages (b458: retail's second unlock list; the Challenge Map shows
+                # a hidden-flag location only when it is unlocked). No packages = an empty list (a fresh save's view).
+                from .optional_content import CONTENT_ERRORS as UNLOCK_ERRORS
+                target=stage/'assets/private/dlc-unlocks.json'
+                try:
+                    lines=dlc_packages.unlocks(dlc_folder) if dlc_identity else []
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    target.write_text(json.dumps({'version':1,'unlocks':lines},indent=1),encoding='utf-8')
+                except UNLOCK_ERRORS as error:
+                    report(f'DLC unlocks unavailable ({error})')
+            # The living world reads only the disc and writes only private/living_world (its own process, so its NumPy work
+            # runs beside the audio's); the props below read its tables, so it is joined first.
+            living_job=None
+            if 'livingworld' in groups:
+                living_job=Background(lambda:run_stage('livingworld',game_root,stage,work,log,report),'livingworld')
+            if 'audio' in groups:
+                exports.audio(game_root,stage,work,report,log,base/'tools',dlc_jobs,dlc_vaults)
+            if living_job is not None:living_job.join()
+            if 'maps' in groups and catalog_ok:
+                # Ped hand props (DMO_Global templates) need the livingworld group's tables.json with dmo_models.
+                try:
+                    tables=private/'living_world/tables.json'
+                    if tables.is_file() and 'dmo_models' in json.loads(tables.read_text(encoding='utf-8')).get('classes',{}):
+                        from .hand_props import export as write_hand_props
+                        props=write_hand_props(work/'dmo/catalog.json',private,report)['props']
+                        report(f"Hand props: {sum('file' in p for p in props.values())} of {len(props)} exported")
+                    else:
+                        report('Hand props skipped: rerun the livingworld group (tables.json has no dmo_models)')
+                except CONTENT_ERRORS as error:
+                    # The map jobs read work/dmo meanwhile: it stays (they place their props as before).
+                    note(private/'native-props/props-availability.json','Movable props',error,report=report)
+            if hud_job is not None:hud_job.join()
+            report('Validating skater, input and animation data')
+            validator=start_validator(game_exe,stage/'assets',log,report)
+            customiser=None  # Background customiser when overlapped with the map stage
+            def validate(request):
+                """Today's checks raise (map rejected); new findings come back as warnings."""
+                nonlocal validator
+                if validator is not None:
+                    try:result=validator.check(request)
+                    except RuntimeError as error:
+                        report(f'{error}; validating with --check-assets per map')
+                        validator.close();validator=None
+                    else:
+                        if not result['ok']:raise RuntimeError('Map validation failed: '+'; '.join(result['errors']))
+                        return result
+                target=['--test-world'] if request=='TEST_WORLD' else ['--map',request]
+                run([game_exe,'--assets',stage/'assets',*target,'--check-assets'],log,report)
+                return None
+            validate('TEST_WORLD')
+            if 'maps' in groups:
+                # The customiser reads only stock, default-skater and disc data (all
+                # prepared above) and writes only assets/private/customisation, so it
+                # runs beside the map jobs instead of after them.
+                if finalize and overlap_customiser(workers):
+                    report('Preparing the character customiser alongside the maps')
+                    customiser=Background(lambda:finalize(stage),'customiser')
+                completed={}
+                pool,futures=map_run
+                with pool:
+                    for future in as_completed(futures):
+                        label=futures[future]['label']
+                        try:
+                            completed[label]=future.result()
+                            # Validate while the remaining maps keep converting.
+                            checked=validate(stage/completed[label]['path'])
+                        except CONTENT_ERRORS as error:
+                            completed.pop(label,None)
+                            (maps/(label+'.skate')).unlink(missing_ok=True)
+                            props=private/'native-props'/(label+'.skate')
+                            if props.is_dir():remove_intermediate(props,private)
+                            note(private/'map-status'/(label+'-availability.json'),label,error,report=report)
+                            continue
+                        (private/'map-status'/(completed[label]['name']+'-availability.json')).unlink(missing_ok=True)
+                        record_validation(private,completed[label],checked,report)
+                        report(f"Converted {len(completed)}/{len(jobs)} maps: {completed[label]['name']}")
+        except BaseException:
+            if map_run is not None:
+                # Stop the queued map jobs and let the running ones end before the stage is cleaned up.
+                map_run[0].shutdown(wait=True,cancel_futures=True)
+            raise
+        if 'maps' in groups:
             catalog=[completed[j['label']] for j in jobs if j['label'] in completed]
             if previous:
                 # An absent/failed source district may still have a usable old
