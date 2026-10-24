@@ -52,8 +52,22 @@ impl<A: Asset> StagedAssets<A> {
     }
 
     pub(crate) fn publish(&mut self, world: &mut World) {
-        let mut assets = world.resource_mut::<Assets<A>>();
-        for (handle, asset) in self.pending.drain(..) {
+        self.publish_some(&mut world.resource_mut::<Assets<A>>(), usize::MAX, |_| 0);
+    }
+
+    /// Insert staged assets in staging order until `budget` bytes (`size` of each) went in, at
+    /// least one; returns the bytes inserted.
+    fn publish_some(&mut self, assets: &mut Assets<A>, budget: usize, size: impl Fn(&A) -> usize) -> usize {
+        let mut bytes = 0usize;
+        let mut taken = 0;
+        for (_, asset) in &self.pending {
+            if taken > 0 && bytes >= budget {
+                break;
+            }
+            bytes = bytes.saturating_add(size(asset));
+            taken += 1;
+        }
+        for (handle, asset) in self.pending.drain(..taken) {
             self.owned.push(handle.id());
             // The handle came from this same provider moments ago, so a stale
             // generation would mean the reservation logic is broken, not that a
@@ -65,6 +79,7 @@ impl<A: Asset> StagedAssets<A> {
                 );
             }
         }
+        bytes
     }
 }
 
@@ -124,6 +139,8 @@ impl SceneCommands {
 #[derive(Resource, Default)]
 pub(crate) struct MapAssets {
     groups: Vec<Box<dyn OwnedAssets>>,
+    /// A map switch's meshes and textures, inserted a slice per frame after the commit ([`upload_slices`]).
+    uploads: Option<(StagedAssets<Mesh>, StagedAssets<Image>)>,
 }
 
 impl MapAssets {
@@ -141,7 +158,16 @@ impl MapAssets {
             for group in &mut assets.groups {
                 group.release(world);
             }
+            if let Some((meshes, images)) = assets.uploads.as_mut() {
+                meshes.release(world);
+                images.release(world);
+            }
         }
+    }
+
+    /// Meshes or textures of the current map are still to be inserted.
+    pub(crate) fn uploading(&self) -> bool {
+        self.uploads.is_some()
     }
 }
 
@@ -286,6 +312,25 @@ impl PreparedScene {
     pub(crate) fn publish(&mut self, world: &mut World) {
         self.meshes.publish(world);
         self.images.publish(world);
+        self.publish_rest(world);
+    }
+
+    /// The map switch's commit: as [`PreparedScene::publish`], but the meshes and textures go in
+    /// slices over the next frames ([`upload_slices`]) so the render thread does not upload a
+    /// district's 1.1 GB in one frame. Their entities spawn now and draw once their assets are in;
+    /// the transition holds the paused world until then (doc 25, "Map switch: the render upload").
+    pub(crate) fn publish_sliced(&mut self, world: &mut World) {
+        if slice_bytes() == usize::MAX {
+            self.publish(world);
+            return;
+        }
+        let meshes = std::mem::replace(&mut self.meshes, StagedAssets::new(world));
+        let images = std::mem::replace(&mut self.images, StagedAssets::new(world));
+        self.publish_rest(world);
+        world.resource_mut::<MapAssets>().uploads = Some((meshes, images));
+    }
+
+    fn publish_rest(&mut self, world: &mut World) {
         self.standard.publish(world);
         self.world_materials.publish(world);
         self.sky.publish(world);
@@ -300,7 +345,47 @@ impl PreparedScene {
                 Box::new(std::mem::replace(&mut self.sky, StagedAssets::new(world))),
                 Box::new(std::mem::replace(&mut self.params, StagedAssets::new(world))),
             ],
+            uploads: None,
         });
+    }
+}
+
+/// Bytes of meshes and textures a map switch inserts per frame (`SKATE_MAP_UPLOAD_MB`, default 64; 0 = all at once,
+/// as before). At least one asset goes in each frame.
+fn slice_bytes() -> usize {
+    static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BYTES.get_or_init(|| match std::env::var("SKATE_MAP_UPLOAD_MB").ok().and_then(|v| v.trim().parse::<usize>().ok()) {
+        Some(0) => usize::MAX,
+        Some(mb) => mb << 20,
+        None => 64 << 20,
+    })
+}
+
+fn mesh_bytes(mesh: &Mesh) -> usize {
+    mesh.get_vertex_size() as usize * mesh.count_vertices() + mesh.indices().map_or(0, |i| i.len() * 4)
+}
+
+fn image_bytes(image: &Image) -> usize {
+    image.data.as_ref().map_or(0, Vec::len)
+}
+
+/// A slice of the pending map meshes, then textures, per frame; the rest of the frame's budget carries over.
+pub(crate) fn upload_slices(map: Option<ResMut<MapAssets>>, mut meshes: ResMut<Assets<Mesh>>, mut images: ResMut<Assets<Image>>) {
+    let Some(mut map) = map else { return };
+    let map = &mut *map;
+    let Some((staged_meshes, staged_images)) = map.uploads.as_mut() else { return };
+    let mut budget = slice_bytes();
+    if !staged_meshes.pending.is_empty() {
+        budget = budget.saturating_sub(staged_meshes.publish_some(&mut meshes, budget, mesh_bytes));
+    }
+    if staged_meshes.pending.is_empty() && budget > 0 && !staged_images.pending.is_empty() {
+        staged_images.publish_some(&mut images, budget, image_bytes);
+    }
+    if staged_meshes.pending.is_empty() && staged_images.pending.is_empty() {
+        let (meshes, images) = map.uploads.take().expect("checked above");
+        map.groups.push(Box::new(meshes));
+        map.groups.push(Box::new(images));
+        info!("MAP_UPLOAD done");
     }
 }
 
@@ -370,5 +455,27 @@ impl<A: Asset> StagedAssets<A> {
     }
     pub(crate) fn publish_now(&mut self, world: &mut World) {
         self.publish(world);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_slice_takes_assets_in_order_up_to_the_budget_and_at_least_one() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        let mut staged = StagedAssets::<Image>::new(&world);
+        let sized = |bytes: usize| { let mut image = Image::default(); image.data = Some(vec![0; bytes]); image };
+        let handles: Vec<_> = [40, 30, 100, 10].into_iter().map(|b| staged.add(sized(b))).collect();
+        let mut assets = world.resource_mut::<Assets<Image>>();
+        let inserted = |a: &Assets<Image>| handles.iter().map(|h| a.contains(h)).collect::<Vec<_>>();
+        assert_eq!(staged.publish_some(&mut assets, 60, image_bytes), 70, "the asset that crosses the budget still goes in");
+        assert_eq!(inserted(&assets), [true, true, false, false]);
+        assert_eq!(staged.publish_some(&mut assets, 50, image_bytes), 100, "one asset over the budget goes in alone");
+        assert_eq!(staged.publish_some(&mut assets, 50, image_bytes), 10);
+        assert_eq!(inserted(&assets), [true; 4]);
+        assert!(staged.pending.is_empty() && staged.owned.len() == 4, "inserted assets are owned (released with the map)");
     }
 }

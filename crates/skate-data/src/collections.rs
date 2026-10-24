@@ -17,6 +17,9 @@ pub struct Field {
 pub struct FieldArray {
     #[serde(default)]
     pub text_items: Vec<String>,
+    /// Elements of two text pointers each, resolved (the loading screen's hints: title, text).
+    #[serde(default)]
+    pub text_pairs: Vec<[String; 2]>,
     /// The raw elements as big-endian hex.
     #[serde(default)]
     pub items: Vec<String>,

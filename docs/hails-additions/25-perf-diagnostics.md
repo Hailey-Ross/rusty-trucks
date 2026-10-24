@@ -489,17 +489,29 @@ unchanged.
   installed map transition tests.
 - **Open:** measure the commit frame in a switch run (`.local/tools/frame-time-run.ps1`, `SKATE_MAP_SWITCH`).
 
-## Map switch: the render upload (2026-10-24, USER-ASKS 301)
+## Map switch: the render upload (2026-10-24, USER-ASKS 301, 303)
 
 - **Size:** the installed transition test now prints what the render world uploads after a commit: University
   990 MB of textures (RGBA8 arrays with full mip chains, `retail_render::upload_page`) and 153 MB of vertices;
   BlackBoxPark 56 MB / 1 MB (`LIFECYCLE_CHECK ... image_mb mesh_vertex_mb`). The 2026-10-23 switch's render frame
   (`prepare_assets<GpuImage>` 295 ms, `allocate_and_free_meshes` 197 ms) is that copy. The map images and meshes are
   `RENDER_WORLD` only, so extraction moves them (no clone on the main thread) and nothing is copied twice.
-- **Not changed (needs a decision):** the copy can only be spread over frames. Uploading during the load means both
-  maps' textures in video memory at once (about 2.2 GB for two districts); uploading after the commit in slices means
-  the new map appears piece by piece behind the progress overlay, which does not cover the screen. Compressing the
-  textures would change how they look.
+- **Change (user 2026-10-24: "Lets upload in pieces after the switch", USER-ASKS 303):** the map switch's commit
+  (`PreparedScene::publish_sliced`) publishes the materials, buffers and entities at once but keeps the new map's
+  meshes and textures in `MapAssets`; `map_render::upload_slices` (PreUpdate, after the transition) inserts them in
+  staging order, meshes first, up to 64 MB a frame and at least one asset (`SKATE_MAP_UPLOAD_MB`, 0 = all at once as
+  before). The transition stays in its publishing phase (world paused, overlay up) until the last slice is in, then
+  runs its three publishing frames as before. Entities whose mesh or texture is not in yet do not draw (their
+  material's bind group waits for its images); the user chose this over holding both maps in video memory. The
+  startup map still publishes in one pass (behind the splash). Same final world: the same assets under the same
+  handles, the same entities; only when each asset goes in changes. Released with the map like every staged asset,
+  also when a map is retired mid-upload.
+- **Slices:** University 7 frames (one texture array can be larger than the budget and goes in alone), BlackBoxPark 1
+  (installed transition test `upload_slices=`).
+- **Tests:** `map_render::tests::a_slice_takes_assets_in_order_up_to_the_budget_and_at_least_one`; the installed map
+  transition test runs the slices to the end after each commit.
+- **Open:** a switch run to measure the render frames per slice (`.local/tools/frame-time-run.ps1`,
+  `SKATE_MAP_SWITCH`); the largest single texture array bounds a slice.
 
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 

@@ -76,6 +76,9 @@ MENU_ROOTS = (
     # The action overlay (template 59 SignUpHUD): the teleporter prompt (state 2, research b421 / b426). Optional for
     # the engine: a set without it keeps the teleporter's text line, so the set version stays.
     'source/screens/hud2/actionoverlay2',
+    # The loading screen (template 131 TipsLoader, FE screen 52, host object TipsLoader; research b581). Optional for
+    # the engine like the action overlay: a set without it keeps the progress overlay, so the set version stays.
+    'source/screens/main/tiploader',
     'source/screens/main3dhud',
     'source/helper/screenmanager',
     'source/helper/screentransitionmanager',

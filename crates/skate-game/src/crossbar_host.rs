@@ -217,6 +217,8 @@ pub struct FrontEnd<'a> {
     pub credits: crate::extras_host::CreditsHost,
     /// FE 62 SpawnSkater's `SkaterSpawner` object (spawn_skater_host).
     pub spawn_skater: crate::spawn_skater_host::SpawnSkaterHost,
+    /// FE 52 loading screen's `TipsLoader` object (tips_loader_host).
+    pub tips_loader: crate::tips_loader_host::TipsLoaderHost,
     /// FE 34 FreeSkateOption's object (free_skate_options_host).
     pub free_skate: crate::free_skate_options_host::FreeSkateOptionsHost,
     /// The image slots (`Game.ImageRenderer_*`, one global manager across screens).
@@ -254,6 +256,7 @@ impl<'a> FrontEnd<'a> {
             tos: Default::default(),
             credits: Default::default(),
             spawn_skater: Default::default(),
+            tips_loader: Default::default(),
             free_skate: Default::default(),
             image_slots: Default::default(),
             popup: Default::default(),
@@ -264,7 +267,7 @@ impl<'a> FrontEnd<'a> {
 
 impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     fn objects(&self) -> Vec<String> {
-        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos", "FECredits", "SkaterSpawner", "FreeSkateOption"]
+        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos", "FECredits", "SkaterSpawner", "FreeSkateOption", "TipsLoader"]
             .map(String::from)
             .to_vec()
     }
@@ -316,6 +319,9 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
             return Ok(value);
         }
         if let Some(value) = self.spawn_skater.call(vm, object, method, &args)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.tips_loader.call(vm, object, method, &args)? {
             return Ok(value);
         }
         // The Extras rows and its picker callbacks (only while FE 18 is on top).

@@ -163,6 +163,44 @@ this machine). The outputs are identical, so nothing the user can see changes.
 There is no equivalence mechanism for the customiser fingerprint, and the
 rebuild is cheap, so none was added.
 
+## Export speed pass (2026-10-24, USER-ASKS 305)
+
+User: "run an optimization pass over our scripts that extract assets with the goal of making it faster while not
+introducing any new issues into the export process."
+
+**Measured first.** A full fresh setup of the disc (no DLC) into a scratch base on K:, with the native RefPack DLL and
+the dev game exe the launcher's refresh uses, every progress line timestamped (`.local/perf-bench/setup_bench.py`: also
+a sha256 manifest of every installed file). Baseline 228.3 s. The stages before the maps ran one after another: the
+HUD and menu movies 31 s, audio 59 s (of it the bank decode loop 36 s, the ambience beds 10.5 s, the region read
+11 s), the living world 28 s; then maps beside the customiser 61 s, park layouts 17 s, the final validation 18 s.
+Inside the menu movie export (cProfile): DXT decoding in pure Python 13 s, a pure-Python RefPack 9 s (the vendored UI
+tools' copy, not the setup's native one), PNG zlib 5 s.
+
+**Changes:**
+- Audio: the sound banks and the ambience beds decode on `setup_budget.decode_workers()` threads (vgmstream processes;
+  `SKATE_SETUP_DECODE_WORKERS`, default cpu/2, 2..6); each writes only its own files and the manifest is filled in the
+  original order (`audio_export._in_order`). The beds' NumPy downmix stays one at a time (`_NUMPY` lock): with several
+  threads in NumPy's BLAS at once Python crashed (access violation) in a first attempt.
+- Menu movies: the vendored RefPack uses the setup's native decoder when it is built (`vendor/skate3_ui/refpack.py`,
+  as `owned_game/refpack.py` already did); the DXT decoder works on all blocks at once in NumPy with the same integer
+  arithmetic (`xenos._decode_dxt`; the old one is `_decode_dxt_reference`, test `test_menu_texture_decode`: 480 random
+  cases over the three formats, odd sizes, three-colour and six-step-alpha blocks, byte-identical).
+- The HUD / menu movie stage (its own process; reads only the disc and the stock collections, writes only its folders)
+  runs beside character, environment, audio and the living world, joined before validation (`install.py` `hud_job`).
+  In-process stages stay one at a time (the audio overlapping the living world is what crashed in NumPy).
+- `install.spawn` holds a lock: the frozen build's `SetDllDirectoryW` switch around a child start is process-wide.
+
+**Result:** 228.3 s to 189.5 s (-17%); everything before the maps 131 s to 75 s. The maps and the customiser
+(beside them) are now the critical path.
+
+**Identity:** the new export writes the same 18,868 files. Every file that differs from the baseline also differs
+between two runs of the unchanged pipeline (a second baseline): 40 files that are not reproducible run to run
+(map `.skate` files, park layouts and props, the customiser set id in paths, a few HUD / menu manifests that hash
+their temporary sources). The other 18,828 are byte-identical, including all audio and every menu movie texture.
+
+**Open:** the 40 run-to-run differences are pre-existing (not caused here); making them reproducible would let the
+identity check cover them too. The customiser library (41 s) and the map stage are the next candidates.
+
 ## Fingerprints
 
 The stream change touches a file in the shared parser set, changing the

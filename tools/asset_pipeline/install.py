@@ -138,7 +138,16 @@ def dependency(cache,name,url,sha,report):
     if executable is None:raise RuntimeError('Missing downloaded tool: '+name)
     return executable
 
+import threading
+_SPAWN=threading.Lock()
+
 def spawn(args,**popen):
+    # One child start at a time: the frozen build's DLL directory switch below is process-wide, and the HUD, audio and
+    # map stages start children from their own threads.
+    with _SPAWN:
+        return _spawn(args,**popen)
+
+def _spawn(args,**popen):
     from .setup_budget import priority_class
     # Child processes inherit the setup priority budget.
     kwargs={'creationflags':subprocess.CREATE_NO_WINDOW|priority_class()} if os.name=='nt' else {}
@@ -146,7 +155,7 @@ def spawn(args,**popen):
     if external:
         # External tools and the game must load their own libraries, not
         # the setup bundle's DLL directory inherited by child processes.
-        # SetDllDirectoryW is process-wide: only spawn external tools from one thread.
+        # SetDllDirectoryW is process-wide: `spawn` holds _SPAWN around this.
         import ctypes
         ctypes.windll.kernel32.SetDllDirectoryW(None)
         env=os.environ.copy()
@@ -505,8 +514,12 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             converted=exports.core(game_root,stage,work,report,log)
         else:
             converted=json.loads((stock/'skater-collections.json').read_text(encoding='utf-8'))
+        # The HUD and menu movies (their own process) read only the disc and the stock collections and write only their
+        # own folders: they run beside the stages below and are joined before validation (doc 08 "Export speed pass").
+        # In-process stages stay one at a time (NumPy's BLAS crashed when two threads used it at once).
+        hud_job=None
         if 'hud' in groups:
-            exports.hud(game_root,stage,work,report,log,dlc=dlc_folder if dlc_identity else None)
+            hud_job=Background(lambda:exports.hud(game_root,stage,work,report,log,dlc=dlc_folder if dlc_identity else None),'hud')
         if 'character' in groups:
             exports.character(game_root,stage,work,report,log,converted)
         # The player's DLC map packs: their map jobs and collection vaults, read once for the groups that use them.
@@ -551,6 +564,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             except CONTENT_ERRORS as error:
                 if (work/'dmo').exists():remove_intermediate(work/'dmo',work)
                 note(private/'native-props/props-availability.json','Movable props',error,report=report)
+        if hud_job is not None:hud_job.join()
         report('Validating skater, input and animation data')
         validator=start_validator(game_exe,stage/'assets',log,report)
         customiser=None  # Background customiser when overlapped with the map stage

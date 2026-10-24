@@ -52,6 +52,9 @@ pub(crate) const SPAWN_SKATER_SCREEN: &str = "6abd6ed78ce7e627";
 /// The Free Play options screen's id (TU3 FE id 34, template 13 `main/freeskate_options.swf`; info record 0x83026088 +
 /// 34 * 24, disc index 32; b548 / b564).
 pub(crate) const FREE_SKATE_SCREEN: &str = "898675eacd78bf05";
+/// The loading screen's id (TU3 FE id 52, template 131 `main/tiploader.swf`; disc index 50, key = hash64("tiploader");
+/// b581).
+pub(crate) const LOADING_SCREEN: &str = "e1fa207da2bdf61a";
 
 #[derive(Resource, Default)]
 pub(crate) struct FeBackdrop {
