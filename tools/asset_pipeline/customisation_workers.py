@@ -1,8 +1,12 @@
 """Parallel worker processes for the character customiser (source and frozen setup).
 
-Two jobs, each reading a JSON request file:
+Four jobs, each reading a JSON request file:
   --warm-textures REQUEST  decode clothing-library textures into the decoded/ cache
                            (customisation_library.warm_textures)
+  --warm-models REQUEST    convert clothing-library models into library/*_v4.glb
+                           (customisation_library.warm_models)
+  --derive-textures REQUEST  normal / rough maps and alpha-masked diffuses into library/textures
+                           (customisation_library.derive_textures)
   --roster REQUEST         prepare a subset of pro/special characters
                            (native_roster.prepare with only=..., report_path=...)
 Workers only fill caches or write disjoint per-character outputs; the callers
@@ -50,6 +54,12 @@ def main(argv):
     if mode == '--warm-textures':
         from tools.asset_pipeline.customisation_library import warm_textures
         warm_textures(request['config'], request['textures'])
+    elif mode == '--warm-models':
+        from tools.asset_pipeline.customisation_library import warm_models
+        warm_models(request['config'], request['models'])
+    elif mode == '--derive-textures':
+        from tools.asset_pipeline.customisation_library import derive_textures
+        derive_textures(request['config'], request['jobs'])
     elif mode == '--roster':
         from tools.asset_pipeline.native_roster import prepare
         prepare(*(Path(request[k]) for k in ('game', 'assets', 'library', 'collections', 'work')),

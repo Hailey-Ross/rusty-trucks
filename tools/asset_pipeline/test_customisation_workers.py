@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from . import native_roster
-from .customisation_library import requested_textures
+from .customisation_library import derived_jobs, requested_textures, warm_up
 from .customisation_workers import customiser_workers
 
 
@@ -118,6 +118,44 @@ class WarmTextureTests(unittest.TestCase):
                                            {'lods': [{'index': 0, 'material_instances': [[{'id': 'm1'}], [{'id': 'm3'}]]}]}]},
                 {'slot': 'Misc', 'models': [{'lods': [{'index': 0, 'material_instances': [[{'id': 't1'}]]}]}]}]}
         self.assertEqual(requested_textures(catalog), ['diffuse2', 'normal2', 'diffuse3', 'alpha3', 'specular3', 'tat'])
+
+    def test_warm_up_splits_unconverted_models_and_textures_over_the_workers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            (cache / 'library').mkdir()
+            (cache / 'library' / 'done_v4.glb').write_bytes(b'glb')
+            catalog = {'materials': {}, 'components': [
+                {'slot': 'Hat', 'models': [{'id': k, 'lods': []} for k in ('a', 'done', 'b', 'c')]},
+                {'slot': 'Misc', 'models': [{'id': 'stamps', 'lods': []}]}]}
+            (cache / 'catalog.json').write_text(json.dumps(catalog))
+            sent = {}
+            def record(requests, workers):
+                for mode, request in requests:
+                    data = json.loads(Path(request).read_text())
+                    sent.setdefault(mode, []).append(data.get('models', data.get('textures')))
+                return [None] * len(requests)
+            with patch('tools.asset_pipeline.customisation_library.requested_textures', return_value=['t1', 't2', 't3']), \
+                 patch('tools.asset_pipeline.customisation_workers.run_parallel', side_effect=record):
+                warmed, _ = warm_up({'directory': str(cache)}, 2)
+            self.assertEqual(sorted(k for chunk in sent['--warm-models'] for k in chunk), ['a', 'b', 'c'])
+            self.assertEqual(sorted(t for chunk in sent['--warm-textures'] for t in chunk), ['t1', 't2', 't3'])
+            self.assertTrue(all(sent['--warm-models']) and len(sent['--warm-models']) == 2)
+            self.assertEqual(warmed, {'t1', 't2', 't3'})
+
+    def test_derived_jobs_follow_the_material_loop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            for key in ('hat', 'hair'):
+                (out / f'{key}_v4.glb').write_bytes(b'glb')
+            def mat(**tex):
+                return {'textures': [{'channel': c, 'id': i} for c, i in tex.items()], 'flags': {}}
+            def model(key, *mids):
+                return {'id': key, 'lods': [{'index': 0, 'material_instances': [[{'id': m} for m in mids]]}]}
+            catalog = {'materials': {'m1': mat(diffuse='d1', alpha='a1', normal='n1', specular='s1'),
+                                     'm2': mat(diffuse='d2', alpha='a2'), 'm3': mat(normal='n3'), 'm4': mat(diffuse='d4', normal='n4')},
+                       'components': [{'slot': 'Hat', 'models': [model('hat', 'm1', 'm3'), model('nomesh', 'm4')]},
+                                      {'slot': 'Hair', 'models': [model('hair', 'm2', 'm1')]}]}
+            self.assertEqual(derived_jobs(catalog, out), [('d1_a1', 'combined', 'd1', 'a1'), ('n1_normal', 'normal', 'n1'), ('s1_rough', 'rough', 's1')])
 
 
 if __name__ == '__main__':
