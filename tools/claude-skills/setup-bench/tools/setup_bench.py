@@ -45,6 +45,18 @@ def main():
     ap.add_argument('--label', required=True)
     ap.add_argument('--no-hash', action='store_true')
     a = ap.parse_args()
+    try:
+        import numpy, PIL  # noqa: F401
+    except ImportError:
+        # A system Python without the setup's packages (laptop 2026-10-24): rerun in a setup venv.
+        roots = [a.checkout, *Path(__file__).resolve().parents]
+        for venv in (v for r in roots for v in (r / '.local/venv-setup', r / '.local/versions/hails-additions/.local/venv-setup')):
+            python = venv / 'Scripts' / 'python.exe'
+            if python.is_file() and Path(sys.prefix).resolve() != venv.resolve():
+                import subprocess
+                print(f'setup_bench: numpy / Pillow missing here, running with {python}', flush=True)
+                sys.exit(subprocess.call([str(python), str(Path(__file__).resolve()), *sys.argv[1:]]))
+        sys.exit('setup_bench: numpy / Pillow missing; run tools/setup.py once (it creates .local/venv-setup) or pip install -r tools/requirements-setup.txt')
     if a.base.exists():
         if not (a.base / 'BENCH').exists():
             sys.exit(f'{a.base} exists and is not a bench base')
