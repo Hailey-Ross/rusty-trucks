@@ -392,9 +392,18 @@ fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::P
     }
     stage.call_path("_level0._root.SetPlatform", vec![text("0")], fe)?;
     stage.call_path("_level0._root.SetScreenSize", vec![text("1280"), text("720")], fe)?;
-    stage.call_path("_level0._root.SetScreenEdgeOffset", vec![text("136")], fe)?;
+    // No SetScreenEdgeOffset: retail sends its SD value "136" only without the HD flag (doc 31 "Screen edge offset").
     stage.call_path("_level0._root.UpdatePALMode", vec![text("false")], fe)?;
     Ok(names)
+}
+
+/// The autosave layer's corner wheel while the loading screen is up, as in the recomp's loads (doc 31 "Loading screen
+/// (FE 52)"). A menu set without the autosave layer has no such function; the load runs without the wheel.
+fn load_tag(stage: &mut Stage, on: bool, fe: &mut FrontEnd) {
+    let (path, args) = if on { ("_global.Load_EnableTag", vec![Value::Bool(true)]) } else { ("_global.Load_HideTag", Vec::new()) };
+    if let Err(e) = stage.call_path(path, args, fe) {
+        debug!("RETAIL_MENUS {path}: {e}");
+    }
 }
 
 /// The Apt keys: names from the menu tables' key table, expressions from the install's stock input.cfg.
@@ -1312,6 +1321,7 @@ fn update(
                     ms.load_up = false;
                     ms.load_gone = false;
                     open_screen(&mut ms.stage, TIPS_LOADER_PATH, TIPS_LOADER, &mut fe)?;
+                    load_tag(&mut ms.stage, true, &mut fe);
                 }
                 Effect::Close(i) if Some(i) == loader => {
                     info!("RETAIL_MENUS close loading screen (FE {i})");
@@ -1319,6 +1329,7 @@ fn update(
                     ms.load_up = false;
                     ms.load_gone = true;
                     close(&mut ms.stage, ms.tips_loader_id, &mut fe)?;
+                    load_tag(&mut ms.stage, false, &mut fe);
                 }
                 Effect::Close(i) if Some(i) == spawn => {
                     info!("RETAIL_MENUS close SpawnSkater (FE {i})");
