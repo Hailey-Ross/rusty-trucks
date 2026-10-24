@@ -284,8 +284,26 @@ customiser fingerprint, so every install redoes the customiser once).
 - **Cost:** the customiser fingerprint changes, so every existing install redoes the customiser once on its next
   refresh.
 - **Open:** the worker count stays a share of the machine (`setup_budget.customiser_workers`, a quarter of the core
-  budget, 1..8; memory scale-with-machine); the laptop's worker-count runs decide whether the share changes. The
-  docstring "a quarter" in `customisation_workers.py` matches `setup_budget.py` (the note above about it was stale).
+  budget, 1..8; memory scale-with-machine); see the worker share below. The docstring "a quarter" in
+  `customisation_workers.py` matches `setup_budget.py` (the note above about it was stale).
+
+**Customiser worker share on two machines (2026-10-24, USER-ASKS 316, 324):**
+- **Laptop** (Ryzen 9 8945HS, 8 cores / 16 threads, 31 GB, NVMe; budget 12, 3 map workers, customiser default 3;
+  pipeline 5b16a77b, before ddf2231a; `second-pc/HAILS-ROGLAPTOP/setup-bench-20261024-1325`): 30f19a4e -> 5b16a77b
+  178.4 / 180.5 s -> 136.2 / 136.9 s (-24%). Customiser workers 3: 136.2, 136.9, 134.8, 136.3 s; 6: 117.4, 124.7 s
+  (-11%): the maps end at about 103 s and the customiser (roster ends about 131 s) runs on alone with 3 workers
+  while 9 cores of the budget are idle. Same 18,868 files; only the 41 run-to-run files differ.
+- **Desktop** (28 threads, budget 21, customiser default 5; pipeline ddf2231a): 5 workers 77.3 / 76.8 s (library
+  36.96 / 36.91 s, customiser ends 68.7 / 68.2 s, maps 72.5 / 71.9 s); 8 workers 78.9 / 79.3 s (library 29.81 /
+  29.77 s, customiser ends 54.8 / 55.4 s, maps 74.0 / 74.1 s). The customiser and the maps already end together at
+  5, so more customiser workers only take threads from the map jobs (`job_threads` is the budget left after the
+  customiser, over 3 jobs). Same files (0 outside the 41-file set).
+- **Conclusion:** no fixed share fits both (a quarter is right here, half is right on the laptop). What fits both is
+  giving the customiser the cores the maps release once they finish (open, USER-ASKS 325 alongside the CPU-load idea).
+- `setup_bench.py` (`.local/perf-bench`, published copy `tools/claude-skills/setup-bench/tools`) now reruns itself in
+  a setup venv (`.local/venv-setup` of the checkout or a parent, or `.local/versions/hails-additions`) when the
+  Python it was started with has no numpy / Pillow (the laptop's system Python 3.13 failed in extract_default_skater).
+  An install folder was about 4.9 GB on the laptop (desktop bench installs include more).
 
 ## Fingerprints
 
