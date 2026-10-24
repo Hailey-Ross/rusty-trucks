@@ -53,14 +53,14 @@ you read code through skill `ghidra`. Credit them in every doc and PR that uses 
   - AI-graph ops: an op's vtable comes from its constructor's `stw rX,0(r31)`, with Begin / Update / End at
     vtable +48 / +52 / +56 (a condition's test is +48); when a factory has no vtable store, follow its `bl` to the real
     constructor.
-  - `grepfn.sh`, `callctx.sh`, `ppcxref.py` from `tools/recomp-code-search/` of upstream PR #37 (`ppcxref.py`: `IMG` is
+  - `grepfn.sh`, `callctx.sh`, `ppcxref.py` from `tools/recomp-code-search/` in the repo (`ppcxref.py`: `IMG` is
     the image, read vtables and floats with `struct`; `cstr`, `callers`, `xrefs`).
 - PowerPC `bdzf` = decrement CTR, branch if CTR == 0 and the condition is false (switch idiom); reading it as
   "CTR != 0" swaps the cases.
 - **Data:** the attribute database (`assets/private/stock/skater-collections.json` in your converted install; class and
   record names are listed in the disc's `db.big` summary report `skatercollections_summaryreport.txt`; keys are
   `name_id` = lookup8 of the name), world-painter region layers (`tools/asset_pipeline/audio_formats
-  .region_layers` on audio branches: districts, census, challenge zones...), streams via `skate3_streams.read_sfil`.
+  .region_layers`: districts, census, challenge zones...), streams via `skate3_streams.read_sfil`.
   Names inside a district's sim streams: search the extracted `cSim_*.xsf` files for printable strings.
 - **APT menu movies:** in action bytecode, ops 0xA2 / 0xA3 / 0xAE / 0xAF / 0xB0..0xB3 index the function's own 0x88
   constant pool, not the movie's CONST table; a disassembler that resolves them through CONST prints the wrong names.
@@ -73,7 +73,7 @@ you read code through skill `ghidra`. Credit them in every doc and PR that uses 
     `HexAt`, the category gate `On("<cat>")`, and `FIRST_PASS_HOOK`;
   - `hooks_<domain>.cpp` per domain (audio, physics, watch, world, npc, traffic, vehicles, marker, queue, cas, grind,
     render, ...), added to the common sources list in `CMakeLists.txt` (reconfigure after adding one).
-  - A published set exists as a `research-hooks` branch of a skate3recomp fork (linked from upstream PR #37's
+  - A published set exists as a `research-hooks` branch of a skate3recomp fork (linked from the repo's
     `tools/recomp-code-search/README.md`). If you publish your own: no game code or data, no private paths, SDK
     changes as a patch file, a README kept current.
 - **Rebuild:** from PowerShell in the recomp folder with the build helpers of skill `recomp-audio-trace`
@@ -191,3 +191,11 @@ teleports, scripted skating or asking someone to drive.
 - **World one-shots from code plus existing traces:** some sounds show up as Splice starts rather than POSTs (for
   example a ped body fall keyed by an animation event), so search both kinds before calling a sound missing.
 - **Online gating:** ambient peds, traffic and NPC skaters do not spawn in online games; culling still runs.
+- **Engine vs retail collision at one spot:** when the engine's collision behaves differently from retail somewhere,
+  hook retail's per-triangle wheel contact (`WHLC`, area-filtered by `SKATE3_WHLC`; skill `recomp-scripted-runs`),
+  teleport there with `SKATE3_TP_OVERRIDE` and a short pad script, and compare its runtime triangle flags and edge
+  cosines with the engine's from the asset probe `park_layout_fused_probe` (same corners, same order). The
+  difference named the missing step (the collision fuser's ground plane pass); the values that step uses were then
+  read with a second small hook instead of guessed.
+- **Speech echo:** ped and main-cast speech has an echo path: a pre-gain send, then high-pass, a delay from the camera
+  distance, low-pass, into the environment bus. It was settled from code plus existing traces, without new sessions.

@@ -648,7 +648,7 @@ TELEPORT=dist_university_library`, radius 150 m):
 | + no record target during the hold | 4 | 1 | 1 | 8 |
 
 **Retail riding mode (recomp trace, 2026-10-15).** Hook `AIPC922` (category `aiskater`, `824660A0`, research-hooks
-branch, uncommitted): the path controller's `pc+922` (the hips ground test, which keeps the record's physics-riding bit
+branch, committed): the path controller's `pc+922` (the hips ground test, which keeps the record's physics-riding bit
 25) is 0 only on a controller's first sample and at its end, 1 for its whole ride (24 controllers, 360 samples,
 `.local/research/aipc922/`). Retail's ambient AI skaters ride with full physics, like ours; FollowPath (105) is not their
 riding mode. `824660A0` writes `pc+922` every call (not a one-way latch).

@@ -53,8 +53,8 @@ bin\skate3rust.exe --assets assets --test-world --check-assets                  
   requested:PhysicsGround->PhysicsAir` with no landing = falling from spawn.
 - Every map's startup position and menu "default landing zone" is the baked spawn; `teleports.json` destinations are
   only used when picked from the menu.
-- Inspect the collision with the collision tools (`tools/collision-inspect/` from upstream PR #37, "Tools: published
-  research and regression helpers"; fetch that branch if it is not merged yet). They write to gitignored
+- Inspect the collision with the collision tools (`tools/collision-inspect/`, in the repo since upstream PR #37
+  merged). They write to gitignored
   `.local\collision\<District>\`:
   ```bash
   py -3.13 tools/collision-inspect/map_collision.py MegaPark            # extract, print bounds + the rule's spawn
@@ -73,11 +73,11 @@ bin\skate3rust.exe --assets assets --test-world --check-assets                  
   `setup-report.json` via `validation_report.summary`.
 - The character customiser runs on a background thread beside the map stage when memory allows
   (`install.overlap_customiser`); log line "Preparing the character customiser alongside the maps".
-- Group `audio` (audio branches): downloads vgmstream (SHA-256 checked) into `data\tools\vgmstream-cli\` and decodes
+- Group `audio` (upstream main since PR #32): downloads vgmstream (SHA-256 checked) into `data\tools\vgmstream-cli\` and decodes
   the disc's audio into `assets/private/audio/` (hundreds of MB). Optional: on failure it writes
   `audio-availability.json` and the game runs silent. Dev re-export of just this group: skill `audio-tuning`.
 - City stream loads skip identical duplicate copies (`skate3_streams.read_sfil(known_copies=...)`); prove a
-  stream-loader change with `tools/setup-equivalence/compare_streams.py` (PR #37).
+  stream-loader change with `tools/setup-equivalence/compare_streams.py` (in the repo since PR #37).
 
 ## Diagnosing invisible walls / invisible floors
 - Symptom: blocked or standing on nothing visible; logs show normal states (no `physics_failed`).

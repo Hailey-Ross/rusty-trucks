@@ -716,7 +716,7 @@ Implementation of 1–3 (2026-10-04, on `audio/moddability-2`):
 
 ## M. The third pass: hot swap, MixMap inputs and instances, Csis projects, seed, hot reload (L1–L5, L7)
 
-Status: built on `audio/moddability-2` (2026-10-04, on top of H–K; uncommitted at the time of writing). With these
+Status: built on `audio/moddability-2` (2026-10-04, on top of H to K); landed upstream with PR #32 (merged 2026-10-06). With these
 the "Later" list of section 3 is done (L6, native routing by default, was done in H). Capabilities: `audio` = 4
 (L2, L5), `audio_content` = 3 (L1, L4, L7), `audio_events` = 3 (the offset frame, moving emitters), `world_audio` = 3
 (L3), then 4 (own instances the default for mod cars and peds, M3). Without mods nothing here runs: the headless e2e

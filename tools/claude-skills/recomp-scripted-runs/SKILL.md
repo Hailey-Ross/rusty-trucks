@@ -11,8 +11,8 @@ screenshot its own window, and run in the background without touching the real c
 
 Rules from skill `recomp-audio-trace` apply: your own legal copy of the game, your own recomp build, no licence on
 skate3recomp (local only, never copy its code), credit skate3recomp, rexglue and Xenia. The script player, background
-mode and trace hooks are research additions to the recomp (the `research-hooks` branch linked from upstream PR #37's
-`tools/recomp-code-search/README.md`, or your own equivalent); a stock recomp build does not have them.
+mode and trace hooks are research additions to the recomp (the `research-hooks` branch linked from
+`tools/recomp-code-search/README.md` in the repo, or your own equivalent); a stock recomp build does not have them.
 
 ## Pieces
 | what | where |
@@ -40,6 +40,13 @@ bash <skill>/tools/recomp_script_run.sh <ABSOLUTE script.txt> <ABSOLUTE out/trac
   `script end`. Analyse windows between MARKs (exact, unlike hand marks).
 - Put hard time limits on every run and wait loop, and check for leftover processes afterwards. Run one district or
   batch per background job, so a killed loop cannot orphan a recomp.
+
+## Back up the recomp save first
+Scripted runs boot the signed-in profile (`--skate3_demo_path_signed_in`), and menus, session markers and settings
+changed by a script are saved into it. Before every run copy the profile folder under `%APPDATA%\skate3` (the
+profile save is small; the large content folder does not need copying) and hash it; after the run compare. Restore
+only from that backup, only while the game is closed, and hash-check after; never try to put settings back by
+navigating menus.
 
 ## Background mode (default)
 `SKATE3_BACKGROUND=1`: window shown without activation at the bottom of the z-order (`window_win.cpp`), real pad
@@ -90,6 +97,11 @@ depending on the save.
   two recomps at once. A batch can occasionally die during boot (trace holds only "script loaded"): check each
   batch's MARK lines and re-run batches without `at` marks.
 - A second teleport in one boot after a bail stalled a script once; keep bail runs to one teleport per boot.
+- A second Challenge Map teleport after placing a session marker did not happen in one run: the menu key sequence
+  that worked for the first teleport drifted after the marker menu. Screenshot-check each menu step before relying
+  on a repeat, or use one teleport per boot.
+- The recomp can run slower than real time under heavy tracing (1500 s of wall time covered about 9 minutes of game
+  time in one run): size time limits by game time reached, not by wall time.
 
 ## Teleport to any coordinate: `SKATE3_TP_OVERRIDE`
 `SKATE3_TP_OVERRIDE="x y z yaw[; x y z yaw ...]"` in the runner's environment: each Challenge Map menu teleport (lr
@@ -200,12 +212,24 @@ internally.
   (10 s counts of the periodic presence and trespass checks), positions `PEDXYZ`, perception `PEDSEE`, chase /
   takedown `SECCHASE` / `SECTAKE` / `SECTAZE` / `SECZONE` (the generic chase code peds use; Skate 3 has no guards),
   ped audio `PEDAUD` (the PedestrianSFX process `sub_824D8078`: footsteps, voice model, speech value, materials).
+  `MOODOUT` values: mood event id (word 2) 10 = skater bump, 11 = collision nearby, 2 = slam nearby, 6 = trick
+  nearby, 8 = presence, 16 = greeted; want enum 1 = angry chase, 2 = warn, 10 = flee, 12 = taze. The `PEDTIMER` name
+  list is the table at `0x82064BCC`. `TELEFP` (first pass) lists teleport-path candidates.
+- Ped navigation (`pedstuck`): `STILLOBS` (the bot's still timer queues its own obstacle, `82EA17E8` from lr
+  `0x82E9747C`), `NAVCUT` (`8292ADE8` from lr `0x82EA126C`), `PATHOK` (path check `82E95FD0` from lr `0x82E975A8`;
+  invalid results always, valid ones only after a `STILLOBS`), `PATHREQ` (path request `82E957F8`, any lr, per bot at
+  most 4/s with a skipped count), `STILLREL` (`82E939A0`). Teleport to each spot with `SKATE3_TP_OVERRIDE`.
 - Traffic (`traffic`, `skitch`): `VEHSTATE` (per vehicle at most 4/s plus on manoeuvre or lane change: target speed
   `+3408`, manoeuvre `+4396`, target lane `+4380`, alarm `+3716`, position + forward from the world matrix
   `*(vehicle+164)+16`), `VEHAUD` (the TrafficEngine update `sub_824D6478`'s vehicle audio record: rpm, acceleration,
   speed, listener distance, horn, skid, relative speed), horns/skids/engine/lights `TRAF*`, junctions `VEHJUNC` /
   `VEHCONN`, skitching `SKITCH*`, `VEHBAIL`. NPC skaters skitch cars unprompted in busy spots (Crystal Towers), so a
   short scripted proof run fires the skitch hooks without the player.
+  Also `TRAFPROG` and `TRAFLIGHT2` (traffic program and light state).
+- NPC skater spawn push (`aiskater`): `AIPUSH <ms> board | lr | vx vy vz` = the push `82C04168` when called from the
+  AI hold branch `824701F8` (lr in `0x824701F8..0x82470718`); `BUMPQ <ms> owner | result | after_push` = IsBumped
+  `82BA7310`, every true result and every evaluation within 1 s after an `AIPUSH` (at most one line per owner per
+  30 ms). Answers whether a retail AI skater reads as Bumped right after its spawn push.
 - NPC skater boards (`aiskater`): `SKATEB` per board at most 4/s (contact pattern of w0-w3 / front truck / back truck
   / deck: `0000110` grind, `0000001` slide, `0011000` manual, `0000000` air; contact point of the first touching
   part; deck velocity; part index), `SKATER` state flags, `AIPC922` (path controller test byte). PCU Library has the
@@ -220,6 +244,20 @@ internally.
 - Render (`render`): `DOFRAME` / `DOLIST` / `DOAPPLY` (one frame of effect applies and scene-view draw lists),
   `VDLWRITE` / `VDLVAL` (writer probes for a render global).
 - Physics (`physics`): solver iterations `ITERSET` / `ITERTICK`, board/body lines.
+- Wheel contacts (`physics`, on only when `SKATE3_WHLC="x z radius [maxr]"` is set): `WHLC` = every wheel / board
+  volume vs world triangle pair that `8277BC58` hands to `8277B720` whose fixup ran (accepted and rejected): body,
+  volume ids / type / radius / centre, triangle (ids, corners, normal, runtime flags, the three decoded edge cosines
+  and the bytes rebuilt from them), the fixup region (0 face, 1 e0, 2 e1, 3 v1, 4 e2, 5 v0, 6 v2) and result, the
+  normal before / after, count, separation, the first point pair and the return value (25 fields). `WHLCARM` once
+  (proves it fires), `WHLCSUM` at 1 Hz (lines, dropped, candidates, accepted; capped at 2000/s). Use it to compare
+  retail's runtime triangle flags and edge cosines at one spot with the engine's (skill `recomp-research`, worked
+  example).
+- HUD minimap (`render`): `MMDRAW` (minimap draw `82665388` at 1 Hz: lr, component, f1 / f2, r4 / r6 / r7, the r5 map
+  matrix as 16 floats, callers), `MMITEM` (icon draw `8268CB40`, at most 10/s: item fields +0x10 x z, +0x20 angle,
+  +0x24 scale, +0x28 visible, +0x30 fade, +0x40 rgba), `MMQUAD` (`824FA550` from the icon / pointer draws: both
+  16-float argument blocks).
+- Diagnostics for the per-player gate (`audiox`): `LOCALTEST` logs each object's local / NPC decision when it
+  changes; `BAILCAND` holds the rate-limited raw lookup inputs of the bail hooks.
 - Per-player hooks must gate on the local-rider byte (`local72`) or they log nearby NPC skaters too; filter older
   traces accordingly.
 - Trace size: pass only the categories a run needs; location and ambience runs need `audio` only, while `physics`
