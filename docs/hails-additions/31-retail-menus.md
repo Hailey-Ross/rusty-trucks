@@ -2064,15 +2064,36 @@ The loading screen's Stats panel shows the player's career stats, as retail does
   next Refresh Game Files). `skate_core::career_stats` (rows, kinds, the fetch, the formats) and
   `career_stats_host.rs`: the local player's totals in `settings/career-stats.json` (written every 30 s when changed and
   at exit; the 30 s write runs on a short-lived thread, off the game thread). Optimisation pass: a few adds per fixed
-  step and a small JSON (under 2 KB) at most every 30 s, nothing per frame to measure. Fed now: time played (8), distance travelled on the board (7) and on foot (9), skitching distance and time
-  (11, 12; while the skitch state holds a car), grind distance (13; summed while a grind is active, added when it
-  ends), ped hits (47..60; rows 47 to 50 show). The Units row of Game Settings is no longer greyed: it switches the
-  panel's distances to feet.
-- **NOT RETAIL YET:** retail's writers for rows 3 to 6, 8, 14 to 16, 18, 23 to 45 and 63 are not found (bones, hits,
-  wipeouts, flips, tricks, Hall of Meat, air and ground time); rows 10, 17, 19 to 22 have retail writers but no engine
-  source yet (invert time, body flips, pushes, mongo pushes, manual and powerslide distance). Time played (row 8) has
-  no retail writer found; ours counts gameplay time outside map loads. Retail's shuffle order and money format are not
-  decoded. Moves over 5 m in one fixed step (teleports) are not counted as travel.
+  step and a small JSON (under 2 KB) at most every 30 s, nothing per frame to measure.
+- **Rows fed (2026-10-25, USER-ASKS 335; research `.local/research/b590-stat-writers.md`, main read the bail-end
+  writer 0x8250F820, the trick-end writer 0x82773D98 and the move-end writer 0x82774230 itself):**
+  - Time played (8; retail 0x825D8B50 adds the game tick while the game state is 5; ours the fixed step outside map
+    loads), distance on the board (7) and on foot (9), skitching distance and time (11, 12; while the skitch state
+    holds a car), ped hits by type (47..60, 0x826C0730).
+  - Wipeouts (6): +1 per bail start (0x82774DA0; ours: the scoring runtime's bail count). Bail distance (29): position
+    steps over 0.005 m while bailing, added in whole metres (0x82775158 / 0x82775018).
+  - Trick ends (0x82773D98): successful (24) / unsuccessful (23) tricks per announced trick leaving its slot, and on a
+    success a flip (15) or a late flip (18: the trick's base is the ollie, `catalog::base`); the scoring runtime posts
+    `StatEvent::TrickEnd` from `finish`.
+  - Move ends (0x82774230, completed moves only): invert time (10, a handplant's held time), manual (21), powerslide
+    (22) and grind (13) distance from the runtime's move tracker, which is retail's 82DB0588 (path length, the
+    forward projection on the slot that uses it, steps over 0.005 m); a move that carries on as the next trick adds
+    its distance when it finally ends.
+  - Body flips: an attempt (17) on the first tick of a flip (82DA8EB8 latch), the landed count (16) when a landed air
+    ends (0x82773C00, |P+0x2674|); row 17 shows the percent of 16 over 17.
+- **Rows not fed yet:**
+  - The Hall of Meat bail record (0x8250F820 at bail end, struct P+0x3030 and the HOM record Stats+0x98): bones (3),
+    head (4) and groin (5) hits, peds (26) and vehicles (28) hit in bails, dislocations, sprains, bruises, scrapes
+    (30..33), body tweaks (34), objects hit (35), and the bail's ground / air time and distance, push offs, barrel
+    and cannonball rolls, spread eagle time, judo kicks and time in bail (36..45). The engine has no Hall of Meat
+    bail measurement or injury model; porting it is its own piece of work.
+  - Pushes (19) and mongo pushes (20): retail counts the rising edge of a push-active state bit (0x82DB6EC0, state
+    word +0x9A4 bit 0x2000000; mongo by bit 26) the engine's push graph does not publish yet.
+  - Air grab time (14, P+0x266C) and peds / vehicles jumped (25, 27; a merged jumped-over record): no engine source
+    yet. Money (62, 63) and the Create A Spot rows are disabled in retail's table and have no store here.
+- **NOT RETAIL YET:** retail's shuffle order and money format are not decoded; whether 0x826C0730 and the bail-end
+  writer double count a ped hit is open (ours has only the first). Moves over 5 m in one fixed step (teleports) are
+  not counted as travel.
 - **Mods:** `sdk.loading.stat(key, {label, value})` adds rows to the Stats panel (capability `loading` 2).
 - **Tests:** `skate_core::career_stats::tests` (records, clock, formats, fetch), `career_stats_host::tests` (hit rows,
   save and load, panel rows), `menu_tables` data-gated (65 rows at 0x83043AE8, 0..46 enabled), the setup check.
