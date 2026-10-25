@@ -510,6 +510,8 @@ function Ensure-Version($v) {
     $mark = Join-Path $StateDir ('BUILDING-' + $v.id + '.txt')
     $who = if ($ui) { 'window' } else { 'shell' }
     Set-Content -Path $mark -Value ("{0}`t{1}`t{2}`t{3}" -f $PID, $v.name, (Get-Date -Format s), $who) -Encoding ASCII
+    # A pull that leaves the build inputs unchanged (docs, tools) does not rebuild the game (docs/hails-additions/25-perf-diagnostics.md#build-stamp-for-local-builds).
+    $env:SKATE_BUILD_STAMP = 'inputs'
     try { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'scripts\Build.ps1') -TargetDirectory $target; $code = $LASTEXITCODE }
     finally { if (Test-Path $mark) { $own = (Get-Content $mark -Raw) -split "`t"; if ($own[0] -eq "$PID") { Remove-Item $mark -ErrorAction SilentlyContinue } } }
     if ($ui) {

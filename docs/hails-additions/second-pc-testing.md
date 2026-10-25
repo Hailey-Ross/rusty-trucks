@@ -101,6 +101,9 @@ git config user.email "26784904+Hailey-Ross@users.noreply.github.com"
 
 ### Build (and after every pull)
 
+Set `$env:SKATE_BUILD_STAMP = 'inputs'` before `scripts\Build.ps1` (the Steam launcher does): a pull that changes
+only docs or tools then finishes in seconds instead of rebuilding the game (doc 25 "Build stamp for local builds").
+
 ```powershell
 cd $repo
 powershell -ExecutionPolicy Bypass -File scripts\Build.ps1

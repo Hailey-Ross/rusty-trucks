@@ -79,6 +79,8 @@ this one is the shorter pass every new feature gets before it lands. Same bar: *
   afternoon the laptop ran 35% slower as a whole and made a real gain look like a regression.
 
 ## Engine runs (before / after builds, both machines)
+- Build with `SKATE_BUILD_STAMP=inputs` (doc 25 "Build stamp for local builds"): commits that do not touch the build
+  inputs then cost no rebuild.
 - Build the version before the feature and the one after it (one build at a time, `scripts/Build.ps1`, detach the
   checkout to the older commit and back) and copy each `bin` (exe, dlls, `manifest.json`; no pdbs)
   into a bench folder on K:.
