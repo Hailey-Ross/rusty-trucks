@@ -4,6 +4,22 @@
 pub const BONES: usize = 25;
 pub const LEVELS: usize = 6;
 
+/// A bone touches the world when its contact record's world flag (+0x73, our `groups[3]`) is set and the channel's
+/// normal points up (y over 0.33, 0x82238694); bones 0..22 use part i + 1's normal, 23 / 24 the specific normal of
+/// parts 1 / 23 (0x82DAE9A8). The skater is airborne in the bail when no bone touches (M+0x8B8).
+pub const CONTACT_NORMAL_Y: f32 = 0.33;
+
+pub fn airborne(world_contact: &[bool; 24], normal_y: &[f32; 24], specific_normal_y: &[f32; 24]) -> bool {
+    !(0..BONES).any(|i| {
+        let (part, y) = match i {
+            23 => (1, specific_normal_y[1]),
+            24 => (23, specific_normal_y[23]),
+            _ => (i + 1, normal_y[i + 1]),
+        };
+        world_contact[part] && y > CONTACT_NORMAL_Y
+    })
+}
+
 /// The impact each bone reads from the skeleton contact record (0x82DAE9A8): bones 0..22 part i + 1's force, bone
 /// 23 part 1's specific force, bone 24 part 23's specific force. The record is Fill 0x82BD60C8's copy of the contact
 /// array (+0x34 / +0x64 <- force / specific force).
@@ -139,6 +155,163 @@ impl Injuries {
     }
 }
 
+/// The total body rotation (M+0x81C, degrees): three trackers turn about the hips' axes (physical part 23; retail
+/// `[skater+0x14]` +0x30..+0x6F). Each tick a tracker measures how far its reference row turned about its axis row
+/// (0x82DAC9D0; a turn over 90 degrees in one tick counts 0) and adds it up; when the sum starts shrinking after more
+/// than 30 degrees it is banked as |sum| and restarts from that tick's turn (0x82DAC930). The total is the banked
+/// degrees plus the trackers' open |sum| (0x82DAD640). Research b594 / b596 / b597.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rotation {
+    trackers: [(f32, Option<[[f32; 4]; 3]>); 3],
+    banked: f32,
+    pub total: f32,
+}
+
+impl Rotation {
+    pub const REVERSAL_DEGREES: f32 = 30.0;
+
+    /// `hips` rows 0..2; `counting` false (body at rest, or retail's cVar2) re-seeds the trackers without counting.
+    pub fn tick(&mut self, hips: &[[f32; 4]; 3], counting: bool) {
+        use crate::player::wipeout_state::{math, orientation};
+        // (axis row, reference row) of the hips per tracker: ids 2, 0, 1 at M+0x70 / 0xC0 / 0x110.
+        const ROWS: [(usize, usize); 3] = [(2, 0), (0, 1), (1, 0)];
+        for (k, (sum, old)) in self.trackers.iter_mut().enumerate() {
+            let previous = old.replace(*hips);
+            let Some(previous) = previous.filter(|_| counting) else { continue };
+            let (q, r) = (previous[ROWS[k].0], previous[ROWS[k].1]);
+            let n = math::normalize(math::cross(hips[ROWS[k].1], q));
+            let m = math::normalize(math::cross(q, n));
+            let delta = if math::dot(m, r) < 0.0 { 0.0 } else { wrap_pi(orientation::signed_angle(m, r, q)) };
+            let before = sum.abs().to_degrees();
+            let after = (*sum + delta).abs().to_degrees();
+            if after < before && before > Self::REVERSAL_DEGREES {
+                self.banked += before;
+                *sum = delta;
+            } else {
+                *sum += delta;
+            }
+        }
+        self.total = self.banked + self.trackers.iter().map(|(s, _)| s.abs().to_degrees()).sum::<f32>();
+    }
+}
+
+fn wrap_pi(a: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    if a > PI {
+        a - TAU
+    } else if a <= -PI {
+        a + TAU
+    } else {
+        a
+    }
+}
+
+/// One BodyTweak element (`scoring_wipeouts` `Hash_5717CFCCCA59BD47`): the pose slot, its stick direction, the held
+/// ticks that count a tweak and its points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pose {
+    pub pose: usize,
+    pub direction: [f32; 2],
+    pub frames: u32,
+    pub points: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PoseTable {
+    pub poses: Vec<Pose>,
+    /// The gesture stick must be longer than this (`Hash_9C494E9614FA5ED6`, retail 0.6; 0 when missing).
+    pub dead_zone: f32,
+}
+
+impl PoseTable {
+    /// The array items as words {pose, handle, dir x, dir y, frames, points}.
+    pub fn from_items(items: &[[u32; 6]], dead_zone: f32) -> Self {
+        let poses = items
+            .iter()
+            .map(|w| Pose { pose: w[0] as usize, direction: [f32::from_bits(w[2]), f32::from_bits(w[3])], frames: w[4], points: w[5] })
+            .collect();
+        Self { poses, dead_zone }
+    }
+
+    /// 0x82DAD728 / 0x8296EA60: the first element within pi / count of the stick, outside the dead zone.
+    fn matching(&self, stick: [f32; 2]) -> Option<&Pose> {
+        if self.dead_zone * self.dead_zone >= stick[0] * stick[0] + stick[1] * stick[1] {
+            return None;
+        }
+        let width = std::f32::consts::PI / self.poses.len().max(1) as f32;
+        self.poses.iter().find(|p| angle_2d(p.direction, stick) < width)
+    }
+}
+
+fn angle_2d(a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (la, lb) = (a[0] * a[0] + a[1] * a[1], b[0] * b[0] + b[1] * b[1]);
+    if !(la > 1e-4 && lb > 1e-4) {
+        return 0.0;
+    }
+    ((a[0] * b[0] + a[1] * b[1]) / (la.sqrt() * lb.sqrt())).clamp(-1.0, 1.0).acos()
+}
+
+/// The bail's body tweak poses (air ticks only): counts, rotation, time and longest hold per pose slot.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Poses {
+    current: Option<usize>,
+    last_air: Option<usize>,
+    held: u32,
+    rotation_mark: f32,
+    pub rotation: [f32; 4],
+    pub time: [f32; 4],
+    pub longest: [f32; 4],
+    pub tweaks: u32,
+    pub points: u32,
+}
+
+impl Poses {
+    pub const JUDO_POSE: usize = 2;
+
+    /// An air starts (0x82DAF1D8: the matched pose -1, held 0).
+    pub fn air_start(&mut self) {
+        self.current = None;
+        self.last_air = None;
+        self.held = 0;
+    }
+
+    /// One air tick (0x82DAD728). `total` is the body rotation before this tick's trackers; `frozen` is retail's
+    /// cVar2, which holds the counters (a hold frozen at exactly the element's frames adds its tweak every tick, as
+    /// retail does). `dt` replaces the 1/60 s tick.
+    pub fn air_tick(&mut self, table: &PoseTable, stick: [f32; 2], total: f32, frozen: bool, dt: f32) {
+        let previous = self.current.take();
+        match table.matching(stick) {
+            Some(e) => {
+                self.current = Some(e.pose);
+                let slot = e.pose.min(3);
+                if Some(e.pose) == previous {
+                    let last = std::mem::replace(&mut self.rotation_mark, total);
+                    if !frozen {
+                        self.held += 1;
+                        self.rotation[slot] += total - last;
+                        self.time[slot] += dt;
+                        self.longest[slot] = self.longest[slot].max(self.held as f32 * dt);
+                    }
+                } else {
+                    self.rotation_mark = total;
+                    self.held = 0;
+                }
+                if self.held == e.frames {
+                    self.points += e.points;
+                    self.tweaks += 1;
+                }
+            }
+            None => self.held = 0,
+        }
+        self.last_air = self.current;
+    }
+
+    /// New hits count as judo kicks while the pose (this air's, or the one the last air ended in) is the judo kick.
+    pub fn judo(&self) -> bool {
+        self.current == Some(Self::JUDO_POSE) || self.last_air == Some(Self::JUDO_POSE)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +363,36 @@ mod tests {
         hit[0] = 0.05; // 0.075 under the floor
         s.tick(&tuning(), &hit, 1.0);
         assert_eq!(s, Injuries { accumulated: [0.0; BONES], peak: [0.0; BONES], level: [-1; BONES] });
+    }
+
+    fn table() -> PoseTable {
+        let item = |pose: u32, x: f32, y: f32| [pose, 0, x.to_bits(), y.to_bits(), 15, 500];
+        PoseTable::from_items(&[item(0, 0.0, 1.0), item(2, 1.0, 0.0), item(1, 0.0, -1.0), item(3, -1.0, 0.0)], 0.6)
+    }
+
+    #[test]
+    fn a_pose_held_its_frames_counts_one_tweak_and_its_rotation() {
+        let t = table();
+        let mut p = Poses::default();
+        p.air_start();
+        // Stick right (pose 2) for 17 ticks while the body turns 10 degrees a tick.
+        for i in 0..17 {
+            p.air_tick(&t, [0.9, 0.1], i as f32 * 10.0, false, 1.0 / 60.0);
+        }
+        assert_eq!((p.tweaks, p.points), (1, 500));
+        assert!((p.rotation[2] - 160.0).abs() < 1e-3 && p.judo());
+        // Inside the dead zone: no pose, the hold resets.
+        p.air_tick(&t, [0.3, 0.3], 170.0, false, 1.0 / 60.0);
+        assert!(!p.judo() && p.held == 0);
+    }
+
+    #[test]
+    fn a_barrel_roll_turns_the_total_rotation() {
+        let mut r = Rotation::default();
+        let frame = |a: f32| [[1.0, 0.0, 0.0, 0.0], [0.0, a.cos(), a.sin(), 0.0], [0.0, -a.sin(), a.cos(), 0.0]];
+        for i in 0..=36 {
+            r.tick(&frame((i as f32 * 10.0).to_radians()), true);
+        }
+        assert!((r.total - 360.0).abs() < 1.0, "{}", r.total);
     }
 }

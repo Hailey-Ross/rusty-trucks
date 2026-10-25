@@ -2106,11 +2106,35 @@ The loading screen's Stats panel shows the player's career stats, as retail does
     1 bruise, 2 sprain, 3 dislocation, 4 / 5 broken: rows 33, 32, 31, 30, 3); a level on bone 0 or 23 adds a head hit
     (4), on bone 24 a groin hit (5). Ours: `skate_core::hall_of_meat` (Tuning from the BoneSet field and the scale,
     loaded with the physics settings, data-gated test), fed in `career_stats_host::track`.
+  - Bail ground and air time (36, 37; research b596, main read the contact flags in 0x82DAE9A8): a bone touches when
+    its record's world flag (+0x73 = our `groups[3]`) is set and its channel normal (Fill copies the normals raw) has
+    y over 0.33; the skater is airborne when no bone touches. Each finished air adds its time (an air still open at
+    bail end is not added, 0x82DAEBC0); ground time is the time in bail less the air time. Ours:
+    `hall_of_meat::airborne`, `BailRecord::air_seconds`.
+  - Bail ground and air distance (38, 39; research b597, main read 0x82DAECB8 and 0x82DAEBC0): the body is the
+    skeleton centre of mass (retail `[skater+0x24]`, written by 0x82BE1AE8 from Skeleton +16144 / +16176; ours
+    `board_frames.centre_of_mass` / `com_velocity`, the same values our port publishes as `reckoning.vector_64 /
+    _16`). In an air the apex keeps the highest height and the air's distance is the apex less this tick's height;
+    each finished air adds it (a fall height, not a horizontal length). On ground ticks the speed times the step adds
+    to the ground distance.
+  - Body tweaks, rolls, judo kicks, spread eagle (34, 41..44; research b594 / b596 / b597 / b598, main read 0x82DAC930
+    and the tracker gate in 0x82DAF1D8): three trackers on the hips (physical part 23) measure the turn about each
+    of its axes per tick (a turn over 90 degrees in a tick counts 0); a tracker's sum is banked as degrees when it
+    starts shrinking after more than 30 degrees; the total body rotation is the banked degrees plus the open sums.
+    While the body is at rest or retail's cVar2 (PhysOut_Air +452, our `use_air_reckoning_452`) is set the trackers
+    re-seed without counting. In the air the wipeout gesture stick (not WipeoutControl) outside the dead zone
+    (`Hash_9C494E9614FA5ED6` 0.6) picks the first of the 4 BodyTweak poses within 180 / 4 degrees; holding it adds
+    the rotation, time and longest hold to that pose's slot, and a hold reaching the element's frames (15) counts a
+    tweak (500 points). Rows: tweaks (34), barrel rolls (41) = floor((pose 3 degrees + 90) / 360), cannonball rolls
+    (42) = the same for pose 0, judo kicks (43) = new peds and vehicles hit while the pose (this air's or the last
+    one's) is 2, spread eagle time (44) = pose 1's time. cVar2 also holds the time in bail, air frames and ground
+    distance (not push offs). Ours: `hall_of_meat::{Rotation, Poses, PoseTable}`, `career_stats::BailTick`.
 - **Rows not fed yet:**
-  - The rest of the Hall of Meat bail record: body tweaks (34), objects hit (35), ground / air time and distance
-    (36..39), barrel and cannonball rolls, spread eagle time, judo kicks (41..44). They need the contact test (the
-    record's transformed channel vector, y > 0.33, research b595 open), the rotation tracker 0x82DAC930 (b594) and
-    the BodyTweak poses (in the export: 4 poses, 15 frames, 500 points).
+  - Objects hit (35): retail counts the distinct placed dynamic props (the DMO census) near the skater whose sticky
+    "touched by actor" mask has this skater's bit (filler 0x82761100, scorer 0x82DAFFA0, research b598). Our skeleton
+    contacts with props carry no prop identity (`physics/skeleton_feedback.rs`: only network solids, cars and peds,
+    become hits), so the row waits for that (todo `hom-objects-hit.md`); judo kicks also leave out the props retail
+    counts when they are worth points.
   - Air grab time (14, P+0x266C) and peds / vehicles jumped (25, 27; a merged jumped-over record): no engine source
     yet. Money (62, 63) and the Create A Spot rows are disabled in retail's table and have no store here.
 - **NOT RETAIL YET:** retail's shuffle order and money format are not decoded; whether 0x826C0730 and the bail-end
