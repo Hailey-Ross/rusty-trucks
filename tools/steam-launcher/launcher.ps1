@@ -33,6 +33,8 @@ if ($Here -like (Join-Path $Repo 'tools') + '\*') { $StateDir = Join-Path $Repo 
 New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 $Playing = Join-Path $StateDir 'PLAYING.txt'
 $LastSession = Join-Path $StateDir 'last_session.txt'
+# Tools > Physics step threads: 'single' or 'multi' (the default); the game reads SKATE_FIXED_EXECUTOR.
+$FixedExecutorFile = Join-Path $StateDir 'fixed-executor.txt'
 $SelectedFile = Join-Path $StateDir 'version.txt'
 $script:BuildLog = ''
 $StateLogs = Join-Path $Repo '.local\audio-state-logs'
@@ -683,6 +685,10 @@ function Send-Sessions {
 
 # docs/hails-additions/second-pc-testing.md#share-sessions-via-github
 $ShareSettings = Join-Path $Repo 'share-sessions.txt'
+function Fixed-Executor {
+    if ((Test-Path $FixedExecutorFile) -and (Get-Content $FixedExecutorFile -Raw).Trim() -eq 'single') { return 'single' }
+    return 'multi'
+}
 function Share-Script {
     foreach ($s in (Join-Path $Here 'share-session-issue.ps1'), (Join-Path $Repo 'tools\second-pc\share-session-issue.ps1')) { if (Test-Path $s) { return $s } }
     return $null
@@ -929,6 +935,7 @@ function Launch([string]$Key, [string]$Lbl) {
         }
         # Per-version environment (versions.json "env": { NAME: value }).
         if ($ver.env) { foreach ($p in $ver.env.PSObject.Properties) { Set-Item -Path ("env:" + $p.Name) -Value ([string]$p.Value) } }
+        $env:SKATE_FIXED_EXECUTOR = Fixed-Executor
     }
     $since = Get-Date
     Set-Content -Path $Playing -Value ("entry=$Key label=$Lbl version=$($ver.id) started=" + $since.ToString('yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
@@ -1069,6 +1076,7 @@ if ($Entry -eq 'status') {
     "last`t$last"
     $sb = Send-Blocked; "send`t$(if (-not (Send-Script)) { 'off' } elseif ($sb) { $sb } else { 'on' })"
     "share`t$(Share-Status (Version-Dir $v))"
+    "fixed_executor`t$(Fixed-Executor)"
     "setup_missing`t$(Setup-Missing)"
     # The launcher's own commit and the fork's newest (as of the last check at start), for the main screen.
     $lc = Launcher-Commit; $fc = Fork-Commit
@@ -1128,6 +1136,7 @@ if ($Entry -in @('clear-cache', 'clear-build')) {
 }
 if ($Entry -eq 'room') { Make-Room (Get-Version $(if ($Label) { $Label } else { $Version })); exit 0 }
 if ($Entry -eq 'send') { $r = Send-Sessions; if (-not $r) { $r = 'Send: no after_session in config.json.' }; $r; exit 0 }
+if ($Entry -in @('fixed-executor-single', 'fixed-executor-multi')) { Set-Content -Path $FixedExecutorFile -Value $Entry.Substring(15) -Encoding ASCII; exit 0 }
 if ($Entry -eq 'share-on') { Share-Run (Version-Dir (Get-Version '')) @('-Consent'); exit 0 }
 if ($Entry -eq 'share-off') { Share-Run (Version-Dir (Get-Version '')) @('-Revoke'); exit 0 }
 if ($Entry -eq 'list') { $Entries.Keys | ForEach-Object { '{0,-20} {1}' -f $_, $Entries[$_].Name }; exit 0 }

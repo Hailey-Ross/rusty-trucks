@@ -175,6 +175,7 @@ A shortcut without launch options opens the menu.
 | `tool-share` | pack the new logs and open a GitHub issue (Share sessions on; `share-on` / `share-off` toggle it, see docs/hails-additions/second-pc-testing.md#share-sessions-via-github) |
 | `tool-recomp-update`, `tool-recomp-getsave` | `play-recomp.ps1 -Update` / `-GetSave` |
 | `tool-setup` | `setup.ps1 -Install` |
+| `fixed-executor-single`, `fixed-executor-multi` | Tools > Physics step threads: the game's fixed step on one thread or Bevy's multi-threaded scheduler (default); saved in `fixed-executor.txt`, passed as `SKATE_FIXED_EXECUTOR` |
 | `clear-cache <id\|all>`, `clear-build <id\|all>` | delete a version's build cache (its cargo target folder) or its whole build (that plus `bin\`); Tools > Clear builds runs these |
 | `recomp-*`, `rpcs3-*` | the modes from `config.json` |
 

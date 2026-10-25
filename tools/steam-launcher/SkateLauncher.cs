@@ -440,9 +440,29 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             p.Items.Add(item);
         }
         if (group == "rust" || group == "tools") p.Items.Add(ShareItem());
+        if (group == "tools") p.Items.Add(FixedExecutorItem());
         if (group == "tools") p.Items.Add(new Item("Clear builds and build caches", "Frees disk space: everything, or one version's build cache or whole build. Asks before deleting.", true, delegate { pages.Push(ClearPage()); }));
         if (p.Items.Count == 0) p.Items.Add(new Item("Nothing here yet", "See README.md to set these up.", false, null));
         return p;
+    }
+    // Physics step threads (docs/hails-additions/25-perf-diagnostics.md#fixed-step-executor): launcher.ps1 passes the
+    // choice to the game as SKATE_FIXED_EXECUTOR.
+    Item FixedExecutorItem() {
+        var item = new Item("", "", false, null);
+        item.Run = delegate {
+            Run(St("fixed_executor") == "single" ? "fixed-executor-multi" : "fixed-executor-single");
+            RefreshStatus(); ShowFixedExecutor(item);
+        };
+        ShowFixedExecutor(item);
+        return item;
+    }
+    void ShowFixedExecutor(Item item) {
+        string s = St("fixed_executor");
+        item.Text = "Physics step threads: " + (s == "single" ? "Single" : "Multi (default)");
+        item.Hint = s == "" ? "Not in this launcher version." : s == "single"
+            ? "The physics step runs on one thread: a little steadier on some PCs. Press for multi-threaded."
+            : "Bevy's multi-threaded scheduler for the physics step. Press to try single-threaded.";
+        item.On = s != "";
     }
     // docs/hails-additions/second-pc-testing.md#share-sessions-via-github
     Item ShareItem() {
