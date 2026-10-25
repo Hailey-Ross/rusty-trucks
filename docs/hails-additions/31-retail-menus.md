@@ -813,7 +813,7 @@ no-op).
   825D9450; research `.local/research/boot-enums.md`, main-checked path indices 28 / 30 / 31 / 32 / 33 / 46): the
   56 Apt keys as RegisterAptInputEnum(name, key INDEX) (retail registers the index, not the record's key code),
   FE_SOUND_<NAME> = record name for all fe records (from the install's audio manifest), SetPlatform "0",
-  SetScreenSize 1280 / 720, SetScreenEdgeOffset 136, UpdatePALMode false. Audio.PlaySound from the movies plays
+  SetScreenSize 1280 / 720, UpdatePALMode false (SetScreenEdgeOffset 136 only on SD, so not sent since 2026-10-24). Audio.PlaySound from the movies plays
   the fe record. Open: the 191 challenge enums, RefreshSubtitle.
 - Screen templates extracted (`skate-data` menu_tables `templates`, located by the record whose path is
   "main/core_menu.swf", walked both ways): TU3 133 records at 0x8302F1A8 (0 Ignore, 12 Background = FE_root,
@@ -1853,9 +1853,9 @@ Game Settings > Video > Video Calibration was greyed (no handler).
   (back on Video Settings), `no.png` (the first page again).
 
 ### Open questions
-- Does retail pick the SD pages on a 720p console? Our boot registers edge offset "136" like retail
-  (`boot-enums.md`), so the movie's `Screen_EdgeOffset > 0` test would choose the SD frames; the shots look like the
-  HD layout, so the movie reads something else or the variable is not where it looks (not checked).
+- Does retail pick the SD pages on a 720p console? No: on HD retail never sends the "136" edge offset, so the
+  offset stays 0 and the movie shows the HD pages (answered 2026-10-24 by the loading screen, "Loading screen (FE
+  52)"); our boot no longer sends it either.
 
 ## Popups (2026-10-13)
 
@@ -1968,24 +1968,51 @@ pass and recomp timing run), `.local/research/b581-loading-screen-port.md` (port
 - **Tests:** `skate_core::tips_loader::tests` (5: line pick, panel buckets, Stats joining, cycle, load sequence);
   `skate_data::tips_loader::tests::the_retail_tips` (data-gated); `apt_stage::tests::retail_loading_screen_shows_a_tip`
   (data-gated: a set with the movie); the map transition tests.
-- **NOT RETAIL YET / open:** the console's FE update rate (30 or 60 a second: a fade of 0.83 or 0.40 s; `fe_fade`
-  assumes 30); the RNG and its seed (ours: a per-boot LCG); where the "shown before" flags reset; the startup load
-  (our splash covers it); the 65 stats labels; who re-holds black at the end of a load (ours: the sequence);
-  "Loading..." drawing (see the game run below).
+- **FE fade rate: 60 updates a second** (2026-10-24, USER-ASKS 326). The user's retail video (PS3 game in RPCS3,
+  `F:\Libraries\Videos\2026-10-21 08-45-27.mp4`, 60 fps) fades back in after a Challenge Map teleport's load in 25
+  frames (19.38 to 19.80 s), the brightness falling by 0.04 of full (3.75 of 93.8) on every 1/60 s frame [video]; the
+  recomp's `LSRATE` counts 303 fade updates in 5 s with a 16 ms step [trace]. `FeFadeParams::RETAIL.tick_hz` is now 60
+  (a fade 0.42 s instead of 0.83 s); the load sequence, its 4 black updates and the Trick Guide's state-4 count run on
+  the same ticks. The fade runs in the FE update `sub_825D8B50`; the pause blur's tick `sub_825D8E68` is called from
+  `sub_825D9168` and the menu key repeat from the input channel update, so their 30 Hz stays assumed (not measured).
+- **NOT RETAIL YET / open:** the RNG and its seed (ours: a per-boot LCG); where the "shown before" flags reset; the startup load
+  (our splash covers it); the 65 stats labels; who re-holds black at the end of a load (ours: the sequence).
 - **Game run (2026-10-24, scripted `SKATE_MAP_SWITCH` BlackBoxPark -> University, the scratch menu set with the movie):**
-  request 39.03, black 39.86 (0.83 s, `fe_fade` at 30 updates), FE 52 open and its intro done at once (clear 40.03),
+  request 39.03, black 39.86 (0.83 s, `fe_fade` then at 30 updates), FE 52 open and its intro done at once (clear 40.03),
   commit 43.51, slices done 43.98, black 44.96, close, clear 45.99 (`RETAIL_MENUS fade` / `open loading screen` log
   lines). The screenshot 3.5 s in shows Coach Frank's panel with a disc line over the movie's own dark backdrop, laid
   out like the recomp's screen (`.local/research/loading-screen/load1-coachfrank-panel.jpg`). Fixed on the way: the PC
   overlay forced itself open on every transition, so the stage never saw a load without it; it now stays closed when
   the front end has its loading screen (`LoadingCover::available`).
-- **Differences to the recomp shot (open):** "Loading..." sits about 130 px further right and dimmer (the movie's
-  `mLoading` clip; `Screen_EdgeOffset` is 0 in both); the blue spinner at the bottom right is missing (likely the main
-  table's `EnableLoadingTag` 825A9EC0 or another layer, not the tips movie); the body text reads bluer than the
-  recomp's.
-- **Moddability (next):** hint / coach lists and panel timing from data with mod overrides, a mod hold of the loading
-  screen (like `StartupLoading::hold`), cleanup on mod disable; the movie is replaceable through the menu movie
-  overrides.
+- **Differences to the recomp shot (2026-10-24 evening, USER-ASKS 326):** a full-size recomp shot of the loading
+  screen (scripted Challenge Map teleport, `SHOT_FULL=1`, `.local/research/loading-screen/recomp-1024b`) settled them:
+  - **Screen edge offset.** "Loading..." sits at x 100 of 1280 in the recomp, 236 in ours: the movie places `mLoading`
+    at 98 + `Screen_EdgeOffset`, and our boot sent `SetScreenEdgeOffset "136"`. Retail sends that only when a display
+    flag byte is 0 (`boot-enums.md` row 7), and the video calibration movie picks its SD pages when the offset is
+    above 0, so 136 is the SD (4:3) safe frame; on the HD screen the recomp shows, the offset stays 0, `main.apt`'s
+    initial value [trace + code]. Fixed: the boot no longer sends it. This moves every screen that reads the offset
+    to its HD place: the chyron (`_x` = offset), panels (`panel.apt`, Free Play options), tabs, the Trick Guide,
+    credits, the action overlay, the autosave wheel and the FMV popup. The Trick Guide panel's right edge was about
+    200 px further in than in a retail shot (`.local/research/menus-m6/retail/fe_settings_shots`); 136 of that was this.
+    It also answers the video calibration question below: retail shows the HD pages.
+  - **Colours: no difference.** At full size the text matches (body (111,147,163) recomp vs (112,147,160) ours, title
+    (54,78,101) vs (65,87,110), backdrop (20,27,39) vs (20,26,40)); "dimmer" and "bluer" came from the 480 px JPEG.
+  - **Spinner.** The blue wheel at the bottom right is the autosave layer's load tag (`controls/autosave`, one of the
+    layers `main.apt` loads): `_global.Load_EnableTag(bEnableBackground)` -> `SetLoadingVisible(true)` (corner
+    position, "load" frames, wheel visible, animation on), `_global.Load_HideTag()` hides it. In the recomp shots
+    it is up exactly while the loading screen is (26.5 to 31.3 s of the run). Ours now calls `Load_EnableTag(true)`
+    when FE 52 opens and `Load_HideTag()` when it closes (`retail_menu_stage::load_tag`); a menu set without the
+    layer runs without it. Retail's own caller is the main table native EnableLoadingTag `825A9EC0` (not traced).
+- **Moddability (2026-10-24, USER-ASKS 326):** `sdk.loading` (capability `loading` 1, `sdk/ENGINE_API.md` "Loading
+  screen"): a mod's hint and Coach Frank lines by key (string ids localised, other text as written), joined to the
+  retail lines when the screen opens; `retail(false)` leaves only mods' lines on a panel mods fill; `hold` / `release`
+  keep a running load's screen up past the engine's own work, at most 30 s (`tips_loader_host::LoadingMods`,
+  `MAX_MOD_HOLD_SECS`); all of it goes with the mod (`retail_menus::clear_owner`). The movie is replaceable through
+  the menu movie overrides. Not done: the panel timings (9.0 / 0.5 s) as mod values, open / close events for mods.
+- **Startup: not shown, by design.** Retail's boot load uses the same screen; ours shows its native splash for the
+  engine start (before mods, config and the menu set load) and opens the game window only when the first world is
+  playable (doc 31 "Startup loading screen"), so there is no load left for the tips loader to cover (b581 3c
+  option (i)). NOT RETAIL (ours).
 
 ## Startup loading screen (2026-10-15)
 

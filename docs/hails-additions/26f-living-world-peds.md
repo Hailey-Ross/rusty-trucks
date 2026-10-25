@@ -587,6 +587,48 @@ The DMO's plugin check (`82C56DB0`, b136 / b137): moved more than its type's max
 
 `82E3DBE0`: the seated owner (OwnPluginObject, `brain+3277` bit 0x01) of a moving object jumps off forward: intent Avoid / Jump / Forward -> motiongraph_avoid SitJump -> JumpForward `SitAvoidFwd` (blend 0.1), speech PedestrianAvoidJump (4). The gate `[ped+5712]+1416 == 0` is not decoded (taken as open). The body plays it (`advance_peds`) while the flag is up.
 
+### Seated peds avoid an approaching skater
+
+(2026-10-24, USER-ASKS 326; research b229, b583; user 2026-10-18: "they get up in reaction to you coming at them".)
+
+- **Problem:** a seated ped only reacted to its seat moving or to a hit; retail peds on a bench flinch or jump up
+  when a skater comes at them.
+- **Retail [code + trace]:** every ped has a SkaterAvoidance avoider (nav modifier 2, `ped+2832`, vtable 0x8232CA50),
+  and sitting does not turn it off. Per sensed mover, about every 1/3 s in the recomp: skip movers farther than 10 m
+  (0x820ED57C = 100, squared) or slower than 1 m/s (0x8231A844); the straight-line closest approach (82E2E738, 3D: it
+  reproduces the trace's t and miss to the third decimal) must come within 0.75 s (`+0x44`) and 3 m (`+0x38`); a Jump
+  when faster than 5 m/s (`+0x4C`) and closer than 1 m (`+0x3C`), else a Step (82E2E890). The direction is the angle
+  of the escape vector (ped minus the closest point, flattened) from the ped's facing about up (8296EC98, read in the
+  generated code: acos of the normalised dot, 2 pi minus it when cross(facing, escape) points down; the call passes
+  the facing from the owner's vt+0x14 as the first vector), with 30 degree (0.5236, `+0x40`) Forward and Back sectors:
+  Left is the ped's own left. The escape point must pass a 0.1 m ground probe (82C46460). Values from the `AVOIDK` /
+  `AVOIDTEST` lines of a recomp run (25 tests on 5 avoiders, all the same); two traced decisions (Step Right at miss
+  2.08 m, Jump Left at miss 0.425 m and 7.8 m/s) follow the rule.
+- **Seated outcome [data, `motiongraph_avoid.xml` from `Locomotion.Sit.SittingCyc`]:** Jump Forward `SitAvoidFwd`,
+  Left `SitAvoidLeft`, Right `SitAvoidLeft` mirrored (the ped leaves the seat, speech PedestrianAvoidJump 4); Jump Back
+  `SitAvoidBack` and every Step (`SitAvoidSmallFront` / `SitAvoidSmallLeft`, mirrored for Right / `SitAvoidSmallBack`)
+  keep the seat (ReturnToSit.StillSitting, SitSmall).
+- **Ours:** `skate_core::living_world::peds::avoid` (`AvoidRules::RETAIL`, `decide`, `seated`); `think_peds` tests the
+  skaters for each seated ped with SkaterAvoidance on, on the ped's own phase every `period`, first qualifying skater
+  wins, escape point probed on the navmesh with 0.1 m (`SEAT_PROBE_TOLERANCE`). The seat-moved jump above goes through
+  the same table (Jump Forward). A clip that keeps the seat plays and hands back to the sit sequence's held cycle
+  (`PedAnimPlayer::remaining_steps`, held with no time limit like the plugin's own sequence); one that leaves the seat
+  ends the sequence as the seat-moved jump does. Logs: `PED_AVOID ped=#N skater=i kind dir seated clip leaves_seat t
+  miss speed angle`, `PED_AVOID_SKIP ... why=off_ground`, then the existing `PED_SIT_AVOID` / `PED_SIT_AVOID_DONE`.
+- **Moddability:** `ped_brain` tuning `skater_avoid_sense`, `skater_avoid_min_speed`, `skater_avoid_look_ahead`,
+  `skater_avoid_radius`, `skater_avoid_jump_radius`, `skater_avoid_jump_speed`, `skater_avoid_sector`,
+  `skater_avoid_period` (retail values as defaults, restored when the mod goes); the SkaterAvoidance nav modifier a
+  plugin or behaviour switches off (ChangeNavModifierSetting index 2) turns it off per ped.
+- **Multiplayer:** decided on the ped authority from positions, velocities and the ped's stable serial phase, no
+  RNG; clients see the clip through the body sync.
+- **Tests:** `peds::avoid::tests` (the two traced decisions as fixtures, the gates, the sides, the seated table),
+  `peds::tests::a_seated_step_avoid_returns_to_the_held_sit_cycle`, and the data test
+  `living_world_ped_data_loads_from_the_export` (all six clips resolve in all 12 sitting anim sets).
+- **NOT RETAIL YET / open:** standing peds' dodges (the same decision with the standing clips; a follow-up, scope
+  freeze); which movers never cause a Jump (actor type 6, flag `+0x3937`) and the kind 3 message a Jump sends to the
+  mover; whether the values differ per ped type (one run, ped types not named); the recomp's 1/3 s cadence and its
+  phase (ours: the ped's serial); whether a ped that jumped off sits down again. Needs a play test.
+
 ### Plugin behaviour end
 
 Leaving the Plugin state, or moving to another plugin graph, first ends the old graph's active behaviours: the Plugin behaviour's End (`8269F310` -> `82E0CFA0`, controller vtable +0x10 = EndAllBehaviours `82C13498`). So the sit body's End removes its packet (Sit2Stand plays) and OwnPluginObject / IgnoreStandingCollisions / LockToCurrentPosition clear as in retail (b300).

@@ -223,6 +223,10 @@ struct MenuStage {
     /// FE 52's AS id, its `TipsLoader` host, the load sequence and whether the screen's intro is done / it closed.
     tips_loader_id: i32,
     tips_loader: crate::tips_loader_host::TipsLoaderHost,
+    /// The retail lines, before mods' `sdk.loading` lines join them (set on the first open).
+    retail_lines: Option<skate_data::tips_loader::TipsLines>,
+    /// Seconds the loading screen has stayed up past the load's own work (mods' holds, capped).
+    load_after: f32,
     load: skate_core::tips_loader::LoadScreen,
     load_up: bool,
     load_gone: bool,
@@ -282,6 +286,7 @@ impl Plugin for RetailMenuStagePlugin {
             .init_resource::<crate::trick_guide_host::TrickGuideMods>()
             .init_resource::<crate::offline_profile_host::ProfileMods>()
             .init_resource::<crate::extras_host::CreditsMods>()
+            .init_resource::<crate::tips_loader_host::LoadingMods>()
             .init_resource::<crate::popup_host::PopupMods>()
             .add_message::<crate::extras_host::CheatChanged>()
             .add_message::<crate::extras_host::UnlockGranted>()
@@ -392,9 +397,18 @@ fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::P
     }
     stage.call_path("_level0._root.SetPlatform", vec![text("0")], fe)?;
     stage.call_path("_level0._root.SetScreenSize", vec![text("1280"), text("720")], fe)?;
-    stage.call_path("_level0._root.SetScreenEdgeOffset", vec![text("136")], fe)?;
+    // No SetScreenEdgeOffset: retail sends its SD value "136" only without the HD flag (doc 31 "Screen edge offset").
     stage.call_path("_level0._root.UpdatePALMode", vec![text("false")], fe)?;
     Ok(names)
+}
+
+/// The autosave layer's corner wheel while the loading screen is up, as in the recomp's loads (doc 31 "Loading screen
+/// (FE 52)"). A menu set without the autosave layer has no such function; the load runs without the wheel.
+fn load_tag(stage: &mut Stage, on: bool, fe: &mut FrontEnd) {
+    let (path, args) = if on { ("_global.Load_EnableTag", vec![Value::Bool(true)]) } else { ("_global.Load_HideTag", Vec::new()) };
+    if let Err(e) = stage.call_path(path, args, fe) {
+        debug!("RETAIL_MENUS {path}: {e}");
+    }
 }
 
 /// The Apt keys: names from the menu tables' key table, expressions from the install's stock input.cfg.
@@ -667,6 +681,8 @@ fn setup(
                 swap_due: None,
                 swap_loading: false,
                 tips_loader_id: as_id(TIPS_LOADER),
+                retail_lines: None,
+                load_after: 0.0,
                 tips_loader: crate::tips_loader_host::TipsLoaderHost {
                     lines: skate_data::collections::Collections::load(&config.asset_root).map(|c| skate_data::tips_loader::read(&c)).unwrap_or_default(),
                     seed: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos() | 1),
@@ -730,11 +746,12 @@ fn update(
     mut warned: Local<bool>,
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     // Mods' Trick Guide and Skate Profile layers (one parameter: the system is at Bevy's 16).
-    (guide_mods, profile_mods, credits_mods, config): (
+    (guide_mods, profile_mods, credits_mods, config, loading_mods): (
         Res<crate::trick_guide_host::TrickGuideMods>,
         Res<crate::offline_profile_host::ProfileMods>,
         Res<crate::extras_host::CreditsMods>,
         Res<crate::config::Config>,
+        Res<crate::tips_loader_host::LoadingMods>,
     ),
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>),
@@ -1309,9 +1326,12 @@ fn update(
                     info!("RETAIL_MENUS open loading screen (FE {i})");
                     fe.tips_loader.open = true;
                     fe.tips_loader.tips.open();
+                    let retail = ms.retail_lines.get_or_insert_with(|| fe.tips_loader.lines.clone());
+                    fe.tips_loader.lines = loading_mods.lines(retail);
                     ms.load_up = false;
                     ms.load_gone = false;
                     open_screen(&mut ms.stage, TIPS_LOADER_PATH, TIPS_LOADER, &mut fe)?;
+                    load_tag(&mut ms.stage, true, &mut fe);
                 }
                 Effect::Close(i) if Some(i) == loader => {
                     info!("RETAIL_MENUS close loading screen (FE {i})");
@@ -1319,6 +1339,7 @@ fn update(
                     ms.load_up = false;
                     ms.load_gone = true;
                     close(&mut ms.stage, ms.tips_loader_id, &mut fe)?;
+                    load_tag(&mut ms.stage, false, &mut fe);
                 }
                 Effect::Close(i) if Some(i) == spawn => {
                     info!("RETAIL_MENUS close SpawnSkater (FE {i})");
@@ -1456,6 +1477,7 @@ fn update(
         let before = ms.fade.alpha;
         let period = 1.0 / params.tick_hz.max(1.0);
         let ticks = ((time.delta_secs() + ms.fade_carry) / period).floor() as u32;
+        ms.load_after = if ms.load.active() && !transition.busy() { ms.load_after + time.delta_secs() } else { 0.0 };
         ms.fade_carry = (time.delta_secs() + ms.fade_carry - ticks as f32 * period).min(period * 30.0);
         for _ in 0..ticks.min(30) {
             if let Some(n) = ms.trick_guide_fade_in {
@@ -1473,7 +1495,9 @@ fn update(
             // from the PC overlay keeps the overlay's progress text.
             if let Some(l) = loader {
                 use skate_core::tips_loader::LoadStep;
-                let loading = transition.busy() && (ms.load.active() || !overlay.as_ref().is_some_and(|o| o.open));
+                // A mod's `sdk.loading.hold` keeps a running load's screen up a while longer (tips_loader_host).
+                let loading = (transition.busy() && (ms.load.active() || !overlay.as_ref().is_some_and(|o| o.open)))
+                    || (ms.load.active() && loading_mods.holding(ms.load_after));
                 match ms.load.update(loading, ms.fade.alpha >= 1.0, ms.load_up, ms.load_gone) {
                     Some(LoadStep::HoldBlack) => {
                         ms.fade.hold(FADE_LOAD, None, false, &params);

@@ -318,9 +318,14 @@ fn living_world_ped_data_loads_from_the_export() {
     assert!(d.clips.len() > 50);
     // The sit plugin's cycle and the Avoid graph's jump off a seat resolve in the stock sets (the seat-moved avoid).
     let sit_sets = d.anim_sets.values().filter(|s| s.entries.contains_key(super::peds::SIT_CYCLE)).count();
-    let avoid_sets = d.anim_sets.values().filter(|s| s.entries.contains_key(super::peds::SIT_AVOID_CLIP)).count();
+    let avoid_sets = d.anim_sets.values().filter(|s| s.entries.contains_key(skate_core::living_world::peds::avoid::SEATED_CLIPS[0])).count();
     eprintln!("anim sets with the sit cycle {sit_sets}, with SitAvoidFwd {avoid_sets}");
     assert!(avoid_sets > 0 && avoid_sets >= sit_sets, "SitAvoidFwd in {avoid_sets} of {sit_sets} sitting sets");
+    // Every seated SkaterAvoidance clip (motiongraph_avoid.xml SitJump / SitSmall) resolves where the jump does.
+    for clip in skate_core::living_world::peds::avoid::SEATED_CLIPS {
+        let n = d.anim_sets.values().filter(|s| s.entries.contains_key(clip)).count();
+        assert!(n >= avoid_sets, "{clip} in {n} of {avoid_sets} sets");
+    }
     let look = d.catalog.choose("aletown", 1, &PedOverrides::default()).unwrap();
     let set = &d.anim_sets[&look.anim_set];
     let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, reaction_due: None, position: Vec3::ZERO, velocity: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default(), plugin_motion: Default::default() };

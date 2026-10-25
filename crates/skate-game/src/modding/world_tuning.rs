@@ -390,6 +390,15 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         use skate_core::living_world::peds::skater_contact::{ReactionDirection, ReactionKind};
         b.values.trip_kind = f.trip_kind.as_deref().and_then(ReactionKind::from_name).unwrap_or(b.values.trip_kind);
         b.values.trip_direction = f.trip_direction.as_deref().and_then(ReactionDirection::from_name).unwrap_or(b.values.trip_direction);
+        let a = &mut b.values.avoid;
+        a.sense_radius = f.skater_avoid_sense.unwrap_or(a.sense_radius);
+        a.min_speed = f.skater_avoid_min_speed.unwrap_or(a.min_speed);
+        a.look_ahead = f.skater_avoid_look_ahead.unwrap_or(a.look_ahead);
+        a.avoid_radius = f.skater_avoid_radius.unwrap_or(a.avoid_radius);
+        a.jump_radius = f.skater_avoid_jump_radius.unwrap_or(a.jump_radius);
+        a.jump_speed = f.skater_avoid_jump_speed.unwrap_or(a.jump_speed);
+        a.sector_half_angle = f.skater_avoid_sector.unwrap_or(a.sector_half_angle);
+        a.period = f.skater_avoid_period.unwrap_or(a.period).max(1.0 / 60.0);
     }
     if let Some(f) = &p.npc_avoid {
         let a = &mut s.npc_avoid;

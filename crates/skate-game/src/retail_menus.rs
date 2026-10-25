@@ -756,6 +756,9 @@ pub(crate) fn clear_owner(world: &mut World, id: &str) {
     if let Some(mut credits) = world.get_resource_mut::<crate::extras_host::CreditsMods>() {
         credits.clear_owner(Some(id));
     }
+    if let Some(mut loading) = world.get_resource_mut::<crate::tips_loader_host::LoadingMods>() {
+        loading.clear_owner(Some(id));
+    }
     if let Some(mut popups) = world.get_resource_mut::<crate::popup_host::PopupMods>() {
         popups.clear_owner(Some(id));
     }
@@ -781,6 +784,9 @@ pub(crate) fn clear_mods(world: &mut World) {
     }
     if let Some(mut credits) = world.get_resource_mut::<crate::extras_host::CreditsMods>() {
         credits.clear_owner(None);
+    }
+    if let Some(mut loading) = world.get_resource_mut::<crate::tips_loader_host::LoadingMods>() {
+        loading.clear_owner(None);
     }
     if let Some(mut popups) = world.get_resource_mut::<crate::popup_host::PopupMods>() {
         popups.clear_owner(None);

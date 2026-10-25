@@ -775,6 +775,12 @@ pub enum Command {
     MenuProfile { page: String, key: String, #[serde(default)] options: Option<crate::menus::ProfileOptions> },
     /// This mod's credit lines by key, after the retail credits (Extras > Credits); no lines = drop the section.
     MenuCredits { key: String, #[serde(default)] lines: Option<Vec<crate::menus::CreditLine>> },
+    /// This mod's loading screen line by key (a hint or a Coach Frank line); no line = drop it.
+    LoadingLine { key: String, #[serde(default)] line: Option<crate::menus::LoadingLine> },
+    /// false: while this mod runs the loading screen shows only mods' lines (with none, the retail lines stay).
+    LoadingRetail { shown: bool },
+    /// Keep the loading screen up after a load's own work is done until released (capped by the engine).
+    LoadingHold { key: String, held: bool },
     CameraClearCapture {
         key: String,
     },
@@ -1134,6 +1140,9 @@ impl Command {
                 crate::menus::valid_menu_id(key)
                     && lines.as_ref().is_none_or(|l| l.len() <= crate::menus::MAX_CREDIT_LINES && l.iter().all(crate::menus::CreditLine::validate))
             }
+            Self::LoadingLine { key, line } => crate::menus::valid_menu_id(key) && line.as_ref().is_none_or(crate::menus::LoadingLine::validate),
+            Self::LoadingRetail { .. } => true,
+            Self::LoadingHold { key, .. } => crate::menus::valid_menu_id(key),
             Self::CameraClearCapture { key } => crate::schema::valid_id(key),
         }
     }
@@ -1264,6 +1273,9 @@ fn command_kind(command: &Command) -> &'static str {
         Command::MenuPopup { .. } => "menu_popup",
         Command::MenuProfile { .. } => "menu_profile",
         Command::MenuCredits { .. } => "menu_credits",
+        Command::LoadingLine { .. } => "loading_line",
+        Command::LoadingRetail { .. } => "loading_retail",
+        Command::LoadingHold { .. } => "loading_hold",
         Command::MenuBitmap { .. } => "menu_bitmap",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
@@ -1508,6 +1520,7 @@ impl Vm {
             capabilities.set("scene_transforms", 2)?;
             capabilities.set("skater", 4)?;
             capabilities.set("menus", 3)?;
+            capabilities.set("loading", 1)?;
             capabilities.set("player_physics", 2)?;
             capabilities.set("engine_access", 1)?;
             capabilities.set("command_results", 1)?;
@@ -3167,6 +3180,13 @@ mod empty_table_lists {
         assert!(!eval("return {kind='menu_profile', page='stats', key='a', options={total=3}}").validate());
         assert!(!eval("return {kind='menu_profile', page='career', key='a', options={label='#x'}}").validate());
         assert!(!eval("return {kind='menu_profile', page='friends', key='a'}").validate());
+        let hint = eval("return {kind='loading_line', key='my-mod.tip', line={panel='hint', title='#Tip', text='#Hold A to ollie higher.'}}");
+        assert!(matches!(&hint, Command::LoadingLine { line: Some(crate::menus::LoadingLine::Hint { .. }), .. }) && hint.validate());
+        assert!(eval("return {kind='loading_line', key='my-mod.frank', line={panel='coach_frank', text='ID_TIPS_COACHFRANK_3'}}").validate());
+        assert!(eval("return {kind='loading_line', key='my-mod.tip'}").validate());
+        assert!(!eval("return {kind='loading_line', key='my-mod.tip', line={panel='hint', title='', text='x'}}").validate());
+        assert!(eval("return {kind='loading_hold', key='my-mod.bank', held=true}").validate());
+        assert!(eval("return {kind='loading_retail', shown=false}").validate());
         assert!(!eval("return {kind='menu_backdrop', screen='56'}").validate());
         assert!(eval("return {kind='menu_backdrop', screen='a774f79d33b6be83:1'}").validate());
         assert!(!eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={tint={1, 2}}}").validate());

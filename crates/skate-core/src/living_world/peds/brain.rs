@@ -65,6 +65,8 @@ pub struct BrainSettings {
     /// The reaction a failed takedown's trip stores (`826A5068`: Knockdown `830218C0[0]`, FromBack `830218B0[1]`; b326).
     pub trip_kind: super::skater_contact::ReactionKind,
     pub trip_direction: super::skater_contact::ReactionDirection,
+    /// SkaterAvoidance's closest-approach test and Jump / Step limits (`super::avoid`).
+    pub avoid: super::avoid::AvoidRules,
 }
 
 /// ZombieFollow (`826A91A8` / `826A9250` / `826A9518`) [code]: beyond `follow_distance` the goal is the player; inside
@@ -95,7 +97,7 @@ impl Default for ZombieFollowSettings {
 
 impl Default for BrainSettings {
     fn default() -> Self {
-        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, mood_want_memory_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, tazer_clip_blend: 0.2, tazer_clip_end: 0.2, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, reach_check_seconds: 10.0 / 30.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default(), trip_kind: super::skater_contact::ReactionKind::Knockdown, trip_direction: super::skater_contact::ReactionDirection::FromBack }
+        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, mood_want_memory_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, tazer_clip_blend: 0.2, tazer_clip_end: 0.2, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, reach_check_seconds: 10.0 / 30.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default(), trip_kind: super::skater_contact::ReactionKind::Knockdown, trip_direction: super::skater_contact::ReactionDirection::FromBack, avoid: super::avoid::AvoidRules::RETAIL }
     }
 }
 
