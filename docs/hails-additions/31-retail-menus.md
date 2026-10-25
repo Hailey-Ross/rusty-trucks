@@ -2565,6 +2565,16 @@ looked at in the running game (keyboard look, popup over the keyboard).
   in this pass (no stick input); the stage backdrop is a concrete wall and ledge (screenshot `run1_shots`, 38.9 s).
   Open: the exact eye formula from the entry value (x differs by 0.2 m, y by 0.4 m), free-look under the sticks.
 - **Tests:** `spawn_skater` (rows, limit, dismiss, Free Play pick / preview / options / close), `retail_spawn_skater_screen_lists_skaters_and_picks_one` (the movie loads, every call answered, A picks). Automated in-game runs (keys `_x60,13,_x30,13,_x30,2`: Call Skater with 33 rows; `_x60,13,_x30,2,_x120,13,_x30,2`: Free Play, picks Andrew Reynolds, the player swaps). Not play-tested by the user.
+
+### Runtime pro swap T-pose
+
+2026-10-25, USER-ASKS 343 / 344. Ours (engine bug, no retail question).
+
+- **Problem:** a saved pro animates at startup, but swapping to a pro at runtime (FE 62 Free Play pick, or Extras > Custom Models) left the new pro in a T-pose. Dem Bones (same 35-bone rig) animated after the same swap. Laptop sessions game-20261025-115957 and -125257; reproduced on the desktop with `SKATE_CUSTOM_MODEL_SWAP=danny_way@15` (saved Andrew Reynolds).
+- **Root cause:** the living world preload (`living_world/preload.rs`) loads every NPC skater look as `<pro>/character.glb#Scene0` and holds only that handle, so the bare GLB (`Gltf`) asset is dropped once it has loaded. `custom_models::publish` loaded the bare GLB again (for its load state) next to the scene. With the bare entry gone Bevy 0.18 loads the whole file again and re-inserts `Scene0` into its live slot, which sends `AssetEvent::Modified`; the scene spawner then despawns and respawns every instance of that scene. The swap had already bound the first instance's joints (its scene was loaded through the preload, so the instance was ready at once), so the visible respawned instance was unbound. Debug logging: bindings alive 0/35 after the swap, the visible meshes' joints new entities. Dem Bones is not in the NPC skater pool, so nothing preloads it and it loads in one go. The respawn would also hit an NPC skater wearing the same pro (inferred, not observed).
+- **Change:** `publish` loads only the scene (`GltfAssetLabel::Scene(0)`), whose live handle never reloads the file, and reads a failed bare GLB through `AssetServer::get_path_id` without loading it (`custom_models.rs`, `Pending { path, scene }`).
+- **Tests:** `custom_models::tests::swap_loads_the_scene_so_a_preloaded_instance_keeps_its_joints` (a scene-only preload keeps its joints when the scene is loaded again; loading the bare GLB respawns them, the hazard). Test hook `SKATE_CUSTOM_MODEL_SWAP=<id or roster key>@<seconds>` (or `stock@<seconds>`).
+
 ## Free Play options (FE 34)
 
 2026-10-23. X in FE 62's Free Play list (flow 0x8A).
