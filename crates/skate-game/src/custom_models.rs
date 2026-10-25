@@ -535,6 +535,9 @@ fn publish(
                     Err(e) => format!("Restored; selection could not be saved: {e}"),
                 };
             }
+            Some(id) if state.active.as_ref() == Some(&id) => {
+                bevy::log::info!("CUSTOM_MODEL {id} already active");
+            }
             Some(id)
                 if state.active.as_ref() != Some(&id)
                     && state.entries.iter().any(|e| e.id == id) =>
@@ -597,6 +600,7 @@ fn publish(
     match prepared {
         Err(error) => {
             commands.entity(pending.root).despawn();
+            bevy::log::warn!("CUSTOM_MODEL {} failed: {error}", pending.id);
             state.status = format!("{error} Previous character retained.");
         }
         Ok(bindings) => {
@@ -617,6 +621,8 @@ fn publish(
             // Seed the new rig before publishing visibility, even when paused.
             let pose:Vec<_>=skater.render_pose.iter().copied().map(crate::animation::native_matrix).collect();
             for (joint,transform) in bindings.pose_transforms(&pose) {commands.entity(joint).insert(transform);}
+            bevy::log::info!("CUSTOM_MODEL {} ready bones={} native={}", pending.id, bindings.joints().len(),
+                state.entries.iter().find(|e| e.id == pending.id).and_then(|e| e.native.as_ref()).map_or("-", |n| n.key.as_str()));
             *animation = bindings;
             state.active = Some(pending.id.clone());
             state.status = match save_selection(&state.directory, Some(pending.id)) {
