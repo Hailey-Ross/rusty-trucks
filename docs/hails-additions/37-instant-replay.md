@@ -357,6 +357,22 @@ record space mapping of b401 (Follow SPACE_EYE).
 Tests: `editor::tests::a_key_edit_stores_the_leashed_eye_and_playback_keeps_it`,
 `camera_key::tests::set_eye_round_trips_a_follow_orbit`, the `camera_collision` tests.
 
+### Replay popups own the pad (2026-10-25, USER-ASKS 342)
+
+Problem (laptop session `game-20261025-114137`, the user: "going into options (pressing X while editing a clip)
+doesnt block input to the replay and your inputs can unpaise or make changes to the clip in the background"). The
+log: with the film pack menu (X) up, D-pad presses moved the clip (`REPLAY_CAMERA shot` lines, a refused marker), the
+A that picked Replay Mode also switched the editor Timeline -> Effects, and the B that closed it switched back.
+
+Cause [code, ours]: `replay::controls` stops editor and transport input while the quit warning, a marker question or
+the photo flow waits, but not while a film pack popup does (`film_ask`), and on the frame an answer arrives the
+press that gave it went on to the editor. Retail's popup takes the pad while it shows (`0x825A4F00`: input blocked
+until the next show, as `popup_host.rs` notes).
+
+Change: the gate also covers `film_ask`, and a frame with a replay popup answer runs no editor or transport input.
+New log line `REPLAY_EDITOR play cursor=..` / `pause` whenever the replay starts or stops (`log_transport`).
+Test: `the_film_pack_finished_menu_works_as_retail` (A, D-pad and RB under the open menu change nothing).
+
 ## M2 step 2: editor session and key bindings (skate-core)
 
 `skate_core::replay_edit::session`: retail's editor modes (the values of `[DAT_83067084]+0x30`: 1 playback, 2 trim,
