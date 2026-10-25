@@ -32,13 +32,13 @@ pub(super) fn advance(
     physics.exchange = super::SimulationExchange::new(tick);
     //SimController8285C968 dispatches the preceding tick's camera messages
     //before simulation. Keep End/Begin ordering when both occur in one update.
-    // The camera graph's slow-motion requests are logged, not applied: on a long air (MegaPark mega ramp) they
-    // slowed the game to 39-48 ticks a second, which retail does not do (user 2026-10-23). The retail condition that
-    // keeps them out is not found yet (doc 21 "Camera slow motion", USER-ASKS 294).
+    // Without the controller's subject (retail's graph context, `CameraGraph::slow_motion_subject`) only Begin / End's
+    // 1/60 requests arrive; a slower one is logged (doc 21 "Camera slow motion").
     for request in camera.simulation_rate_requests.drain(..) {
         if request.timestep != f32::from_bits(0x3c888889) {
-            bevy::log::info!("CAMERA_SLOW_MOTION request timestep={:.4} ticks={} (not applied)", request.timestep, request.ticks);
+            bevy::log::info!("CAMERA_SLOW_MOTION request timestep={:.4} ticks={}", request.timestep, request.ticks);
         }
+        if !physics.network_active { physics.clock.apply(request)?; }
     }
     if physics.network_active { physics.clock = super::clock::SimulationClock::default(); }
     if physics.ticks == 0 {
