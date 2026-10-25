@@ -440,8 +440,43 @@ Change: `Editor::pick_camera`: a non-Game pick on a clip with no keys also puts 
 hardness on the clip's In point (the key at the playhead is the one edited, as before). Data:
 `CameraRules::fill_section` (retail on); a mod turns it off with `sdk.replay.set_camera{fill_section = false}`.
 Test: `editor::tests::camera_keys_hold_cut_and_blend` (the part before a first Tripod key shows the key's pose).
-NOT RETAIL YET: a pick of another camera on a clip that already has keys (retail's confirm dialog and section replace;
-its strings are unread), and our "shown view" as the converted pre-pick pose is inference (b604 open points).
+The keyed-clip case is ported below.
+
+### A camera picked on a keyed clip asks, then replaces its section (2026-10-25, USER-ASKS 341 follow-up, research b609 / b610)
+
+Retail [code, `.local/research/b609-camera-pick-on-keyed-clip.md`, `b610-section-start-pose.md`; main checked the
+`82614148` branches in the recomp]:
+- **Insert or replace (`82614148`):** rows 0..6 are items 0, 1, 3, 2, 4, 5, 6, compared with the section's kind
+  (`82508CE8`). A basic row inserts only over its own camera with hard keys (or the In / Out points) on both sides
+  (`82508828`); an advanced row inserts over its own camera. Otherwise the pick replaces.
+- **Confirm:** a replace asks "Change Camera" (`ID_REPLAY_EDITOR_REPLACE_CAMERA_TITLE` / `_DESC`, No / Yes; callback
+  `826142F8`: Yes replaces, anything else does nothing), except when the channel is one Game segment (`82C7F3D8` == 1,
+  kind 3): then it replaces at once (the b603 case above). An advanced-row replace at the 100-key cap is refused
+  (`82613500` / `82613598`).
+- **Replace (`82C7FB08`, `82C7FFB8` / `82C80298` / `82C80540` / `82C807F0`):** the section runs from the nearest hard
+  key at or before the playhead (or the In point) to the next hard key (or the Out point). Its soft keys go, its start
+  key takes the new type with its stored eye / look re-expressed in the new camera's space (old space -> world -> new
+  space with the frames at the playhead, `82C852F0`; the look height stays between Follow and Tripod), and one key goes
+  in at the playhead. Keys outside the section stay.
+
+Change:
+- `camera_key::convert_key`: Follow <-> Tripod move the eye between the Follow eye frame and world and keep the look
+  height; any camera -> Free is built from the old pose; Free -> Follow / Tripod keeps the eye (look height 0, see
+  Open); -> Game is Game; a Game start has no stored pose and takes the new key's.
+- `Editor::pick_replaces` / `pick_asks` / `pick_camera` (the decision, the section replace, then the key at the
+  playhead); `replay.rs`: `CameraAsk` raises the confirm (`camera_popup`) like the marker questions, an open confirm
+  owns the pad, Yes picks.
+- Data: `CameraRules::fill_section` (retail on) covers the whole section rule; a mod's
+  `sdk.replay.set_camera{fill_section = false}` makes every pick a plain insert again.
+
+Tests: `editor::tests::a_camera_pick_on_a_keyed_clip_replaces_its_section` (keys hard 2, soft 4, soft 6, hard Free 8,
+soft Free 10; Follow at 5 asks, clears the soft keys, turns the 2 s Tripod key into Follow with the same world eye and
+look height, keeps 8 and 10; Advanced Tripod over Tripod only inserts; `fill_section = false` only inserts);
+`camera_keys_hold_cut_and_blend` now expects the Advanced Free pick inside the Tripod section to turn its 5 s key into
+Free. Not play-tested.
+Open (b610): a Free start converted to Follow / Tripod keeps its look in one frame but retail relabels it subject 4
+(ours: look height 0); what a Game section's records hold; the popup's cancelable flag and default (`82D0B0B0` defaults
+assumed cancelable like the other editor questions); a pick inside the minimum spacing during a replace.
 
 ### Replay popups own the pad (2026-10-25, USER-ASKS 342)
 
