@@ -417,8 +417,13 @@ Change: `FollowEye::Camera` (retail, default) builds the eye frame upright from 
 Tests: `camera_key::tests::follow_eye_frame_is_the_camera_heading_only` (pitch leaves the frame unchanged, roll tips
 it only by the flattened side axis, the low eye stays where it was placed, the full frame swings), skate-mods
 `replay_set_camera` validation with `camera_full`.
-Open: the laptop retest; how playback evaluates a Follow key per frame without calling `82C84CF8` (frames cached at
-edit time is the likely reading, not traced).
+Playback [code b611 + trace run7]: every frame the render update `8279E350` ticks the editor camera `82C8A960` ->
+`82C8B9F8` -> `82C8C470` (the per-frame twin of `82C84CF8`, ~490 calls a second per caller). Hook `RCAMP`
+(`.local/research/m350/run7.tsv`): the eye call (lr `82C8BC40`) is space 0 object 2 and the look call (lr `82C8B95C`)
+space 0 object 4 in all 1056 logged eye calls, with the three flag arguments (r7..r9) 0 throughout: no smoothing and
+no extra upright step, so the eye rides slot 1's own upright frame live every frame, as ours does (`camera_key::pose`
+per frame from the recorded camera at the cursor).
+Open: the laptop retest.
 
 ### A camera picked on a clip with no keys covers the whole clip (2026-10-25, USER-ASKS 341, research b603 / b604)
 
