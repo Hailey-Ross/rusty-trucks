@@ -225,8 +225,25 @@ fn track(
         let (over, strength) = (skeleton.over_599 != 0, skeleton.response_strength_580);
         let peds = s.ped_hits.iter().map(|h| h.0);
         let vehicles = s.vehicle_hits.iter().map(|h| h.0);
+        let contacts = &s.collision_feedback.bones;
+        let airborne = skate_core::hall_of_meat::airborne(&contacts.map(|b| b.groups[3]), &contacts.map(|b| b.normal[1]),
+            &contacts.map(|b| b.specific_normal[1]));
         let bail = host.bail.get_or_insert_default();
-        bail.tick(dt, over, strength, peds, vehicles);
+        let frames = &s.animated_skeleton.board_frames;
+        let speed = frames.com_velocity[..3].iter().map(|v| v * v).sum::<f32>().sqrt();
+        let hips = s.skeleton.record.pose[23];
+        let tick = skate_core::career_stats::BailTick {
+            dt,
+            over,
+            frozen: s.player_input.physical.air.use_air_reckoning_452 != 0,
+            response_strength: strength,
+            airborne,
+            centre: (frames.centre_of_mass[1], speed),
+            hips: [hips[0], hips[1], hips[2]],
+            stick: s.animation_input.extra.wipeout_gesture,
+            poses: physics.as_ref().and_then(|p| p.settings.hall_of_meat_poses.as_ref()),
+        };
+        bail.tick(&tick, peds, vehicles);
         if let Some(tuning) = physics.as_ref().and_then(|p| p.settings.hall_of_meat.as_ref()) {
             let bones = &s.collision_feedback.bones;
             let impacts = skate_core::hall_of_meat::part_impacts(&bones.map(|b| b.force), &bones.map(|b| b.specific_force));
