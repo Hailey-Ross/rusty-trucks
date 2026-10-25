@@ -646,6 +646,17 @@ impl Replay {
     }
 }
 
+/// `REPLAY_EDITOR play` / `pause` when the replay starts or stops playing (laptop 2026-10-25 asked for it).
+fn log_transport(replay: Res<Replay>, mut last: Local<Option<bool>>) {
+    let now = replay.active.then_some(replay.playing);
+    if now != *last {
+        if let Some(playing) = now {
+            info!("REPLAY_EDITOR {} cursor={:.2}", if playing { "play" } else { "pause" }, replay.cursor);
+        }
+        *last = now;
+    }
+}
+
 pub(crate) struct ReplayPlugin;
 impl Plugin for ReplayPlugin {
     fn build(&self, app: &mut App) {
@@ -673,6 +684,7 @@ impl Plugin for ReplayPlugin {
                 )
                     .run_if(live),
             )
+            .add_systems(PreUpdate, log_transport.after(controls))
             .add_systems(
                 PreUpdate,
                 controls
@@ -1058,6 +1070,8 @@ pub(crate) fn controls(
     let (ours, others) = std::mem::take(&mut popups.engine_choices).into_iter()
         .partition::<Vec<_>, _>(|(callback, _)| callback.starts_with(REPLAY_POPUP_PREFIX));
     popups.engine_choices = others;
+    // A popup answered this frame took the press that answered it (USER-ASKS 342).
+    let answered = !ours.is_empty();
     // The quit warning's answer (No / Yes, Yes = 1).
     for (callback, choice) in ours {
         if callback == QUIT_POPUP && replay.quit_pending {
@@ -1215,7 +1229,9 @@ pub(crate) fn controls(
             apply_marker_ask(&mut *replay, ask);
         }
     }
-    if !replay.active || menu_open || replay.quit_pending || replay.marker_ask.is_some() || replay.photo != Photo::Idle {
+    // An open replay popup owns the pad: no editor or transport input underneath it (USER-ASKS 342).
+    if !replay.active || menu_open || answered || replay.quit_pending || replay.marker_ask.is_some() || replay.film_ask.is_some()
+        || replay.photo != Photo::Idle {
         return;
     }
     let dt = time.delta_secs().min(0.1);

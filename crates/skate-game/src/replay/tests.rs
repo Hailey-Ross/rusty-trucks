@@ -787,6 +787,16 @@ fn the_film_pack_finished_menu_works_as_retail() {
     let menu = pop(&mut app);
     assert_eq!(menu.callback, FILM_MENU_POPUP);
     assert_eq!(menu.options, film_menu_rows(true).into_iter().map(String::from).collect::<Vec<_>>());
+    // The open menu owns the pad (USER-ASKS 342): A, the D-pad and RB do nothing underneath it.
+    let (cursor, playing) = { let r = app.world().resource::<Replay>(); (r.cursor, r.playing) };
+    for buttons in [A, 0, DPAD_DOWN, 0, RB, 0] {
+        tick(&mut app, buttons);
+    }
+    {
+        let r = app.world().resource::<Replay>();
+        assert_eq!((r.cursor, r.playing), (cursor, playing));
+        assert_eq!(r.editor.as_ref().unwrap().session.mode, skate_core::replay_edit::session::EditorMode::Timeline);
+    }
     // Replay mode: a toggle stays up; cancel closes.
     choose(&mut app, FILM_MENU_POPUP, 2);
     assert_eq!(pop(&mut app).callback, REPLAY_MODE_POPUP);
