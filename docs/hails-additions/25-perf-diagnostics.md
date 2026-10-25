@@ -573,21 +573,34 @@ approaching skater") and the camera slow-motion subject gate (doc 21 "Camera slo
   step 2.48 ms = systems busy 1.80 ms + gaps 0.68 ms, cpu 1.84 ms. The systems barely overlap (cpu about equal to
   busy), and the gaps are the multi-threaded executor handing systems between threads plus its sync points. Largest
   systems: `npc_sim::simulate` 0.77 ms, `physics::advance` 0.69 ms per step.
-- **Change:** `SKATE_FIXED_EXECUTOR=single` runs `FixedUpdate` on Bevy's single-threaded executor (`app.rs`). Default
+- **Change:** `SKATE_FIXED_EXECUTOR=single` runs the fixed schedules (`FixedFirst`, `FixedPreUpdate`, `FixedUpdate`,
+  `FixedPostUpdate`, `FixedLast`) on Bevy's single-threaded executor (`app.rs` `single_fixed_executor`). Default
   stays Bevy's multi-threaded one (user 2026-10-24: "multi threaded should be default"); players choose in the Steam
   launcher, Tools > Physics step threads (saved in `.local/steam-launcher/fixed-executor.txt`, passed to the game).
 - **Same outcome:** the single-threaded executor runs the same systems with the same order constraints and sync
   points; systems with no order between them run in one fixed order, which is one of the orders the multi-threaded
   executor already picks from frame to frame. Systems that use parallel iteration inside still do.
-- **Desktop (same exe, alternating, 45 s University, `SKATE_FIXED_TIMING=1`):**
+- **What the pauses are (USER-ASKS 330):** a Chrome trace (`--trace <file> --trace-seconds 30`, 20 steps late in the
+  capture, `.local/perf-bench/tick_gaps.py`): of a 2.79 ms traced step, 0.365 ms has no system running on any thread.
+  No single cause: about 5 us at each hand-off between systems, plus about 20 us for each of the near-empty
+  `FixedFirst`, `FixedPostUpdate` and `FixedLast` (Bevy's gizmo and message systems: the multi-threaded executor's
+  start-up per schedule run). Trace-all itself does not cost the tick (plain frame log vs trace-all, tick frames:
+  `fixed_ms` median 2.399 / 2.393 vs 2.415 / 2.407 ms).
+- **Tried and reverted:** `replay::world_live` guards 30 living world systems one by one (`distributive_run_if`, 30
+  checks a step); one check per group measured 2.386 vs 2.376 ms (three runs each, plain frame log), within the
+  noise, so it stays as it was.
+- **Desktop, plain frame log, tick frames' `fixed_ms` median (University, 45 s, alternating):** multi 2.388 / 2.373 /
+  2.397 ms; single on `FixedUpdate` only 2.322 / 2.340; single on all fixed schedules 2.228 / 2.243 / 2.212 (-6%
+  against multi). Tick frame median 5.00 to 4.85 ms. No errors in any run.
+- **Laptop (Ryzen 9 8945HS, Turbo, `SKATE_FIXED_TIMING=1`, e84604a2 = single on `FixedUpdate` only, alternating):**
 
-  | executor | step ms | gaps ms | frame median | p90 | p99 |
+  | executor | step ms (3 runs) | gaps ms | frame p90 | p99 | max |
   |---|---|---|---|---|---|
-  | multi 1 / 2 | 2.47 / 2.47 | 0.66 / 0.66 | 2.98 / 3.01 | 5.34 / 5.37 | 6.56 / 6.55 |
-  | single 1 / 2 | 2.38 / 2.36 | 0.59 / 0.58 | 2.95 / 2.94 | 5.24 / 5.23 | 6.32 / 6.31 |
+  | multi | 3.48 / 3.57 / 3.63 | 0.99 / 1.03 / 1.10 | 7.17 / 7.81 / 8.08 | 8.52 / 9.04 / 9.31 | 79.3 / 37.3 / 53.8 |
+  | single | 3.34 / 3.43 / 3.40 | 0.89 / 0.91 / 0.90 | 7.16 / 7.27 / 7.23 | 8.07 / 8.48 / 8.18 | 19.5 / 46.8 / 29.2 |
 
-  About 4% off the step and 0.1 to 0.2 ms off the slow frames; no errors in any run. Most of the gaps remain (sync
-  points), so the executor was not their main cause. Laptop: not measured yet.
+  Step -4.7%, p99 -8% (8.96 to 8.24 ms mean); every single run beat every multi run. The schedules added since
+  (all fixed schedules) are not measured on the laptop yet.
 
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 
