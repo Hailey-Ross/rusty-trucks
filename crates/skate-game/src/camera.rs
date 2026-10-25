@@ -65,7 +65,6 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
     history: Res<crate::presentation::Presentation>, time: Res<Time<Fixed>>,
     replay: Res<crate::replay::Replay>,
     customiser: Option<Res<crate::customiser::Customiser>>,
-    physics: Option<Res<crate::physics::GamePhysics>>,
     mut guard: Local<crate::replay::CameraGuard>,
     mut cameras: Query<(&mut Camera, &mut Transform, &mut Projection), With<GameplayCamera>>) {
     if let Ok(window) = windows.single() {
@@ -88,8 +87,7 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
             } else {
                 // The editor's camera key on the skater root (Follow / Tripod / Free; Game keeps the recording).
                 let root = crate::presentation::blend(previous.root, current.root, alpha);
-                let world = physics.as_deref().map(crate::physics::GamePhysics::world);
-                let (key_pose, fov) = replay.guarded_editor_camera(&root, &mut guard, world);
+                let (key_pose, fov) = replay.guarded_editor_camera(&root, &mut guard);
                 if let Some(pose) = key_pose {
                     *transform = pose;
                 }

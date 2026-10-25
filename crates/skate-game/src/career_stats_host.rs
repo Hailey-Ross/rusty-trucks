@@ -2,7 +2,7 @@
 //! `settings/career-stats.json`, shown on the loading screen's Stats panel. Details:
 //! docs/hails-additions/31-retail-menus.md "Career stats".
 use bevy::prelude::*;
-use skate_core::career_stats::{row, CareerStats, Format};
+use skate_core::career_stats::{row, BailRecord, CareerStats, Format, PushLatch};
 use std::collections::BTreeMap;
 
 /// A position step longer than this in one fixed tick is a teleport or a map switch, not travel.
@@ -55,6 +55,9 @@ pub(crate) struct CareerStatsHost {
     bail_seq: Option<u32>,
     /// Bail distance not yet added (0x82775018 adds whole metres).
     bail_metres: f32,
+    pushes: PushLatch,
+    /// The bail running now (Hall of Meat record), added to the rows when it ends.
+    bail: Option<BailRecord>,
     dirty: bool,
     since_save: f32,
 }
@@ -184,8 +187,8 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>) {
     commands.insert_resource(CareerStatsHost::load(root.join("settings/career-stats.json"), tables));
 }
 
-/// One fixed step of the local player: time played, distance on and off the board, skitching, bails and their
-/// distance (0x82775158, 0x82774DA0), and the scoring runtime's trick, move and body flip events.
+/// One fixed step of the local player: time played, distance on and off the board, skitching, push starts, bails and
+/// their distance (0x82775158, 0x82774DA0), and the scoring runtime's trick, move and body flip events.
 fn track(
     host: Option<ResMut<CareerStatsHost>>,
     skater: Option<ResMut<crate::physics::SkaterRuntime>>,
@@ -203,14 +206,31 @@ fn track(
         host.record(row::WIPEOUTS, (bail_seq - last) as f32);
     }
     host.bail_seq = Some(bail_seq);
+    let packet = &s.animation.packet;
+    if let Some(i) = host.pushes.update(s.player_input.processed.flags_2468, packet.regular_stance, packet.riding_switch) {
+        host.record(i, 1.0);
+    }
     let dt = time.delta_secs();
     let root = s.animated_skeleton.roots.animation_to_world;
     let at = [root[3][0], root[3][1], root[3][2]];
     if transition.busy() {
         host.last = None;
+        host.bail = None;
         return;
     }
     host.record(row::TIME_PLAYED, dt);
+    let wiping = physics.as_ref().is_some_and(|p| p.board_wiping_out);
+    if wiping {
+        let skeleton = &s.player_input.physical.skeleton;
+        let (over, strength) = (skeleton.over_599 != 0, skeleton.response_strength_580);
+        let peds = s.ped_hits.iter().map(|h| h.0);
+        let vehicles = s.vehicle_hits.iter().map(|h| h.0);
+        host.bail.get_or_insert_default().tick(dt, over, strength, peds, vehicles);
+    } else if let Some(bail) = host.bail.take() {
+        for (i, v) in bail.rows() {
+            host.record(i, v);
+        }
+    }
     let step = host.last.map(|l| ((at[0] - l[0]).powi(2) + (at[1] - l[1]).powi(2) + (at[2] - l[2]).powi(2)).sqrt()).filter(|d| d.is_finite() && *d <= MAX_STEP);
     host.last = Some(at);
     let Some(step) = step else { return };
@@ -220,7 +240,7 @@ fn track(
         host.record(row::SKITCH_DISTANCE, step);
         host.record(row::SKITCH_TIME, dt);
     }
-    if physics.is_some_and(|p| p.board_wiping_out) && step > BAIL_MIN_STEP {
+    if wiping && step > BAIL_MIN_STEP {
         host.bail_metres += step;
         let whole = host.bail_metres.floor();
         if whole >= 1.0 {

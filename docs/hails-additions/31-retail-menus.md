@@ -2081,14 +2081,30 @@ The loading screen's Stats panel shows the player's career stats, as retail does
     its distance when it finally ends.
   - Body flips: an attempt (17) on the first tick of a flip (82DA8EB8 latch), the landed count (16) when a landed air
     ends (0x82773C00, |P+0x2674|); row 17 shows the percent of 16 over 17.
+  - Pushes (19) and mongo pushes (20) (2026-10-25, USER-ASKS 340; main read 0x82DB6EC0 at 0x82DB7B58..7C18 in the
+    recomp code): while the processed state word +2468 (0x9A4) has the pushing bit 25, the push is a mongo push when
+    bit 26 equals (animation output +10371 riding switch == +10374 regular stance), else a regular one; each kind is
+    pulsed on its rising edge (Q+0xA3 / Q+0xA4, mongo checked first, last tick's kinds latched in +1296 bits 22 / 23)
+    and 0x82775328 adds 1 to the row. Ours: `career_stats::PushLatch` on the published `flags_2468` and the animation
+    packet's `regular_stance` / `riding_switch`, in `career_stats_host::track`.
+  - Hall of Meat bail record, first part (2026-10-25, USER-ASKS 340; research `.local/research/b592-hom-bail-record.md`,
+    main read 0x82DAF1D8 at 0x82DAF624..F70C and 0x82510990 itself): retail's per-skater tracker updates every tick of
+    the bail and 0x8250F820 adds it to the rows at bail end. Time in bail (45): ticks while the body is not at rest
+    (wipeout `over_599` clear) and the gate `[[skater+8]+452]` is 0 (meaning open; ours: always 0). Push offs (40):
+    +1 every tick with the wipeout response strength (+580) above 0, with no other gate (b592 said gated, the code is
+    not). Peds (26) and vehicles (28) hit: distinct entities the body touched during the bail, 8 at most (the
+    scorers refuse a 9th); ours from the skeleton contact lists `ped_hits` / `vehicle_hits`. Ours:
+    `career_stats::BailRecord` from `board_wiping_out` rising to falling (retail's end is the HOM state 4 event
+    0x825694D8, NOT RETAIL YET), dropped on a map load; ticks become game time (dt x 60 for counts).
 - **Rows not fed yet:**
-  - The Hall of Meat bail record (0x8250F820 at bail end, struct P+0x3030 and the HOM record Stats+0x98): bones (3),
-    head (4) and groin (5) hits, peds (26) and vehicles (28) hit in bails, dislocations, sprains, bruises, scrapes
-    (30..33), body tweaks (34), objects hit (35), and the bail's ground / air time and distance, push offs, barrel
-    and cannonball rolls, spread eagle time, judo kicks and time in bail (36..45). The engine has no Hall of Meat
-    bail measurement or injury model; porting it is its own piece of work.
-  - Pushes (19) and mongo pushes (20): retail counts the rising edge of a push-active state bit (0x82DB6EC0, state
-    word +0x9A4 bit 0x2000000; mongo by bit 26) the engine's push graph does not publish yet.
+  - The rest of the Hall of Meat bail record (b592): bones (3), head (4) and groin (5) hits, dislocations, sprains,
+    bruises, scrapes (30..33: one per bone per bail at its highest injury level, 0x82510990: level 0 scrape, 1 bruise,
+    2 sprain, 3 dislocation, 4 / 5 broken; main checked), body tweaks (34), objects hit (35), ground / air time and
+    distance (36..39), barrel and cannonball rolls, spread eagle time, judo kicks (41..44). They need the per-part
+    impact record behind `[skater+0x18]` (stride 0x80; the impact is its float at +0x34 / +0x64 x 2.0 x
+    `scoring_wipeouts` layout+0xBFC, not our `BoneContact` layout), the all-bones-airborne test from the same record,
+    and the total body rotation tracker 0x82DAC930. Tuning is in the export: `scoring_wipeouts/default` BoneSet (25 x
+    0x54) and BodyTweak (4 poses, 15 frames, 500 points).
   - Air grab time (14, P+0x266C) and peds / vehicles jumped (25, 27; a merged jumped-over record): no engine source
     yet. Money (62, 63) and the Create A Spot rows are disabled in retail's table and have no store here.
 - **NOT RETAIL YET:** retail's shuffle order and money format are not decoded; whether 0x826C0730 and the bail-end

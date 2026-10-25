@@ -717,9 +717,11 @@ fn editor_controls(
     keys: &ButtonInput<KeyCode>,
     dt: f32,
     sound: &mut Option<&'static str>,
+    world: Option<&skate_core::physics::board_world::BoardWorld>,
 ) -> bool {
     use skate_core::replay_edit::session::EditorMode;
     let cursor = replay.cursor;
+    let collision = replay.camera_collision;
     let playing = replay.playing;
     // The current view and the skater root, for a new camera key (the recorded camera, or the clip's camera).
     let view_root = replay.sample().map(|(a, b, t)| (blend(a.camera, b.camera, t), blend(a.root, b.root, t)));
@@ -791,6 +793,9 @@ fn editor_controls(
                 zoom: dpad(DPAD_RIGHT, DPAD_LEFT),
             };
             editor.edit_key(input, view_root.as_ref().map(|(_, root)| root), dt);
+            if let Some((_, root)) = view_root.as_ref() {
+                editor.constrain_editing(root, &collision, |from, to, radius| world.and_then(|w| camera_collision::sweep(w, from, to, radius)));
+            }
             // Leaving a key edit runs the base game's commit too (`82508930` leave states 7..10 -> `82507438(E, 0)`,
             // b462); it lands only when no camera key is under the cursor.
             if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
@@ -951,33 +956,23 @@ impl Replay {
         editor.pose(self.cursor, root)
     }
 
-    /// [`Self::editor_camera`] held out of the world by retail's constraint (b449). View only: the stored keys keep
-    /// their pose (whether retail rewrites them on playback is open). A new shot or a cursor jump is a cut.
-    pub(crate) fn guarded_editor_camera(&self, root: &Transform, guard: &mut CameraGuard,
-        world: Option<&skate_core::physics::board_world::BoardWorld>) -> (Option<Transform>, Option<f32>) {
+    /// [`Self::editor_camera`] for the view. Retail plays stored keys with no constraint: the leash and world
+    /// collision ran while the key was edited and the held pose is in the key (`Editor::constrain_editing`, b593).
+    /// The guard only notices new shots for the log.
+    pub(crate) fn guarded_editor_camera(&self, root: &Transform, guard: &mut CameraGuard) -> (Option<Transform>, Option<f32>) {
         let (pose, fov) = self.editor_camera(root);
         let shot = self.editor.as_ref().and_then(|e| e.camera_at(self.cursor));
-        let (Some(mut pose), Some((index, key, lens))) = (pose, shot) else {
+        let (Some(pose), Some((index, key, lens))) = (pose, shot) else {
             *guard = CameraGuard::default();
             return (pose, fov);
         };
         let cut = guard.shot != Some(index) || (self.cursor - guard.cursor).abs() > CameraGuard::CUT_SECONDS;
-        let wanted = pose.translation;
-        let old = if cut { None } else { guard.last };
-        let free = matches!(key, camera_key::CameraKey::Free { .. });
-        let c = camera_collision::constrain(old, pose.translation, root.translation, free, &self.camera_collision,
-            |from, to, radius| world.and_then(|w| camera_collision::sweep(w, from, to, radius)));
-        pose.translation = c.position;
-        // REPLAY_CAMERA shot: each new shot (a cut) with where the key wanted the camera, where the constraint put it and
-        // the skater root, so a camera held in or under the world shows in the log (USER-ASKS 339).
+        // REPLAY_CAMERA shot: each new shot (a cut) with the key's eye and the skater root (USER-ASKS 339, 341).
         if cut {
-            info!("REPLAY_CAMERA shot {index} {} wanted={:?} at={:?} root={:?} relook={}", editor::log_key(&key, lens),
-                wanted.to_array(), c.position.to_array(), root.translation.to_array(), c.relook);
+            info!("REPLAY_CAMERA shot {index} {} at={:?} root={:?}", editor::log_key(&key, lens), pose.translation.to_array(),
+                root.translation.to_array());
         }
-        if let Some(look) = camera_key::look_point(&key, root).filter(|_| c.relook) {
-            pose.look_at(look, Vec3::Y);
-        }
-        *guard = CameraGuard { last: Some(c.position), shot: Some(index), cursor: self.cursor };
+        *guard = CameraGuard { shot: Some(index), cursor: self.cursor };
         (Some(pose), fov)
     }
 
@@ -1002,11 +997,9 @@ impl Replay {
     }
 }
 
-/// The editor camera's last accepted position for the world constraint (retail keeps it in the constraint object,
-/// +0x40), the clip camera it belongs to and the cursor it was taken at.
+/// The clip camera on view and the cursor it was seen at (new shots for the `REPLAY_CAMERA shot` log).
 #[derive(Default)]
 pub(crate) struct CameraGuard {
-    last: Option<Vec3>,
     shot: Option<usize>,
     cursor: f64,
 }
@@ -1272,7 +1265,8 @@ pub(crate) fn controls(
         }
     } else {
         let mut sound = None;
-        let used = editor_controls(&mut replay, look_screen.as_ref().is_some_and(|s| s.0), pressed, released, &pad, &keys, dt, &mut sound);
+        let used = editor_controls(&mut replay, look_screen.as_ref().is_some_and(|s| s.0), pressed, released, &pad, &keys, dt, &mut sound,
+            physics.as_deref().map(crate::physics::GamePhysics::world));
         if let Some(name) = sound {
             sounds.write(crate::ui_audio::FrontendSound::named(name));
         }

@@ -26,7 +26,11 @@ pub mod row {
     pub const POWERSLIDE_DISTANCE: usize = 22;
     pub const UNSUCCESSFUL_TRICKS: usize = 23;
     pub const SUCCESSFUL_TRICKS: usize = 24;
+    pub const PEDS_HIT: usize = 26;
+    pub const VEHICLES_HIT: usize = 28;
     pub const BAIL_DISTANCE: usize = 29;
+    pub const PUSH_OFFS: usize = 40;
+    pub const TIME_IN_BAIL: usize = 45;
     pub const MOST_COLLIDED: usize = 46;
     /// Hits per ped type, in this order: bum, jock, teen girl, teen guy, man, woman, business man, business woman,
     /// male skater, female skater, male tourist, female tourist, security guard, granny.
@@ -119,6 +123,83 @@ impl CareerStats {
         shuffle(&mut rows, rng);
         rows.truncate(16);
         rows
+    }
+}
+
+/// One bail's Hall of Meat record (the tracker 0x82DAF1D8, copied to P+0x3030 and added to the rows at bail end by
+/// 0x8250F820). Retail counts 1/60 s ticks; ours adds game time, so the totals match at any fixed rate.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BailRecord {
+    /// Ticks with the body not yet at rest (wipeout over_599 clear): row 45, time in bail.
+    pub active_seconds: f32,
+    /// Ticks with the wipeout response strength (+580) above 0, at rest or not: row 40, push offs.
+    pub push_off_ticks: f32,
+    /// Distinct peds / vehicles the body touched (the scorers 0x82DAF948 / 0x82DAFBC0 refuse a 9th).
+    pub peds: Vec<u64>,
+    pub vehicles: Vec<u64>,
+}
+
+impl BailRecord {
+    pub const ENTITY_CAP: usize = 8;
+    pub const TICK_RATE: f32 = 60.0;
+
+    pub fn tick(&mut self, dt: f32, over: bool, response_strength: f32, peds: impl IntoIterator<Item = u64>,
+        vehicles: impl IntoIterator<Item = u64>) {
+        if !over {
+            self.active_seconds += dt;
+        }
+        if response_strength > 0.0 {
+            self.push_off_ticks += dt * Self::TICK_RATE;
+        }
+        for (list, ids) in [(&mut self.peds, peds.into_iter().collect::<Vec<_>>()), (&mut self.vehicles, vehicles.into_iter().collect())] {
+            for id in ids {
+                if list.len() < Self::ENTITY_CAP && !list.contains(&id) {
+                    list.push(id);
+                }
+            }
+        }
+    }
+
+    /// The rows 0x8250F820 adds at bail end.
+    pub fn rows(&self) -> [(usize, f32); 4] {
+        [
+            (row::TIME_IN_BAIL, self.active_seconds),
+            (row::PUSH_OFFS, self.push_off_ticks.round()),
+            (row::PEDS_HIT, self.peds.len() as f32),
+            (row::VEHICLES_HIT, self.vehicles.len() as f32),
+        ]
+    }
+}
+
+/// Push starts (0x82DB6EC0 pulses Q+0xA4 / Q+0xA3, 0x82775328 adds rows 19 / 20). While the state word +2468 has the
+/// pushing bit 25, the push is a mongo push when bit 26 equals (regular stance == riding switch), else a regular one;
+/// each kind counts on its rising edge, a mongo start first. The last tick's kinds are retail's flags_1296 bits 22 / 23.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PushLatch {
+    mongo: bool,
+    regular: bool,
+}
+
+impl PushLatch {
+    /// The row to add 1 to this tick, if a push started.
+    pub fn update(&mut self, flags_2468: u32, regular_stance: bool, riding_switch: bool) -> Option<usize> {
+        let (mut mongo, mut regular) = (false, false);
+        if flags_2468 & (1 << 25) != 0 {
+            if (flags_2468 & (1 << 26) != 0) == (regular_stance == riding_switch) {
+                mongo = true;
+            } else {
+                regular = true;
+            }
+        }
+        let started = if !self.mongo && mongo {
+            Some(row::MONGO_PUSHES)
+        } else if !self.regular && regular {
+            Some(row::PUSHES)
+        } else {
+            None
+        };
+        *self = Self { mongo, regular };
+        started
     }
 }
 
@@ -264,5 +345,36 @@ mod tests {
             s.record(i, 1.0);
         }
         assert_eq!(s.fetch(&enabled, &mut || 7).len(), 16);
+    }
+
+    #[test]
+    fn pushes_count_on_the_rising_edge_by_kind() {
+        let mut l = PushLatch::default();
+        let push = 1 << 25;
+        let right = 1 << 26;
+        assert_eq!(l.update(0, true, true), None);
+        // Bit 26 clear, stance == switch: not equal, a regular push.
+        assert_eq!(l.update(push, true, true), Some(row::PUSHES));
+        assert_eq!(l.update(push, true, true), None);
+        assert_eq!(l.update(push | right, true, false), None);
+        // The kind changes while pushing: the new kind starts.
+        assert_eq!(l.update(push | right, true, true), Some(row::MONGO_PUSHES));
+        assert_eq!(l.update(0, true, true), None);
+        assert_eq!(l.update(push, true, false), Some(row::MONGO_PUSHES));
+    }
+
+    #[test]
+    fn a_bail_record_counts_time_push_offs_and_distinct_entities() {
+        let mut b = BailRecord::default();
+        let dt = 1.0 / 60.0;
+        for i in 0..20u64 {
+            b.tick(dt, i >= 12, if i < 5 || i >= 18 { 0.5 } else { 0.0 }, [i % 3, 100 + i], []);
+        }
+        b.tick(dt, true, 0.0, [], [7, 7]);
+        let rows = b.rows();
+        assert!((rows[0].1 - 12.0 * dt).abs() < 1e-6);
+        assert_eq!(rows[1], (row::PUSH_OFFS, 7.0));
+        assert_eq!(rows[2], (row::PEDS_HIT, BailRecord::ENTITY_CAP as f32));
+        assert_eq!(rows[3], (row::VEHICLES_HIT, 1.0));
     }
 }

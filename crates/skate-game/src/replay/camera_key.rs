@@ -251,12 +251,22 @@ pub(crate) fn pose(key: &CameraKey, root: &Transform) -> Option<Transform> {
     }
 }
 
-/// The point a Follow / Tripod `key` looks at for `root` (the same point [`pose`] aims at); None for Free and Game.
-pub(crate) fn look_point(key: &CameraKey, root: &Transform) -> Option<Vec3> {
-    let base = root.translation + Vec3::Y * CameraRules::default().look_target_height;
-    match *key {
-        CameraKey::Follow { look_height, .. } | CameraKey::Tripod { look_height, .. } => Some(base + Vec3::Y * look_height),
-        CameraKey::Game | CameraKey::Free { .. } => None,
+/// Moves `key`'s eye to `eye` (the constraint's result written back into the key, `82683450` -> `82C82E40`, b593):
+/// Tripod and Free store it, Follow re-derives its orbit in the root's frame; Game has no eye.
+pub(crate) fn set_eye(key: &mut CameraKey, eye: Vec3, root: &Transform) {
+    match key {
+        CameraKey::Tripod { eye: e, .. } | CameraKey::Free { eye: e, .. } => *e = eye,
+        CameraKey::Follow { yaw, pitch, distance, .. } => {
+            let centre = root.translation + Vec3::Y * CameraRules::default().look_target_height;
+            let local = root.rotation.inverse() * (eye - centre);
+            let d = local.length();
+            if d > 1e-4 {
+                *distance = d;
+                *yaw = local.x.atan2(local.z).to_degrees();
+                *pitch = (local.y / d).clamp(-1.0, 1.0).asin().to_degrees();
+            }
+        }
+        CameraKey::Game => {}
     }
 }
 
@@ -337,5 +347,15 @@ mod tests {
         }
         let CameraKey::Tripod { eye, .. } = key else { panic!() };
         assert!((eye.distance(look) - 3.0).abs() < 1e-3, "{eye}");
+    }
+
+    #[test]
+    fn set_eye_round_trips_a_follow_orbit() {
+        let root = Transform::from_xyz(3.0, 1.0, -2.0).with_rotation(Quat::from_rotation_y(0.7));
+        let mut key = CameraKey::Follow { yaw: 30.0, pitch: 20.0, distance: 4.0, look_height: 0.5 };
+        let eye = pose(&key, &root).unwrap().translation;
+        set_eye(&mut key, eye, &root);
+        let CameraKey::Follow { yaw, pitch, distance, .. } = key else { panic!() };
+        assert!((yaw - 30.0).abs() < 1e-3 && (pitch - 20.0).abs() < 1e-3 && (distance - 4.0).abs() < 1e-4, "{key:?}");
     }
 }
