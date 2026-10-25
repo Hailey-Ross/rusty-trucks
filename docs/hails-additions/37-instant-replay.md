@@ -345,17 +345,53 @@ skater.
 
 Change: `Editor::constrain_editing` (after each `edit_key`, against the skater root at the playhead) runs
 `camera_collision::constrain` on the edited key's eye and stores the result (`camera_key::set_eye`: Tripod / Free
-eye, Follow orbit re-derived in the root's frame); `edit_last` starts empty when an edit opens (snap).
+eye, Follow eye in its eye frame); `edit_last` starts empty when an edit opens (snap).
 `Replay::guarded_editor_camera` no longer constrains; it only logs `REPLAY_CAMERA shot <i> <key> at=.. root=..` on
 a new shot. The instant replay free camera (C) still runs the constraint every move (retail's other gate writer
 `82833CF0` is not identified).
 
 Still open (b593): which camera retail shows before the first key of a clip when that key is placed mid-clip (ours:
-the recorded camera; a key placed on the In point covers the whole clip, `82C892D8`); `82C88A00`; the element to
-record space mapping of b401 (Follow SPACE_EYE).
+the recorded camera; a key placed on the In point covers the whole clip, `82C892D8`); `82C88A00`. The element to
+record space mapping of b401 (Follow SPACE_EYE) is settled: see "The Follow eye rides the gameplay camera" below.
 
 Tests: `editor::tests::a_key_edit_stores_the_leashed_eye_and_playback_keeps_it`,
-`camera_key::tests::set_eye_round_trips_a_follow_orbit`, the `camera_collision` tests.
+`camera_key::tests::set_eye_round_trips_a_follow_eye`, the `camera_collision` tests.
+
+### The Follow eye rides the gameplay camera (2026-10-25, USER-ASKS 346 / 349)
+
+Problem (laptop sessions `game-20261025-130256` and `-144414`, the user: "advanced follow camera at a low angle can
+cause the camera to get forced under the map when landing jumps", "it does a good job of switching sides but the
+camera still can peak under the map even from little jumps"). The log of the second: an Advanced Follow key at pitch
+1.4 degrees, 1.86 m; the eye dipped 0.09 to 0.28 m below the skater root while the root climbed 2.09 -> 3.69 m.
+
+Cause [code, ours]: our Follow eye was an orbit in the skater root's full frame (`camera_key::pose`, the root from
+`presentation.rs` `animation_to_world`), so the body pitching or rolling on a ramp or landing swung a low eye into the
+ground. There is no smoothing: the view only blends two ticks.
+
+Retail [code + trace, research `.local/research/m346-follow-eye-space.md`]: `82C84CF8(take, &m, space, id)` builds
+an element's frame; for space 0 an id at or below `[[0x830C1584]+0x24]` is the default subject `[0x83037408]+4`, a
+larger id is slot `id - 1` of the actor manager `0x830846C4` (rotation `826813C0`, position `82681870`). Slot 1 is the
+gameplay camera's matrix (`82672118([0x83083C38]+0x2FD20)`), slot 3 the flagged skater entry. Follow's setup
+`82C7FFB8` (also Advanced Follow, b405) writes eye object 2 and look object 4 (b402). A recomp watch run read the
+threshold as 0 in all 68 samples, before, in and after the Replay Editor (`.local/research/m346/run1.tsv`, watch list
+`follow_watch.txt`, script `.local/recomp/scripts/m346_replay_editor.txt`) [trace]. So the Follow eye rides the
+gameplay camera (position and rotation) and only the look rides the skater. The recorded gameplay camera keeps itself
+out of the ground, so an eye placed relative to it does not dive when the body pitches. Editing is unchanged: the
+sticks orbit the eye around the look point in world angles (the pivot rebuild, as Tripod); only the stored space
+differs.
+
+Change: `CameraKey::Follow { eye, look_height }` stores the eye in the Follow eye frame; `camera_key::Anchors` (the
+eye frame and the skater root at the cursor, built from the recorded camera and the root) replaces the bare root in
+`key_from_view` / `edit` / `pose` / `set_eye` and the editor (`pick_camera`, `edit_key`, `constrain_editing`,
+`pose`); `Replay::editor_camera` takes the recorded camera. The frame is data, `Replay::follow_eye` (`FollowEye::
+Camera`, retail, or `Skater`, ours before), and a mod sets it with `sdk.replay.set_camera{follow_eye = 'skater'}`
+(nil restores retail's; the override goes when the mod stops). `REPLAY_CAMERA` lines print a Follow key as
+`follow eye=[x, y, z] look=..`.
+
+Tests: `camera_key::tests::follow_eye_rides_the_gameplay_camera_and_orbits_the_look_point` (the skater pitching does
+not move the eye, the camera moving does, the skater option turns it, the orbit caps), `set_eye_round_trips_a_follow_eye`,
+`replay::tests::a_mod_camera_override_goes_on_restore_and_disable`, skate-mods `replay_set_camera` validation.
+Open: whether `82C7FFB8`'s advanced flag changes the object ids (not read); the laptop retest.
 
 ### Replay popups own the pad (2026-10-25, USER-ASKS 342)
 
@@ -920,9 +956,9 @@ Detail moved out of the code comments of `crates/skate-game/src/replay/camera_ke
 
 ### Replay basic cameras
 
-The replay editor's basic cameras (Pro Edit Menu rows 0..3; research b401 / b402): Follow orbits the skater in its frame (space 0 on the skater), Tripod keeps its eye in the world and looks at the skater, Free is a world pose, Game is the recorded gameplay camera with only the lens to change. Controls run per console frame (30 Hz) with retail's caps (`82C826D0`, `82509558`). Every limit and rate is data ([`CameraRules`]).
+The replay editor's basic cameras (Pro Edit Menu rows 0..3; research b401 / b402): Follow keeps its eye in the gameplay camera's frame (eye object 2) and looks at the skater, Tripod keeps its eye in the world and looks at the skater, Free is a world pose, Game is the recorded gameplay camera with only the lens to change. Controls run per console frame (30 Hz) with retail's caps (`82C826D0`, `82509558`). Every limit and rate is data ([`CameraRules`]).
 
-A basic camera is one pose for the whole clip: its setup clears the channel's keys and the sampler holds the live value without keys (b404, `82C89A50`); keyed poses are the Advanced cameras'. The look object 4 is the skater root (b406, traced). NOT RETAIL YET: the skater root as the eye object 2 (b406: likely the game camera's frame), the pad mapping (retail's axis table `[pad+0xC]+4` is unread), and the lens to field of view (a 24 mm high film gate).
+A basic camera is one pose for the whole clip: its setup clears the channel's keys and the sampler holds the live value without keys (b404, `82C89A50`); keyed poses are the Advanced cameras'. The look object 4 is the skater root (b406, traced). NOT RETAIL YET: the pad mapping (retail's axis table `[pad+0xC]+4` is unread), and the lens to field of view (a 24 mm high film gate).
 
 ## Code reference: replay/camera_collision.rs
 

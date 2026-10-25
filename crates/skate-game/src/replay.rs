@@ -314,6 +314,8 @@ pub(crate) struct Replay {
     audible: bool,
     /// The replay cameras' leash and world collision (retail defaults; `sdk.replay.set_camera`).
     pub(crate) camera_collision: camera_collision::CameraCollision,
+    /// The frame a Follow key's eye rides (retail: the gameplay camera, m346; `sdk.replay.set_camera{follow_eye}`).
+    pub(crate) follow_eye: camera_key::FollowEye,
     /// The mod whose `sdk.replay.set_camera` is in force (last writer wins).
     camera_owner: Option<String>,
     /// The quit warning is up (waiting for its answer).
@@ -489,16 +491,20 @@ impl Replay {
         self.limits_owner = Some(owner.to_string());
     }
 
-    /// `sdk.replay.set_camera`: the camera collision switch, radius and leash; all absent restores retail's.
-    pub(crate) fn set_camera(&mut self, owner: &str, collide: Option<bool>, radius: Option<f32>, leash: Option<f32>) {
+    /// `sdk.replay.set_camera`: the camera collision switch, radius and leash, and the Follow eye frame; all absent
+    /// restores retail's.
+    pub(crate) fn set_camera(&mut self, owner: &str, collide: Option<bool>, radius: Option<f32>, leash: Option<f32>,
+        follow_eye: Option<camera_key::FollowEye>) {
         let retail = camera_collision::CameraCollision::default();
-        if collide.is_none() && radius.is_none() && leash.is_none() {
+        if collide.is_none() && radius.is_none() && leash.is_none() && follow_eye.is_none() {
             if self.camera_owner.as_deref() == Some(owner) {
                 self.camera_collision = retail;
+                self.follow_eye = Default::default();
                 self.camera_owner = None;
             }
             return;
         }
+        self.follow_eye = follow_eye.unwrap_or_default();
         self.camera_collision = camera_collision::CameraCollision {
             enabled: collide.unwrap_or(retail.enabled),
             radius: radius.unwrap_or(retail.radius),
@@ -512,7 +518,7 @@ impl Replay {
     pub(crate) fn clear_owner(&mut self, owner: &str) {
         self.markers.retain(|m| m.owner != owner);
         self.set_limits(owner, None, None, None);
-        self.set_camera(owner, None, None, None);
+        self.set_camera(owner, None, None, None, None);
     }
 
     /// Every mod stopped.
@@ -522,6 +528,7 @@ impl Replay {
         self.edit_limits = Default::default();
         self.limits_owner = None;
         self.camera_collision = Default::default();
+        self.follow_eye = Default::default();
         self.camera_owner = None;
     }
 
@@ -735,8 +742,12 @@ fn editor_controls(
     let cursor = replay.cursor;
     let collision = replay.camera_collision;
     let playing = replay.playing;
-    // The current view and the skater root, for a new camera key (the recorded camera, or the clip's camera).
-    let view_root = replay.sample().map(|(a, b, t)| (blend(a.camera, b.camera, t), blend(a.root, b.root, t)));
+    // The recorded camera and the frames the keys ride (Follow eye, skater root).
+    let follow_eye = replay.follow_eye;
+    let view_root = replay.sample().map(|(a, b, t)| {
+        let view = blend(a.camera, b.camera, t);
+        (view, camera_key::Anchors::new(view, blend(a.root, b.root, t), follow_eye))
+    });
     // Decided with the editor borrowed, applied to the replay after.
     let mut seek: Option<f64> = None;
     let mut play: Option<bool> = None;
@@ -782,7 +793,7 @@ fn editor_controls(
                 if let Some((view, root)) = view_root {
                     if let Some(mode) = editor.pick_camera(editor.row, cursor, &view, &root) {
                         info!("REPLAY_CAMERA key new row={} {} view={:?} root={:?}", editor.row, editor.editing_line().unwrap_or_default(),
-                            view.translation.to_array(), root.translation.to_array());
+                            view.translation.to_array(), root.root.translation.to_array());
                         editor.session.mode = match mode {
                             7 => EditorMode::FollowKey,
                             8 => EditorMode::TripodKey,
@@ -962,17 +973,18 @@ fn load_shake(config: Option<Res<crate::config::Config>>, mut replay: ResMut<Rep
 }
 
 impl Replay {
-    /// The editor's camera at the cursor (key on the skater root, lens as vertical FOV); None = recorded camera.
-    pub(crate) fn editor_camera(&self, root: &Transform) -> (Option<Transform>, Option<f32>) {
+    /// The editor's camera at the cursor (keys on the recorded camera `camera` and the skater root, lens as vertical
+    /// FOV); None = recorded camera.
+    pub(crate) fn editor_camera(&self, camera: &Transform, root: &Transform) -> (Option<Transform>, Option<f32>) {
         let Some(editor) = self.editor.as_ref() else { return (None, None) };
-        editor.pose(self.cursor, root)
+        editor.pose(self.cursor, &camera_key::Anchors::new(*camera, *root, self.follow_eye))
     }
 
     /// [`Self::editor_camera`] for the view. Retail plays stored keys with no constraint: the leash and world
     /// collision ran while the key was edited and the held pose is in the key (`Editor::constrain_editing`, b593).
     /// The guard only notices new shots for the log.
-    pub(crate) fn guarded_editor_camera(&self, root: &Transform, guard: &mut CameraGuard) -> (Option<Transform>, Option<f32>) {
-        let (pose, fov) = self.editor_camera(root);
+    pub(crate) fn guarded_editor_camera(&self, camera: &Transform, root: &Transform, guard: &mut CameraGuard) -> (Option<Transform>, Option<f32>) {
+        let (pose, fov) = self.editor_camera(camera, root);
         let shot = self.editor.as_ref().and_then(|e| e.camera_at(self.cursor));
         let (Some(pose), Some((index, key, lens))) = (pose, shot) else {
             *guard = CameraGuard::default();

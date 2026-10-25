@@ -7,8 +7,8 @@ use bevy::prelude::*;
 pub(crate) enum CameraKey {
     /// The recorded gameplay camera.
     Game,
-    /// Orbit about the skater, in its frame: yaw / pitch (degrees), distance (m), look height over the root (m).
-    Follow { yaw: f32, pitch: f32, distance: f32, look_height: f32 },
+    /// The eye in the Follow eye frame ([`Anchors::eye`]), looking at the skater root plus the look height (m).
+    Follow { eye: Vec3, look_height: f32 },
     /// A world eye looking at the skater's root plus the look height.
     Tripod { eye: Vec3, look_height: f32 },
     /// A world pose: eye, yaw / pitch (degrees).
@@ -68,9 +68,7 @@ impl CameraKey {
         let l = |a: f32, b: f32| a + (b - a) * u;
         Some(match (*self, *other) {
             (CameraKey::Game, CameraKey::Game) => CameraKey::Game,
-            (CameraKey::Follow { yaw, pitch, distance, look_height }, CameraKey::Follow { yaw: y2, pitch: p2, distance: d2, look_height: h2 }) => {
-                CameraKey::Follow { yaw: l(yaw, y2), pitch: l(pitch, p2), distance: l(distance, d2), look_height: l(look_height, h2) }
-            }
+            (CameraKey::Follow { eye, look_height }, CameraKey::Follow { eye: e2, look_height: h2 }) => CameraKey::Follow { eye: eye.lerp(e2, u), look_height: l(look_height, h2) },
             (CameraKey::Tripod { eye, look_height }, CameraKey::Tripod { eye: e2, look_height: h2 }) => CameraKey::Tripod { eye: eye.lerp(e2, u), look_height: l(look_height, h2) },
             (CameraKey::Free { eye, yaw, pitch }, CameraKey::Free { eye: e2, yaw: y2, pitch: p2 }) => CameraKey::Free { eye: eye.lerp(e2, u), yaw: l(yaw, y2), pitch: l(pitch, p2) },
             _ => return None,
@@ -154,20 +152,42 @@ pub(crate) struct FreeHeight {
     pub offset: f32,
 }
 
-/// A new key of `row`'s camera from the current view (`view`) and the skater root (`root`).
-pub(crate) fn key_from_view(row: usize, view: &Transform, root: &Transform) -> Option<CameraKey> {
+/// Which frame a Follow key's eye rides (data, `sdk.replay.set_camera{follow_eye}`). Retail: its eye object 2 is the
+/// gameplay camera (m346); `Skater` is the skater root, ours before 2026-10-25.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum FollowEye {
+    #[default]
+    Camera,
+    Skater,
+}
+
+/// The frames the keys ride at the cursor: the Follow eye frame and the skater root (retail's look object 4).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Anchors {
+    pub eye: Transform,
+    pub root: Transform,
+}
+
+impl Anchors {
+    /// `camera` is the recorded gameplay camera at the cursor.
+    pub fn new(camera: Transform, root: Transform, follow_eye: FollowEye) -> Self {
+        Self { eye: if follow_eye == FollowEye::Camera { camera } else { root }, root }
+    }
+
+    fn to_eye_frame(&self, p: Vec3) -> Vec3 {
+        self.eye.rotation.inverse() * (p - self.eye.translation)
+    }
+
+    fn look(&self, look_height: f32) -> Vec3 {
+        self.root.translation + Vec3::Y * (CameraRules::default().look_target_height + look_height)
+    }
+}
+
+/// A new key of `row`'s camera from the current view (`view`).
+pub(crate) fn key_from_view(row: usize, view: &Transform, anchors: &Anchors) -> Option<CameraKey> {
     let (yaw, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
     Some(match row {
-        0 => {
-            let local = root.rotation.inverse() * (view.translation - root.translation);
-            let distance = local.length().max(0.5);
-            CameraKey::Follow {
-                yaw: local.x.atan2(local.z).to_degrees(),
-                pitch: (local.y / distance).clamp(-1.0, 1.0).asin().to_degrees(),
-                distance,
-                look_height: 0.0,
-            }
-        }
+        0 => CameraKey::Follow { eye: anchors.to_eye_frame(view.translation), look_height: 0.0 },
         1 => CameraKey::Tripod { eye: view.translation, look_height: 0.0 },
         2 => CameraKey::Game,
         3 => CameraKey::Free { eye: view.translation, yaw: yaw.to_degrees(), pitch: pitch.to_degrees() },
@@ -176,36 +196,34 @@ pub(crate) fn key_from_view(row: usize, view: &Transform, root: &Transform) -> O
 }
 
 /// One console frame of the key edit controls, scaled by `dt` x the console rate (retail steps per frame, no dt).
-/// `root` is the skater root at the cursor: a Tripod key orbits its world eye around the look point (b550).
+/// `anchors` are the frames at the cursor: Follow and Tripod orbit their eye around the look point (b550).
 pub(crate) fn edit(key: &mut CameraKey, lens: &mut f32, height: &mut FreeHeight, input: CameraInput, rules: &CameraRules,
-                   root: Option<&Transform>, dt: f32) {
+                   anchors: Option<&Anchors>, dt: f32) {
     let frames = dt * rules.console_hz;
     let cap = |v: f32, c: f32| v.clamp(-c, c);
     *lens = (*lens + input.zoom * rules.lens_step * frames).clamp(rules.lens_range.0, rules.lens_range.1);
+    // `82C82E40` with the pivot byte set (Follow and Tripod): the look point is the pivot, eye = look + v(yaw, pitch,
+    // distance) in world angles; the lift moves the look point only (`82C80EA0` re-derives v).
+    let orbit = |eye: Vec3, look: Vec3| {
+        let v = eye - look;
+        let distance = v.length().max(1e-3);
+        let yaw = v.x.atan2(v.z).to_degrees() + cap(input.turn.x * rules.orbit_deg_per_unit, rules.orbit_deg_cap) * frames;
+        let pitch = ((v.y / distance).clamp(-1.0, 1.0).asin().to_degrees()
+            + cap(input.turn.y * rules.orbit_deg_per_unit, rules.orbit_deg_cap) * frames).clamp(-rules.pitch_limit, rules.pitch_limit);
+        let distance = (distance - cap(input.move_.y, rules.distance_step) * frames).clamp(rules.distance_range.0, rules.distance_range.1);
+        let (yaw, pitch) = (yaw.to_radians(), pitch.to_radians());
+        look + Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()) * distance
+    };
     match key {
-        CameraKey::Follow { yaw, pitch, distance, look_height } => {
-            *yaw += cap(input.turn.x * rules.orbit_deg_per_unit, rules.orbit_deg_cap) * frames;
-            *pitch = (*pitch + cap(input.turn.y * rules.orbit_deg_per_unit, rules.orbit_deg_cap) * frames)
-                .clamp(-rules.pitch_limit, rules.pitch_limit);
-            *distance = (*distance - cap(input.move_.y, rules.distance_step) * frames)
-                .clamp(rules.distance_range.0, rules.distance_range.1);
+        CameraKey::Follow { eye, look_height } => {
+            if let Some(a) = anchors {
+                *eye = a.to_eye_frame(orbit(a.eye.transform_point(*eye), a.look(*look_height)));
+            }
             *look_height = (*look_height + input.height * rules.look_step * frames).clamp(rules.look_range.0, rules.look_range.1);
         }
         CameraKey::Tripod { eye, look_height } => {
-            // `82C82E40` with the pivot byte set: the look point is the pivot, eye = look + v(yaw, pitch, distance) in
-            // world angles, the same caps as Follow; the lift moves the look point only (`82C80EA0` re-derives v).
-            if let Some(root) = root {
-                let look = root.translation + Vec3::Y * (rules.look_target_height + *look_height);
-                let v = *eye - look;
-                let distance = v.length().max(1e-3);
-                let mut yaw = v.x.atan2(v.z).to_degrees();
-                let mut pitch = (v.y / distance).clamp(-1.0, 1.0).asin().to_degrees();
-                yaw += cap(input.turn.x * rules.orbit_deg_per_unit, rules.orbit_deg_cap) * frames;
-                pitch = (pitch + cap(input.turn.y * rules.orbit_deg_per_unit, rules.orbit_deg_cap) * frames)
-                    .clamp(-rules.pitch_limit, rules.pitch_limit);
-                let distance = (distance - cap(input.move_.y, rules.distance_step) * frames).clamp(rules.distance_range.0, rules.distance_range.1);
-                let (yaw, pitch) = (yaw.to_radians(), pitch.to_radians());
-                *eye = look + Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()) * distance;
+            if let Some(a) = anchors {
+                *eye = orbit(*eye, a.look(*look_height));
             }
             *look_height = (*look_height + input.height * rules.look_step * frames).clamp(rules.look_range.0, rules.look_range.1);
         }
@@ -227,21 +245,14 @@ pub(crate) fn edit(key: &mut CameraKey, lens: &mut f32, height: &mut FreeHeight,
     }
 }
 
-/// The camera pose of `key` for the skater root `root` (None: the recorded camera), looking at the root raised by the
-/// rules' look target height.
-pub(crate) fn pose(key: &CameraKey, root: &Transform) -> Option<Transform> {
-    let root = Transform { translation: root.translation + Vec3::Y * CameraRules::default().look_target_height, ..*root };
-    let root = &root;
+/// The camera pose of `key` at `anchors` (None: the recorded camera), looking at the root raised by the rules' look
+/// target height.
+pub(crate) fn pose(key: &CameraKey, anchors: &Anchors) -> Option<Transform> {
     let look_at = |eye: Vec3, look: Vec3| Transform::from_translation(eye).looking_at(look, Vec3::Y);
     match *key {
         CameraKey::Game => None,
-        CameraKey::Follow { yaw, pitch, distance, look_height } => {
-            let (yaw, pitch) = (yaw.to_radians(), pitch.to_radians());
-            let local = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()) * distance;
-            let look = root.translation + Vec3::Y * look_height;
-            Some(look_at(root.translation + root.rotation * local, look))
-        }
-        CameraKey::Tripod { eye, look_height } => Some(look_at(eye, root.translation + Vec3::Y * look_height)),
+        CameraKey::Follow { eye, look_height } => Some(look_at(anchors.eye.transform_point(eye), anchors.look(look_height))),
+        CameraKey::Tripod { eye, look_height } => Some(look_at(eye, anchors.look(look_height))),
         CameraKey::Free { eye, yaw, pitch } => Some(Transform::from_translation(eye).with_rotation(Quat::from_euler(
             EulerRot::YXZ,
             yaw.to_radians(),
@@ -252,20 +263,11 @@ pub(crate) fn pose(key: &CameraKey, root: &Transform) -> Option<Transform> {
 }
 
 /// Moves `key`'s eye to `eye` (the constraint's result written back into the key, `82683450` -> `82C82E40`, b593):
-/// Tripod and Free store it, Follow re-derives its orbit in the root's frame; Game has no eye.
-pub(crate) fn set_eye(key: &mut CameraKey, eye: Vec3, root: &Transform) {
+/// Tripod and Free store it, Follow in its eye frame; Game has no eye.
+pub(crate) fn set_eye(key: &mut CameraKey, eye: Vec3, anchors: &Anchors) {
     match key {
         CameraKey::Tripod { eye: e, .. } | CameraKey::Free { eye: e, .. } => *e = eye,
-        CameraKey::Follow { yaw, pitch, distance, .. } => {
-            let centre = root.translation + Vec3::Y * CameraRules::default().look_target_height;
-            let local = root.rotation.inverse() * (eye - centre);
-            let d = local.length();
-            if d > 1e-4 {
-                *distance = d;
-                *yaw = local.x.atan2(local.z).to_degrees();
-                *pitch = (local.y / d).clamp(-1.0, 1.0).asin().to_degrees();
-            }
-        }
+        CameraKey::Follow { eye: e, .. } => *e = anchors.to_eye_frame(eye),
         CameraKey::Game => {}
     }
 }
@@ -279,32 +281,45 @@ pub(crate) fn lens_fov(mm: f32) -> f32 {
 mod tests {
     use super::*;
 
+    fn at(root: Transform) -> Anchors {
+        Anchors::new(Transform::from_xyz(0.0, 3.0, 8.0), root, FollowEye::Camera)
+    }
+
+    /// m346: a Follow key's eye rides the recorded gameplay camera (retail's eye object 2), so the skater pitching on a
+    /// landing does not swing it into the ground; the sticks orbit it around the look point with the retail caps.
     #[test]
-    fn follow_orbits_in_the_skater_frame_with_retail_caps() {
-        let root = Transform::from_xyz(10.0, 0.0, 0.0).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
-        let view = Transform::from_xyz(10.0, 0.0, 0.0) * Transform::from_xyz(0.0, 0.0, 4.0);
-        let mut key = key_from_view(0, &Transform::from_translation(root.transform_point(Vec3::new(0.0, 0.0, 4.0))), &root).unwrap();
-        let p = pose(&key, &root).unwrap();
-        // The orbit centre is the look target, the root raised by the rules' height.
-        let expected = root.transform_point(Vec3::new(0.0, 0.0, 4.0)) + Vec3::Y * CameraRules::default().look_target_height;
-        assert!(p.translation.distance(expected) < 1e-4, "{p:?}");
-        let _ = view;
-        // A full stick for one second: capped at 3 degrees per console frame -> 90 degrees.
-        let mut lens = 24.0;
-        let rules = CameraRules::default();
+    fn follow_eye_rides_the_gameplay_camera_and_orbits_the_look_point() {
+        let root = Transform::from_xyz(10.0, 0.0, 0.0);
+        let camera = Transform::from_xyz(10.0, 1.0, 4.0).looking_at(root.translation, Vec3::Y);
+        let anchors = Anchors::new(camera, root, FollowEye::Camera);
+        let view = Transform::from_xyz(10.0, 0.5, 4.0);
+        let mut key = key_from_view(0, &view, &anchors).unwrap();
+        assert!(pose(&key, &anchors).unwrap().translation.distance(view.translation) < 1e-4);
+        let pitched = Anchors::new(camera, root.with_rotation(Quat::from_rotation_x(-0.6)), FollowEye::Camera);
+        assert!(pose(&key, &pitched).unwrap().translation.distance(view.translation) < 1e-4, "the skater's pitch moves the eye");
+        let moved = Anchors::new(Transform::from_xyz(0.0, 2.0, 0.0) * camera, root, FollowEye::Camera);
+        assert!((pose(&key, &moved).unwrap().translation - view.translation - Vec3::Y * 2.0).length() < 1e-4);
+        let skater = Anchors::new(camera, root.with_rotation(Quat::from_rotation_x(-0.6)), FollowEye::Skater);
+        let on_skater = key_from_view(0, &view, &Anchors::new(camera, root, FollowEye::Skater)).unwrap();
+        assert!(pose(&on_skater, &skater).unwrap().translation.distance(view.translation) > 0.5, "the skater frame turns it");
+        // A full stick for one second: capped at 3 degrees per console frame -> a quarter turn about the look point.
+        let (mut lens, rules) = (24.0, CameraRules::default());
+        let look = anchors.look(0.0);
+        let before = pose(&key, &anchors).unwrap().translation - look;
         for _ in 0..30 {
-            edit(&mut key, &mut lens, &mut FreeHeight::default(), CameraInput { turn: Vec2::new(10.0, 0.0), ..default() }, &rules, None, 1.0 / 30.0);
+            edit(&mut key, &mut lens, &mut FreeHeight::default(), CameraInput { turn: Vec2::new(10.0, 0.0), ..default() }, &rules, Some(&anchors), 1.0 / 30.0);
         }
-        let CameraKey::Follow { yaw, .. } = key else { panic!() };
-        assert!((yaw - 90.0).abs() < 1e-3, "{yaw}");
+        let after = pose(&key, &anchors).unwrap().translation - look;
+        let turn = Vec2::new(before.x, before.z).angle_to(Vec2::new(after.x, after.z)).to_degrees().abs();
+        assert!((turn - 90.0).abs() < 1e-2 && (after.length() - before.length()).abs() < 1e-3, "{turn} {before} {after}");
         // Pitch stops at 85, the lens at 75 mm.
         for _ in 0..120 {
-            edit(&mut key, &mut lens, &mut FreeHeight::default(), CameraInput { turn: Vec2::new(0.0, 1.0), zoom: 1.0, ..default() }, &rules, None, 1.0 / 30.0);
+            edit(&mut key, &mut lens, &mut FreeHeight::default(), CameraInput { turn: Vec2::new(0.0, 1.0), zoom: 1.0, ..default() }, &rules, Some(&anchors), 1.0 / 30.0);
         }
-        let CameraKey::Follow { pitch, .. } = key else { panic!() };
-        assert_eq!((pitch, lens), (85.0, 75.0));
+        let v = pose(&key, &anchors).unwrap().translation - look;
+        assert!(((v.y / v.length()).asin().to_degrees() - 85.0).abs() < 1e-2 && lens == 75.0, "{v}");
         assert_eq!(CameraKey::edit_mode_and_state(2), Some((9, 10)));
-        assert!(pose(&CameraKey::Game, &root).is_none());
+        assert!(pose(&CameraKey::Game, &anchors).is_none());
     }
 
     /// b549: free turn clamp(5 s, 1.6) deg, moves clamp(s, 0.2) m per axis, height eases to 0.0375 m per frame.
@@ -337,25 +352,25 @@ mod tests {
         let mut key = CameraKey::Tripod { eye: look + Vec3::new(0.0, 0.0, 4.0), look_height: 0.0 };
         let (mut lens, mut height) = (24.0, FreeHeight::default());
         for _ in 0..30 {
-            edit(&mut key, &mut lens, &mut height, CameraInput { turn: Vec2::new(10.0, 0.0), ..default() }, &rules, Some(&root), 1.0 / 30.0);
+            edit(&mut key, &mut lens, &mut height, CameraInput { turn: Vec2::new(10.0, 0.0), ..default() }, &rules, Some(&at(root)), 1.0 / 30.0);
         }
         let CameraKey::Tripod { eye, .. } = key else { panic!() };
         // 3 degrees per frame for 30 frames: a quarter turn at the same 4 m.
         assert!((eye - (look + Vec3::new(4.0, 0.0, 0.0))).length() < 1e-3, "{eye}");
         for _ in 0..5 {
-            edit(&mut key, &mut lens, &mut height, CameraInput { move_: Vec2::new(0.0, 1.0), ..default() }, &rules, Some(&root), 1.0 / 30.0);
+            edit(&mut key, &mut lens, &mut height, CameraInput { move_: Vec2::new(0.0, 1.0), ..default() }, &rules, Some(&at(root)), 1.0 / 30.0);
         }
         let CameraKey::Tripod { eye, .. } = key else { panic!() };
         assert!((eye.distance(look) - 3.0).abs() < 1e-3, "{eye}");
     }
 
     #[test]
-    fn set_eye_round_trips_a_follow_orbit() {
-        let root = Transform::from_xyz(3.0, 1.0, -2.0).with_rotation(Quat::from_rotation_y(0.7));
-        let mut key = CameraKey::Follow { yaw: 30.0, pitch: 20.0, distance: 4.0, look_height: 0.5 };
-        let eye = pose(&key, &root).unwrap().translation;
-        set_eye(&mut key, eye, &root);
-        let CameraKey::Follow { yaw, pitch, distance, .. } = key else { panic!() };
-        assert!((yaw - 30.0).abs() < 1e-3 && (pitch - 20.0).abs() < 1e-3 && (distance - 4.0).abs() < 1e-4, "{key:?}");
+    fn set_eye_round_trips_a_follow_eye() {
+        let anchors = at(Transform::from_xyz(3.0, 1.0, -2.0).with_rotation(Quat::from_rotation_y(0.7)));
+        let mut key = CameraKey::Follow { eye: Vec3::new(1.0, 0.5, -2.0), look_height: 0.5 };
+        let eye = pose(&key, &anchors).unwrap().translation;
+        set_eye(&mut key, eye, &anchors);
+        let CameraKey::Follow { eye: local, .. } = key else { panic!() };
+        assert!(local.distance(Vec3::new(1.0, 0.5, -2.0)) < 1e-4, "{key:?}");
     }
 }

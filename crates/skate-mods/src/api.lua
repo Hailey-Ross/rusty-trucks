@@ -436,10 +436,11 @@ function sdk.replay.set_limits(opts)
   submit{kind="replay_set_limits",max_frames=opts.max_frames,byte_budget=opts.byte_budget,share_max_seconds=opts.share_max_seconds}
 end
 -- The replay cameras' world collision and leash (retail: collide on, radius 0.1 m, leash 40 m): opts.collide
--- (false = cameras pass through walls), opts.radius, opts.leash. nil restores retail's; the override goes on disable.
+-- (false = cameras pass through walls), opts.radius, opts.leash; opts.follow_eye = 'camera' (retail: a Follow key's
+-- eye rides the recorded gameplay camera) or 'skater'. nil restores retail's; the override goes on disable.
 function sdk.replay.set_camera(opts)
   opts = opts or {}
-  submit{kind="replay_set_camera",collide=opts.collide,radius=opts.radius,leash=opts.leash}
+  submit{kind="replay_set_camera",collide=opts.collide,radius=opts.radius,leash=opts.leash,follow_eye=opts.follow_eye}
 end
 
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and

@@ -75,7 +75,7 @@ pub(crate) fn log_key(camera: &super::camera_key::CameraKey, lens: f32) -> Strin
     let v = |p: bevy::prelude::Vec3| format!("[{:.2}, {:.2}, {:.2}]", p.x, p.y, p.z);
     match *camera {
         CameraKey::Game => format!("game lens={lens}"),
-        CameraKey::Follow { yaw, pitch, distance, look_height } => format!("follow yaw={yaw:.1} pitch={pitch:.1} distance={distance:.2} look={look_height:.2} lens={lens}"),
+        CameraKey::Follow { eye, look_height } => format!("follow eye={:?} look={look_height:.2} lens={lens}", eye.to_array()),
         CameraKey::Tripod { eye, look_height } => format!("tripod eye={} look={look_height:.2} lens={lens}", v(eye)),
         CameraKey::Free { eye, yaw, pitch } => format!("free eye={} yaw={yaw:.1} pitch={pitch:.1} lens={lens}", v(eye)),
     }
@@ -239,11 +239,11 @@ impl Editor {
 
     /// A on a camera row (b405, `82C7FFB8`): a key of that camera at the playhead from the current view (a key already
     /// there takes the new camera), then its edit mode. None when refused (the cap) or the row is not a camera.
-    pub fn pick_camera(&mut self, row: usize, time: f64, view: &bevy::prelude::Transform, root: &bevy::prelude::Transform) -> Option<u8> {
+    pub fn pick_camera(&mut self, row: usize, time: f64, view: &bevy::prelude::Transform, anchors: &super::camera_key::Anchors) -> Option<u8> {
         let (mode, _) = super::camera_key::CameraKey::edit_mode_and_state(row)?;
         let (basic, soft) = super::camera_key::CameraKey::basic_row(row);
-        let from = self.pose(time, root).0.unwrap_or(*view);
-        let camera = super::camera_key::key_from_view(basic, &from, root)?;
+        let from = self.pose(time, anchors).0.unwrap_or(*view);
+        let camera = super::camera_key::key_from_view(basic, &from, anchors)?;
         let lens = self.active(time).map_or(self.camera_rules.lens_default, |i| self.cameras[i].lens);
         let index = match self.key_near(time) {
             Some(i) => {
@@ -281,13 +281,13 @@ impl Editor {
 
     /// The key edit controls on the key being edited. While the sticks / D-pad move it, a `REPLAY_CAMERA edit` line
     /// every half second (the key and the input; laptop 2026-10-25 asked for the pose in the log).
-    pub fn edit_key(&mut self, input: super::camera_key::CameraInput, root: Option<&bevy::prelude::Transform>, dt: f32) {
+    pub fn edit_key(&mut self, input: super::camera_key::CameraInput, anchors: Option<&super::camera_key::Anchors>, dt: f32) {
         let rules = self.camera_rules;
         if self.free_height.0 != self.editing {
             self.free_height = (self.editing, Default::default());
         }
         if let Some(k) = self.editing.and_then(|i| self.cameras.get_mut(i)) {
-            super::camera_key::edit(&mut k.camera, &mut k.lens, &mut self.free_height.1, input, &rules, root, dt);
+            super::camera_key::edit(&mut k.camera, &mut k.lens, &mut self.free_height.1, input, &rules, anchors, dt);
         }
         let moving = input.turn.length() > 0.0 || input.move_.length() > 0.0 || input.height != 0.0 || input.zoom != 0.0;
         self.edit_log = if moving { self.edit_log + dt } else { 0.5 };
@@ -295,7 +295,7 @@ impl Editor {
             self.edit_log = 0.0;
             if let Some(k) = self.editing.and_then(|i| self.cameras.get(i)) {
                 bevy::log::info!("REPLAY_CAMERA edit {} turn={:?} move={:?} height={} zoom={} root={:?}", log_key(&k.camera, k.lens),
-                    input.turn.to_array(), input.move_.to_array(), input.height, input.zoom, root.map(|r| r.translation.to_array()));
+                    input.turn.to_array(), input.move_.to_array(), input.height, input.zoom, anchors.map(|a| a.root.translation.to_array()));
             }
         }
     }
@@ -303,13 +303,13 @@ impl Editor {
     /// Retail's camera constraint runs only while a key edit is open (`82683680` returns unless the byte 0x83037414 is
     /// set; the edit openers `82614658`.. set it, the timeline `82612C28` clears it) and the held pose is stored in the
     /// key, so playback needs no constraint (b593). The anchor is the skater root at the key's frame.
-    pub fn constrain_editing(&mut self, root: &bevy::prelude::Transform, rules: &super::camera_collision::CameraCollision,
+    pub fn constrain_editing(&mut self, anchors: &super::camera_key::Anchors, rules: &super::camera_collision::CameraCollision,
         sweep: impl FnMut(bevy::prelude::Vec3, bevy::prelude::Vec3, f32) -> Option<super::camera_collision::Hit>) {
         let Some(k) = self.editing.and_then(|i| self.cameras.get_mut(i)) else { return };
-        let Some(pose) = super::camera_key::pose(&k.camera, root) else { return };
+        let Some(pose) = super::camera_key::pose(&k.camera, anchors) else { return };
         let free = matches!(k.camera, super::camera_key::CameraKey::Free { .. });
-        let c = super::camera_collision::constrain(self.edit_last, pose.translation, root.translation, free, rules, sweep);
-        super::camera_key::set_eye(&mut k.camera, c.position, root);
+        let c = super::camera_collision::constrain(self.edit_last, pose.translation, anchors.root.translation, free, rules, sweep);
+        super::camera_key::set_eye(&mut k.camera, c.position, anchors);
         self.edit_last = Some(c.position);
     }
 
@@ -318,13 +318,13 @@ impl Editor {
         self.editing.and_then(|i| self.cameras.get(i)).map(|k| format!("{} frame={}", log_key(&k.camera, k.lens), k.frame))
     }
 
-    /// The camera at `time` on the skater root: the key in effect (a soft key blends into the next soft key of the
+    /// The camera at `time` on `anchors`: the key in effect (a soft key blends into the next soft key of the
     /// same camera), and its lens; (None, None) = the recorded camera at its own lens.
-    pub fn pose(&self, time: f64, root: &bevy::prelude::Transform) -> (Option<bevy::prelude::Transform>, Option<f32>) {
+    pub fn pose(&self, time: f64, anchors: &super::camera_key::Anchors) -> (Option<bevy::prelude::Transform>, Option<f32>) {
         let Some((_, camera, lens)) = self.camera_at(time) else { return (None, None) };
         let fov = (lens != self.camera_rules.lens_default || camera != super::camera_key::CameraKey::Game)
             .then(|| super::camera_key::lens_fov(lens));
-        (super::camera_key::pose(&camera, root), fov)
+        (super::camera_key::pose(&camera, anchors), fov)
     }
 
     /// The camera key at `time` (soft keys blended) with the index of its clip camera, and its lens.
@@ -682,14 +682,14 @@ mod tests {
         use bevy::prelude::{Transform, Vec3};
         use super::super::camera_key::CameraKey;
         let mut e = Editor::open(0.0, 20.0, EditLimits::default()).unwrap();
-        let root = Transform::IDENTITY;
+        let root = super::super::camera_key::Anchors::new(Transform::IDENTITY, Transform::IDENTITY, Default::default());
         assert_eq!(e.pick_camera(1, 5.0, &Transform::from_xyz(0.0, 2.0, 5.0), &root), Some(8));
         let i = e.editing.unwrap();
         e.cameras[i].camera = CameraKey::Tripod { eye: Vec3::new(0.0, 0.0, 55.0), look_height: 0.0 };
         e.constrain_editing(&root, &Default::default(), |_, _, _| None);
         let CameraKey::Tripod { eye, .. } = e.cameras[i].camera else { panic!() };
         assert!((eye - Vec3::new(0.0, 0.0, 40.0)).length() < 1e-4, "{eye}");
-        let far = Transform::from_xyz(30.0, 0.0, 0.0);
+        let far = super::super::camera_key::Anchors::new(Transform::IDENTITY, Transform::from_xyz(30.0, 0.0, 0.0), Default::default());
         assert_eq!(e.pose(9.0, &far).0.unwrap().translation, eye);
     }
 
@@ -699,7 +699,7 @@ mod tests {
     fn camera_keys_hold_cut_and_blend() {
         use bevy::prelude::{Transform, Vec3};
         let mut e = Editor::open(0.0, 20.0, EditLimits::default()).unwrap();
-        let root = Transform::IDENTITY;
+        let root = super::super::camera_key::Anchors::new(Transform::IDENTITY, Transform::IDENTITY, Default::default());
         let view = Transform::from_xyz(0.0, 2.0, 5.0);
         // No keys: the recorded camera.
         assert!(e.pose(5.0, &root).0.is_none());
@@ -791,7 +791,7 @@ mod tests {
     fn reset_timeline_clears_the_channel_or_all() {
         use bevy::prelude::Transform;
         let mut e = Editor::open(0.0, 30.0, EditLimits::default()).unwrap();
-        let (root, view) = (Transform::IDENTITY, Transform::from_xyz(0.0, 2.0, 5.0));
+        let (root, view) = (super::super::camera_key::Anchors::new(Transform::IDENTITY, Transform::IDENTITY, Default::default()), Transform::from_xyz(0.0, 2.0, 5.0));
         assert!(e.pick_camera(1, 5.0, &view, &root).is_some());
         e.cycle_channel();
         e.drop_marker(10.0, true).unwrap();
@@ -847,7 +847,7 @@ mod tests {
     fn deleting_a_clip_marker_takes_the_key_markers_on_both_sides() {
         use bevy::prelude::Transform;
         let mut e = Editor::open(0.0, 30.0, EditLimits::default()).unwrap();
-        let (root, view) = (Transform::IDENTITY, Transform::from_xyz(0.0, 2.0, 5.0));
+        let (root, view) = (super::super::camera_key::Anchors::new(Transform::IDENTITY, Transform::IDENTITY, Default::default()), Transform::from_xyz(0.0, 2.0, 5.0));
         // Keys: hard 4, soft 8, soft 10, hard 14, soft 18, soft 20, hard 24.
         for (t, row) in [(4.0, 1), (8.0, 6), (10.0, 6), (14.0, 0), (18.0, 4), (20.0, 4), (24.0, 2)] {
             assert!(e.pick_camera(row, t, &view, &root).is_some(), "{t}");
@@ -884,7 +884,7 @@ mod tests {
     fn a_clip_delete_with_the_film_pack_resets_only_the_values_at_the_cursor() {
         use bevy::prelude::Transform;
         let mut e = Editor::open(0.0, 30.0, EditLimits::default()).unwrap();
-        let (root, view) = (Transform::IDENTITY, Transform::from_xyz(0.0, 2.0, 5.0));
+        let (root, view) = (super::super::camera_key::Anchors::new(Transform::IDENTITY, Transform::IDENTITY, Default::default()), Transform::from_xyz(0.0, 2.0, 5.0));
         for (t, row) in [(20.0, 1), (28.0, 0)] {
             assert!(e.pick_camera(row, t, &view, &root).is_some(), "{t}");
         }

@@ -1530,3 +1530,32 @@ nodes back) are in `.local/research/b523-npc-skater-stalls.md`; the retail check
   normalised in 3D (ours took the next node's step, normalised flat). The side was already retail's. Test
   `the_lost_test_uses_the_nodes_own_direction`.
 - Not play-tested.
+## The record's lane flags as retail: NPC skaters steer back onto their line (2026-10-25, USER-ASKS 345, research b600 to b602)
+
+Problem (user: NPC skaters "run around trying to get onto a line far more than retail ever does"; laptop sessions of
+2026-10-25, 5 sessions, about 53 min): 42 `NPC_SKATER_LOST` walk-backs against 10 stuck stage 3 ones. The lost /
+walk-back rules, the line-end chain, the take-off arc and the air already match retail (b600, b601: lost radius 6.0 /
+max speed 14, `path_follow.rs`; the arc window 4.0 / 0.333 / 3.0). The skaters reached jumps 2 to 5 m to the side of
+their line (still inside the lane, so "on path") and at 40 to 75 % of the recorded speed, so the recorded arc was
+rejected and they landed off the line.
+
+Cause [code, both sides]: retail's per-tick update `sub_8246FA30` calls the ground steer `sub_8246AA00` and then the
+record builder `sub_8246DB50` in the same tick (recomp `skate3_recomp.8.cpp` 56672 / 56973). `sub_8246AA00` stores
+`pc+944` = inside the lane (`pc+932`) and lateral (`pc+868`) under 0.6 (centred) and `pc+945` = not avoid-steering
+(`pc+933`), trick category not 9, not centred and distance (`pc+828`) over 0.4 m (rejoining) (`8.cpp` 44225-44275).
+`sub_8246DE38` reads both for the record bits (above: B needs `pc+945` clear, C needs `pc+944` clear): while rejoining
+the board path's velocity and facing pulls are off and the ground steer turns the skater back. Ours never set either
+byte (`npc_sim.rs` set only `byte_933`), so all pulls ran on every on-path tick and held the skater parallel to the
+line, 2 to 5 m out.
+
+Change: `ground_steer::lane_flags` (the two flags; `heading_error` uses it too, so they cannot diverge);
+`npc_sim.rs` works them out from the path follow before the record on ground ticks and keeps them through the air
+(`NpcSim::lane_flags`), and sets `byte_944` / `byte_945`. The 0.6 lane ratio and the 0.4 m rejoin distance are the
+existing `GroundSteerTuning` data (`lane_centre`, `rejoin_start`). Category 9 is still not mapped (as the ground steer,
+b121 open).
+
+Test: `ground_steer::tests::lane_flags_mark_centred_and_rejoining_as_retail` (centred, 1.5 m off, 0.3 m off,
+avoiding, category 9); the record bits from the flags: the `ai_record` tests.
+Open (b602): the speed loss is partly inferred (the skid between the full-stick steer and the pulls); the avoid point
+written back into the steer's far aim (`sub_82464E30`, `pc+352`) and the low prop rule are smaller parity items; the
+landing loss of skater #7 at node 26. Not play-tested.
