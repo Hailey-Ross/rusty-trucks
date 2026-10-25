@@ -74,7 +74,11 @@ fn verify(
             e.row = 0;
         }
         let cursor = replay.cursor();
-        let view_root = replay.sample().map(|(a, b, t)| (crate::presentation::blend(a.camera, b.camera, t), crate::presentation::blend(a.root, b.root, t)));
+        let follow_eye = replay.follow_eye;
+        let view_root = replay.sample().map(|(a, b, t)| {
+            let view = crate::presentation::blend(a.camera, b.camera, t);
+            (view, crate::replay::camera_key::Anchors::new(view, crate::presentation::blend(a.root, b.root, t), follow_eye))
+        });
         if let (Some(e), Some((view, root))) = (replay.editor.as_mut().filter(|e| mode == "camera" && e.mode() == 11 && state.elapsed > replay_at + 2.0), view_root) {
             if e.pick_camera(0, cursor, &view, &root).is_some() {
                 e.session.mode = skate_core::replay_edit::session::EditorMode::FollowKey;

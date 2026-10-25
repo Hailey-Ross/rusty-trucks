@@ -422,8 +422,9 @@ pub enum Command {
         #[serde(default)]
         share_max_seconds: Option<u32>,
     },
-    /// Override the replay cameras' world collision (switch, sphere radius m) and leash (m); all absent restores
-    /// retail's (on, 0.1, 40).
+    /// Override the replay cameras' world collision (switch, sphere radius m) and leash (m), and the frame a Follow
+    /// key's eye rides ("camera" = the recorded gameplay camera, "skater"); all absent restores retail's (on, 0.1, 40,
+    /// "camera").
     ReplaySetCamera {
         #[serde(default)]
         collide: Option<bool>,
@@ -431,6 +432,8 @@ pub enum Command {
         radius: Option<f32>,
         #[serde(default)]
         leash: Option<f32>,
+        #[serde(default)]
+        follow_eye: Option<String>,
     },
     /// Audio extension 4 (doc 16 L2): write one input of a retail MixMap controller (`value` absent
     /// = release it: the input gets back the value before this mod's first write).
@@ -878,8 +881,9 @@ impl Command {
                 && byte_budget.is_none_or(|b| (1 << 20..=1 << 30).contains(&b))
                 && share_max_seconds.is_none_or(|s| (1..=600).contains(&s)),
             // Up to a 2 m sphere; a 1 m to 1 km leash.
-            Self::ReplaySetCamera { radius, leash, .. } => radius.is_none_or(|r| (0.0..=2.0).contains(&r))
-                && leash.is_none_or(|l| (1.0..=1000.0).contains(&l)),
+            Self::ReplaySetCamera { radius, leash, follow_eye, .. } => radius.is_none_or(|r| (0.0..=2.0).contains(&r))
+                && leash.is_none_or(|l| (1.0..=1000.0).contains(&l))
+                && follow_eye.as_deref().is_none_or(|f| matches!(f, "camera" | "skater")),
             Self::WorldSetTuning { domain, patch } => crate::world_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::world_tuning::valid_patch(domain, p)),
             Self::AudioSetTuning { domain, patch } => crate::audio_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::audio_tuning::valid_patch(domain, p)),
             Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
@@ -2800,6 +2804,8 @@ mod world_audio_tests {
             (json!({"kind":"replay_set_camera"}), true),
             (json!({"kind":"replay_set_camera","radius":5.0}), false),
             (json!({"kind":"replay_set_camera","leash":0.5}), false),
+            (json!({"kind":"replay_set_camera","follow_eye":"skater"}), true),
+            (json!({"kind":"replay_set_camera","follow_eye":"board"}), false),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(c.validate(), ok, "{value}");
@@ -2835,7 +2841,7 @@ mod world_audio_tests {
         let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
         assert_eq!(kinds, ["world_set_tuning", "world_set_tuning", "request", "world_reset_moved_props", "world_reset_prop", "world_upright_prop", "world_spawn_prop", "world_remove_prop",
             "replay_open", "replay_marker", "replay_set_limits", "replay_set_limits", "replay_set_camera"]);
-        assert!(matches!(&cmds[12], Command::ReplaySetCamera { collide: Some(false), radius: None, leash: Some(80.0) }));
+        assert!(matches!(&cmds[12], Command::ReplaySetCamera { collide: Some(false), radius: None, leash: Some(80.0), follow_eye: None }));
         assert!(matches!(&cmds[11], Command::ReplaySetLimits { max_frames: None, byte_budget: None, share_max_seconds: None }), "nil restores");
         assert!(cmds.iter().all(Command::validate));
         assert!(matches!(&cmds[1], Command::WorldSetTuning { patch: None, .. }), "nil restores");

@@ -153,6 +153,9 @@ pub(crate) struct NpcSim {
     /// Ticks left of the per-tick NPC_SKATER_PLACED trace after a placement (debug level; how the launch at line
     /// ends was found).
     trace_ticks: u32,
+    /// `pc+944` / `pc+945` (centred, rejoining): written on ground ticks before the record (`sub_8246FA30` calls
+    /// `sub_8246AA00` then `sub_8246DB50`), kept through the air.
+    lane_flags: (bool, bool),
     /// The spawn push set by the replay -> sim handover (m/s), until the first measured speed after its teleport is
     /// logged (b174 4: does the handover keep its speed through the queued teleport?).
     handover_push: Option<f32>,
@@ -453,7 +456,7 @@ fn spawn_sim(
         }
         None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, pushing: false, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
+    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, pushing: false, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, lane_flags: (false, false), handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
     let v = place(&mut sim, target, hold_ticks)?;
     sim.handover_push = Some((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
     Ok(sim)
@@ -1172,10 +1175,12 @@ pub(crate) fn simulate(
                 }
                 let right = super::npc_avoid::right_of(base.step);
                 steered.position = std::array::from_fn(|i| base.position[i] + right[i] * avoid.offset);
-                let steer = ai_record::SteerState {
-                    byte_933: matches!(avoid.last.mode, skate_core::living_world::avoid::AvoidMode::Steer | skate_core::living_world::avoid::AvoidMode::Skitch),
-                    ..Default::default()
-                };
+                let byte_933 = matches!(avoid.last.mode, skate_core::living_world::avoid::AvoidMode::Steer | skate_core::living_world::avoid::AvoidMode::Skitch);
+                if let Some((_, f)) = sim.follow.filter(|(id, _)| !airborne_now && *id == replay.cursor.line) {
+                    // Not mapped yet: the pending node trick's category 9 (b121 open), as the ground steer.
+                    sim.lane_flags = skate_core::living_world::ground_steer::lane_flags(f.inside_lane, f.lateral, f.dist, byte_933, false, &rules.ground_steer);
+                }
+                let steer = ai_record::SteerState { byte_933, byte_944: sim.lane_flags.0, byte_945: sim.lane_flags.1, ..Default::default() };
                 // `sub_8246DB50`: off the path or before the start nodes `sub_8246DE38` is skipped and the record
                 // carries no target; the skater coasts on its own physics until the projection commits again.
                 // Retail's hold branch after a placement (`824701F8`) sends a record with no target (no steering).

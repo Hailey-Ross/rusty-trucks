@@ -87,7 +87,8 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
             } else {
                 // The editor's camera key on the skater root (Follow / Tripod / Free; Game keeps the recording).
                 let root = crate::presentation::blend(previous.root, current.root, alpha);
-                let (key_pose, fov) = replay.guarded_editor_camera(&root, &mut guard);
+                let recorded = crate::presentation::blend(previous.camera, current.camera, alpha);
+                let (key_pose, fov) = replay.guarded_editor_camera(&recorded, &root, &mut guard);
                 if let Some(pose) = key_pose {
                     *transform = pose;
                 }
