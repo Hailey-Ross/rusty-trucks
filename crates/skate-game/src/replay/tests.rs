@@ -838,3 +838,36 @@ fn replay_mode_flags_pick_what_draws() {
     view.toggle(1);
     assert!(!view.player);
 }
+
+/// USER-ASKS 350 (laptop session game-20261025-152135): an Advanced Follow key pitched down at the logged spot on
+/// DownTown must stay above the ground; the edit-time constraint holds it (b593). Prints the eye against the ground.
+#[test]
+#[ignore = "requires an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<installation>/maps/DownTown.skate)"]
+fn a_follow_key_pitched_down_on_downtown_stays_above_the_ground() {
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(std::path::Path::new(&std::env::var_os("SKATE3_MAP").unwrap())).unwrap();
+    let physics = crate::physics::GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    let world = physics.world();
+    let ground = |p: Vec3| camera_collision::sweep(world, p + Vec3::Y * 3.0, p - Vec3::Y * 10.0, 0.0).map(|h| p.y + 3.0 - 13.0 * h.fraction);
+    let root = Transform::from_xyz(-259.95566, 40.306458, 50.564365);
+    let camera = Transform::from_xyz(-259.16074, 40.80301, 48.966225).looking_at(root.translation, Vec3::Y);
+    let anchors = camera_key::Anchors::new(camera, root, camera_key::FollowEye::Camera);
+    println!("ground under root {:?}", ground(root.translation));
+    let mut e = editor::Editor::open(0.0, 20.0, skate_core::replay_edit::EditLimits::default()).unwrap();
+    assert!(e.pick_camera(4, 10.0, &camera, &anchors).is_some());
+    let collision = camera_collision::CameraCollision::default();
+    let mut lowest = f32::MAX;
+    for (frames, turn) in [(90, Vec2::new(-1.0, 0.0)), (120, Vec2::new(-0.5, -0.8)), (60, Vec2::new(0.0, -1.0))] {
+        for _ in 0..frames {
+            e.edit_key(camera_key::CameraInput { turn, ..default() }, Some(&anchors), 1.0 / 60.0);
+            e.constrain_editing(&anchors, &collision, |from, to, radius| camera_collision::sweep(world, from, to, radius));
+            let eye = e.pose(10.0, &anchors).0.unwrap().translation;
+            if let Some(g) = ground(eye) {
+                lowest = lowest.min(eye.y - g);
+            }
+        }
+    }
+    let eye = e.pose(10.0, &anchors).0.unwrap().translation;
+    println!("eye {eye} ground {:?} lowest clearance {lowest}", ground(eye));
+    assert!(lowest > -0.01, "the eye went {lowest} m under the ground");
+}

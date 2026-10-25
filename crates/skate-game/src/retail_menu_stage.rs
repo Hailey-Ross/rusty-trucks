@@ -2189,6 +2189,7 @@ fn show_popup(
     show(stage, fe, handle, true)?;
     sounds.write(FrontendSound::named("core_popup"));
     fe.popup.input_ready = true;
+    info!("RETAIL_MENUS popup {popup} shown ({}, screen {handle}, {})", request.kind.template(), request.callback);
     Ok(())
 }
 
