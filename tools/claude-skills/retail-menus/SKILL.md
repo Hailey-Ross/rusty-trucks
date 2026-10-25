@@ -65,5 +65,6 @@ The foundation went upstream as #59; the rest is part of #52.
 
 ## Open
 The "NOT RETAIL YET" lines of doc 31's sections; inline button tags in menu text (`<B:B_hud> Back`) are not laid out
-yet; the loading screen's "Loading..." position, spinner and text tint; the FE 62 preview (MarqueeViewer); the
+yet; the loading screen's mod API and startup use (its position, spinner and fade rate were fixed 2026-10-24: no SD
+edge offset on HD, the autosave layer's corner wheel, FE fade at 60 ticks a second); the FE 62 preview (MarqueeViewer); the
 minimap's challenge icon groups (they need a challenge system).
