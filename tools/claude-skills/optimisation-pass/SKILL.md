@@ -80,14 +80,14 @@ this one is the shorter pass every new feature gets before it lands. Same bar: *
 
 ## Engine runs (before / after builds, both machines)
 - Build the version before the feature and the one after it (one build at a time, `scripts/Build.ps1`, detach the
-  checkout to the older commit and back) and copy each `bin` (exe, dlls, `manifest.json`, `built_commit.txt`; no pdbs)
+  checkout to the older commit and back) and copy each `bin` (exe, dlls, `manifest.json`; no pdbs)
   into a bench folder on K:.
 - `tools/frame-time-run.ps1 -Bin <bench>\<label> -Install <install> [-SwitchTo DownTown]`: muted, minimised, trace-all
   frame log + `system_timing.log`; median / p90 / p99 / max of frames 100+; with `-SwitchTo` it covers a map switch
   behind the loading screen too. Alternate before / after, three runs each; average `system_timing.log` per system
   with `.local/tools/system-timing-sum.py` to see the feature's own systems.
 - Laptop: `docs/hails-additions/second-pc-testing.md` "Engine frame-time test". The laptop runs `tools/keep-awake.ps1`
-  first: its ASUS screensaver renders on the second screen when idle and spoiled a whole sitting once (2026-10-24).
+  first (SendInput nudges; `mouse_event` did not reset its idle timer): its ASUS screensaver renders on the second screen when idle and ran through all the 2026-10-24 afternoon setup benches.
 
 ## Rules
 - No change without a before and after number with repeats; report the spread and drop disturbed runs openly.

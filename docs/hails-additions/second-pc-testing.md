@@ -529,14 +529,14 @@ there, which spoils every timing. Before anything else, in a background shell:
 powershell -NoProfile -ExecutionPolicy Bypass -File <checkout>\tools\claude-skills\optimisation-pass\tools\keep-awake.ps1 -Minutes 120
 ```
 
-It nudges the mouse by 1 px (and back) at once and every 30 s and keeps the display on, so the screensaver ends and
-does not come back. Check that its output has `KEEP_AWAKE woke idle_ms=0` and that no screensaver is showing on
+It nudges the mouse by 1 px (and back, with SendInput) at once and every 30 s and keeps the display on, so the screensaver ends and
+does not come back. Check that its output has `KEEP_AWAKE woke idle_ms=` below 1000 and that no screensaver is showing on
 either screen (if one still is, switch it off in its settings for the test and note that). Leave it running until the
 last run ends. Plugged in, one Windows power mode throughout (note which), nothing else running.
 
 **Build the two versions** (one build at a time; `<bench>` = a new folder on a local drive, about 1 GB):
 1. `git fetch` and `git switch --detach 2c00e994` (hails-additions before the evening's engine work), then
-   `scripts/Build.ps1`. Copy `bin\skate3rust.exe`, `bin\*.dll`, `bin\manifest.json` and `bin\built_commit.txt` into
+   `scripts/Build.ps1`. Copy `bin\skate3rust.exe`, `bin\*.dll` and `bin\manifest.json` into
    `<bench>\before\`.
 2. `git switch hails-additions`, `git pull`, `scripts/Build.ps1` (eb77643a or newer). Copy the same files into
    `<bench>\after\`.
@@ -558,6 +558,13 @@ one line (frames, median / p90 / p99 / max frame time), the switch lines, the hi
 `<label>-system_timing.log`) and `frame-bench.notes.log`: the machine, the power mode, the six printed lines, any
 error or panic line, whether the screensaver stayed away. Then delete `<bench>` and stop `keep-awake.ps1` if it still
 runs.
+
+Result (laptop, 2026-10-24 23:07; Ryzen 9 8945HS, power mode Turbo): before 2c00e994 median 4.22 / 4.62 / 4.67 ms,
+p99 8.81 / 9.11 / 9.20, max 118.9 / 117.8 / 115.7; after eb77643a median 4.83 / 4.58 / 4.73 ms, p99 9.34 / 9.00 / 9.16,
+max 109.4 / 110.4 / 112.5. Within noise (the 4.22 run is the outlier); every switch committed, no errors. Builds:
+2c00e994 from a6ef8401 5m 40s, eb77643a after it 3m 04s. The ASUS screensaver (`Zephyrus_Duo_Screensaver.scr`) had
+been running since 13:35, so through all of that afternoon's setup benches; it was ended before these runs. The first
+`keep-awake.ps1` used `mouse_event`, which did not reset the laptop's idle timer; it now uses SendInput.
 
 ## Moving the ISO
 
