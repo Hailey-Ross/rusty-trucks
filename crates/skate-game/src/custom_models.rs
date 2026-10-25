@@ -4,7 +4,6 @@ use bevy::{
         LoadState,
         io::{AssetSourceBuilder, file::FileAssetReader},
     },
-    gltf::Gltf,
     input::mouse::{MouseScrollUnit, MouseWheel},
     mesh::skinning::SkinnedMesh,
     prelude::*,
@@ -61,7 +60,8 @@ struct Selection {
 struct Pending {
     id: String,
     root: Entity,
-    asset: Handle<Gltf>,
+    path: String,
+    scene: Handle<Scene>,
     started: Instant,
 }
 struct Import {
@@ -543,13 +543,14 @@ fn publish(
                     && state.entries.iter().any(|e| e.id == id) =>
             {
                 let path = state.entries.iter().find(|e| e.id == id).unwrap().asset_path("character.glb");
-                let asset = server.load(path.clone());
+                // Only the scene, never the bare GLB: see docs/hails-additions/31-retail-menus.md#runtime-pro-swap-t-pose
+                let scene = server.load(GltfAssetLabel::Scene(0).from_asset(path.clone()));
                 let root = commands
                     .spawn((
                         CustomModelRoot,
                         Transform::default(),
                         Visibility::Hidden,
-                        SceneRoot(server.load(GltfAssetLabel::Scene(0).from_asset(path))),
+                        SceneRoot(scene.clone()),
                     ))
                     .id();
                 commands.entity(player).add_child(root);
@@ -559,7 +560,8 @@ fn publish(
                 state.pending = Some(Pending {
                     id,
                     root,
-                    asset,
+                    path,
+                    scene,
                     started: Instant::now(),
                 });
                 state.status = "Loading model; your current skater stays active.".into();
@@ -571,14 +573,15 @@ fn publish(
     let Some(p) = state.pending.as_ref() else {
         return;
     };
-    let error = match server.get_load_state(p.asset.id()) {
+    let root_state = server.get_path_id(p.path.clone()).and_then(|id| server.get_load_state(id));
+    let error = match server.get_load_state(p.scene.id()).filter(LoadState::is_failed).or(root_state) {
         Some(LoadState::Failed(e)) => Some(format!("Could not load model: {e}")),
         _ if p.started.elapsed().as_secs() > 120 => Some("Character loading timed out.".into()),
         _ => None,
     };
     let prepared = if let Some(error) = error {
         Some(Err(error))
-    } else if server.is_loaded_with_dependencies(p.asset.id())
+    } else if server.is_loaded_with_dependencies(p.scene.id())
         && instances
             .get(p.root)
             .is_ok_and(|i| spawner.instance_is_ready(**i))
@@ -753,6 +756,7 @@ fn button(parent: &mut ChildSpawnerCommands, action: usize, text: &str, selected
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::gltf::Gltf;
     #[test]
     fn customiser_fresh_roster_combines_with_personal_imports_without_duplicates() {
         let root = std::env::temp_dir().join(format!("skate-roster-sources-{}", std::process::id()));
@@ -797,6 +801,46 @@ mod tests {
         assert!(state.active.is_none() && state.stock_visibility.is_empty());
         assert!(parts.applied.is_null());
         assert!(!animation.ready);
+    }
+    /// The runtime pro swap T-pose: a preload holding only `#Scene0` lets the bare GLB drop, and loading the bare GLB
+    /// again re-inserts the scene, so Bevy respawns every instance and the bound joints die. `publish` loads the scene.
+    #[test]
+    fn swap_loads_the_scene_so_a_preloaded_instance_keeps_its_joints() {
+        use bevy::{asset::AssetPlugin, gltf::GltfPlugin, image::ImagePlugin, mesh::MeshPlugin, scene::ScenePlugin};
+        let root = std::env::temp_dir().join(format!("skate-swap-scene-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("character.gltf"),
+            r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"Skate3_RX2_Rig"}]}"#).unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin { file_path: root.to_string_lossy().into_owned(), ..default() },
+            ImagePlugin::default(), MeshPlugin, ScenePlugin, GltfPlugin::default()));
+        app.init_asset::<StandardMaterial>().init_asset::<AnimationClip>();
+        app.finish();
+        app.cleanup();
+        let run = |app: &mut App, done: &dyn Fn(&World) -> bool| {
+            let started = Instant::now();
+            while !done(app.world()) {
+                app.update();
+                assert!(started.elapsed().as_secs() < 30, "timed out");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            for _ in 0..5 { app.update(); }
+        };
+        let label = || GltfAssetLabel::Scene(0).from_asset("character.gltf");
+        let preload: Handle<Scene> = app.world().resource::<AssetServer>().load(label());
+        let instance = app.world_mut().spawn(SceneRoot(preload.clone())).id();
+        run(&mut app, &|w| w.get::<SceneInstance>(instance).is_some_and(|i| w.resource::<SceneSpawner>().instance_is_ready(**i)));
+        let joint = |w: &World| w.get::<Children>(instance).map(|c| c[0]);
+        let bound = joint(app.world()).unwrap();
+        assert!(app.world().resource::<AssetServer>().get_path_id("character.gltf").is_none(), "the bare GLB dropped");
+        let swap: Handle<Scene> = app.world().resource::<AssetServer>().load(label());
+        run(&mut app, &|w| w.resource::<AssetServer>().is_loaded_with_dependencies(swap.id()));
+        assert_eq!(joint(app.world()), Some(bound), "loading the scene keeps the bound joints");
+        let bare: Handle<Gltf> = app.world().resource::<AssetServer>().load("character.gltf");
+        run(&mut app, &|w| w.resource::<AssetServer>().is_loaded_with_dependencies(bare.id()));
+        assert_ne!(joint(app.world()), Some(bound), "loading the bare GLB respawns the instance");
+        drop((preload, swap, bare));
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     #[ignore = "Requires private retail roster and animation banks; asset loading only"]
