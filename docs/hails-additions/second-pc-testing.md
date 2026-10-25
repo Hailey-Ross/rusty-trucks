@@ -515,6 +515,50 @@ Result (laptop, 2026-10-24 17:25): means 176.8 s (5b16a77b), 156.7 s (964fb5bc),
 order as the desktop; 18,868 files. The maps started at 14 to 28 s, so the machine was not steady: the ASUS
 screensaver renders on the second screen when the laptop sits idle. Switch it off before the next timing test.
 
+## Engine frame-time test (2026-10-24)
+
+The optimisation pass over the evening's engine work (the loading screen's mod lines and corner wheel, seated peds
+reacting to a skater, the camera slow-motion gate) measures the game itself, not the setup: the same muted run with
+the build from before that work and the build after it, alternating, on the laptop as on the desktop. The setup
+scripts did not change since the same-session version test, so there is no setup run this time.
+
+**Wake the laptop first.** The ASUS screensaver takes the second screen over when the laptop sits idle and renders
+there, which spoils every timing. Before anything else, in a background shell:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <checkout>\tools\claude-skills\optimisation-pass\tools\keep-awake.ps1 -Minutes 120
+```
+
+It nudges the mouse by 1 px (and back) at once and every 30 s and keeps the display on, so the screensaver ends and
+does not come back. Check that its output has `KEEP_AWAKE woke idle_ms=0` and that no screensaver is showing on
+either screen (if one still is, switch it off in its settings for the test and note that). Leave it running until the
+last run ends. Plugged in, one Windows power mode throughout (note which), nothing else running.
+
+**Build the two versions** (one build at a time; `<bench>` = a new folder on a local drive, about 1 GB):
+1. `git fetch` and `git switch --detach 2c00e994` (hails-additions before the evening's engine work), then
+   `scripts/Build.ps1`. Copy `bin\skate3rust.exe`, `bin\*.dll`, `bin\manifest.json` and `bin\built_commit.txt` into
+   `<bench>\before\`.
+2. `git switch hails-additions`, `git pull`, `scripts/Build.ps1` (eb77643a or newer). Copy the same files into
+   `<bench>\after\`.
+
+**Run** six times, alternating, each about 2.5 min (`<install>` = the folder with `assets\` and `maps\`, the one the
+launcher plays from):
+
+```powershell
+$t = "<checkout>\tools\claude-skills\optimisation-pass\tools\frame-time-run.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File $t -Bin <bench>\before -Install <install> -SwitchTo DownTown
+```
+
+Order: before, after, before, after, before, after (`-Bin <bench>\after` for the after runs). Each run starts in
+University, switches to DownTown at 25 s behind the loading screen and stops 70 s after it started tracing; it prints
+one line (frames, median / p90 / p99 / max frame time), the switch lines, the hitch lines and an error count.
+
+**Send back** to `<share>\<LAPTOP NAME>\frame-bench-<yyyymmdd-hhmm>\`: for each run its `frames.tsv`,
+`system_timing.log` (both in `<bench>\<before|after>\logs\trace-all-<n>\`, renamed `<label>-frames.tsv` /
+`<label>-system_timing.log`) and `frame-bench.notes.log`: the machine, the power mode, the six printed lines, any
+error or panic line, whether the screensaver stayed away. Then delete `<bench>` and stop `keep-awake.ps1` if it still
+runs.
+
 ## Moving the ISO
 
 A FAT32 flash drive cannot hold a file over 4 GB, whatever its free space. Format it as exFAT (Explorer: right-click

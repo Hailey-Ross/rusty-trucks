@@ -67,7 +67,7 @@ asking for the task it describes, or by name (for example `/regression-check`).
 | `living-world/tools` | `render_glb.py` (offscreen render of a converted model) |
 | `ghidra/tools` | `decompile.ps1` (pseudocode for a batch of addresses), `ghidra_headless.ps1` (AnalyzeHeadless without the .bat), `scripts/DecompileAt.java` (the post-script) |
 | `retail-menus/tools` | `apt_dump.py` (an exported menu movie's actions as text, pool names resolved), `check_trick_clips.sh` (Trick Guide demo clips: names, decode, posture) |
-| `optimisation-pass/tools` | `with_affinity.py` (run a command pinned to a CPU mask, to bench as a smaller machine) |
+| `optimisation-pass/tools` | `with_affinity.py` (run a command pinned to a CPU mask, to bench as a smaller machine), `frame-time-run.ps1` (muted frame-time run of one build, optional map switch), `keep-awake.ps1` (wake the PC from its screensaver and keep it awake during a timing test) |
 | `setup-bench/tools` | `setup_bench.py` (timed full setup into a scratch base plus a sha256 manifest of the install) |
 
 More general tools referenced by the skills (map/collision inspection, regression checks with baselines, recomp code

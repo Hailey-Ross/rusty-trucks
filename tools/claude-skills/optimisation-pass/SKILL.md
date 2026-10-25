@@ -78,6 +78,17 @@ this one is the shorter pass every new feature gets before it lands. Same bar: *
   Check the pre-work step time (setup: start to "Converting 10 maps") is the same in every run before comparing; one
   afternoon the laptop ran 35% slower as a whole and made a real gain look like a regression.
 
+## Engine runs (before / after builds, both machines)
+- Build the version before the feature and the one after it (one build at a time, `scripts/Build.ps1`, detach the
+  checkout to the older commit and back) and copy each `bin` (exe, dlls, `manifest.json`, `built_commit.txt`; no pdbs)
+  into a bench folder on K:.
+- `tools/frame-time-run.ps1 -Bin <bench>\<label> -Install <install> [-SwitchTo DownTown]`: muted, minimised, trace-all
+  frame log + `system_timing.log`; median / p90 / p99 / max of frames 100+; with `-SwitchTo` it covers a map switch
+  behind the loading screen too. Alternate before / after, three runs each; average `system_timing.log` per system
+  with `.local/tools/system-timing-sum.py` to see the feature's own systems.
+- Laptop: `docs/hails-additions/second-pc-testing.md` "Engine frame-time test". The laptop runs `tools/keep-awake.ps1`
+  first: its ASUS screensaver renders on the second screen when idle and spoiled a whole sitting once (2026-10-24).
+
 ## Rules
 - No change without a before and after number with repeats; report the spread and drop disturbed runs openly.
 - One test run at a time (memory one-test-at-a-time); no game windows without asking; build output on K:; delete bench
