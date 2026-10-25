@@ -26,9 +26,16 @@ pub mod row {
     pub const POWERSLIDE_DISTANCE: usize = 22;
     pub const UNSUCCESSFUL_TRICKS: usize = 23;
     pub const SUCCESSFUL_TRICKS: usize = 24;
+    pub const BONES_BROKEN: usize = 3;
+    pub const HEAD_HITS: usize = 4;
+    pub const GROIN_HITS: usize = 5;
     pub const PEDS_HIT: usize = 26;
     pub const VEHICLES_HIT: usize = 28;
     pub const BAIL_DISTANCE: usize = 29;
+    pub const DISLOCATIONS: usize = 30;
+    pub const SPRAINS: usize = 31;
+    pub const BRUISES: usize = 32;
+    pub const SCRAPES: usize = 33;
     pub const PUSH_OFFS: usize = 40;
     pub const TIME_IN_BAIL: usize = 45;
     pub const MOST_COLLIDED: usize = 46;
@@ -137,6 +144,8 @@ pub struct BailRecord {
     /// Distinct peds / vehicles the body touched (the scorers 0x82DAF948 / 0x82DAFBC0 refuse a 9th).
     pub peds: Vec<u64>,
     pub vehicles: Vec<u64>,
+    /// The bones' injury levels (0x82DAE9A8 / 0x82DAF1D8), when the tuning is loaded.
+    pub injuries: crate::hall_of_meat::Injuries,
 }
 
 impl BailRecord {
@@ -160,9 +169,17 @@ impl BailRecord {
         }
     }
 
-    /// The rows 0x8250F820 adds at bail end.
-    pub fn rows(&self) -> [(usize, f32); 4] {
+    /// The rows 0x8250F820 adds at bail end; the injury counts come from 0x82510990.
+    pub fn rows(&self) -> [(usize, f32); 11] {
+        let c = self.injuries.counts();
         [
+            (row::BONES_BROKEN, c.broken as f32),
+            (row::HEAD_HITS, f32::from(u8::from(self.injuries.head_hit()))),
+            (row::GROIN_HITS, f32::from(u8::from(self.injuries.groin_hit()))),
+            (row::DISLOCATIONS, c.dislocations as f32),
+            (row::SPRAINS, c.sprains as f32),
+            (row::BRUISES, c.bruises as f32),
+            (row::SCRAPES, c.scrapes as f32),
             (row::TIME_IN_BAIL, self.active_seconds),
             (row::PUSH_OFFS, self.push_off_ticks.round()),
             (row::PEDS_HIT, self.peds.len() as f32),
@@ -371,10 +388,11 @@ mod tests {
             b.tick(dt, i >= 12, if i < 5 || i >= 18 { 0.5 } else { 0.0 }, [i % 3, 100 + i], []);
         }
         b.tick(dt, true, 0.0, [], [7, 7]);
-        let rows = b.rows();
+        let rows = &b.rows()[7..];
         assert!((rows[0].1 - 12.0 * dt).abs() < 1e-6);
         assert_eq!(rows[1], (row::PUSH_OFFS, 7.0));
         assert_eq!(rows[2], (row::PEDS_HIT, BailRecord::ENTITY_CAP as f32));
         assert_eq!(rows[3], (row::VEHICLES_HIT, 1.0));
+        assert!(b.rows()[..7].iter().all(|r| r.1 == 0.0));
     }
 }

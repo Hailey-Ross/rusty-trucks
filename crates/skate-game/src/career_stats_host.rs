@@ -225,7 +225,13 @@ fn track(
         let (over, strength) = (skeleton.over_599 != 0, skeleton.response_strength_580);
         let peds = s.ped_hits.iter().map(|h| h.0);
         let vehicles = s.vehicle_hits.iter().map(|h| h.0);
-        host.bail.get_or_insert_default().tick(dt, over, strength, peds, vehicles);
+        let bail = host.bail.get_or_insert_default();
+        bail.tick(dt, over, strength, peds, vehicles);
+        if let Some(tuning) = physics.as_ref().and_then(|p| p.settings.hall_of_meat.as_ref()) {
+            let bones = &s.collision_feedback.bones;
+            let impacts = skate_core::hall_of_meat::part_impacts(&bones.map(|b| b.force), &bones.map(|b| b.specific_force));
+            bail.injuries.tick(tuning, &impacts, dt * BailRecord::TICK_RATE);
+        }
     } else if let Some(bail) = host.bail.take() {
         for (i, v) in bail.rows() {
             host.record(i, v);

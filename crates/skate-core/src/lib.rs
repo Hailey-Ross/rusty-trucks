@@ -43,6 +43,7 @@ pub mod video_calibration;
 pub mod spawn_skater;
 pub mod tips_loader;
 pub mod career_stats;
+pub mod hall_of_meat;
 pub mod free_skate_options;
 pub mod indicator_trail;
 pub mod minimap;
