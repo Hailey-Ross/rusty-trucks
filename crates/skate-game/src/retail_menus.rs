@@ -297,11 +297,10 @@ const STORED_OWNER: &str = "settings";
 /// Rows with a retail rule whose effect the engine does not have yet (user, 2026-10-13: grey them like the other
 /// unported items). They get no stored layer, so they stay greyed and show retail's default; a mod's value layer
 /// still enables them. Remove an id here when its feature lands (doc 31 "Stored settings").
-const NO_EFFECT_YET: [&str; 9] = [
+const NO_EFFECT_YET: [&str; 8] = [
     "ID_GAMESETTINGS_SUBTITLE_TOGGLE",
     "ID_GAMESETTINGS_CAM_MAN_TOGGLE",
     "ID_GAMESETTINGS_HOM_MODE_OPTIONS",
-    "ID_GAMESETTINGS_UNITS_TOGGLE",
     "ID_GAMESETTINGS_TRANSPARENCY_TOGGLE",
     "ID_GAMESETTINGS_SKATEFEED_BOOTFLOW",
     "ID_GAMESETTINGS_SKATEFEED_CHYRON",

@@ -61,7 +61,12 @@ impl TipsLoaderHost {
             // 825BA018: up to n rows of [label, value].
             "GetStats" => {
                 let n = args.first().map_or(0, crate::apt_vm::to_integer).max(0) as usize;
-                let rows = self.stats.iter().take(n).cloned().collect::<Vec<_>>();
+                // Shuffled again on every call (sub_826060F0), then up to n rows.
+                let mut order: Vec<usize> = (0..self.stats.len()).collect();
+                let mut seed = self.seed;
+                skate_core::career_stats::shuffle(&mut order, &mut || lcg(&mut seed));
+                self.seed = seed;
+                let rows = order.into_iter().take(n).map(|i| self.stats[i].clone()).collect::<Vec<_>>();
                 let mut out = Vec::new();
                 for (label, value) in rows {
                     out.push(Value::Object(vm.array(vec![Value::Text(label), Value::Text(value)])?));
@@ -86,6 +91,10 @@ pub(crate) struct LoadingMods {
     lines: Vec<(String, String, skate_mods::menus::LoadingLine)>,
     retail_hidden: std::collections::BTreeSet<String>,
     holds: std::collections::BTreeSet<(String, String)>,
+    /// Panel timings by mod, in the order set (the newest wins).
+    timings: Vec<(String, (Option<f32>, Option<f32>))>,
+    /// `loading_opened` / `loading_closed` for every mod's `on_event`.
+    events: Vec<serde_json::Value>,
 }
 
 impl LoadingMods {
@@ -114,9 +123,43 @@ impl LoadingMods {
         }
     }
 
-    /// Drop one mod's lines and holds (None: every mod's).
+    /// Mods' Stats panel rows (label, value), in the order added.
+    pub(crate) fn stat_rows(&self) -> Vec<(String, String)> {
+        self.lines.iter().filter_map(|(_, _, l)| match l {
+            skate_mods::menus::LoadingLine::Stat { label, value } => Some((label.clone(), value.clone())),
+            _ => None,
+        }).collect()
+    }
+
+    pub(crate) fn set_timing(&mut self, owner: &str, timing: Option<(Option<f32>, Option<f32>)>) {
+        self.timings.retain(|(o, _)| o != owner);
+        if let Some(timing) = timing {
+            self.timings.push((owner.to_owned(), timing));
+        }
+    }
+
+    /// The panel timing: the newest mod's values over retail's.
+    pub(crate) fn timing(&self) -> skate_core::tips_loader::Timing {
+        let retail = skate_core::tips_loader::Timing::RETAIL;
+        self.timings.last().map_or(retail, |(_, (show, outro))| skate_core::tips_loader::Timing { show: show.unwrap_or(retail.show), outro: outro.unwrap_or(retail.outro) })
+    }
+
+    pub(crate) fn opened(&mut self, map: Option<&str>) {
+        self.events.push(serde_json::json!({"name": "loading_opened", "map": map}));
+    }
+
+    pub(crate) fn closed(&mut self, map: Option<&str>) {
+        self.events.push(serde_json::json!({"name": "loading_closed", "map": map}));
+    }
+
+    pub(crate) fn drain_events(&mut self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Drop one mod's lines, holds and timing (None: every mod's).
     pub(crate) fn clear_owner(&mut self, owner: Option<&str>) {
         let keep = |o: &String| owner.is_some_and(|owner| o != owner);
+        self.timings.retain(|(o, _)| keep(o));
         self.lines.retain(|(o, _, _)| keep(o));
         self.retail_hidden.retain(|o| keep(o));
         self.holds.retain(|(o, _)| keep(o));
@@ -133,11 +176,11 @@ impl LoadingMods {
         use skate_mods::menus::LoadingLine;
         let hints: Vec<(String, String)> = self.lines.iter().filter_map(|(_, _, l)| match l {
             LoadingLine::Hint { title, text } => Some((title.clone(), text.clone())),
-            LoadingLine::CoachFrank { .. } => None,
+            _ => None,
         }).collect();
         let coach: Vec<String> = self.lines.iter().filter_map(|(_, _, l)| match l {
             LoadingLine::CoachFrank { text } => Some(text.clone()),
-            LoadingLine::Hint { .. } => None,
+            _ => None,
         }).collect();
         let hide = !self.retail_hidden.is_empty();
         let mut out = skate_data::tips_loader::TipsLines::default();
@@ -181,5 +224,29 @@ mod tests {
         assert!(!mods.holding(0.0));
         mods.clear_owner(None);
         assert_eq!(mods.lines(&retail), retail);
+    }
+
+    #[test]
+    fn mod_timing_overrides_retail_and_goes_with_the_mod() {
+        use skate_core::tips_loader::Timing;
+        let mut mods = LoadingMods::default();
+        assert_eq!(mods.timing(), Timing::RETAIL);
+        mods.set_timing("a", Some((Some(4.0), None)));
+        assert_eq!(mods.timing(), Timing { show: 4.0, outro: 0.5 });
+        mods.set_timing("b", Some((None, Some(0.0))));
+        assert_eq!(mods.timing(), Timing { show: 9.0, outro: 0.0 });
+        mods.clear_owner(Some("b"));
+        assert_eq!(mods.timing(), Timing { show: 4.0, outro: 0.5 });
+        mods.set_timing("a", None);
+        assert_eq!(mods.timing(), Timing::RETAIL);
+        mods.set_line("a", "kicks", Some(LoadingLine::Stat { label: "#Kickflips".into(), value: "#12".into() }));
+        assert_eq!(mods.stat_rows(), [("#Kickflips".to_owned(), "#12".to_owned())]);
+        assert_eq!(mods.lines(&skate_data::tips_loader::TipsLines::default()), Default::default(), "a stat row is no hint or Coach Frank line");
+        mods.opened(Some("University"));
+        mods.closed(None);
+        let events = mods.drain_events();
+        assert_eq!(events[0], serde_json::json!({"name": "loading_opened", "map": "University"}));
+        assert_eq!(events[1]["name"], "loading_closed");
+        assert!(mods.drain_events().is_empty());
     }
 }

@@ -781,6 +781,8 @@ pub enum Command {
     LoadingRetail { shown: bool },
     /// Keep the loading screen up after a load's own work is done until released (capped by the engine).
     LoadingHold { key: String, held: bool },
+    /// Seconds a panel shows and its outro takes (retail 9.0 / 0.5); none = this mod's change is dropped.
+    LoadingTiming { #[serde(default)] show: Option<f32>, #[serde(default)] outro: Option<f32> },
     CameraClearCapture {
         key: String,
     },
@@ -1143,6 +1145,9 @@ impl Command {
             Self::LoadingLine { key, line } => crate::menus::valid_menu_id(key) && line.as_ref().is_none_or(crate::menus::LoadingLine::validate),
             Self::LoadingRetail { .. } => true,
             Self::LoadingHold { key, .. } => crate::menus::valid_menu_id(key),
+            Self::LoadingTiming { show, outro } => {
+                show.is_none_or(|s| s.is_finite() && (1.0..=120.0).contains(&s)) && outro.is_none_or(|o| o.is_finite() && (0.0..=10.0).contains(&o))
+            }
             Self::CameraClearCapture { key } => crate::schema::valid_id(key),
         }
     }
@@ -1276,6 +1281,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::LoadingLine { .. } => "loading_line",
         Command::LoadingRetail { .. } => "loading_retail",
         Command::LoadingHold { .. } => "loading_hold",
+        Command::LoadingTiming { .. } => "loading_timing",
         Command::MenuBitmap { .. } => "menu_bitmap",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
@@ -1520,7 +1526,7 @@ impl Vm {
             capabilities.set("scene_transforms", 2)?;
             capabilities.set("skater", 4)?;
             capabilities.set("menus", 3)?;
-            capabilities.set("loading", 1)?;
+            capabilities.set("loading", 2)?;
             capabilities.set("player_physics", 2)?;
             capabilities.set("engine_access", 1)?;
             capabilities.set("command_results", 1)?;
@@ -3184,9 +3190,15 @@ mod empty_table_lists {
         assert!(matches!(&hint, Command::LoadingLine { line: Some(crate::menus::LoadingLine::Hint { .. }), .. }) && hint.validate());
         assert!(eval("return {kind='loading_line', key='my-mod.frank', line={panel='coach_frank', text='ID_TIPS_COACHFRANK_3'}}").validate());
         assert!(eval("return {kind='loading_line', key='my-mod.tip'}").validate());
+        assert!(eval("return {kind='loading_line', key='my-mod.kicks', line={panel='stat', label='#Kickflips', value='#12'}}").validate());
+        assert!(!eval("return {kind='loading_line', key='my-mod.kicks', line={panel='stat', label='#Kickflips', value=''}}").validate());
         assert!(!eval("return {kind='loading_line', key='my-mod.tip', line={panel='hint', title='', text='x'}}").validate());
         assert!(eval("return {kind='loading_hold', key='my-mod.bank', held=true}").validate());
         assert!(eval("return {kind='loading_retail', shown=false}").validate());
+        assert!(eval("return {kind='loading_timing', show=4.5, outro=0.25}").validate());
+        assert!(eval("return {kind='loading_timing'}").validate());
+        assert!(!eval("return {kind='loading_timing', show=0.2}").validate());
+        assert!(!eval("return {kind='loading_timing', outro=30}").validate());
         assert!(!eval("return {kind='menu_backdrop', screen='56'}").validate());
         assert!(eval("return {kind='menu_backdrop', screen='a774f79d33b6be83:1'}").validate());
         assert!(!eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={tint={1, 2}}}").validate());

@@ -827,11 +827,9 @@ pub(crate) fn interact(
 ) {
     let wheel_notches: f32 = wheel.read().map(|e| if e.unit == MouseScrollUnit::Line { e.y } else { e.y / 40. }).sum();
     if transition.busy() {
-        // The retail loading screen (FE 52) covers a load started with the overlay closed; otherwise the overlay shows
-        // the progress.
-        if menu.open || !cover.is_some_and(|c| c.available) {
-            menu.open = true;
-        }
+        // The retail loading screen (FE 52) covers every load: the overlay closes (a load picked in it too). Without
+        // the screen (a set exported before it) the overlay shows the progress.
+        menu.open = !cover.is_some_and(|c| c.available);
         time.pause();
         return;
     }

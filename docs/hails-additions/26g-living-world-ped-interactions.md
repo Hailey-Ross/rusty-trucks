@@ -2178,6 +2178,24 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   (legs in shallow water), or where no water triangle was found is not in the log. Added `PED_PLUGIN_WATER_REST` once
   per stop of a moved seat prop: its water state, the lowest seat, and the nearest water surface within 5 m above or
   below it, next to the rule's own window (`water_above`, `water_max_depth`). The next session decides the fix.
+- **The logs decide (2026-10-25, USER-ASKS 334):** every `PED_PLUGIN_WATER_REST` line of the sessions since
+  2026-10-19 (12 session logs, laptop and desktop) read:
+  - Aletown canal (DownTown map; laptop 2026-10-19 18:04, benches C8 / C9 / CA8888659E2DCE6F): at rest the lowest seats at y 9.62
+    to 9.70, the canal surface at 8.934 [log]: legs in the water, seats 0.69 to 0.77 m over it, so `water_above` 0.05
+    never counted them (wet=false on every line). These are the user's "pushed into the water" benches.
+  - Laptop 2026-10-20 10:13 (benches E8 / EA / EBF5360F38E5D567): seats at y 0.25 to 0.44 against a surface at 0.353:
+    wet=true at rest, flipping to false and back while the bench rocked (seats 0.04 to 0.09 over the surface).
+  - Every other rest line: no water surface within 5 m (dry ground, a newspaper box, park benches).
+  - The rest line itself repeated every few ticks while a prop jittered at rest (up to 9 lines per stop).
+- **Change (NOT RETAIL, ours):** `PluginSettings::water_above` 0.05 -> 0.8 m, so a bench standing in water whose seat
+  is up to 0.8 m over the surface counts as in the water (the canal benches; the rocking ones no longer flip); 1 m
+  up on a ledge over the water stays dry. `water_above` is now in the mod patch next to `water_disables_seats` /
+  `water_max_depth` (`living_world.ped_brain`, 0..=100). `PED_PLUGIN_WATER_REST` logs once per change of the rest
+  state (wet, lowest seat in 10 cm steps) instead of every jitter.
+- **Verification:** `a_bench_standing_in_a_canal_counts_as_wet` (the canal numbers: seat 9.62 wet, 9.95 dry),
+  `a_seat_in_water_switches_the_bench_off`, the skate-mods patch checks. Play check: push a bench into the Aletown
+  canal; its seats stop being offered (`PED_PLUGIN_PROP ... disabled (a seat in water)` unless it was already off as
+  tipped).
 - **Open:** a seated ped's exit through the drop path uses the same path as the tipped bench (not re-checked); the
   other PluginSettings values are not in the mod patch yet.
 

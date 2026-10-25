@@ -1108,6 +1108,10 @@ fn apply(world: &mut World, mods: &mut Mods) {
     for (owner, payload) in menu_events {
         mods.manager.call(&owner, "on_event", payload);
     }
+    let loading_events = world.get_resource_mut::<crate::tips_loader_host::LoadingMods>().map(|mut m| m.drain_events()).unwrap_or_default();
+    for payload in loading_events {
+        mods.manager.dispatch("on_event", payload);
+    }
     let mut row = 0;
     for entity in mods.overlays.values() {
         if let Some(mut node) = world.get_mut::<Node>(*entity) {
@@ -1644,6 +1648,7 @@ fn apply_one(
         Command::LoadingLine { key, line } => loading_mods(world)?.set_line(id, &key, line),
         Command::LoadingRetail { shown } => loading_mods(world)?.set_retail(id, shown),
         Command::LoadingHold { key, held } => loading_mods(world)?.set_hold(id, &key, held),
+        Command::LoadingTiming { show, outro } => loading_mods(world)?.set_timing(id, (show.is_some() || outro.is_some()).then_some((show, outro))),
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
     Ok(())

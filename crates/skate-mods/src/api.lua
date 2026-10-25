@@ -792,15 +792,17 @@ function sdk.menus.popup(key, options) submit{kind="menu_popup",key=key,options=
 function sdk.menus.profile(page, key, options) submit{kind="menu_profile",page=page,key=key,options=options} end
 function sdk.menus.credits(key, lines) submit{kind="menu_credits",key=key,lines=lines} end
 -- The loading screen (FE 52) between maps: this mod's lines and holds (doc 31 "Loading screen (FE 52)").
-sdk.loading = { version = 1 }
+sdk.loading = { version = 2 }
 function sdk.loading.hint(key, line)
   submit{kind="loading_line",key=key,line=line and {panel="hint",title=line.title,text=line.text} or nil}
 end
 function sdk.loading.coach_frank(key, text) submit{kind="loading_line",key=key,line=text and {panel="coach_frank",text=text} or nil} end
+function sdk.loading.stat(key, row) submit{kind="loading_line",key=key,line=row and {panel="stat",label=row.label,value=row.value} or nil} end
 function sdk.loading.remove(key) submit{kind="loading_line",key=key} end
 function sdk.loading.retail(shown) submit{kind="loading_retail",shown=shown and true or false} end
 function sdk.loading.hold(key) submit{kind="loading_hold",key=key,held=true} end
 function sdk.loading.release(key) submit{kind="loading_hold",key=key,held=false} end
+function sdk.loading.timing(t) submit{kind="loading_timing",show=t and t.show,outro=t and t.outro} end
 -- Replace one bitmap of a menu movie by its stable id: the movie's import name plus the bitmap
 -- character id (sdk.menus.info().movies.bitmaps lists them), with a PNG in the mod's folder. The
 -- image covers the same fill area as the retail bitmap; newest mod wins; removed when the mod stops.

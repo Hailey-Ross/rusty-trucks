@@ -145,6 +145,11 @@ fn tu3_image_matches_the_documented_tables() {
     // Retail pairs the park labels with these helpers as is (label 0 NEW_PARK, helper MY_PARKS).
     assert_eq!(t.sub_options[0].helpers[0], "ID_CROSSBAR_MY_PARKS_HELPER_TEXT");
     assert_eq!(t.sub_options[4].labels[..2], ["ID_CROSSBAR_TRICK_ANALYZER_ON", "ID_CROSSBAR_MANUAL_METER_ON"]);
+    // Career stats (doc 31 "Loading screen (FE 52)", research b589): 65 rows at 0x83043AE8, 0..46 enabled.
+    assert_eq!(t.addresses["career_stats"], "0x83043AE8");
+    assert_eq!(t.career_stats.len(), 65);
+    assert_eq!((t.career_stats[7].label.as_str(), t.career_stats[13].label.as_str()), ("ID_RECORD_STATS_21", "ID_RECORD_STATS_03"));
+    assert!(t.career_stats[..47].iter().all(|r| r.enabled) && t.career_stats[47..].iter().all(|r| !r.enabled));
     assert_eq!((t.settings_titles[0].as_str(), t.settings_titles[2].as_str(), t.settings_titles[12].as_str()),
         ("ID_GAMESETTINGS_TITLE", "ID_GAMESETTINGS_DIFFICULTY_SETTINGS", "ID_GAMESETTINGS_AUDIO_SETTINGS"));
     // Trick Guide (doc 31 "Trick Guide"): 8 category keys, 58 gesture names, 28 button names.

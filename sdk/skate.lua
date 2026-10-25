@@ -467,6 +467,9 @@ function sdk.loading.hint(key, line) end
 ---@param text string|nil a Coach Frank line; nil removes it
 function sdk.loading.coach_frank(key, text) end
 ---@param key string
+---@param row {label:string, value:string}|nil a Stats panel row next to the career stats; nil removes it
+function sdk.loading.stat(key, row) end
+---@param key string
 function sdk.loading.remove(key) end
 ---@param shown boolean false: only mods' lines on the panels mods give lines for, while this mod is enabled
 function sdk.loading.retail(shown) end
@@ -474,6 +477,9 @@ function sdk.loading.retail(shown) end
 function sdk.loading.hold(key) end
 ---@param key string
 function sdk.loading.release(key) end
+---@param t {show:number|nil, outro:number|nil}|nil seconds a panel shows (1..120, retail 9.0) and its outro takes
+---(0..10, retail 0.5); nil drops this mod's change. The newest mod's timing wins.
+function sdk.loading.timing(t) end
 
 ---@class TriggerVolume
 ---@field id string retail instance id (16 hex digits), custom-map id or "mod:<mod>:<key>"

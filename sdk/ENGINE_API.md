@@ -85,18 +85,25 @@ peer's mods place their own icons.
 takes the mod's hide back. It never shows a minimap the player turned off in Game Settings or one the HUD hides; while
 any mod hides it, it stays hidden. A disabled mod's hide goes with it.
 
-## Loading screen (`sdk.loading`, capability `loading` 1)
+## Loading screen (`sdk.loading`, capability `loading` 2: timing, stat rows and events since 2)
 
 The loading screen between maps (Skate 3's tips loader, FE 52) picks a Coach Frank line or a hint each time it opens.
 `sdk.loading.hint(key, {title=..., text=...})` and `sdk.loading.coach_frank(key, text)` add (or replace, by key) this
-mod's lines; a string id (`ID_HINTS_TITLE_3`) is localised, any other text shows as written. `sdk.loading.remove(key)`
-drops one. `sdk.loading.retail(false)` leaves only mods' lines on a panel mods give lines for (the retail lines stay
+mod's lines; a string id (`ID_HINTS_TITLE_3`) is localised, any other text shows as written.
+`sdk.loading.stat(key, {label=..., value=...})` adds a row to the Stats panel next to the player's career stats (the
+panel shows 5 rows picked at random from them). `sdk.loading.remove(key)` drops one. `sdk.loading.retail(false)` leaves only mods' lines on a panel mods give lines for (the retail lines stay
 on a panel no mod fills); `retail(true)` takes that back. Lines join the next time the screen opens.
 
 `sdk.loading.hold(key)` keeps a running load's screen up after the engine's own loading is done, until
 `sdk.loading.release(key)`, for at most 30 s; it never opens the screen by itself. Lines, the retail switch and holds
 belong to their mod and go when it is disabled. The movie itself is replaced through the menu movie overrides
 (`sdk.menus.movie`). Local display only: in a session each peer shows its own loading screen.
+
+`sdk.loading.timing({show=4.5, outro=0.5})` sets how long a panel shows (1 to 120 s, retail 9.0) and how long its
+outro takes (0 to 10 s, retail 0.5); a missing field keeps the retail value, `timing(nil)` drops the change, the
+newest mod's timing wins and it goes with the mod. Every mod's `on_event` gets `{name="loading_opened", map=...}`
+when the screen comes up and `{name="loading_closed", map=...}` when it has gone (`map` is the map being loaded,
+nil when unknown).
 
 ## Trigger volumes (`sdk.triggers`, capability `triggers` 1)
 
