@@ -23,10 +23,13 @@ use skate_data::GameAssets;
 /// invocation counts, which says nothing about how long the pass took. Set
 /// `SKATE_GPU_TIMING=1` to get `render/**/elapsed_gpu`.
 /// Trace-all: docs/hails-additions/25-perf-diagnostics.md#code-reference-apprs-performancers-frame_timingstatsrs
-/// One fixed schedule on Bevy's single-threaded executor, unless `SKATE_FIXED_EXECUTOR=multi`.
-fn single_fixed_executor(schedule: &mut Schedule) {
-    if std::env::var("SKATE_FIXED_EXECUTOR").as_deref() != Ok("multi") {
-        schedule.set_executor_kind(bevy::ecs::schedule::ExecutorKind::SingleThreaded);
+/// One fixed schedule on Bevy's single-threaded executor, unless Physics Step Threads is Multi
+/// (`graphics_menu::physics_threads_multi`).
+fn fixed_executor(multi: bool) -> impl Fn(&mut Schedule) + Copy {
+    move |schedule: &mut Schedule| {
+        if !multi {
+            schedule.set_executor_kind(bevy::ecs::schedule::ExecutorKind::SingleThreaded);
+        }
     }
 }
 
@@ -103,6 +106,7 @@ pub(crate) fn build(
     skater: SkaterRuntime,
 ) -> App {
     let retail_scene = config.map.as_ref().is_some_and(|map| crate::retail_render::RetailScene::for_map(map));
+    let single_fixed_executor = fixed_executor(crate::graphics_menu::physics_threads_multi(&config.asset_root));
     let mut app = App::new();
     crate::custom_models::register_source(&mut app);
     crate::modding::register_source(&mut app);
@@ -155,8 +159,8 @@ pub(crate) fn build(
         )
             .chain(),
     )
-    // The fixed step on one thread, without the multi-threaded executor's hand-offs; SKATE_FIXED_EXECUTOR=multi (the
-    // launcher's Tools choice) gives Bevy's (docs/hails-additions/25-perf-diagnostics.md#fixed-step-executor).
+    // The fixed step on one thread, without the multi-threaded executor's hand-offs; Physics Step Threads = Multi (Opt-Ins,
+    // the launcher's Tools page, or SKATE_FIXED_EXECUTOR=multi) gives Bevy's (docs/hails-additions/25-perf-diagnostics.md#fixed-step-executor).
     .edit_schedule(FixedFirst, single_fixed_executor)
     .edit_schedule(FixedPreUpdate, single_fixed_executor)
     .edit_schedule(FixedUpdate, single_fixed_executor)

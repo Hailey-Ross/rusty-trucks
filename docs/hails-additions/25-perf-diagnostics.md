@@ -590,6 +590,12 @@ approaching skater") and the camera slow-motion subject gate (doc 21 "Camera slo
   Step -4.7%, p99 -8% (8.96 to 8.24 ms mean); every single run beat every multi run. The schedules added since
   (all fixed schedules) are not measured on the laptop yet.
 
+- **Overlay row and launcher page (2026-10-25, USER-ASKS 336 / 337):** Physics Step Threads is a row of the overlay's
+  Opt-Ins section, saved as `physics_threads_multi` in `settings/graphics.json` and read when the app is built
+  (`graphics_menu::physics_threads_multi`; `SKATE_FIXED_EXECUTOR=multi|single` still overrides it for a run). The
+  launcher's Tools > Opt-ins and settings page writes the same field instead of its own `fixed-executor.txt`, and
+  passes it on as `SKATE_FIXED_EXECUTOR` for older game versions. Applies at the next start.
+
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 
 Status: done, in #52; used in play sessions since 2026-10-17.
