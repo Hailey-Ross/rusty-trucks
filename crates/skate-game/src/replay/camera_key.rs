@@ -157,12 +157,25 @@ pub(crate) struct FreeHeight {
 }
 
 /// Which frame a Follow key's eye rides (data, `sdk.replay.set_camera{follow_eye}`). Retail: its eye object 2 is the
-/// gameplay camera (m346); `Skater` is the skater root, ours before 2026-10-25.
+/// gameplay camera (m346) made upright (m350, doc 37 "The Follow eye frame is upright"); `CameraFull` keeps the
+/// camera's pitch and roll; `Skater` is the skater root, ours before 2026-10-25.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum FollowEye {
     #[default]
     Camera,
+    CameraFull,
     Skater,
+}
+
+/// The camera's side axis flattened onto the ground, up = world up, at the camera's position.
+fn upright(t: Transform) -> Transform {
+    let side = t.rotation * Vec3::X;
+    let flat = Vec3::new(side.x, 0.0, side.z);
+    if flat.length_squared() < 1e-8 {
+        return t;
+    }
+    let x = flat.normalize();
+    t.with_rotation(Quat::from_mat3(&Mat3::from_cols(x, Vec3::Y, x.cross(Vec3::Y))))
 }
 
 /// The frames the keys ride at the cursor: the Follow eye frame and the skater root (retail's look object 4).
@@ -175,7 +188,12 @@ pub(crate) struct Anchors {
 impl Anchors {
     /// `camera` is the recorded gameplay camera at the cursor.
     pub fn new(camera: Transform, root: Transform, follow_eye: FollowEye) -> Self {
-        Self { eye: if follow_eye == FollowEye::Camera { camera } else { root }, root }
+        let eye = match follow_eye {
+            FollowEye::Camera => upright(camera),
+            FollowEye::CameraFull => camera,
+            FollowEye::Skater => root,
+        };
+        Self { eye, root }
     }
 
     fn to_eye_frame(&self, p: Vec3) -> Vec3 {
@@ -287,6 +305,26 @@ mod tests {
 
     fn at(root: Transform) -> Anchors {
         Anchors::new(Transform::from_xyz(0.0, 3.0, 8.0), root, FollowEye::Camera)
+    }
+
+    /// m350: retail's Follow eye frame is the recorded camera made upright (heading only, up = world up), so the
+    /// camera pitching or rolling does not swing a low eye into the ground; `CameraFull` keeps the old full frame.
+    #[test]
+    fn follow_eye_frame_is_the_camera_heading_only() {
+        let root = Transform::from_xyz(10.0, 0.0, 0.0);
+        let level = Transform::from_xyz(10.0, 1.5, 6.0).with_rotation(Quat::from_rotation_y(0.4));
+        let tilted = level.with_rotation(level.rotation * Quat::from_rotation_x(-0.136) * Quat::from_rotation_z(0.05));
+        let anchors = Anchors::new(level, root, FollowEye::Camera);
+        let pitched = level.with_rotation(level.rotation * Quat::from_rotation_x(-0.136));
+        assert!(Anchors::new(pitched, root, FollowEye::Camera).eye.rotation.angle_between(anchors.eye.rotation) < 1e-3);
+        // Roll tips the flattened side axis a little (retail flattens the same row).
+        assert!(Anchors::new(tilted, root, FollowEye::Camera).eye.rotation.angle_between(anchors.eye.rotation) < 0.01);
+        let view = Transform::from_xyz(11.0, 0.3, 5.0);
+        let key = key_from_view(0, &view, &anchors).unwrap();
+        let low = pose(&key, &Anchors::new(tilted, root, FollowEye::Camera)).unwrap().translation;
+        assert!(low.distance(view.translation) < 0.02, "pitch and roll leave the eye where it was placed");
+        let full = pose(&key, &Anchors::new(tilted, root, FollowEye::CameraFull)).unwrap().translation;
+        assert!(full.distance(view.translation) > 0.05, "the full frame swings with the camera");
     }
 
     /// m346: a Follow key's eye rides the recorded gameplay camera (retail's eye object 2), so the skater pitching on a
