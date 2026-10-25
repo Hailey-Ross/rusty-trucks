@@ -7,6 +7,7 @@ pub mod chase;
 pub mod chase_alert;
 pub mod conversation;
 pub mod perception;
+pub mod avoid;
 pub mod takedown;
 pub mod choice;
 pub mod colorize;

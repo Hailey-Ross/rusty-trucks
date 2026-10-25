@@ -142,7 +142,8 @@ pub mod names {
         // motiongraph_taunt.
         "Taunt",
         // The plugin states (`super::plugin_motion`): sit, ATM, vending machine, water fountain, newspaper box.
-        "Stand2Sit", "SitIdleCyc", "Sit2Stand", "SitAvoidFwd", "ATMInsertCard", "ATMMakeSelection", "ATMCollectMoney", "ATMCollectCard",
+        "Stand2Sit", "SitIdleCyc", "Sit2Stand", "SitAvoidFwd", "SitAvoidLeft", "SitAvoidBack", "SitAvoidSmallFront",
+        "SitAvoidSmallLeft", "SitAvoidSmallBack", "ATMInsertCard", "ATMMakeSelection", "ATMCollectMoney", "ATMCollectCard",
         "VendInsert", "VendSelect", "VendCollect", "WaterFountainInto", "WaterFountainCyc", "WaterFountainOut", "NewspaperCollect",
         // The light hand prop throw (`super::hand_prop::light_throw_clip`).
         "HandPropThrowLightForward", "HandPropThrowLightL45", "HandPropThrowLightL90", "HandPropThrowLightR180",
@@ -454,6 +455,11 @@ impl PedAnimPlayer {
                 r.ground_left = 0.0;
             }
         }
+    }
+
+    /// The running reaction's steps from the current one on (a clip that returns to it plays these after).
+    pub fn remaining_steps(&self) -> Vec<super::skater_contact::ReactionStep> {
+        self.reaction.as_ref().map(|r| r.steps[r.index..].to_vec()).unwrap_or_default()
     }
 
     /// Whether a reaction (or plugin sequence) is running.
