@@ -2395,7 +2395,7 @@ Each owner is driven by its game object's state, so the owners need that state b
   - The 13 world banks join the decoded set.
   - The manifest gets `world_tuning` (the `aud_traffic_engine` records and the ped footstep fields).
   - `speech/livingworld.json` holds the clip index (2.3 MB).
-  - Decoding the speech is opt-in with `SKATE_SETUP_SPEECH=1`: about 2.4 GB of PCM for the free-roam events.
+  - Decoding the speech is on by default since 2026-10-25 (USER-ASKS 338; Ped Speech, `SKATE_SETUP_SPEECH=0` skips it): about 2.4 GB of PCM for the free-roam events.
   - Dev install tools: `stage_extra_banks.py --tag world …` and the local tool `stage_world_audio.py`.
 
 **Verification.**

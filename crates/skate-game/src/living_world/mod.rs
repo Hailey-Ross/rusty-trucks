@@ -193,7 +193,9 @@ impl Default for LivingWorldSettings {
             // The zombie cheat; no cheat screen yet: `SKATE_ZOMBIE=1` or the mod value `zombie`.
             zombie: std::env::var("SKATE_ZOMBIE").ok().as_deref() == Some("1"),
             dmo_stream: Default::default(),
-            user_opt_ins: Default::default(),
+            // The engine default before the player's saved choice arrives (graphics_menu): the run's variables, as
+            // `npc_simulated` (the saved default, NPC Skater Physics on, is `OptIns::default`).
+            user_opt_ins: opt_ins::OptIns::from_env(),
             net_role: NetRole::Standalone,
             seed: 0,
             debug: false,

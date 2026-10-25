@@ -1333,7 +1333,7 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
         (output/'speech').mkdir(parents=True, exist_ok=True)
         (output/'speech'/'livingworld.json').write_text(json.dumps(index), encoding='utf-8')
         entry = {'index': 'speech/livingworld.json', 'audio': None}
-        if speech_requested():  # SKATE_SETUP_SPEECH=1: ~2.4 GB of PCM
+        if speech_requested():  # Ped Speech on (the default; SKATE_SETUP_SPEECH=0 skips it): ~2.4 GB of PCM
             report('Decoding world speech')
             decode_speech(speech, index, output/'speech'/'livingworld', work/'speech', vgmstream, _decode, log)
             entry['audio'] = 'speech/livingworld'
@@ -1346,7 +1346,7 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
         (output/'speech').mkdir(parents=True, exist_ok=True)
         (output/'speech'/'maincast.json').write_text(json.dumps(index), encoding='utf-8')
         entry = {'index': 'speech/maincast.json', 'audio': None}
-        if speech_requested():  # SKATE_SETUP_SPEECH=1: ~0.95 GB more
+        if speech_requested():  # Ped Speech on (the default; SKATE_SETUP_SPEECH=0 skips it): ~0.95 GB more
             report('Decoding main-cast speech')
             decode_speech(main_cast, index, output/'speech'/'maincast', work/'speech_maincast', vgmstream, _decode, log,
                           events=MAIN_CAST_EVENTS)
@@ -1360,7 +1360,7 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
         (output/'speech').mkdir(parents=True, exist_ok=True)
         (output/'speech'/'announcer.json').write_text(json.dumps(index), encoding='utf-8')
         entry = {'index': 'speech/announcer.json', 'audio': None}
-        if speech_requested():  # SKATE_SETUP_SPEECH=1: ~41 MB more (the crash line)
+        if speech_requested():  # Ped Speech on (the default; SKATE_SETUP_SPEECH=0 skips it): ~41 MB more (the crash line)
             report('Decoding announcer speech')
             decode_speech(announcer, index, output/'speech'/'announcer', work/'speech_announcer', vgmstream, _decode, log,
                           events=ANNOUNCER_EVENTS)

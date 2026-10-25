@@ -312,7 +312,7 @@ New in this pass:
 
 **Data and failure modes.**
 - The index and rules are part of the normal setup.
-- The takes need the opt-in decode (`SKATE_SETUP_SPEECH=1`, about 2.4 GB). The dev install now has all 40
+- The takes need the speech decode (on by default since 2026-10-25, USER-ASKS 338; `SKATE_SETUP_SPEECH=0` skips it, about 2.4 GB). The dev install now has all 40
   free-roam events: 13,322 takes, 2.3 GB.
 - A take is read from disk when its line starts, as retail streams it. The last 24 stay loaded.
 - Without the index, speech is off and the log says so once.

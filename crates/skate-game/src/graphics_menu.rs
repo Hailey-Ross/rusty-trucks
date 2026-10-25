@@ -69,7 +69,13 @@ struct GraphicsSettings {
     /// true = Bevy's multi-threaded scheduler. Read at start-up (`physics_threads_multi`); the launcher's Tools page
     /// writes the same field.
     physics_threads_multi: bool,
+    /// Which default changes this file has been through (`DEFAULTS_VERSION`; 0 in files from before the field); files
+    /// from before 1 get NPC Skater Physics switched on once, so a later "off" sticks.
+    #[serde(default)]
+    defaults_version: u32,
 }
+/// 1 (2026-10-25, USER-ASKS 338): NPC Skater Physics on by default.
+const DEFAULTS_VERSION: u32 = 1;
 impl Default for GraphicsSettings {
     fn default() -> Self {
         Self {
@@ -89,6 +95,7 @@ impl Default for GraphicsSettings {
             better_object_mover: false,
             debug_menus: false,
             physics_threads_multi: false,
+            defaults_version: DEFAULTS_VERSION,
         }
     }
 }
@@ -105,6 +112,17 @@ pub(crate) fn physics_threads_multi(asset_root: &std::path::Path) -> bool {
     std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<GraphicsSettings>(&b).ok()).is_some_and(|s| s.physics_threads_multi)
 }
 impl GraphicsSettings {
+    /// A file saved before a default changed takes the new default once; true when it changed (to be saved).
+    fn migrated(&mut self) -> bool {
+        if self.defaults_version >= DEFAULTS_VERSION {
+            return false;
+        }
+        if self.defaults_version < 1 {
+            self.opt_ins.npc_physics = true;
+        }
+        self.defaults_version = DEFAULTS_VERSION;
+        true
+    }
     fn validated(mut self) -> Self {
         if !skate_core::living_world::DrawDistance::MENU_STEPS.contains(&self.npc_draw_distance) {
             self.npc_draw_distance = skate_core::living_world::DrawDistance::RETAIL;
@@ -670,7 +688,7 @@ fn setup(
         .parent()
         .unwrap_or(&config.asset_root)
         .join("settings/graphics.json");
-    let settings = match std::fs::read(&path) {
+    let mut settings = match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice::<GraphicsSettings>(&bytes).unwrap_or_else(|e| {
             warn!("Graphics settings: {e}");
             GraphicsSettings::default()
@@ -678,6 +696,14 @@ fn setup(
         Err(_) => GraphicsSettings::default(),
     }
     .validated();
+    if path.is_file() && settings.migrated() {
+        info!("GRAPHICS_SETTINGS defaults updated to version {DEFAULTS_VERSION} (NPC Skater Physics on)");
+        if let Ok(bytes) = serde_json::to_vec_pretty(&settings) {
+            if let Err(e) = std::fs::write(&path, bytes) {
+                warn!("Graphics settings: {e}");
+            }
+        }
+    }
     // The session log shows what a run started with (later changes log as PC_OVERLAY).
     info!(
         "GRAPHICS_SETTINGS {}x{} scale {}% framerate cap {} npc draw distance {:.2} frame stats {}",
@@ -1832,6 +1858,18 @@ mod tests {
     }
     /// Physics Step Threads: single by default and for settings files written before the row; the saved choice is read
     /// back at start-up.
+    /// USER-ASKS 338: NPC Skater Physics is on by default; a file from before the change gets it once, a later "off"
+    /// stays off.
+    #[test]
+    fn npc_physics_defaults_on_once_and_off_sticks() {
+        assert!(GraphicsSettings::default().opt_ins.npc_physics);
+        let mut old: GraphicsSettings = serde_json::from_str(r#"{"opt_ins":{"zombie":false,"npc_physics":false,"visualize_grabs":false}}"#).unwrap();
+        assert!(old.migrated() && old.opt_ins.npc_physics && old.defaults_version == DEFAULTS_VERSION);
+        old.opt_ins.npc_physics = false;
+        let again: GraphicsSettings = serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut again = again;
+        assert!(!again.migrated() && !again.opt_ins.npc_physics);
+    }
     #[test]
     fn physics_threads_default_single_and_load_saved() {
         let old: GraphicsSettings = serde_json::from_str(r#"{"width":1920,"height":1080}"#).unwrap();
@@ -1878,7 +1916,7 @@ mod tests {
         let settings: GraphicsSettings =
             serde_json::from_str(r#"{"width":0,"height":999999,"scale":0,"fps":1}"#)
                 .unwrap();
-        assert_eq!(settings.validated(), GraphicsSettings::default());
+        assert_eq!(settings.validated(), GraphicsSettings { defaults_version: 0, ..GraphicsSettings::default() });
     }
     #[test]
     fn scaled_target_and_cycle_boundaries() {

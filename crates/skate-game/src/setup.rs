@@ -319,11 +319,11 @@ fn run_release_setup(setup: &Path, base: &Path, exe: &Path, existing: Option<&Pa
     let mut command = Command::new(setup);
     command.arg("--base").arg(base).arg("--game-exe").arg(exe);
     if existing.is_some() { command.arg("--refresh"); }
-    // The PC overlay's Ped Speech row (saved in the install's audio settings): the opt-in speech decode.
-    if existing.is_some_and(crate::game_audio::decode_speech_saved) {
-        eprintln!("SETUP: speech decode asked for (Ped Speech is on)");
-        command.env("SKATE_SETUP_SPEECH", "1");
-    }
+    // The PC overlay's Ped Speech row (saved in the install's audio settings; on by default): setup decodes the speech
+    // unless the player switched it off.
+    let speech = existing.is_none_or(crate::game_audio::decode_speech_saved);
+    eprintln!("SETUP: speech decode {}", if speech { "on (Ped Speech is on)" } else { "off (Ped Speech is off)" });
+    command.env("SKATE_SETUP_SPEECH", if speech { "1" } else { "0" });
     #[cfg(windows)] {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
