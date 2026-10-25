@@ -23,9 +23,9 @@ use skate_data::GameAssets;
 /// invocation counts, which says nothing about how long the pass took. Set
 /// `SKATE_GPU_TIMING=1` to get `render/**/elapsed_gpu`.
 /// Trace-all: docs/hails-additions/25-perf-diagnostics.md#code-reference-apprs-performancers-frame_timingstatsrs
-/// `SKATE_FIXED_EXECUTOR=single`: one fixed schedule on Bevy's single-threaded executor.
+/// One fixed schedule on Bevy's single-threaded executor, unless `SKATE_FIXED_EXECUTOR=multi`.
 fn single_fixed_executor(schedule: &mut Schedule) {
-    if std::env::var("SKATE_FIXED_EXECUTOR").as_deref() == Ok("single") {
+    if std::env::var("SKATE_FIXED_EXECUTOR").as_deref() != Ok("multi") {
         schedule.set_executor_kind(bevy::ecs::schedule::ExecutorKind::SingleThreaded);
     }
 }
@@ -155,8 +155,8 @@ pub(crate) fn build(
         )
             .chain(),
     )
-    // SKATE_FIXED_EXECUTOR=single (the launcher's Tools choice): the fixed step on one thread, without the multi-threaded
-    // executor's hand-offs (docs/hails-additions/25-perf-diagnostics.md#fixed-step-executor). Default: Bevy's.
+    // The fixed step on one thread, without the multi-threaded executor's hand-offs; SKATE_FIXED_EXECUTOR=multi (the
+    // launcher's Tools choice) gives Bevy's (docs/hails-additions/25-perf-diagnostics.md#fixed-step-executor).
     .edit_schedule(FixedFirst, single_fixed_executor)
     .edit_schedule(FixedPreUpdate, single_fixed_executor)
     .edit_schedule(FixedUpdate, single_fixed_executor)

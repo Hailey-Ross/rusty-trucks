@@ -573,10 +573,11 @@ approaching skater") and the camera slow-motion subject gate (doc 21 "Camera slo
   step 2.48 ms = systems busy 1.80 ms + gaps 0.68 ms, cpu 1.84 ms. The systems barely overlap (cpu about equal to
   busy), and the gaps are the multi-threaded executor handing systems between threads plus its sync points. Largest
   systems: `npc_sim::simulate` 0.77 ms, `physics::advance` 0.69 ms per step.
-- **Change:** `SKATE_FIXED_EXECUTOR=single` runs the fixed schedules (`FixedFirst`, `FixedPreUpdate`, `FixedUpdate`,
-  `FixedPostUpdate`, `FixedLast`) on Bevy's single-threaded executor (`app.rs` `single_fixed_executor`). Default
-  stays Bevy's multi-threaded one (user 2026-10-24: "multi threaded should be default"); players choose in the Steam
-  launcher, Tools > Physics step threads (saved in `.local/steam-launcher/fixed-executor.txt`, passed to the game).
+- **Change:** the fixed schedules (`FixedFirst`, `FixedPreUpdate`, `FixedUpdate`, `FixedPostUpdate`, `FixedLast`) run
+  on Bevy's single-threaded executor (`app.rs` `single_fixed_executor`); `SKATE_FIXED_EXECUTOR=multi` gives Bevy's
+  multi-threaded one. It started as an opt-in with multi as the default; after the desktop and laptop numbers below the
+  user chose "single threaded default" (2026-10-25). Players switch in the Steam launcher, Tools > Physics step
+  threads (saved in `.local/steam-launcher/fixed-executor.txt`, passed to the game).
 - **Same outcome:** the single-threaded executor runs the same systems with the same order constraints and sync
   points; systems with no order between them run in one fixed order, which is one of the orders the multi-threaded
   executor already picks from frame to frame. Systems that use parallel iteration inside still do.
