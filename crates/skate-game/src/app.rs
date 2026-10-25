@@ -148,6 +148,13 @@ pub(crate) fn build(
         )
             .chain(),
     )
+    // SKATE_FIXED_EXECUTOR=single (the launcher's Tools choice): the fixed step on one thread, without the multi-threaded
+    // executor's hand-offs (docs/hails-additions/25-perf-diagnostics.md#fixed-step-executor). Default: Bevy's.
+    .edit_schedule(FixedUpdate, |schedule| {
+        if std::env::var("SKATE_FIXED_EXECUTOR").as_deref() == Ok("single") {
+            schedule.set_executor_kind(bevy::ecs::schedule::ExecutorKind::SingleThreaded);
+        }
+    })
     .configure_sets(
         Update,
         (
