@@ -75,3 +75,111 @@ impl TipsLoaderHost {
         }))
     }
 }
+
+/// How long a mod's hold may keep the loading screen up after a load's own work is done (so a mod never leaves it
+/// stuck; `StartupLoading`'s cap is the same idea).
+pub const MAX_MOD_HOLD_SECS: f32 = 30.0;
+
+/// Mods' loading screen lines and holds (`sdk.loading`), cleared with the mod.
+#[derive(bevy::prelude::Resource, Default)]
+pub(crate) struct LoadingMods {
+    lines: Vec<(String, String, skate_mods::menus::LoadingLine)>,
+    retail_hidden: std::collections::BTreeSet<String>,
+    holds: std::collections::BTreeSet<(String, String)>,
+}
+
+impl LoadingMods {
+    pub(crate) fn set_line(&mut self, owner: &str, key: &str, line: Option<skate_mods::menus::LoadingLine>) {
+        match (self.lines.iter_mut().find(|(o, k, _)| o == owner && k == key), line) {
+            (Some(slot), Some(line)) => slot.2 = line,
+            (None, Some(line)) => self.lines.push((owner.to_owned(), key.to_owned(), line)),
+            (_, None) => self.lines.retain(|(o, k, _)| !(o == owner && k == key)),
+        }
+    }
+
+    pub(crate) fn set_retail(&mut self, owner: &str, shown: bool) {
+        if shown {
+            self.retail_hidden.remove(owner);
+        } else {
+            self.retail_hidden.insert(owner.to_owned());
+        }
+    }
+
+    pub(crate) fn set_hold(&mut self, owner: &str, key: &str, held: bool) {
+        let slot = (owner.to_owned(), key.to_owned());
+        if held {
+            self.holds.insert(slot);
+        } else {
+            self.holds.remove(&slot);
+        }
+    }
+
+    /// Drop one mod's lines and holds (None: every mod's).
+    pub(crate) fn clear_owner(&mut self, owner: Option<&str>) {
+        let keep = |o: &String| owner.is_some_and(|owner| o != owner);
+        self.lines.retain(|(o, _, _)| keep(o));
+        self.retail_hidden.retain(|o| keep(o));
+        self.holds.retain(|(o, _)| keep(o));
+    }
+
+    /// A mod hold keeps the screen up `after` seconds past the load's own work, up to the cap.
+    pub(crate) fn holding(&self, after: f32) -> bool {
+        !self.holds.is_empty() && after < MAX_MOD_HOLD_SECS
+    }
+
+    /// The lines the screen picks from: the retail ones (unless a mod hides them and mods give lines of that panel),
+    /// then the mods' in the order they were added.
+    pub(crate) fn lines(&self, retail: &skate_data::tips_loader::TipsLines) -> skate_data::tips_loader::TipsLines {
+        use skate_mods::menus::LoadingLine;
+        let hints: Vec<(String, String)> = self.lines.iter().filter_map(|(_, _, l)| match l {
+            LoadingLine::Hint { title, text } => Some((title.clone(), text.clone())),
+            LoadingLine::CoachFrank { .. } => None,
+        }).collect();
+        let coach: Vec<String> = self.lines.iter().filter_map(|(_, _, l)| match l {
+            LoadingLine::CoachFrank { text } => Some(text.clone()),
+            LoadingLine::Hint { .. } => None,
+        }).collect();
+        let hide = !self.retail_hidden.is_empty();
+        let mut out = skate_data::tips_loader::TipsLines::default();
+        if !(hide && !coach.is_empty()) {
+            out.coach.extend(retail.coach.iter().cloned());
+        }
+        if !(hide && !hints.is_empty()) {
+            out.hints.extend(retail.hints.iter().cloned());
+        }
+        out.coach.extend(coach);
+        out.hints.extend(hints);
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skate_mods::menus::LoadingLine;
+
+    #[test]
+    fn mod_lines_join_the_retail_ones_and_go_with_the_mod() {
+        let retail = skate_data::tips_loader::TipsLines { coach: vec!["ID_TIPS_COACHFRANK_1".into()], hints: vec![("ID_HINTS_TITLE_1".into(), "ID_HINTS_TEXT_1".into())] };
+        let mut mods = LoadingMods::default();
+        mods.set_line("a", "tip", Some(LoadingLine::Hint { title: "#Tip".into(), text: "#Ollie".into() }));
+        mods.set_line("b", "frank", Some(LoadingLine::CoachFrank { text: "#Push".into() }));
+        let lines = mods.lines(&retail);
+        assert_eq!(lines.hints.len(), 2);
+        assert_eq!(lines.coach, ["ID_TIPS_COACHFRANK_1", "#Push"]);
+        // Hiding the retail lines only drops a panel the mods give lines for.
+        mods.set_retail("a", false);
+        let lines = mods.lines(&retail);
+        assert_eq!(lines.hints, [("#Tip".to_owned(), "#Ollie".to_owned())]);
+        assert_eq!(lines.coach, ["#Push"]);
+        mods.set_hold("a", "bank", true);
+        assert!(mods.holding(0.0) && !mods.holding(MAX_MOD_HOLD_SECS));
+        mods.clear_owner(Some("a"));
+        let lines = mods.lines(&retail);
+        assert_eq!(lines.hints.len(), 1);
+        assert_eq!(lines.coach.len(), 2);
+        assert!(!mods.holding(0.0));
+        mods.clear_owner(None);
+        assert_eq!(mods.lines(&retail), retail);
+    }
+}

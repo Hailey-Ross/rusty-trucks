@@ -1641,9 +1641,16 @@ fn apply_one(
             let mut credits = world.get_resource_mut::<crate::extras_host::CreditsMods>().ok_or("menus are not ready")?;
             credits.set(id, &key, lines);
         }
+        Command::LoadingLine { key, line } => loading_mods(world)?.set_line(id, &key, line),
+        Command::LoadingRetail { shown } => loading_mods(world)?.set_retail(id, shown),
+        Command::LoadingHold { key, held } => loading_mods(world)?.set_hold(id, &key, held),
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
     Ok(())
+}
+
+fn loading_mods(world: &mut World) -> Result<Mut<'_, crate::tips_loader_host::LoadingMods>, String> {
+    world.get_resource_mut::<crate::tips_loader_host::LoadingMods>().ok_or_else(|| "menus are not ready".into())
 }
 
 /// The runtime audio API (`game_audio::mod_audio`) for a mod command.

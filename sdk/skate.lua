@@ -459,6 +459,22 @@ function sdk.minimap.remove(key) end
 ---@param shown boolean false hides the HUD minimap while this mod is enabled
 function sdk.minimap.show(shown) end
 
+sdk.loading = {}
+---@param key string
+---@param line {title:string, text:string}|nil a hint panel line (string ids are localised); nil removes it
+function sdk.loading.hint(key, line) end
+---@param key string
+---@param text string|nil a Coach Frank line; nil removes it
+function sdk.loading.coach_frank(key, text) end
+---@param key string
+function sdk.loading.remove(key) end
+---@param shown boolean false: only mods' lines on the panels mods give lines for, while this mod is enabled
+function sdk.loading.retail(shown) end
+---@param key string keeps a running load's loading screen up until released (at most 30 s past the load)
+function sdk.loading.hold(key) end
+---@param key string
+function sdk.loading.release(key) end
+
 ---@class TriggerVolume
 ---@field id string retail instance id (16 hex digits), custom-map id or "mod:<mod>:<key>"
 ---@field name string short name, e.g. "tut_sksc_reset_vol01"

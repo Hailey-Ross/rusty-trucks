@@ -85,6 +85,19 @@ peer's mods place their own icons.
 takes the mod's hide back. It never shows a minimap the player turned off in Game Settings or one the HUD hides; while
 any mod hides it, it stays hidden. A disabled mod's hide goes with it.
 
+## Loading screen (`sdk.loading`, capability `loading` 1)
+
+The loading screen between maps (Skate 3's tips loader, FE 52) picks a Coach Frank line or a hint each time it opens.
+`sdk.loading.hint(key, {title=..., text=...})` and `sdk.loading.coach_frank(key, text)` add (or replace, by key) this
+mod's lines; a string id (`ID_HINTS_TITLE_3`) is localised, any other text shows as written. `sdk.loading.remove(key)`
+drops one. `sdk.loading.retail(false)` leaves only mods' lines on a panel mods give lines for (the retail lines stay
+on a panel no mod fills); `retail(true)` takes that back. Lines join the next time the screen opens.
+
+`sdk.loading.hold(key)` keeps a running load's screen up after the engine's own loading is done, until
+`sdk.loading.release(key)`, for at most 30 s; it never opens the screen by itself. Lines, the retail switch and holds
+belong to their mod and go when it is disabled. The movie itself is replaced through the menu movie overrides
+(`sdk.menus.movie`). Local display only: in a session each peer shows its own loading screen.
+
 ## Trigger volumes (`sdk.triggers`, capability `triggers` 1)
 
 The engine tracks the map's named trigger volumes the way retail Skate 3 does:
@@ -103,12 +116,12 @@ SkateSchool's map-wide `tut_sksc_reset_vol01` is `2c7017060025128f`). Custom map
 carry their own in a `<Map>.triggers` sidecar or a `TVOL` extension (same JSON;
 see `docs/hails-additions/24-trigger-volumes.md`).
 
-- `sdk.triggers.list()` — every volume: `{id, name, full_name, group, source="map"|"mod",
+- `sdk.triggers.list()`: every volume: `{id, name, full_name, group, source="map"|"mod",
   owner, instance_id, link_guid, center, axes, rotation, half_extents, fatness,
   aabb_min, aabb_max, enabled, inside={bodies}}`. `sdk.triggers.get(id_or_name)`.
-- `sdk.triggers.inside(body)` — volume ids the body (default `"player"`) is in.
+- `sdk.triggers.inside(body)`: volume ids the body (default `"player"`) is in.
 - `sdk.triggers.box(key, {center={x,y,z}, half_extents={x,y,z}, rotation={x,y,z,w},
-  name="...", group="challenge"})` — a mod volume with id `mod:<mod>:<key>`
+  name="...", group="challenge"})`: a mod volume with id `mod:<mod>:<key>`
   (max 64 per mod); `sdk.triggers.remove(key)`.
 - `sdk.triggers.set_enabled(id, false)` switches a map volume off for everyone
   until the same mod switches it on or stops.

@@ -2003,9 +2003,16 @@ pass and recomp timing run), `.local/research/b581-loading-screen-port.md` (port
     it is up exactly while the loading screen is (26.5 to 31.3 s of the run). Ours now calls `Load_EnableTag(true)`
     when FE 52 opens and `Load_HideTag()` when it closes (`retail_menu_stage::load_tag`); a menu set without the
     layer runs without it. Retail's own caller is the main table native EnableLoadingTag `825A9EC0` (not traced).
-- **Moddability (next):** hint / coach lists and panel timing from data with mod overrides, a mod hold of the loading
-  screen (like `StartupLoading::hold`), cleanup on mod disable; the movie is replaceable through the menu movie
-  overrides.
+- **Moddability (2026-10-24, USER-ASKS 326):** `sdk.loading` (capability `loading` 1, `sdk/ENGINE_API.md` "Loading
+  screen"): a mod's hint and Coach Frank lines by key (string ids localised, other text as written), joined to the
+  retail lines when the screen opens; `retail(false)` leaves only mods' lines on a panel mods fill; `hold` / `release`
+  keep a running load's screen up past the engine's own work, at most 30 s (`tips_loader_host::LoadingMods`,
+  `MAX_MOD_HOLD_SECS`); all of it goes with the mod (`retail_menus::clear_owner`). The movie is replaceable through
+  the menu movie overrides. Not done: the panel timings (9.0 / 0.5 s) as mod values, open / close events for mods.
+- **Startup: not shown, by design.** Retail's boot load uses the same screen; ours shows its native splash for the
+  engine start (before mods, config and the menu set load) and opens the game window only when the first world is
+  playable (doc 31 "Startup loading screen"), so there is no load left for the tips loader to cover (b581 3c
+  option (i)). NOT RETAIL (ours).
 
 ## Startup loading screen (2026-10-15)
 
