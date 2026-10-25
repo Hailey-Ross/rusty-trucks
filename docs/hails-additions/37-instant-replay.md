@@ -511,8 +511,8 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   interleaved 16-bit stereo sound, hardware encoders allowed) and the fallback, PNG frames + a WAV in `<name>_frames`.
   Log `REPLAY_EXPORT` when the fallback is taken.
 - Verified: `exports_frames_and_sound_to_a_file` wrote a real 2 s .mp4 (1.19 MB) with Windows' encoder on this PC, no
-  window. Not yet built in the release (/MT, static) link setup.
-- Next: render the clip frame by frame (replay cursor at the export rate, the world image read back from
+  window. Built in the release (/MT, static) link setup since the replay merged into `hails-additions`.
+- Next (done, sections below): render the clip frame by frame (replay cursor at the export rate, the world image read back from
   `SceneTarget`), the sound rendered offline from the replay audio, the save dialog, and the Finished menu with a
   "Save to PC" row (needs the game window to test: not while the user plays).
 

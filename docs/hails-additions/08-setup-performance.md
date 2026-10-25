@@ -260,9 +260,8 @@ processes, then one serial loop converting the 480 models; the roster splits ove
 `SKATE_SETUP_CUSTOMISER_WORKERS` on the unchanged pipeline (28-CPU desktop, default 5): 5 workers 84.7 / 86.3 s, 8
 workers 77.6 s, 10 workers 79.4 s. A default of 40% of the budget (8 here) then measured 86.9 / 81.1 s against 83.7 /
 89.3 s for the unchanged pipeline: within the noise, so it was not landed (output identical in both runs: the 41
-differing files are the run-to-run set). The laptop measures the knob on slower hardware (second-pc-testing.md
-"Setup speed test"). Next candidate: the library's serial model loop (parallel over the workers; it changes the
-customiser fingerprint, so every install redoes the customiser once).
+differing files are the run-to-run set). The laptop result is below ("Customiser worker share on two machines"); the library's serial model loop went to
+the workers next (it changes the customiser fingerprint, so every install redoes the customiser once).
 
 **Customiser library over the workers (2026-10-24, USER-ASKS 322):**
 - **Where the time went** (timing probes in a bench copy only): the GLB conversion of the 480 models was about 12 s
@@ -338,7 +337,7 @@ customiser fingerprint, so every install redoes the customiser once).
 - The laptop's 964fb5bc (153 s) looked slower than its morning 5b16a77b (137 s), as if the library on the workers
   (ddf2231a) slowed its maps. Not so: the steps before the maps, which run none of that code, took 7.7 to 8.2 s in
   the afternoon against 5.8 s in the morning, so the laptop itself ran about 35% slower. A same-session test of all
-  three versions is queued (second-pc-testing.md "Same-session version test").
+  three versions (below) settled it.
 - **Desktop pinned to 16 CPUs** (8 P-cores with hyperthreading, `.local/perf-bench/with_affinity.py 0xFFFF`) and
   `SKATE_SETUP_CORES=12` (the laptop's budget), two runs each:
 
@@ -371,9 +370,9 @@ customiser fingerprint, so every install redoes the customiser once).
 
 The stream change touches a file in the shared parser set, changing the
 `character`, `environment` and `maps` fingerprints without changing outputs
-(proven above); old→new pairs are in `pipeline-equivalence.json`. The
-customiser fingerprint and stage versions are unchanged. An installation built
-from the committed code rebuilds nothing.
+(proven above); old→new pairs are in `pipeline-equivalence.json`. For this
+change the customiser fingerprint and stage versions are unchanged, and an installation built
+from the committed code rebuilds nothing (later passes did change the customiser fingerprint).
 
 ## Full setup result
 
@@ -396,7 +395,7 @@ Full fresh setup, same machine and source, before → after:
   of 126.5 s alone (three map workers compete for disk and memory bandwidth,
   boost clocks drop, and the customiser thread shares the GIL with the setup
   main thread). It is now the critical path; the roster (89.6 s) and library
-  are single-threaded loops and the next candidates.
+  were single-threaded loops then (both run on worker processes now: "Export speed pass" above).
 
 ## Files
 

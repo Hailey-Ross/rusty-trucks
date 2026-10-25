@@ -1,8 +1,10 @@
 # 40. Map block decode: exact-size buffers (upstream PR #66)
 
 Part of PR #52 (an optimisation item the user added 2026-10-21, USER-ASKS 180). The change is JohnUzoka's upstream PR
-[#66](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/66), taken unchanged with his authorship (3 commits);
-#52 only adds a regression check on top, so either PR can be merged first.
+[#66](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/66), taken unchanged with their authorship (3 commits);
+#52 only adds a regression check on top. #66 has since grown to six commits (its first three rebased, the second
+revised), so merging it first now conflicts with #52 in five files: #52 waits for #66 to merge, then merges main in
+(user 2026-10-25: do not pull its new commits; checked with `git merge-tree` against `pull/66/head` 7d707e8c).
 
 ## Problem
 
@@ -16,10 +18,10 @@ buffer alive during each copy. On memory-constrained targets (JohnUzoka's Switch
 1. The doubling is on upstream/main, our main and hails-additions alike (`StoredBlock::decode`).
 2. #66's first commit reserved the exact size in `decode`, but the v9+ geometry merge then did
    `bytes = stored(vertices); bytes.extend(stored(indices)); bytes.extend(stored(collision))`, so the first `extend`
-   regrew the exact vertex buffer to about twice its size: the peak only moved. We said so on #66; his follow-up
+   regrew the exact vertex buffer to about twice its size: the peak only moved. We said so on #66; their follow-up
    commits fix it.
 3. An up-front reservation of a block's declared size lets a tiny bad file force a huge reservation before failing;
-   his last commit rejects such sizes first.
+   their last commit rejects such sizes first.
 
 ## Change (JohnUzoka, `crates/skate-data/src/skate_map.rs`, `skate_map/storage_v15.rs`, `tests/skate_map.rs`)
 
@@ -33,12 +35,12 @@ buffer alive during each copy. On memory-constrained targets (JohnUzoka's Switch
   the RGBA row filter checks its row bytes before allocating.
 
 Ours (on top): the ignored test `installed_map_geometry_fingerprints` (below). When the commits were taken, both
-branches had a `#[cfg(test)] mod tests` at the end of `skate_map.rs`; his tests and `stored()` helper were merged into
+branches had a `#[cfg(test)] mod tests` at the end of `skate_map.rs`; their tests and `stored()` helper were merged into
 the existing module (otherwise E0428).
 
 ## Verification
 
-- Tests (`skate-data`, his): `blocks_decode_into_exactly_their_declared_size`,
+- Tests (`skate-data`, theirs): `blocks_decode_into_exactly_their_declared_size`,
   `a_block_that_decodes_longer_fails_without_growing_its_buffer`, `geometry_blocks_decode_into_one_buffer_reserved_once`,
   `index_and_collision_transforms_reserve_their_exact_size`, `filtered_rows_are_checked_before_the_image_is_allocated`,
   `a_tiny_block_declaring_1_gib_fails_without_reserving_it`, `rejects_blocks_declaring_more_than_their_bytes_can_hold`;

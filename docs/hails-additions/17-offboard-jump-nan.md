@@ -1,4 +1,4 @@
-# 17 — Offboard jump crash: "Nonfinite BipedAir launch packet" (upstream issue #10)
+# 17: Offboard jump crash: "Nonfinite BipedAir launch packet" (upstream issue #10)
 
 Branch: `fix/offboard-jump-nan` (from `main` 4488651). Upstream issue:
 SK8-ENGINE/skate-3-rust-engine#10, reported by @NoahVl with a first-divergence trace.

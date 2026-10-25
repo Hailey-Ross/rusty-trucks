@@ -1,4 +1,4 @@
-# 23 — Input: controller identity and gameplay action IDs (addition to PR #24)
+# 23: Input: controller identity and gameplay action IDs (addition to PR #24)
 
 Branch: `feature/input-controllers`, one commit on top of `input/sdl3-gamepad-backend` (upstream PR #24, the SDL3
 gamepad backend). It extends #24 instead of opening another input PR. Todos: `controller-type-detection`,
