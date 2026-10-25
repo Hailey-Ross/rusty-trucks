@@ -535,8 +535,17 @@ approaching skater") and the camera slow-motion subject gate (doc 21 "Camera slo
   No error or panic line in any run; every switch committed. The ped, menu and camera systems never reach a
   `SYSTEM_TIMING` line's top 16 after start-up in either build except `retail_menu_stage::update` (0.005 to 0.009 ms a frame in both).
   The max is the switch frame and varies run to run in both builds. Same outcome: no measurable cost.
-- **Laptop:** the same test in `second-pc-testing.md` "Engine frame-time test" (the laptop wakes from its screensaver
-  first with `keep-awake.ps1`); result below when it arrives.
+- **Laptop** (Ryzen 9 8945HS, 16 threads, Radeon 780M; `second-pc-testing.md` "Engine frame-time test", screensaver
+  ended first; before = 2c00e994, after = eb77643a, the same engine change):
+
+  | run | median ms | p90 ms | p99 ms | max ms |
+  |---|---|---|---|---|
+  | before 1 / 2 / 3 | 4.22 / 4.62 / 4.67 | 7.66 / 7.84 / 7.92 | 8.81 / 9.11 / 9.20 | 118.9 / 117.8 / 115.7 |
+  | after 1 / 2 / 3 | 4.83 / 4.58 / 4.73 | 8.01 / 7.84 / 7.89 | 9.34 / 9.00 / 9.16 | 109.4 / 110.4 / 112.5 |
+
+  Within noise: the first before run is the outlier (without it 4.65 vs 4.71 ms). The switch frame was about 7 ms
+  shorter after in every pair, likely the faster fade (the loading screen is up a shorter time) or noise; not
+  claimed as a gain. Every switch committed, no error lines. Main checked the medians from the sent frame logs.
 
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 
