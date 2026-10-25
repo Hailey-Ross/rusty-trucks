@@ -196,6 +196,44 @@ Tests: `camera_collision` (slide along a wall, blocked slide stops, no motion ru
 pulls in front, leash before collision, a hidden player turns a non-Free camera back, switched off passes through),
 `replay::tests` (leash, mod override restore and disable), skate-mods `replay_set_camera` validation and Lua call.
 
+### Editor cameras no longer stick under the ground; Advanced Camera rows highlight (2026-10-25, USER-ASKS 339)
+
+Problem (laptop session `game-20261025-085807`, the user: "setting it to free camera pushed it under ground and
+wouldnt let me get it back above ground or move the camera at all (up, down or in any direction) similar results with
+tripod camera with the move camera up function sort of working but just locking in on the player from the underside",
+"when trying to select the advaned camera section the selection highlight dissapeared"). The log showed the key edit
+modes (FreeKey, TripodKey) and the sticks arriving, and no camera pose.
+
+Cause, cameras [code, ours]: on a new shot (a cut) our constraint pulls the camera in front of an occluder on the line
+of sight from the anchor, the skater root at foot level. The anchor sits on the ground, so the fat line (0.13 m)
+starts in contact with it, the map query returns that contact as a hit at fraction 0 (`camera/world_query.rs` `line`
+clamps the fraction and reports the triangle's face normal), and the camera was put at the skater's feet, half under
+the ground. Every later motion sweep then started in contact too and the blocked slide kept the camera where it was:
+it could not move at all, and a Tripod key turned back to its look point looked at the skater from below.
+
+Change: `camera_collision::constrain` is one-sided: a hit counts only for a move into the surface's front face
+(`(to - from) . normal < 0`). A move leaving a surface it touches or coming from behind it (the anchor on the ground, a
+camera under the map) passes; walls and the ground still stop a camera pushed into them. The instant replay free
+camera (C) uses the same constraint.
+
+Cause, highlight [code, research b591]: the editor movies (`replay_editor2` `UpdateEffectsSelection`, and
+`replay_editor3` in camera mode) select the AdvFollow / AdvTripod / AdvFree clips only when `Game.IsDemo() == false`
+(true greys them out). We did not answer `Game.IsDemo`, so the check failed and rows 4..6 showed no highlight. Our row
+indices and states were already right (one flat list of 9: Follow, Tripod, Game, Free, AdvFollow, AdvTripod, AdvFree,
+Speed, Shake). Change: `crossbar_host.rs` `game_constant`: `Game.IsDemo` = false (retail's other demo flags are
+constant false too).
+
+Log: `REPLAY_CAMERA key new row=.. <key> view=.. root=..`, `REPLAY_CAMERA key reopen <key>`, `REPLAY_CAMERA key done
+<key>`, `REPLAY_CAMERA edit <key> turn move height zoom root` every 0.5 s while the sticks or D-pad move a key, and
+`REPLAY_CAMERA shot <i> <key> wanted=.. at=.. root=.. relook=..` on every new shot (where the key wanted the camera and
+where the constraint put it).
+
+Tests: `camera_collision` `a_cut_from_the_skaters_feet_keeps_the_camera_above_the_ground`,
+`a_camera_under_the_ground_can_move_up_and_along_but_not_down_through_it` (with the earlier wall tests),
+`crossbar_host` `game_is_demo_is_false`; skate-game 940. Not play-tested yet: the laptop's next replay edit decides.
+Open: retail's world query may treat start-in-contact differently; the editor movie's `GetCameraZoomString` is still
+empty (b591).
+
 ### Peds' held props replay through a drop, a put-away and a cull (2026-10-21, research b453)
 
 Retail [code, b453]: a ped's hand prop is an ordinary DMO in the census list the recorder walks (`826B8830` creates
