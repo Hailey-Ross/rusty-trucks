@@ -85,12 +85,13 @@ peer's mods place their own icons.
 takes the mod's hide back. It never shows a minimap the player turned off in Game Settings or one the HUD hides; while
 any mod hides it, it stays hidden. A disabled mod's hide goes with it.
 
-## Loading screen (`sdk.loading`, capability `loading` 1)
+## Loading screen (`sdk.loading`, capability `loading` 2: timing, stat rows and events since 2)
 
 The loading screen between maps (Skate 3's tips loader, FE 52) picks a Coach Frank line or a hint each time it opens.
 `sdk.loading.hint(key, {title=..., text=...})` and `sdk.loading.coach_frank(key, text)` add (or replace, by key) this
-mod's lines; a string id (`ID_HINTS_TITLE_3`) is localised, any other text shows as written. `sdk.loading.remove(key)`
-drops one. `sdk.loading.retail(false)` leaves only mods' lines on a panel mods give lines for (the retail lines stay
+mod's lines; a string id (`ID_HINTS_TITLE_3`) is localised, any other text shows as written.
+`sdk.loading.stat(key, {label=..., value=...})` adds a row to the Stats panel next to the player's career stats (the
+panel shows 5 rows picked at random from them). `sdk.loading.remove(key)` drops one. `sdk.loading.retail(false)` leaves only mods' lines on a panel mods give lines for (the retail lines stay
 on a panel no mod fills); `retail(true)` takes that back. Lines join the next time the screen opens.
 
 `sdk.loading.hold(key)` keeps a running load's screen up after the engine's own loading is done, until

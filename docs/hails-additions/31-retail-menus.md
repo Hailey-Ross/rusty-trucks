@@ -1996,8 +1996,7 @@ pass and recomp timing run), `.local/research/b581-loading-screen-port.md` (port
   - Still open: which thread drives that counter on the console; `sub_82709068`'s branch on byte 0x830B7C2B that skips
     the release; T+300 / T+304 (every third open sets a flag, likely the online fetch throttle).
 - **Startup load: NOT RETAIL (ours, by design):** see "Startup: not shown, by design" below.
-- **Stats panel:** waits for a stats table (the 65 entries of the Stats object 0x83067094; the Skate Profile reads the
-  same object).
+- **Stats panel (2026-10-25, USER-ASKS 334):** filled from the player's career stats, see "Career stats" below.
 - **Game run (2026-10-24, scripted `SKATE_MAP_SWITCH` BlackBoxPark -> University, the scratch menu set with the movie):**
   request 39.03, black 39.86 (0.83 s, `fe_fade` then at 30 updates), FE 52 open and its intro done at once (clear 40.03),
   commit 43.51, slices done 43.98, black 44.96, close, clear 45.99 (`RETAIL_MENUS fade` / `open loading screen` log
@@ -2040,6 +2039,43 @@ pass and recomp timing run), `.local/research/b581-loading-screen-port.md` (port
   engine start (before mods, config and the menu set load) and opens the game window only when the first world is
   playable (doc 31 "Startup loading screen"), so there is no load left for the tips loader to cover (b581 3c
   option (i)). NOT RETAIL (ours).
+
+## Career stats (2026-10-25, USER-ASKS 334)
+
+The loading screen's Stats panel shows the player's career stats, as retail does offline. Research
+`.local/research/b589-retail-stats-table.md` (main checked the table rows, enabled bytes and labels in the image and
+`shared.json`, and read the time, distance and ped-hit code below itself).
+
+- **Retail [code + data]:** the Stats object `[0x83067094]` (vtable 0x822FDB30) points at a 65-row table (TU3 0x83043AE8,
+  12 bytes: enabled byte, label string id `ID_RECORD_*`, float); rows 0 to 46 are enabled, 47 to 64 not. The setter
+  vt+0x18 (0x8250DFF0) adds to a row (career running totals; rows 61 and 64 are set). The panel's offline fetch
+  (sub_82607840) keeps enabled rows whose value is not 0, shuffles them and keeps 16; GetStats(5) shuffles again and
+  takes 5. The formatter vt+0x14 (0x8250D6D0) by row: time (`hh:mm:ss.ff` from `ID_COMMON_TIME_FORMAT`, 0x8290EB38:
+  a field shows when it or an earlier one is not zero, padded to its width, hundredths only without hours; then
+  " s"), distance (`{0:distance.1}`: the handler 0x824FE848 registered under "distance" by 0x824FDFC0 shows the number
+  with 1 decimal and " m", or times 3.0 and " ft" when Game Settings > Units is imperial), percent (row 17: row 16 over
+  row 17), the ped type hit most (row 46), money, grouped integers.
+- **Ped hits [code]:** 0x826C0730 adds 1 to a hit row by the hash64 of the ped's entity key: `jock01`,
+  `teenage_female01`, `teenage_male01`, `adult_male01`, `adult_female01`, `business_male01`, `business_female01`,
+  `skater_male01`, `skater_female01`, `tourist_male01`, `tourist_female01`, `security_street01` / `security_nsz01` /
+  `security_nsz02`; every other ped counts as a bum (all 14 hashes matched against the exported entity keys).
+- **Ours:** setup exports the table with the menu tables (`menu_tables::career_stats`, located by the pointer to
+  `ID_RECORD_DMO_01`; TU3 and disc builds checked; setup now requires it, so the environment group runs again on the
+  next Refresh Game Files). `skate_core::career_stats` (rows, kinds, the fetch, the formats) and
+  `career_stats_host.rs`: the local player's totals in `settings/career-stats.json` (written every 30 s when changed and
+  at exit; the 30 s write runs on a short-lived thread, off the game thread). Optimisation pass: a few adds per fixed
+  step and a small JSON (under 2 KB) at most every 30 s, nothing per frame to measure. Fed now: time played (8), distance travelled on the board (7) and on foot (9), skitching distance and time
+  (11, 12; while the skitch state holds a car), grind distance (13; summed while a grind is active, added when it
+  ends), ped hits (47..60; rows 47 to 50 show). The Units row of Game Settings is no longer greyed: it switches the
+  panel's distances to feet.
+- **NOT RETAIL YET:** retail's writers for rows 3 to 6, 8, 14 to 16, 18, 23 to 45 and 63 are not found (bones, hits,
+  wipeouts, flips, tricks, Hall of Meat, air and ground time); rows 10, 17, 19 to 22 have retail writers but no engine
+  source yet (invert time, body flips, pushes, mongo pushes, manual and powerslide distance). Time played (row 8) has
+  no retail writer found; ours counts gameplay time outside map loads. Retail's shuffle order and money format are not
+  decoded. Moves over 5 m in one fixed step (teleports) are not counted as travel.
+- **Mods:** `sdk.loading.stat(key, {label, value})` adds rows to the Stats panel (capability `loading` 2).
+- **Tests:** `skate_core::career_stats::tests` (records, clock, formats, fetch), `career_stats_host::tests` (hit rows,
+  save and load, panel rows), `menu_tables` data-gated (65 rows at 0x83043AE8, 0..46 enabled), the setup check.
 
 ## Startup loading screen (2026-10-15)
 
@@ -2364,7 +2400,8 @@ asserts the movie called GetOverallCareerData, GetStatsChunk, GetPersonalBestChu
 and that no Progression / Stats call went unanswered). Not yet looked at in the running game.
 
 Open: GetSummaryGroupData / GetMilestoneDotData entry layouts (the movie's SUMMARY_GROUP_* / DOT_DATA_* constants);
-which stats retail lists (tables at 0x83067094 / 0x8306FD58); the career and challenge record keys.
+which stats retail lists: answered (doc 31 "Career stats"; 0x8306FD58 is the formatter's 64-byte scratch string, not a
+table; the personal bests are the Stats object's +0x20 table 0x830438B8, 35 rows); the career and challenge record keys.
 
 Follow-up (laptop 2026-10-19 12:32): the start-up check said "game files current" on a set without the movie, so no refresh was offered. The menu movie set is now version 8 (`retail_menu_movies::VERSION`, `prepare_menu_movies.py` `VERSION`): an older set forces Refresh Game Files like the Challenge Map's version 6 did; version 7 sets still load (`OLDEST_VERSION` 5) and keep the SKATER overlay until refreshed.
 

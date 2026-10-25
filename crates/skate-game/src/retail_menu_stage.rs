@@ -749,12 +749,13 @@ fn update(
     mut warned: Local<bool>,
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     // Mods' Trick Guide and Skate Profile layers (one parameter: the system is at Bevy's 16).
-    (guide_mods, profile_mods, credits_mods, config, mut loading_mods): (
+    (guide_mods, profile_mods, credits_mods, config, mut loading_mods, career): (
         Res<crate::trick_guide_host::TrickGuideMods>,
         Res<crate::offline_profile_host::ProfileMods>,
         Res<crate::extras_host::CreditsMods>,
         Res<crate::config::Config>,
         ResMut<crate::tips_loader_host::LoadingMods>,
+        Option<Res<crate::career_stats_host::CareerStatsHost>>,
     ),
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>),
@@ -802,6 +803,11 @@ fn update(
         warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup); Start opens the PC overlay until then");
     }
     let (Some(mut ms), Some(movies), Some(mut menus)) = (stage, movies, menus) else { return };
+    // Game Settings > Units (distances on the Stats panel in feet when imperial).
+    let imperial = matches!(
+        crate::retail_menus::setting(&menus, "ID_GAMESETTINGS_UNITS_TOGGLE"),
+        Some(skate_core::menus::SettingValue::Int(1) | skate_core::menus::SettingValue::Bool(true))
+    );
     if ms.failed {
         // A stopped stage gives the game back: no suspended gameplay, no pause backdrop (Start then opens the PC
         // overlay). Without this a stage error with the pause menu open froze the game (session 2026-10-12).
@@ -1332,6 +1338,13 @@ fn update(
                     let retail = ms.retail_lines.get_or_insert_with(|| fe.tips_loader.lines.clone());
                     fe.tips_loader.lines = loading_mods.lines(retail);
                     fe.tips_loader.tips.timing = loading_mods.timing();
+                    // The Stats panel's rows (offline fetch sub_82607840); none = no Stats panel.
+                    let mut seed = fe.tips_loader.seed;
+                    fe.tips_loader.stats = career.as_ref().map_or_else(Vec::new, |c| {
+                        c.panel_rows(&ms.language, &crate::fe_language::NumberFormat::default(), imperial, &mut || crate::tips_loader_host::lcg(&mut seed))
+                    });
+                    fe.tips_loader.stats.extend(loading_mods.stat_rows());
+                    fe.tips_loader.seed = seed;
                     ms.load_map = transition.loading().map(|e| e.label.clone());
                     loading_mods.opened(ms.load_map.as_deref());
                     ms.load_up = false;

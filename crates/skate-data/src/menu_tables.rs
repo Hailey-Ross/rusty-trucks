@@ -96,6 +96,15 @@ fn hud_off() -> i32 {
     1
 }
 
+/// One row of the career stats table (the Stats object's +0x18 table, TU3 0x83043AE8, 12-byte records: enabled
+/// byte, label string id, value): the loading screen's Stats panel and the Skate Profile read it (doc 31 "Loading
+/// screen (FE 52)", research b589).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StatRow {
+    pub label: String,
+    pub enabled: bool,
+}
+
 /// One sub-option kind's row: label and helper string ids by column ("" = empty).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SubOptionRow {
@@ -180,6 +189,9 @@ pub struct MenuTables {
     /// The Trick Guide's category order and slot name tables. Empty in tables extracted before they were added.
     #[serde(default)]
     pub trick_guide: TrickGuideTables,
+    /// The career stats rows in index order (65 in TU3). Empty in tables extracted before they were added.
+    #[serde(default)]
+    pub career_stats: Vec<StatRow>,
     /// Table addresses in this build (diagnostics only).
     pub addresses: std::collections::BTreeMap<String, String>,
 }
@@ -671,6 +683,25 @@ fn sub_options(img: &Image) -> Result<(u32, Vec<SubOptionRow>), String> {
     Ok((start, rows))
 }
 
+// ---------------------------------------------------------------- career stats
+
+/// Located by content: the record whose label points at "ID_RECORD_DMO_01" and that starts a run of 12-byte records
+/// (enabled byte 0 / 1, label "ID_RECORD_*"); the run ends at the first record that is not one.
+fn career_stats(img: &Image) -> Result<(u32, Vec<StatRow>), String> {
+    let row = |at: u32| -> Option<StatRow> {
+        let enabled = *img.image.at(at, 1)?.first()?;
+        let label = img.string_at(at + 4).filter(|l| l.starts_with("ID_RECORD_"))?;
+        (enabled <= 1).then_some(StatRow { label, enabled: enabled == 1 })
+    };
+    img.pointers_to_string("ID_RECORD_DMO_01")
+        .into_iter()
+        .map(|label_at| label_at - 4)
+        .map(|start| (start, (0..).map_while(|i| row(start + i * 12)).collect::<Vec<_>>()))
+        .filter(|(_, rows)| rows.len() >= 40)
+        .max_by_key(|(_, rows)| rows.len())
+        .ok_or_else(|| "career stats table not found".into())
+}
+
 // ---------------------------------------------------------------- settings screen titles
 
 /// Located by content: two consecutive pointers to "ID_GAMESETTINGS_TITLE" (screens 0 and 1), then one string id
@@ -841,6 +872,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
     let (titles_at, settings_titles) = settings_titles(&img, settings_screens.len())?;
     let (sub_options_at, sub_options) = sub_options(&img)?;
     let (trick_categories_at, gestures_at, buttons_at, trick_guide) = trick_guide(&img)?;
+    let (stats_at, career_stats) = career_stats(&img)?;
     if modes.is_empty() {
         return Err("no per-mode crossbar menus found".into());
     }
@@ -857,6 +889,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         ("trick_guide_categories", trick_categories_at),
         ("trick_guide_gestures", gestures_at),
         ("trick_guide_buttons", buttons_at),
+        ("career_stats", stats_at),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), hex(v)))
@@ -875,6 +908,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         settings_titles,
         sub_options,
         trick_guide,
+        career_stats,
         addresses,
     })
 }

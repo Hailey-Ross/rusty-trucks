@@ -492,13 +492,14 @@ fn credit_spacing() -> f64 {
 /// Lines one credits section may hold.
 pub const MAX_CREDIT_LINES: usize = 512;
 
-/// A loading screen line of a mod (`sdk.loading`): a hint panel's title and text, or a Coach Frank line. A string id
-/// is localised, any other text shows as written.
+/// A loading screen line of a mod (`sdk.loading`): a hint panel's title and text, a Coach Frank line, or a Stats panel
+/// row (label and value). A string id is localised, any other text shows as written.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "panel", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LoadingLine {
     Hint { title: String, text: String },
     CoachFrank { text: String },
+    Stat { label: String, value: String },
 }
 
 impl LoadingLine {
@@ -507,6 +508,7 @@ impl LoadingLine {
         match self {
             Self::Hint { title, text } => ok(title) && ok(text),
             Self::CoachFrank { text } => ok(text),
+            Self::Stat { label, value } => ok(label) && ok(value),
         }
     }
 }

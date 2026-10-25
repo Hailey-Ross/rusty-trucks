@@ -1526,7 +1526,7 @@ impl Vm {
             capabilities.set("scene_transforms", 2)?;
             capabilities.set("skater", 4)?;
             capabilities.set("menus", 3)?;
-            capabilities.set("loading", 1)?;
+            capabilities.set("loading", 2)?;
             capabilities.set("player_physics", 2)?;
             capabilities.set("engine_access", 1)?;
             capabilities.set("command_results", 1)?;
@@ -3189,6 +3189,8 @@ mod empty_table_lists {
         assert!(matches!(&hint, Command::LoadingLine { line: Some(crate::menus::LoadingLine::Hint { .. }), .. }) && hint.validate());
         assert!(eval("return {kind='loading_line', key='my-mod.frank', line={panel='coach_frank', text='ID_TIPS_COACHFRANK_3'}}").validate());
         assert!(eval("return {kind='loading_line', key='my-mod.tip'}").validate());
+        assert!(eval("return {kind='loading_line', key='my-mod.kicks', line={panel='stat', label='#Kickflips', value='#12'}}").validate());
+        assert!(!eval("return {kind='loading_line', key='my-mod.kicks', line={panel='stat', label='#Kickflips', value=''}}").validate());
         assert!(!eval("return {kind='loading_line', key='my-mod.tip', line={panel='hint', title='', text='x'}}").validate());
         assert!(eval("return {kind='loading_hold', key='my-mod.bank', held=true}").validate());
         assert!(eval("return {kind='loading_retail', shown=false}").validate());

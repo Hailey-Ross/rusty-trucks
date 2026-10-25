@@ -61,7 +61,12 @@ impl TipsLoaderHost {
             // 825BA018: up to n rows of [label, value].
             "GetStats" => {
                 let n = args.first().map_or(0, crate::apt_vm::to_integer).max(0) as usize;
-                let rows = self.stats.iter().take(n).cloned().collect::<Vec<_>>();
+                // Shuffled again on every call (sub_826060F0), then up to n rows.
+                let mut order: Vec<usize> = (0..self.stats.len()).collect();
+                let mut seed = self.seed;
+                skate_core::career_stats::shuffle(&mut order, &mut || lcg(&mut seed));
+                self.seed = seed;
+                let rows = order.into_iter().take(n).map(|i| self.stats[i].clone()).collect::<Vec<_>>();
                 let mut out = Vec::new();
                 for (label, value) in rows {
                     out.push(Value::Object(vm.array(vec![Value::Text(label), Value::Text(value)])?));
@@ -118,6 +123,14 @@ impl LoadingMods {
         }
     }
 
+    /// Mods' Stats panel rows (label, value), in the order added.
+    pub(crate) fn stat_rows(&self) -> Vec<(String, String)> {
+        self.lines.iter().filter_map(|(_, _, l)| match l {
+            skate_mods::menus::LoadingLine::Stat { label, value } => Some((label.clone(), value.clone())),
+            _ => None,
+        }).collect()
+    }
+
     pub(crate) fn set_timing(&mut self, owner: &str, timing: Option<(Option<f32>, Option<f32>)>) {
         self.timings.retain(|(o, _)| o != owner);
         if let Some(timing) = timing {
@@ -163,11 +176,11 @@ impl LoadingMods {
         use skate_mods::menus::LoadingLine;
         let hints: Vec<(String, String)> = self.lines.iter().filter_map(|(_, _, l)| match l {
             LoadingLine::Hint { title, text } => Some((title.clone(), text.clone())),
-            LoadingLine::CoachFrank { .. } => None,
+            _ => None,
         }).collect();
         let coach: Vec<String> = self.lines.iter().filter_map(|(_, _, l)| match l {
             LoadingLine::CoachFrank { text } => Some(text.clone()),
-            LoadingLine::Hint { .. } => None,
+            _ => None,
         }).collect();
         let hide = !self.retail_hidden.is_empty();
         let mut out = skate_data::tips_loader::TipsLines::default();
@@ -226,6 +239,9 @@ mod tests {
         assert_eq!(mods.timing(), Timing { show: 4.0, outro: 0.5 });
         mods.set_timing("a", None);
         assert_eq!(mods.timing(), Timing::RETAIL);
+        mods.set_line("a", "kicks", Some(LoadingLine::Stat { label: "#Kickflips".into(), value: "#12".into() }));
+        assert_eq!(mods.stat_rows(), [("#Kickflips".to_owned(), "#12".to_owned())]);
+        assert_eq!(mods.lines(&skate_data::tips_loader::TipsLines::default()), Default::default(), "a stat row is no hint or Coach Frank line");
         mods.opened(Some("University"));
         mods.closed(None);
         let events = mods.drain_events();
