@@ -1881,6 +1881,25 @@ main re-read the host's show 0x825EF440, choice 0x825EF698, create 0x825EF370 an
   `callback(id, choice, user)` and, with auto-remove, removes it (`sub_82D0A628`) and shows the next.
 - Sk8Popup shows the description and the options (no title); the small popup shows the title.
 
+### Popup kinds
+(2026-10-25, USER-ASKS 351 "tried "enter emerica shoe code" and got stuck.")
+- **Retail [code / data]:** the sPopupInfo constructor `sub_82D0B0B0` sets type +1436 = 0 (Sk8Popup), option count
+  +384 = 0, auto-remove +1449 = 1. The cheat matcher `sub_82656080` fills title +0, description +128, one option
+  (+384 = 1, text +388) and pushes it with `sub_82D0A8D0` without touching +1436, so every cheat dialog is a
+  Sk8Popup with its OK / Continue option.
+- **small_popup [data, movie script]:** `Refresh` reads only `GetTitle`, `GetDescription` and `IsPopupCancelable`
+  (frame "nobutton" when not cancelable, "button" with a fixed B ID_COMMON_CANCEL help when cancelable); it never
+  reads the options. `UpdateInput` answers only AptPrevious with `OnMenuSelect(.., 'CANCEL!')`. A small popup is a
+  notice that code removes, or B closes when cancelable.
+- **Bug:** ours pushed the cheat dialogs, the Extras code-redeem popup (ours), the call-skater limit popup and the
+  keyboard warning (record 0x107) as small popups with an option and not cancelable: the movie drew a bottom banner
+  without a button and no press could close it, so the screen below went dead.
+- **Change:** all four use the default kind (Sk8Popup). `show_popup` warns when a small popup has options but is not
+  cancelable (a mod's `sdk.menus.popup` with `kind = small` can still ask for one).
+- **Open:** the limit popup's and record 0x107's retail type are not read yet (they take the constructor default
+  here).
+- **Files:** `crates/skate-game/src/retail_menu_stage.rs`.
+
 ### Change
 - `skate_core::fe_popup` (new): `PopupRequest` (sPopupInfo as data, retail defaults), `PopupList` (retail ordering,
   ids from 0, choose with auto-remove, remove, clear-all with choice -2, a mod's popups by callback prefix).
