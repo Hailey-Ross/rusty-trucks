@@ -1821,7 +1821,6 @@ fn update(
                         title,
                         description,
                         options: vec![button],
-                        kind: skate_core::fe_popup::PopupKind::Small,
                         callback: SPAWN_SKATER_POPUP.into(),
                         ..Default::default()
                     });
@@ -1870,7 +1869,6 @@ fn update(
                         title: "ID_VALID_CODE_TITLE".into(),
                         description: "ID_VALID_CODE_DESC".into(),
                         options: vec!["ID_COMMON_OK".into()],
-                        kind: skate_core::fe_popup::PopupKind::Small,
                         callback: CHEAT_POPUP.into(),
                         ..Default::default()
                     });
@@ -1921,7 +1919,6 @@ fn update(
                                 title: dialog.title,
                                 description: dialog.text,
                                 options: vec![dialog.button],
-                                kind: skate_core::fe_popup::PopupKind::Small,
                                 callback: CHEAT_POPUP.into(),
                                 ..Default::default()
                             });
@@ -1935,7 +1932,6 @@ fn update(
                             title: INVALID_TITLE.into(),
                             description: INVALID_TEXT.into(),
                             options: vec![INVALID_BUTTON.into()],
-                            kind: skate_core::fe_popup::PopupKind::Small,
                             callback: CHEAT_POPUP.into(),
                             ..Default::default()
                         });
@@ -2184,6 +2180,10 @@ fn show_popup(
         warn!("RETAIL_MENUS: popup {popup} has no movie ({}); run setup", request.kind.template());
         return Ok(());
     };
+    // small_popup reads no options and answers only B when cancelable (doc 31 "Popup kinds").
+    if request.kind == PopupKind::Small && !request.cancelable && !request.options.is_empty() {
+        warn!("RETAIL_MENUS: popup {popup} ({}) is small with options but not cancelable: no press can close it", request.callback);
+    }
     fe.popup.shown = Some(request.clone());
     stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(handle.to_string()), Value::Text("1".into())], fe)?;
     show(stage, fe, handle, true)?;
