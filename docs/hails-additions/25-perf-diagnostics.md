@@ -424,9 +424,8 @@ combined, the pairs have to be recomputed for the combined tree (as for F + G).
   the commit, the slowest switch frame 282 ms (render wait 222 ms, emitter banks 50 ms). The disk cache was warm
   from the user's session, so the cold-disk gain is not measured yet. Test
   `the_map_being_loaded_is_named_until_it_is_committed`; game_audio / map_transition / frame_timing tests 107 OK.
-- **Left:** move the other commit-frame loaders (character lighting, living world, peds, traffic) to the loader
-  thread (done 2026-10-24, next section); the emitter banks (`world_sources` bank_load 50 ms) could be read ahead the
-  same way; the render upload.
+- **Left:** none; the other commit-frame loaders, the emitter banks and the render upload followed the same day (next
+  three sections).
 - **Frame-time overlay:** moved to the top left (user 2026-10-23: the HUD minimap owns the top right and the
   overlay covered it), `frame_timing::spawn_overlay`.
 
@@ -593,7 +592,7 @@ approaching skater") and the camera slow-motion subject gate (doc 21 "Camera slo
 
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 
-Status: done on `world/trace-all` (not yet played).
+Status: done, in #52; used in play sessions since 2026-10-17.
 
 Problem: one play session should capture every trace the engine has, and the name has to mean what it says. Before, trace-all only meant whatever the launcher remembered to set, and two of those switches were unsafe for a whole session: `SKATE_PERF_REPORT` exits the game after 25 s, and `SKATE_GPU_TIMING` makes device creation fail on an adapter without timestamp queries.
 
@@ -1216,9 +1215,9 @@ Change (`crates/skate-game/src/system_timing.rs`, research b214 / b268 `.local/r
 - Off: nothing changes (the layer is installed only when either readout is on; `SYSTEM_TIMING`'s line keeps its form,
   command spans are not in it).
 - Verification: test `the_fixed_step_system_is_found_by_name` pins the step system's name; trace-all tests pass
-  (`SKATE_FIXED_TIMING` in its switch list). Not yet run in a game session.
-- Open: nested spans (physics phases, per-mod callbacks) are not split (v2); `.local/tools/frame-time-run.ps1` saves
-  only `SYSTEM_TIMING` lines so far.
+  (`SKATE_FIXED_TIMING` in its switch list). Used in the fixed step executor runs (2026-10-24, "Fixed step executor").
+- Open: nested spans (physics phases, per-mod callbacks) are not split (v2). The run tool
+  (`tools/claude-skills/optimisation-pass/tools/frame-time-run.ps1`) keeps the whole stderr log, FIXED_TIMING lines included.
 
 ## Launcher in a window; the launcher and the game come to the front; a steady splash (2026-10-19)
 

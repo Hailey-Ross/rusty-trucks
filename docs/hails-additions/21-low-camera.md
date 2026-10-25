@@ -133,7 +133,7 @@ Tests:
 - `IsInObserverMode` also forces the low graph in retail; our condition maps it to the subject's special-effect flag
   (unchanged by this work).
 
-## Camera slow motion is not applied (2026-10-23, USER-ASKS 294)
+## Camera slow motion: retail's subject gate (2026-10-23 / 24, USER-ASKS 294, 326)
 
 - **Problem:** desktop session 2026-10-23 17:57 (hails-additions 28181a30), MegaPark full: "significant lag while
   jumping the mega ramp", "the rendering slowed down mid jump". The user, asked whether retail slows down there:
@@ -145,9 +145,8 @@ Tests:
   tick timer (`SimulationClock`, ported from `Simulation::OnRequestSetSimRate` 82857EC8). Upstream code since
   a47da5bb (2026-09-06). Retail does not slow down on the mega ramp, so a retail condition that keeps these requests
   out (or makes them inert) is missing from the port; not found yet.
-- **Change:** the requests are logged (`CAMERA_SLOW_MOTION begin` / `end` in `camera/graph.rs`, `CAMERA_SLOW_MOTION
-  request ... (not applied)` in `physics/frame.rs`) and no longer change the tick rate. The clock and its tests stay
-  for the port.
+- **First change (2026-10-23, replaced on 2026-10-24 below):** the requests were logged (`CAMERA_SLOW_MOTION begin` /
+  `end` in `camera/graph.rs`, `CAMERA_SLOW_MOTION request` in `physics/frame.rs`) and did not change the tick rate.
 - **Tests:** camera 38, physics 222 OK; the data-gated
   `stock_skater_startup_builds_the_graphs_and_physical_body_from_the_same_rig` now expects the normal period after a
   request (it then stops at tick 600 on "Canonical world has no authored query metadata", a test-world limit
