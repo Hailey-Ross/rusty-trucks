@@ -450,7 +450,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     Item FixedExecutorItem() {
         var item = new Item("", "", false, null);
         item.Run = delegate {
-            Run(St("fixed_executor") == "single" ? "fixed-executor-multi" : "fixed-executor-single");
+            Run(St("fixed_executor") == "multi" ? "fixed-executor-single" : "fixed-executor-multi");
             RefreshStatus(); ShowFixedExecutor(item);
         };
         ShowFixedExecutor(item);
@@ -458,10 +458,10 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     }
     void ShowFixedExecutor(Item item) {
         string s = St("fixed_executor");
-        item.Text = "Physics step threads: " + (s == "single" ? "Single" : "Multi (default)");
-        item.Hint = s == "" ? "Not in this launcher version." : s == "single"
-            ? "The physics step runs on one thread: a little steadier on some PCs. Press for multi-threaded."
-            : "Bevy's multi-threaded scheduler for the physics step. Press to try single-threaded.";
+        item.Text = "Physics step threads: " + (s == "multi" ? "Multi" : "Single (default)");
+        item.Hint = s == "" ? "Not in this launcher version." : s == "multi"
+            ? "Bevy's multi-threaded scheduler for the physics step. Press for single-threaded (the default)."
+            : "The physics step runs on one thread: faster and steadier on the desktop and the laptop. Press for multi-threaded.";
         item.On = s != "";
     }
     // docs/hails-additions/second-pc-testing.md#share-sessions-via-github

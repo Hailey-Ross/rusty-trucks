@@ -33,7 +33,7 @@ if ($Here -like (Join-Path $Repo 'tools') + '\*') { $StateDir = Join-Path $Repo 
 New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 $Playing = Join-Path $StateDir 'PLAYING.txt'
 $LastSession = Join-Path $StateDir 'last_session.txt'
-# Tools > Physics step threads: 'single' or 'multi' (the default); the game reads SKATE_FIXED_EXECUTOR.
+# Tools > Physics step threads: 'single' (the default) or 'multi'; the game reads SKATE_FIXED_EXECUTOR.
 $FixedExecutorFile = Join-Path $StateDir 'fixed-executor.txt'
 $SelectedFile = Join-Path $StateDir 'version.txt'
 $script:BuildLog = ''
@@ -686,8 +686,8 @@ function Send-Sessions {
 # docs/hails-additions/second-pc-testing.md#share-sessions-via-github
 $ShareSettings = Join-Path $Repo 'share-sessions.txt'
 function Fixed-Executor {
-    if ((Test-Path $FixedExecutorFile) -and (Get-Content $FixedExecutorFile -Raw).Trim() -eq 'single') { return 'single' }
-    return 'multi'
+    if ((Test-Path $FixedExecutorFile) -and (Get-Content $FixedExecutorFile -Raw).Trim() -eq 'multi') { return 'multi' }
+    return 'single'
 }
 function Share-Script {
     foreach ($s in (Join-Path $Here 'share-session-issue.ps1'), (Join-Path $Repo 'tools\second-pc\share-session-issue.ps1')) { if (Test-Path $s) { return $s } }
