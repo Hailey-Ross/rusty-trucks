@@ -2096,15 +2096,21 @@ The loading screen's Stats panel shows the player's career stats, as retail does
     scorers refuse a 9th); ours from the skeleton contact lists `ped_hits` / `vehicle_hits`. Ours:
     `career_stats::BailRecord` from `board_wiping_out` rising to falling (retail's end is the HOM state 4 event
     0x825694D8, NOT RETAIL YET), dropped on a map load; ticks become game time (dt x 60 for counts).
+  - Injuries (2026-10-25, research b592 / b594 / b595; main read 0x82DAE6F0, the level loop in 0x82DAF1D8,
+    0x82510990 and the record copy in Fill 0x82BD60C8): each tick of the bail, bone i reads the skeleton contact
+    force of part i + 1 (bones 23 / 24: the specific force of parts 1 / 23; Fill copies `force` / `specific_force`
+    into the record HOM reads), times 2.0 times `scoring_wipeouts` `Hash_B7514DE7EBDE9D01` (layout +0xBFC, 0.75).
+    Over 0.1 it adds to the bone's accumulator and spreads along its BoneSet links (factor x impact over 0.1, never
+    back to the bone it came from); the peak is kept, the accumulator decays x0.8 per tick; the level is the highest
+    of 6 whose threshold is above 0 and below the peak. At bail end each bone adds one injury at its level (0 scrape,
+    1 bruise, 2 sprain, 3 dislocation, 4 / 5 broken: rows 33, 32, 31, 30, 3); a level on bone 0 or 23 adds a head hit
+    (4), on bone 24 a groin hit (5). Ours: `skate_core::hall_of_meat` (Tuning from the BoneSet field and the scale,
+    loaded with the physics settings, data-gated test), fed in `career_stats_host::track`.
 - **Rows not fed yet:**
-  - The rest of the Hall of Meat bail record (b592): bones (3), head (4) and groin (5) hits, dislocations, sprains,
-    bruises, scrapes (30..33: one per bone per bail at its highest injury level, 0x82510990: level 0 scrape, 1 bruise,
-    2 sprain, 3 dislocation, 4 / 5 broken; main checked), body tweaks (34), objects hit (35), ground / air time and
-    distance (36..39), barrel and cannonball rolls, spread eagle time, judo kicks (41..44). They need the per-part
-    impact record behind `[skater+0x18]` (stride 0x80; the impact is its float at +0x34 / +0x64 x 2.0 x
-    `scoring_wipeouts` layout+0xBFC, not our `BoneContact` layout), the all-bones-airborne test from the same record,
-    and the total body rotation tracker 0x82DAC930. Tuning is in the export: `scoring_wipeouts/default` BoneSet (25 x
-    0x54) and BodyTweak (4 poses, 15 frames, 500 points).
+  - The rest of the Hall of Meat bail record: body tweaks (34), objects hit (35), ground / air time and distance
+    (36..39), barrel and cannonball rolls, spread eagle time, judo kicks (41..44). They need the contact test (the
+    record's transformed channel vector, y > 0.33, research b595 open), the rotation tracker 0x82DAC930 (b594) and
+    the BodyTweak poses (in the export: 4 poses, 15 frames, 500 points).
   - Air grab time (14, P+0x266C) and peds / vehicles jumped (25, 27; a merged jumped-over record): no engine source
     yet. Money (62, 63) and the Create A Spot rows are disabled in retail's table and have no store here.
 - **NOT RETAIL YET:** retail's shuffle order and money format are not decoded; whether 0x826C0730 and the bail-end

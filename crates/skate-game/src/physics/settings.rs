@@ -50,6 +50,8 @@ pub(crate) struct PhysicsSettings {
     pub move_object: skate_core::player::offboard::move_object::MoveObjectTuning,
     /// `physics_ai` `default`: the AI board path gains (`82C05EC0`).
     pub physics_ai: skate_core::riding::grounded::state::board_path::PhysicsAiTuning,
+    /// `scoring_wipeouts` `default`: the Hall of Meat bones and impact scale; None leaves the injury stats unfed.
+    pub hall_of_meat: Option<skate_core::hall_of_meat::Tuning>,
 }
 
 impl PhysicsSettings {
@@ -171,6 +173,33 @@ impl PhysicsSettings {
                 bevy::log::warn!("SKATE_PHYSICS_AI: stock physics_ai missing ({error}); using the default record's values");
                 Default::default()
             }),
+            hall_of_meat: load_hall_of_meat(data).map_err(|error| bevy::log::warn!("HALL_OF_MEAT: no scoring_wipeouts tuning ({error})")).ok(),
         })
+    }
+}
+
+/// `scoring_wipeouts/default` (class 9E4C471BC6EAB615): BoneSet at layout +0 and the impact scale at +0xBFC
+/// (`Hash_B7514DE7EBDE9D01`; b594 read the layout offsets from the schema).
+pub(crate) fn load_hall_of_meat(data: &Collections) -> Result<skate_core::hall_of_meat::Tuning, String> {
+    const CLASS: &str = "Hash_9E4C471BC6EAB615";
+    let words = data.words::<525>(CLASS, "default", "Hash_1F9B5EA147CBEEE9")?;
+    let scale = data.float(CLASS, "default", "Hash_B7514DE7EBDE9D01")?;
+    skate_core::hall_of_meat::Tuning::from_words(&words, scale).ok_or_else(|| "BoneSet size".to_owned())
+}
+
+#[cfg(test)]
+mod hall_of_meat_tests {
+    /// Data-gated: the stock BoneSet has 25 bones (bone 0 links to 23 and 1) and the impact scale is 0.75.
+    #[test]
+    fn stock_hall_of_meat_tuning_loads() {
+        let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from) else {
+            eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+            return;
+        };
+        let data = super::Collections::load(&root).expect("stock collections");
+        let t = super::load_hall_of_meat(&data).expect("scoring_wipeouts");
+        assert_eq!(t.impact_scale, 0.75);
+        assert_eq!(t.bones[0].links[3], Some((1, 0.5)));
+        assert_eq!(t.bones[0].levels[1], (1000, 14.0));
     }
 }
