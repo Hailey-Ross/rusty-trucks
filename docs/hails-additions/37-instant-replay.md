@@ -180,16 +180,15 @@ too the camera stays where it was. A non-Free camera whose player is hidden is t
 
 Change: `replay/camera_collision.rs` `constrain` (pure, a sweep closure; the map query is the gameplay camera's fat
 line, `camera/world_query.rs` `line`). The instant replay free camera uses it after each move (`replay.rs` controls);
-the editor cameras are corrected for the view in `camera.rs` `present` through `Replay::guarded_editor_camera`, with
-the last accepted position in a `CameraGuard`. The data is `Replay::camera_collision` (`CameraCollision`: switch,
+the editor cameras are constrained while a key is edited and the result is stored in the key (since 2026-10-25, see
+"Editor cameras: the constraint runs while editing, playback plays the key"; before that the view was corrected on
+playback). The data is `Replay::camera_collision` (`CameraCollision`: switch,
 radius, scale, epsilon, leash; retail defaults) and a mod sets it with `sdk.replay.set_camera{collide, radius, leash}`
 (nil restores retail's, the override goes when the mod stops; last writer wins). Replaces `leashed`,
 `FREE_CAMERA_LEASH` and `Replay::free_camera_leash`.
 
-OURS / NOT RETAIL YET: a camera cut (a new clip camera, a cursor jump over 0.25 s) has no last position, so only the
-line of sight runs and the camera is pulled in front of an occluder (our stand-in for retail's snap request +0x183,
-whose setter is open). The editor correction is view only: whether retail writes it back into stored keys on
-playback is open (`82C82E40` / `82C82A50`). The 0.8 m and world-supplied radii (world flags +0x30DA0 / +0x30C72) and
+A snap (retail +0x183, set by the constraint reset `82682A40` -> `82682B20` when an edit opens or the camera changes,
+b593) has no last position: only the line of sight runs and the camera is pulled in front of an occluder. Retail writes the held pose back into the key while editing (`82C82E40`, b593). The 0.8 m and world-supplied radii (world flags +0x30DA0 / +0x30C72) and
 the sweep's collision layers are open; ours hits the map and its external queries, not actors.
 
 Tests: `camera_collision` (slide along a wall, blocked slide stops, no motion runs no query, a cut behind a wall
@@ -327,6 +326,36 @@ effect values and stepped marker lanes, and retail's length rules. Pure data, no
   records and saved edits. A mod may allow speeds over 100 % (ours, not retail).
 - Tests: 6 (open threshold, stepping / clamping / wrapping, stepped markers, marker cap, marker spacing, encoded
   length).
+
+### Editor cameras: the constraint runs while editing, playback plays the key (2026-10-25, USER-ASKS 341)
+
+Problem (laptop session `game-20261025-094410`, the user: "the tripod moved due to the distance of the player from
+the positioning of the placed tripod causing it to slide to the chosen location. This all needs a retail parity pass
+as it doesnt feel correct to how the editor works in retail I believe."). The log: the key edit moved the Tripod eye
+55 m from the skater; on playback `REPLAY_CAMERA shot` put it at the skater root (wanted 55 m out, at = root).
+
+Cause [code, research `.local/research/b593-replay-editor-camera-parity.md`; main checked the gate]: retail's
+constraint `82683680` returns at once unless the byte 0x83037414 (0x830373F0 + 0x24) is set; the key edit opener
+`82614658` (and the other edit openers) set it to 1, the timeline mode `82612C28` clears it. So the leash and world
+collision run only while a key edit is open, and the held pose is written into the key (`82683450` -> `82C82E40` ->
+`82C84868`); playback plays stored keys with no constraint. An edit opening resets the constraint with snap
+(`82682A40` -> `82682B20`, +0x183). Ours did the reverse: the edit was free (up to 1000 m) and playback leashed and
+swept the stored eye around the moving skater every frame, so a far tripod was dragged and a cut pulled it onto the
+skater.
+
+Change: `Editor::constrain_editing` (after each `edit_key`, against the skater root at the playhead) runs
+`camera_collision::constrain` on the edited key's eye and stores the result (`camera_key::set_eye`: Tripod / Free
+eye, Follow orbit re-derived in the root's frame); `edit_last` starts empty when an edit opens (snap).
+`Replay::guarded_editor_camera` no longer constrains; it only logs `REPLAY_CAMERA shot <i> <key> at=.. root=..` on
+a new shot. The instant replay free camera (C) still runs the constraint every move (retail's other gate writer
+`82833CF0` is not identified).
+
+Still open (b593): which camera retail shows before the first key of a clip when that key is placed mid-clip (ours:
+the recorded camera; a key placed on the In point covers the whole clip, `82C892D8`); `82C88A00`; the element to
+record space mapping of b401 (Follow SPACE_EYE).
+
+Tests: `editor::tests::a_key_edit_stores_the_leashed_eye_and_playback_keeps_it`,
+`camera_key::tests::set_eye_round_trips_a_follow_orbit`, the `camera_collision` tests.
 
 ## M2 step 2: editor session and key bindings (skate-core)
 

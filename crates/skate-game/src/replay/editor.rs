@@ -63,6 +63,8 @@ pub(crate) struct Editor {
     pub camera_rules: super::camera_key::CameraRules,
     /// The free camera's eased height for the key being edited (reset when another key is edited).
     free_height: (Option<usize>, super::camera_key::FreeHeight),
+    /// The edited key's last accepted eye for the constraint; None = snap (an edit just opened).
+    edit_last: Option<bevy::prelude::Vec3>,
     /// Seconds since the last `REPLAY_CAMERA edit` line while the sticks move a key.
     edit_log: f32,
 }
@@ -130,7 +132,7 @@ impl Editor {
         let mut session = EditorSession::instant();
         session.mode = EditorMode::Timeline;
         let live = edit.limits.lanes.map(|s| s.default);
-        Some(Self { session, edit, clip, row: 0, channel: 0, tint: 0, live, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default(), free_height: Default::default(), edit_log: 0.0 })
+        Some(Self { session, edit, clip, row: 0, channel: 0, tint: 0, live, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default(), free_height: Default::default(), edit_last: None, edit_log: 0.0 })
     }
 
     pub fn frame(&self, time: f64) -> u32 {
@@ -258,6 +260,7 @@ impl Editor {
             }
         };
         self.editing = Some(index);
+        self.edit_last = None;
         Some(mode)
     }
 
@@ -272,6 +275,7 @@ impl Editor {
         let row = if k.soft { [4, 5, 2, 6][k.camera.row().min(3)] } else { k.camera.row() };
         let mode = super::camera_key::CameraKey::edit_mode_and_state(row).map(|(mode, _)| mode)?;
         self.editing = Some(i);
+        self.edit_last = None;
         Some(mode)
     }
 
@@ -294,6 +298,19 @@ impl Editor {
                     input.turn.to_array(), input.move_.to_array(), input.height, input.zoom, root.map(|r| r.translation.to_array()));
             }
         }
+    }
+
+    /// Retail's camera constraint runs only while a key edit is open (`82683680` returns unless the byte 0x83037414 is
+    /// set; the edit openers `82614658`.. set it, the timeline `82612C28` clears it) and the held pose is stored in the
+    /// key, so playback needs no constraint (b593). The anchor is the skater root at the key's frame.
+    pub fn constrain_editing(&mut self, root: &bevy::prelude::Transform, rules: &super::camera_collision::CameraCollision,
+        sweep: impl FnMut(bevy::prelude::Vec3, bevy::prelude::Vec3, f32) -> Option<super::camera_collision::Hit>) {
+        let Some(k) = self.editing.and_then(|i| self.cameras.get_mut(i)) else { return };
+        let Some(pose) = super::camera_key::pose(&k.camera, root) else { return };
+        let free = matches!(k.camera, super::camera_key::CameraKey::Free { .. });
+        let c = super::camera_collision::constrain(self.edit_last, pose.translation, root.translation, free, rules, sweep);
+        super::camera_key::set_eye(&mut k.camera, c.position, root);
+        self.edit_last = Some(c.position);
     }
 
     /// The key being edited, for the log (`REPLAY_CAMERA`).
@@ -656,6 +673,24 @@ mod tests {
         // b460: the merged clip (here the whole clip) takes the speed / shake defaults.
         assert!(e.cameras.is_empty(), "the camera key went");
         assert_eq!((e.speed(21.0), e.lane_value(Lane::Shake, 21.0)), (1.0, 0));
+    }
+
+    /// The constraint runs inside the key edit and stores the held eye in the key (b593): a Tripod eye pushed past
+    /// the 40 m leash is stored on the sphere, and playback poses the stored eye unchanged.
+    #[test]
+    fn a_key_edit_stores_the_leashed_eye_and_playback_keeps_it() {
+        use bevy::prelude::{Transform, Vec3};
+        use super::super::camera_key::CameraKey;
+        let mut e = Editor::open(0.0, 20.0, EditLimits::default()).unwrap();
+        let root = Transform::IDENTITY;
+        assert_eq!(e.pick_camera(1, 5.0, &Transform::from_xyz(0.0, 2.0, 5.0), &root), Some(8));
+        let i = e.editing.unwrap();
+        e.cameras[i].camera = CameraKey::Tripod { eye: Vec3::new(0.0, 0.0, 55.0), look_height: 0.0 };
+        e.constrain_editing(&root, &Default::default(), |_, _, _| None);
+        let CameraKey::Tripod { eye, .. } = e.cameras[i].camera else { panic!() };
+        assert!((eye - Vec3::new(0.0, 0.0, 40.0)).length() < 1e-4, "{eye}");
+        let far = Transform::from_xyz(30.0, 0.0, 0.0);
+        assert_eq!(e.pose(9.0, &far).0.unwrap().translation, eye);
     }
 
     /// Camera keys (b405): picking a basic camera inserts a hard key at the playhead (the pose holds and cuts), an
