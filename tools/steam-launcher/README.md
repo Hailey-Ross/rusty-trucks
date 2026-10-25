@@ -175,7 +175,9 @@ A shortcut without launch options opens the menu.
 | `tool-share` | pack the new logs and open a GitHub issue (Share sessions on; `share-on` / `share-off` toggle it, see docs/hails-additions/second-pc-testing.md#share-sessions-via-github) |
 | `tool-recomp-update`, `tool-recomp-getsave` | `play-recomp.ps1 -Update` / `-GetSave` |
 | `tool-setup` | `setup.ps1 -Install` |
-| `fixed-executor-single`, `fixed-executor-multi` | Tools > Physics step threads: the game's fixed step on one thread (default) or Bevy's multi-threaded scheduler; saved in `fixed-executor.txt`, passed as `SKATE_FIXED_EXECUTOR` |
+| `game-settings` | Tools > Opt-ins and settings: one row per setting (key, group, label, shown value, hint) from the game's own `settings\*.json` beside the converted game files, the files its Guide / F1 overlay writes |
+| `game-setting <key>` | Steps one of them to its next value (refused while the game runs: change it in the overlay then) |
+| `fixed-executor-single`, `fixed-executor-multi` | Physics Step Threads (also on the Opt-ins page): saved as `physics_threads_multi` in the game's `settings\graphics.json`, passed as `SKATE_FIXED_EXECUTOR` too for older game versions |
 | `clear-cache <id\|all>`, `clear-build <id\|all>` | delete a version's build cache (its cargo target folder) or its whole build (that plus `bin\`); Tools > Clear builds runs these |
 | `recomp-*`, `rpcs3-*` | the modes from `config.json` |
 

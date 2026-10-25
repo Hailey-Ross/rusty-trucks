@@ -33,8 +33,6 @@ if ($Here -like (Join-Path $Repo 'tools') + '\*') { $StateDir = Join-Path $Repo 
 New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 $Playing = Join-Path $StateDir 'PLAYING.txt'
 $LastSession = Join-Path $StateDir 'last_session.txt'
-# Tools > Physics step threads: 'single' (the default) or 'multi'; the game reads SKATE_FIXED_EXECUTOR.
-$FixedExecutorFile = Join-Path $StateDir 'fixed-executor.txt'
 $SelectedFile = Join-Path $StateDir 'version.txt'
 $script:BuildLog = ''
 $StateLogs = Join-Path $Repo '.local\audio-state-logs'
@@ -685,8 +683,94 @@ function Send-Sessions {
 
 # docs/hails-additions/second-pc-testing.md#share-sessions-via-github
 $ShareSettings = Join-Path $Repo 'share-sessions.txt'
+# Tools > Opt-ins and settings (USER-ASKS 337): the game's own saved settings (settings\*.json beside the converted game
+# files), the same files the PC overlay writes, so the two always agree. A field a file lacks is the game's default.
+function Game-SettingsDir { Join-Path (Split-Path (Current-Assets) -Parent) 'settings' }
+function Read-GameJson([string]$File) {
+    $p = Join-Path (Game-SettingsDir) $File
+    if (Test-Path $p) { try { return (Get-Content -Raw $p | ConvertFrom-Json) } catch {} }
+    return (New-Object PSObject)
+}
+function Write-GameJson([string]$File, $Obj) {
+    $dir = Game-SettingsDir
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # No byte order mark: the game's JSON reader refuses one.
+    [IO.File]::WriteAllText((Join-Path $dir $File), ($Obj | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding $false))
+}
+function Get-Field($Obj, [string]$Path) {
+    $o = $Obj
+    foreach ($part in $Path.Split('.')) {
+        if ($null -eq $o -or -not ($o.PSObject.Properties.Name -contains $part)) { return $null }
+        $o = $o.$part
+    }
+    return $o
+}
+function Set-Field($Obj, [string]$Path, $Value) {
+    $parts = $Path.Split('.'); $o = $Obj
+    for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+        if (-not ($o.PSObject.Properties.Name -contains $parts[$i])) { $o | Add-Member -NotePropertyName $parts[$i] -NotePropertyValue (New-Object PSObject) }
+        $o = $o.($parts[$i])
+    }
+    if ($o.PSObject.Properties.Name -contains $parts[-1]) { $o.($parts[-1]) = $Value } else { $o | Add-Member -NotePropertyName $parts[-1] -NotePropertyValue $Value }
+}
+function Same-Value($A, $B) {
+    if ($null -eq $A -or $null -eq $B) { return $false }
+    if ($A -is [bool] -or $B -is [bool]) { return ([bool]$A -eq [bool]$B) -and ($A -is [bool]) -and ($B -is [bool]) }
+    $x = 0.0; $y = 0.0
+    if ([double]::TryParse("$A", [ref]$x) -and [double]::TryParse("$B", [ref]$y)) { return [math]::Abs($x - $y) -lt 1e-6 }
+    return "$A" -eq "$B"
+}
+# key, group, label, file, field, values (the first = the game's default), shown values, hint.
+$GameRows = @(
+    @('npc_draw_distance', 'Opt-ins', 'NPC Draw Distance', 'graphics.json', 'npc_draw_distance', @(1.0, 0.0, 1.5, 2.0, 3.0), @('Retail', 'None (no NPCs, not retail)', '1.5x (not retail)', '2x (not retail)', '3x (not retail)'), 'How far out peds, NPC skaters and cars appear; farther costs frame time.'),
+    @('better_water', 'Opt-ins', 'Better Water', 'water-look.json', 'enabled', @($false, $true), @('Retail', 'On (not retail)'), 'A brighter, calmer water look on the canals, fountains and the sea.'),
+    @('more_audible', 'Opt-ins', 'More Audible World', 'audio.json', 'more_audible_world', @($false, $true), @('Retail', 'On (not retail)'), 'More cars, peds and NPC skaters heard at once. Applies at the next start.'),
+    @('ped_speech', 'Opt-ins', 'Ped Speech', 'audio.json', 'decode_speech', @($false, $true), @('Off', 'On'), 'Setup decodes the speech (about 3.4 GB) at the next Refresh Game Files.'),
+    @('extended_replays', 'Opt-ins', 'Extended Replays', 'graphics.json', 'extended_replays', @($false, $true), @('Retail (1:30)', 'On (not retail)'), 'The instant replay keeps more than retail''s 90 seconds (about 85 MB a minute).'),
+    @('replay_seconds', 'Opt-ins', 'Replay Length', 'graphics.json', 'replay_seconds', @(120, 150, 180, 210, 240), @('2:00', '2:30', '3:00', '3:30', '4:00'), 'How much the replay keeps with Extended Replays on.'),
+    @('better_object_mover', 'Opt-ins', 'Better Object Mover', 'graphics.json', 'better_object_mover', @($false, $true), @('Retail', 'On (not retail)'), 'Every prop can be picked up and moved, not only those with grab handles.'),
+    @('debug_menus', 'Opt-ins', 'Debug Menus', 'graphics.json', 'debug_menus', @($false, $true), @('Retail', 'On (not retail)'), 'Shows the debug menus Skate 3 ships hidden; developer leftovers that may not all work.'),
+    @('physics_threads', 'Opt-ins', 'Physics Step Threads', 'graphics.json', 'physics_threads_multi', @($false, $true), @('Single (default)', 'Multi'), 'The physics step on one thread (faster on the test PCs) or on Bevy''s multi-threaded scheduler.'),
+    @('zombie', 'Opt-ins', 'Zombie Mode', 'graphics.json', 'opt_ins.zombie', @($false, $true), @('Off', 'On'), 'The retail cheat: yellow screen, no traffic, every ped comes after you.'),
+    @('npc_physics', 'Opt-ins', 'NPC Skater Physics', 'graphics.json', 'opt_ins.npc_physics', @($false, $true), @('Off', 'On'), 'NPC skaters near you run full skater physics and bail (still being tested).'),
+    @('visualize_grabs', 'Opt-ins', 'Visualize Grabs', 'graphics.json', 'opt_ins.visualize_grabs', @($false, $true), @('Off', 'On'), 'Shows the props and car spots in grab range and logs grab availability.'),
+    @('resolution', 'Settings', 'Resolution', 'graphics.json', 'resolution', @('1280x800', '1280x720', '1600x900', '1920x1080', '1920x1200', '2560x1440', '2560x1600', '3840x2160'), $null, 'The window size.'),
+    @('scale', 'Settings', 'Render Scale', 'graphics.json', 'scale', @(100, 25, 50, 67, 75, 85), @('100%', '25%', '50%', '67%', '75%', '85%'), 'The 3D render size against the window; lower is faster.'),
+    @('fps', 'Settings', 'Framerate Cap', 'graphics.json', 'fps', @(0, 30, 60, 90, 120, 144, 165, 240), @('Unlimited', '30', '60', '90', '120', '144', '165', '240'), 'The highest frame rate the game runs at.'),
+    @('fps_counter', 'Settings', 'FPS Counter', 'graphics.json', 'fps_counter', @('off', 'simple', 'verbose'), @('Off', 'Simple', 'Verbose'), 'The on-screen frame-time readout.'),
+    @('master', 'Settings', 'Master Volume', 'audio.json', 'master', @(75, 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 85, 90, 95, 100), $null, 'Overall game volume.'),
+    @('ambience', 'Settings', 'Ambience Volume', 'audio.json', 'ambience', @(100, 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95), $null, 'The world''s ambience beds.'),
+    @('effects', 'Settings', 'Effects Volume', 'audio.json', 'effects', @(100, 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95), $null, 'Skating and world sound effects.'),
+    @('difficulty', 'Settings', 'Difficulty', 'gameplay.json', 'difficulty', @('easy', 'normal', 'hardcore', 'motorized'), @('Easy', 'Normal', 'Hardcore', 'Motorized'), 'The skating difficulty (Custom is set in the game''s Skater menu).')
+)
+# A row's value as stored: Resolution is width + height, FPS Counter is frame_stats + frame_stats_simple.
+function Game-Value($Row, $Obj) {
+    switch ($Row[4]) {
+        'resolution' { $w = Get-Field $Obj 'width'; $h = Get-Field $Obj 'height'; if ($null -eq $w) { return $null }; return "$($w)x$($h)" }
+        'fps_counter' { if (-not (Get-Field $Obj 'frame_stats')) { return $(if ($null -eq (Get-Field $Obj 'frame_stats')) { $null } else { 'off' }) }; if (Get-Field $Obj 'frame_stats_simple') { return 'simple' }; return 'verbose' }
+        default { return (Get-Field $Obj $Row[4]) }
+    }
+}
+function Set-GameValue($Row, $Obj, $Value) {
+    switch ($Row[4]) {
+        'resolution' { $wh = "$Value".Split('x'); Set-Field $Obj 'width' ([int]$wh[0]); Set-Field $Obj 'height' ([int]$wh[1]) }
+        'fps_counter' { Set-Field $Obj 'frame_stats' ($Value -ne 'off'); Set-Field $Obj 'frame_stats_simple' ($Value -eq 'simple') }
+        default { Set-Field $Obj $Row[4] $Value }
+    }
+}
+function Game-Index($Row, $Obj) {
+    $cur = Game-Value $Row $Obj
+    if ($null -eq $cur) { return 0 }
+    for ($i = 0; $i -lt $Row[5].Count; $i++) { if (Same-Value $Row[5][$i] $cur) { return $i } }
+    return -1
+}
+function Game-Shown($Row, [int]$Index, $Obj) {
+    if ($Index -lt 0) { return "$(Game-Value $Row $Obj) (custom)" }
+    if ($Row[6]) { return $Row[6][$Index] }
+    return "$($Row[5][$Index])"
+}
 function Fixed-Executor {
-    if ((Test-Path $FixedExecutorFile) -and (Get-Content $FixedExecutorFile -Raw).Trim() -eq 'multi') { return 'multi' }
+    if ((Get-Field (Read-GameJson 'graphics.json') 'physics_threads_multi') -eq $true) { return 'multi' }
     return 'single'
 }
 function Share-Script {
@@ -1136,7 +1220,27 @@ if ($Entry -in @('clear-cache', 'clear-build')) {
 }
 if ($Entry -eq 'room') { Make-Room (Get-Version $(if ($Label) { $Label } else { $Version })); exit 0 }
 if ($Entry -eq 'send') { $r = Send-Sessions; if (-not $r) { $r = 'Send: no after_session in config.json.' }; $r; exit 0 }
-if ($Entry -in @('fixed-executor-single', 'fixed-executor-multi')) { Set-Content -Path $FixedExecutorFile -Value $Entry.Substring(15) -Encoding ASCII; exit 0 }
+if ($Entry -in @('fixed-executor-single', 'fixed-executor-multi')) { $o = Read-GameJson 'graphics.json'; Set-Field $o 'physics_threads_multi' ($Entry -eq 'fixed-executor-multi'); Write-GameJson 'graphics.json' $o; exit 0 }
+# Tools > Opt-ins and settings: one row per setting (key, group, label, shown value, hint); game-setting <key> steps it.
+if ($Entry -eq 'game-settings') {
+    $files = @{}
+    foreach ($r in $GameRows) {
+        if (-not $files.ContainsKey($r[3])) { $files[$r[3]] = Read-GameJson $r[3] }
+        $o = $files[$r[3]]
+        "{0}`t{1}`t{2}`t{3}`t{4}" -f $r[0], $r[1], $r[2], (Game-Shown $r (Game-Index $r $o) $o), $r[7]
+    }
+    exit 0
+}
+if ($Entry -eq 'game-setting') {
+    $r = $GameRows | Where-Object { $_[0] -eq $Label } | Select-Object -First 1
+    if (-not $r) { Write-Host "Unknown setting: $Label"; exit 1 }
+    if (Test-Path $Playing) { Write-Host 'The game is running: change it in the game''s overlay (Guide / F1) instead.'; exit 1 }
+    $o = Read-GameJson $r[3]
+    $i = Game-Index $r $o
+    Set-GameValue $r $o $r[5][($i + 1) % $r[5].Count]
+    Write-GameJson $r[3] $o
+    exit 0
+}
 if ($Entry -eq 'share-on') { Share-Run (Version-Dir (Get-Version '')) @('-Consent'); exit 0 }
 if ($Entry -eq 'share-off') { Share-Run (Version-Dir (Get-Version '')) @('-Revoke'); exit 0 }
 if ($Entry -eq 'list') { $Entries.Keys | ForEach-Object { '{0,-20} {1}' -f $_, $Entries[$_].Name }; exit 0 }

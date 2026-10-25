@@ -440,29 +440,29 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             p.Items.Add(item);
         }
         if (group == "rust" || group == "tools") p.Items.Add(ShareItem());
-        if (group == "tools") p.Items.Add(FixedExecutorItem());
+        if (group == "tools") p.Items.Add(new Item("Opt-ins and settings", "The game's opt-ins and settings, the same ones as its Guide / F1 overlay.", true, delegate { pages.Push(GameSettingsPage("Opt-ins")); }));
         if (group == "tools") p.Items.Add(new Item("Clear builds and build caches", "Frees disk space: everything, or one version's build cache or whole build. Asks before deleting.", true, delegate { pages.Push(ClearPage()); }));
         if (p.Items.Count == 0) p.Items.Add(new Item("Nothing here yet", "See README.md to set these up.", false, null));
         return p;
     }
-    // Physics step threads (docs/hails-additions/25-perf-diagnostics.md#fixed-step-executor): launcher.ps1 passes the
-    // choice to the game as SKATE_FIXED_EXECUTOR.
-    Item FixedExecutorItem() {
-        var item = new Item("", "", false, null);
-        item.Run = delegate {
-            Run(St("fixed_executor") == "multi" ? "fixed-executor-single" : "fixed-executor-multi");
-            RefreshStatus(); ShowFixedExecutor(item);
-        };
-        ShowFixedExecutor(item);
-        return item;
-    }
-    void ShowFixedExecutor(Item item) {
-        string s = St("fixed_executor");
-        item.Text = "Physics step threads: " + (s == "multi" ? "Multi" : "Single (default)");
-        item.Hint = s == "" ? "Not in this launcher version." : s == "multi"
-            ? "Bevy's multi-threaded scheduler for the physics step. Press for single-threaded (the default)."
-            : "The physics step runs on one thread: faster and steadier on the desktop and the laptop. Press for multi-threaded.";
-        item.On = s != "";
+    // Tools > Opt-ins and settings (USER-ASKS 337): launcher.ps1 "game-settings" lists the game's saved opt-ins and settings
+    // (settings\*.json, the files the game's overlay writes); pressing a row steps it ("game-setting <key>"). Opt-ins
+    // first, the settings on their own page.
+    Page GameSettingsPage(string group) {
+        var p = new Page { Title = group == "Opt-ins" ? "Opt-ins" : "Settings" };
+        foreach (var r in Rows("game-settings", 5)) {
+            if (r[1] != group) continue;
+            var row = r; var item = new Item(row[2] + ": " + row[3], row[4], true, null);
+            item.Run = delegate {
+                int code; string o = Run("game-setting " + row[0], out code);
+                if (code != 0) { ShowText(row[2], o, null); return; }
+                foreach (var n in Rows("game-settings", 5)) if (n[0] == row[0]) { item.Text = n[2] + ": " + n[3]; }
+            };
+            p.Items.Add(item);
+        }
+        if (group == "Opt-ins") p.Items.Add(new Item("Settings", "Resolution, render scale, framerate cap, FPS counter, volumes and difficulty.", true, delegate { pages.Push(GameSettingsPage("Settings")); }));
+        if (p.Items.Count == 0) p.Items.Add(new Item("No game files yet", "Convert the game files first (Tools > setup).", false, null));
+        return p;
     }
     // docs/hails-additions/second-pc-testing.md#share-sessions-via-github
     Item ShareItem() {
