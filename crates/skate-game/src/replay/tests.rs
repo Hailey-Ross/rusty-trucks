@@ -441,15 +441,15 @@ fn one_shot_sounds_fire_again_when_playback_crosses_them() {
 fn a_mod_camera_override_goes_on_restore_and_disable() {
     let mut replay = Replay::default();
     assert_eq!(replay.follow_eye, camera_key::FollowEye::Camera, "retail: the gameplay camera (m346)");
-    replay.set_camera("m", Some(false), None, Some(80.), Some(camera_key::FollowEye::Skater));
+    replay.set_camera("m", Some(false), None, Some(80.), Some(camera_key::FollowEye::Skater), Some(false));
     assert!(!replay.camera_collision.enabled && replay.camera_collision.leash == 80.);
     assert_eq!(replay.camera_collision.radius, 0.1, "unset fields keep retail's");
-    assert_eq!(replay.follow_eye, camera_key::FollowEye::Skater);
-    replay.set_camera("other", None, None, None, None);
+    assert_eq!((replay.follow_eye, replay.fill_section), (camera_key::FollowEye::Skater, Some(false)));
+    replay.set_camera("other", None, None, None, None, None);
     assert!(!replay.camera_collision.enabled, "only the owner restores");
     replay.clear_owner("m");
     assert_eq!(replay.camera_collision, camera_collision::CameraCollision::default());
-    assert_eq!(replay.follow_eye, camera_key::FollowEye::Camera);
+    assert_eq!((replay.follow_eye, replay.fill_section), (camera_key::FollowEye::Camera, None));
 }
 
 #[test]

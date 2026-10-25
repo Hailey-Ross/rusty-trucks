@@ -350,8 +350,8 @@ eye, Follow eye in its eye frame); `edit_last` starts empty when an edit opens (
 a new shot. The instant replay free camera (C) still runs the constraint every move (retail's other gate writer
 `82833CF0` is not identified).
 
-Still open (b593): which camera retail shows before the first key of a clip when that key is placed mid-clip (ours:
-the recorded camera; a key placed on the In point covers the whole clip, `82C892D8`); `82C88A00`. The element to
+Still open (b593): `82C88A00` and which camera retail shows before a mid-clip first key were answered by b603 / b604
+(see "A camera picked on a clip with no keys covers the whole clip" below). The element to
 record space mapping of b401 (Follow SPACE_EYE) is settled: see "The Follow eye rides the gameplay camera" below.
 
 Tests: `editor::tests::a_key_edit_stores_the_leashed_eye_and_playback_keeps_it`,
@@ -392,6 +392,29 @@ Tests: `camera_key::tests::follow_eye_rides_the_gameplay_camera_and_orbits_the_l
 not move the eye, the camera moving does, the skater option turns it, the orbit caps), `set_eye_round_trips_a_follow_eye`,
 `replay::tests::a_mod_camera_override_goes_on_restore_and_disable`, skate-mods `replay_set_camera` validation.
 Open: whether `82C7FFB8`'s advanced flag changes the object ids (not read); the laptop retest.
+
+### A camera picked on a clip with no keys covers the whole clip (2026-10-25, USER-ASKS 341, research b603 / b604)
+
+Question (left open by b593 when the tripod fix was confirmed): which camera retail shows before the first camera
+key of a clip when that key is placed mid-clip. Ours showed the recorded Game camera there.
+
+Retail [code, `.local/research/b603-camera-before-first-key.md`, `b604-pose-before-first-key.md`]: the camera type
+flags are stored per segment, and an inserted segment takes the element's live value (`82C88A00`); a fresh clip's
+camera channel is one Game segment (`82C7F728`). A pick (`82614148`) of the same type inserts a key; of another type
+on a clip that is one Game segment it replaces the section with no dialog; otherwise a confirm dialog asks first
+(`826142F8`). The replace (`82614658` with replace = 1; main checked the calls in the recomp: `82C7FB08` merge,
+`82C7FFB8` insert, `82C7FE88`, `82C7F0A8` delete, `82C7FFB8` insert) leaves the section from its start to the
+playhead with the picked type, its eye / look records converted into the new camera's space at the pick
+(`82C854B8` / `82C856C8` via `82C852F0`). The key edit writers touch only the new key's segment (`82C84868`, state
+0xF start record, 0x10 end record), so for a basic (hard) key the part before the key holds the unedited pick pose
+and cuts to the edited pose at the key; for an advanced (soft) key the shared record ramps into it.
+
+Change: `Editor::pick_camera`: a non-Game pick on a clip with no keys also puts a key with the same camera, lens and
+hardness on the clip's In point (the key at the playhead is the one edited, as before). Data:
+`CameraRules::fill_section` (retail on); a mod turns it off with `sdk.replay.set_camera{fill_section = false}`.
+Test: `editor::tests::camera_keys_hold_cut_and_blend` (the part before a first Tripod key shows the key's pose).
+NOT RETAIL YET: a pick of another camera on a clip that already has keys (retail's confirm dialog and section replace;
+its strings are unread), and our "shown view" as the converted pre-pick pose is inference (b604 open points).
 
 ### Replay popups own the pad (2026-10-25, USER-ASKS 342)
 
