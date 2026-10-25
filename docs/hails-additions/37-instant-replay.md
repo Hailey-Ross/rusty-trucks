@@ -393,6 +393,33 @@ not move the eye, the camera moving does, the skater option turns it, the orbit 
 `replay::tests::a_mod_camera_override_goes_on_restore_and_disable`, skate-mods `replay_set_camera` validation.
 Open: whether `82C7FFB8`'s advanced flag changes the object ids (not read); the laptop retest.
 
+### The Follow eye frame is upright (2026-10-25, USER-ASKS 350, research b605 / b606, recomp run m350)
+Problem (laptop session game-20261025-152135): "camera still goes under ground." on c217a21f. An Advanced Follow key
+edited low (eye local [-1.89, -0.75, -1.91]); the edit-time constraint held it 0.137 m up (headless repro
+`replay::tests::a_follow_key_pitched_down_on_downtown_stays_above_the_ground`), so the dip came on playback: ours rode
+the recorded camera's full rotation, and a camera pitching on a landing swung the low eye into the ground.
+
+Retail [trace]: recomp hooks in `hooks_replay.cpp` (category `replay`: `RCAMN` call counts per caller, `RCAMF` the frame
+`82C84CF8` returns, `RCAMRAW` the raw matrix `82672118` copies), script `.local/recomp/scripts/m350_follow_key.txt`
+(Replay Editor, Edit timeline, rewind, Edit clip, Follow Camera, commit, scrub through the key), trace
+`.local/research/m350/run6.tsv`. At the commit the raw recorded camera (game axes, y up) had row 1 = (-0.135, 0.991,
+-0.007), pitched about 7.8 degrees, while the Follow eye frame (space 0, object 2) came back as rows (0.039, 0.999, 0),
+(-0.999, 0.039, 0), (0, 0, 1) at the camera's position: the camera's side axis (row 0) with its vertical part removed
+and renormalised, up = world up. That is the upright form b605 read in `828F36B0` (+0x194). `82C84CF8` / `82C82A50`
+run only on edit events (editor open, commit, exit); `82672118` runs only while the replay is open. The camera-system
+path `828F1C90` -> `828F2C38` b606 named did not run at all, in plain replay or in the Follow edit (hook `CAMSYSN`, 0
+calls in runs 1 to 4).
+
+Change: `FollowEye::Camera` (retail, default) builds the eye frame upright from the recorded camera (`camera_key.rs`
+`upright`); `FollowEye::CameraFull` keeps the full frame (ours from m346 until now), `Skater` the root. Mods:
+`sdk.replay.set_camera{follow_eye = 'camera' | 'camera_full' | 'skater'}`.
+
+Tests: `camera_key::tests::follow_eye_frame_is_the_camera_heading_only` (pitch leaves the frame unchanged, roll tips
+it only by the flattened side axis, the low eye stays where it was placed, the full frame swings), skate-mods
+`replay_set_camera` validation with `camera_full`.
+Open: the laptop retest; how playback evaluates a Follow key per frame without calling `82C84CF8` (frames cached at
+edit time is the likely reading, not traced).
+
 ### A camera picked on a clip with no keys covers the whole clip (2026-10-25, USER-ASKS 341, research b603 / b604)
 
 Question (left open by b593 when the tripod fix was confirmed): which camera retail shows before the first camera

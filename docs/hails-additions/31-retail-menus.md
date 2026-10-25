@@ -1896,8 +1896,18 @@ main re-read the host's show 0x825EF440, choice 0x825EF698, create 0x825EF370 an
   without a button and no press could close it, so the screen below went dead.
 - **Change:** all four use the default kind (Sk8Popup). `show_popup` warns when a small popup has options but is not
   cancelable (a mod's `sdk.menus.popup` with `kind = small` can still ask for one).
-- **Open:** the limit popup's and record 0x107's retail type are not read yet (they take the constructor default
-  here).
+- **Limit popup and record 0x107 [code + data, research b607, main checked the limit push]:** both Sk8Popup. The limit
+  popup (`sub_8264DB30`) sets +384 = 1 and callback +1412 = 0 and never writes +1436. FE popup table records (base
+  0x83028050, stride 0x38, pusher `sub_825DECD8`): +0 kind, +4 title, +8 description, +12 cancelable byte, +16 option
+  count, +20 default selection, +24 options; record 0x107 = kind 0, not cancelable, one option. Only the table gives
+  kinds 1 to 3 (kind 1: the autosave warnings; kind 2 / 3: online notices, the media and keyboard warnings, 0xC8
+  "generating footage").
+- **Kind -> movie and closing [code, research b608; matches `PopupKind::from_retail`]:** the host show `0x825EF440`
+  maps 2 / 3 to Sk8SmallPopup, 1 to Sk8AutoSavePopup, anything else to Sk8Popup. Of the 139 direct pushes only three
+  records have a non-zero kind: 0x17 (autosave), 0x69 ONLINE_LATENCY (kind 3, removed by its owner with
+  `sub_82D0A628`) and 0xC8 GENERATING_FOOTAGE (kind 3, cancelable, no options). The kind 2 records with one option and
+  no cancel (0x93 to 0x96, 0xFC, 0x102 to 0x105) are never pushed in TU3, so retail never shows a small popup that
+  only an option could close; ours now matches.
 - **Files:** `crates/skate-game/src/retail_menu_stage.rs`.
 
 ### Change

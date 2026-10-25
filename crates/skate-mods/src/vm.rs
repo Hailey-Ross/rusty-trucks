@@ -885,7 +885,7 @@ impl Command {
             // Up to a 2 m sphere; a 1 m to 1 km leash.
             Self::ReplaySetCamera { radius, leash, follow_eye, .. } => radius.is_none_or(|r| (0.0..=2.0).contains(&r))
                 && leash.is_none_or(|l| (1.0..=1000.0).contains(&l))
-                && follow_eye.as_deref().is_none_or(|f| matches!(f, "camera" | "skater")),
+                && follow_eye.as_deref().is_none_or(|f| matches!(f, "camera" | "camera_full" | "skater")),
             Self::WorldSetTuning { domain, patch } => crate::world_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::world_tuning::valid_patch(domain, p)),
             Self::AudioSetTuning { domain, patch } => crate::audio_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::audio_tuning::valid_patch(domain, p)),
             Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
@@ -2807,6 +2807,7 @@ mod world_audio_tests {
             (json!({"kind":"replay_set_camera","radius":5.0}), false),
             (json!({"kind":"replay_set_camera","leash":0.5}), false),
             (json!({"kind":"replay_set_camera","follow_eye":"skater"}), true),
+            (json!({"kind":"replay_set_camera","follow_eye":"camera_full"}), true),
             (json!({"kind":"replay_set_camera","follow_eye":"board"}), false),
             (json!({"kind":"replay_set_camera","fill_section":false}), true),
         ] {
