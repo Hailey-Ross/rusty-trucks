@@ -63,6 +63,20 @@ pub(crate) struct Editor {
     pub camera_rules: super::camera_key::CameraRules,
     /// The free camera's eased height for the key being edited (reset when another key is edited).
     free_height: (Option<usize>, super::camera_key::FreeHeight),
+    /// Seconds since the last `REPLAY_CAMERA edit` line while the sticks move a key.
+    edit_log: f32,
+}
+
+/// One camera key for a `REPLAY_CAMERA` line: its camera, its pose numbers (cm) and lens.
+pub(crate) fn log_key(camera: &super::camera_key::CameraKey, lens: f32) -> String {
+    use super::camera_key::CameraKey;
+    let v = |p: bevy::prelude::Vec3| format!("[{:.2}, {:.2}, {:.2}]", p.x, p.y, p.z);
+    match *camera {
+        CameraKey::Game => format!("game lens={lens}"),
+        CameraKey::Follow { yaw, pitch, distance, look_height } => format!("follow yaw={yaw:.1} pitch={pitch:.1} distance={distance:.2} look={look_height:.2} lens={lens}"),
+        CameraKey::Tripod { eye, look_height } => format!("tripod eye={} look={look_height:.2} lens={lens}", v(eye)),
+        CameraKey::Free { eye, yaw, pitch } => format!("free eye={} yaw={yaw:.1} pitch={pitch:.1} lens={lens}", v(eye)),
+    }
 }
 
 /// The two marker kinds retail's delete asks about (b407, `82508D88`): 1 a clip marker (a hard key), 2 a key marker
@@ -116,7 +130,7 @@ impl Editor {
         let mut session = EditorSession::instant();
         session.mode = EditorMode::Timeline;
         let live = edit.limits.lanes.map(|s| s.default);
-        Some(Self { session, edit, clip, row: 0, channel: 0, tint: 0, live, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default(), free_height: Default::default() })
+        Some(Self { session, edit, clip, row: 0, channel: 0, tint: 0, live, base: start, fps, frames, trim_carry: [0.0; 2], trimming_end: false, cameras: Vec::new(), editing: None, camera_rules: Default::default(), free_height: Default::default(), edit_log: 0.0 })
     }
 
     pub fn frame(&self, time: f64) -> u32 {
@@ -261,7 +275,8 @@ impl Editor {
         Some(mode)
     }
 
-    /// The key edit controls on the key being edited.
+    /// The key edit controls on the key being edited. While the sticks / D-pad move it, a `REPLAY_CAMERA edit` line
+    /// every half second (the key and the input; laptop 2026-10-25 asked for the pose in the log).
     pub fn edit_key(&mut self, input: super::camera_key::CameraInput, root: Option<&bevy::prelude::Transform>, dt: f32) {
         let rules = self.camera_rules;
         if self.free_height.0 != self.editing {
@@ -270,6 +285,20 @@ impl Editor {
         if let Some(k) = self.editing.and_then(|i| self.cameras.get_mut(i)) {
             super::camera_key::edit(&mut k.camera, &mut k.lens, &mut self.free_height.1, input, &rules, root, dt);
         }
+        let moving = input.turn.length() > 0.0 || input.move_.length() > 0.0 || input.height != 0.0 || input.zoom != 0.0;
+        self.edit_log = if moving { self.edit_log + dt } else { 0.5 };
+        if moving && self.edit_log >= 0.5 {
+            self.edit_log = 0.0;
+            if let Some(k) = self.editing.and_then(|i| self.cameras.get(i)) {
+                bevy::log::info!("REPLAY_CAMERA edit {} turn={:?} move={:?} height={} zoom={} root={:?}", log_key(&k.camera, k.lens),
+                    input.turn.to_array(), input.move_.to_array(), input.height, input.zoom, root.map(|r| r.translation.to_array()));
+            }
+        }
+    }
+
+    /// The key being edited, for the log (`REPLAY_CAMERA`).
+    pub fn editing_line(&self) -> Option<String> {
+        self.editing.and_then(|i| self.cameras.get(i)).map(|k| format!("{} frame={}", log_key(&k.camera, k.lens), k.frame))
     }
 
     /// The camera at `time` on the skater root: the key in effect (a soft key blends into the next soft key of the

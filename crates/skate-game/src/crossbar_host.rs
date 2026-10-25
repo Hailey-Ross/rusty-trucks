@@ -324,6 +324,9 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
         if let Some(value) = self.tips_loader.call(vm, object, method, &args)? {
             return Ok(value);
         }
+        if let Some(value) = (object == "Game").then(|| game_constant(method)).flatten() {
+            return Ok(value);
+        }
         // The Extras rows and its picker callbacks (only while FE 18 is on top).
         if let Some(value) = (object == "Game").then(|| self.extras.call(method, &args)).flatten() {
             return Ok(value);
@@ -374,6 +377,17 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
         }
         self.calls.push(format!("{object}.{method}({})", args.iter().map(Value::text).collect::<Vec<_>>().join(",")));
         Ok(Value::Undefined)
+    }
+}
+
+/// `Game` natives with a fixed answer. `IsDemo`: false, not the demo build (the replay editor movies grey out and never
+/// highlight the Advanced Camera rows when it is true; unanswered, their `== false` check failed and rows 4..6 lost
+/// the highlight: laptop 2026-10-25, USER-ASKS 339, research b591). Retail's other demo flags are constant false too
+/// (`coremenu.GetIsDemo`, stub 825B3C80).
+fn game_constant(method: &str) -> Option<Value> {
+    match method {
+        "IsDemo" => Some(Value::Bool(false)),
+        _ => None,
     }
 }
 
@@ -442,6 +456,12 @@ mod tests {
         let mut m = CoreMenu { registry: &registry, context: &context, view: &view, state: &mut state, sub_options: &[] };
         m.call(&mut vm, "SetOnlineTeamSubOptionDone", &[]).unwrap();
         assert!(!state.online_team_pending);
+    }
+
+    #[test]
+    fn game_is_demo_is_false() {
+        assert_eq!(game_constant("IsDemo"), Some(Value::Bool(false)));
+        assert_eq!(game_constant("Nope"), None);
     }
 
     #[test]

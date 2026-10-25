@@ -767,6 +767,8 @@ fn editor_controls(
             if !lane_row && (pressed & A != 0 || keys.just_pressed(KeyCode::Enter)) {
                 if let Some((view, root)) = view_root {
                     if let Some(mode) = editor.pick_camera(editor.row, cursor, &view, &root) {
+                        info!("REPLAY_CAMERA key new row={} {} view={:?} root={:?}", editor.row, editor.editing_line().unwrap_or_default(),
+                            view.translation.to_array(), root.translation.to_array());
                         editor.session.mode = match mode {
                             7 => EditorMode::FollowKey,
                             8 => EditorMode::TripodKey,
@@ -792,6 +794,7 @@ fn editor_controls(
             // Leaving a key edit runs the base game's commit too (`82508930` leave states 7..10 -> `82507438(E, 0)`,
             // b462); it lands only when no camera key is under the cursor.
             if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
+                info!("REPLAY_CAMERA key done {}", editor.editing_line().unwrap_or_default());
                 if !channels {
                     editor.commit_base(cursor);
                 }
@@ -827,6 +830,7 @@ fn editor_controls(
             match editor.a_target(cursor, channels) {
                 editor::ATarget::CameraKey => {
                     if let Some(mode) = editor.reopen_at(cursor) {
+                        info!("REPLAY_CAMERA key reopen {}", editor.editing_line().unwrap_or_default());
                         editor.session.mode = match mode {
                             7 => EditorMode::FollowKey,
                             8 => EditorMode::TripodKey,
@@ -953,16 +957,23 @@ impl Replay {
         world: Option<&skate_core::physics::board_world::BoardWorld>) -> (Option<Transform>, Option<f32>) {
         let (pose, fov) = self.editor_camera(root);
         let shot = self.editor.as_ref().and_then(|e| e.camera_at(self.cursor));
-        let (Some(mut pose), Some((index, key, _))) = (pose, shot) else {
+        let (Some(mut pose), Some((index, key, lens))) = (pose, shot) else {
             *guard = CameraGuard::default();
             return (pose, fov);
         };
         let cut = guard.shot != Some(index) || (self.cursor - guard.cursor).abs() > CameraGuard::CUT_SECONDS;
+        let wanted = pose.translation;
         let old = if cut { None } else { guard.last };
         let free = matches!(key, camera_key::CameraKey::Free { .. });
         let c = camera_collision::constrain(old, pose.translation, root.translation, free, &self.camera_collision,
             |from, to, radius| world.and_then(|w| camera_collision::sweep(w, from, to, radius)));
         pose.translation = c.position;
+        // REPLAY_CAMERA shot: each new shot (a cut) with where the key wanted the camera, where the constraint put it and
+        // the skater root, so a camera held in or under the world shows in the log (USER-ASKS 339).
+        if cut {
+            info!("REPLAY_CAMERA shot {index} {} wanted={:?} at={:?} root={:?} relook={}", editor::log_key(&key, lens),
+                wanted.to_array(), c.position.to_array(), root.translation.to_array(), c.relook);
+        }
         if let Some(look) = camera_key::look_point(&key, root).filter(|_| c.relook) {
             pose.look_at(look, Vec3::Y);
         }
