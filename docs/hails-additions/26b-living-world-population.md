@@ -404,6 +404,18 @@ User: "anything opt in should be added as a setting to the guide overlay that ca
   differs from the player's choice), and the overlay's `better_water`, `more_audible_world` and `decode_speech` at
   their toggle and reset. The `OPT_IN` summary line stays. Test `changes_name_each_toggle_and_its_source`.
 
+- **Every opt-in in one section (2026-10-25, USER-ASKS 336: "Ensure all optins are available in the guide
+  overlay"):** the Opt-Ins section now holds every feature that is off by default or not retail, grouped by header:
+  Living World (NPC Draw Distance, from Graphics), Water (Better Water, from Extras), Audio (More Audible World, Ped
+  Speech), Replay (Extended Replays, Replay Length, from Extras), Objects (Better Object Mover, from Extras), Debug
+  (Debug Menus, from Extras), Performance (Physics Step Threads, new: until now only in the Steam launcher), Opt-In
+  Features (Zombie Mode, NPC Skater Physics, Visualize Grabs). Extras keeps Mods, Updates, Controllers and Refresh
+  Game Files; Graphics keeps display, day and night, volumes and the FPS counter. The settings files are unchanged,
+  so saved choices stay. Switches that stay outside the overlay are kill switches and developer variables (for
+  example `SKATE_LIVING_WORLD=0`, `SKATE3_RETAIL_MENUS=0`, `SKATE_PRESENT_MODE`, `SKATE3_INPUT=xinput`), not opt-ins.
+  Test: `pages_put_headers_in_front_of_their_groups`, `sections_expose_only_real_rows_and_all_maps` (no opt-in outside
+  the Opt-Ins section), `physics_threads_default_single_and_load_saved`.
+
 ## Map change: fresh NPC bodies, ids that never repeat, ped state cleared, 2026-10-18
 
 - **Problem:** after a map change (a teleport to another map, a reload) parts of the living world kept the old

@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 
 /// A position step longer than this in one fixed tick is a teleport or a map switch, not travel.
 const MAX_STEP: f32 = 5.0;
+/// Bail distance steps at or under this are not counted (0x82775158, 0.005 m).
+const BAIL_MIN_STEP: f32 = 0.005;
 /// How often changed totals are written.
 const SAVE_SECONDS: f32 = 30.0;
 
@@ -50,7 +52,9 @@ pub(crate) struct CareerStatsHost {
     pub enabled: Vec<bool>,
     path: Option<std::path::PathBuf>,
     last: Option<[f32; 3]>,
-    grind_run: Option<f32>,
+    bail_seq: Option<u32>,
+    /// Bail distance not yet added (0x82775018 adds whole metres).
+    bail_metres: f32,
     dirty: bool,
     since_save: f32,
 }
@@ -95,6 +99,36 @@ impl CareerStatsHost {
             if std::thread::Builder::new().name("career-stats-save".into()).spawn(move || write(&path, &text)).is_err() {
                 self.dirty = true;
             }
+        }
+    }
+
+    /// A scoring runtime event: trick counts (0x82773D98: success / failure, flip or late flip), move ends with their
+    /// time or distance (0x82774230: invert, manual, powerslide, grind), body flips (0x82773C00 / 0x82775328).
+    fn event(&mut self, event: crate::scoring_runtime::StatEvent) {
+        use crate::scoring_runtime::StatEvent;
+        use skate_core::scoring::catalog;
+        match event {
+            StatEvent::TrickEnd { id, success, announced, held, distance } => {
+                let i = id as i16;
+                if announced {
+                    self.record(if success { row::SUCCESSFUL_TRICKS } else { row::UNSUCCESSFUL_TRICKS }, 1.0);
+                    if success && catalog::category(i) == Some(catalog::FLIP) {
+                        let late = catalog::base(i) == catalog::OLLIE && i != catalog::OLLIE;
+                        self.record(if late { row::LATE_FLIPS } else { row::FLIP_TRICKS }, 1.0);
+                    }
+                }
+                if success {
+                    match catalog::category(i) {
+                        Some(catalog::HANDPLANT) => self.record(row::INVERT_TIME, held),
+                        Some(catalog::MANUAL) => self.record(row::MANUAL_DISTANCE, distance),
+                        Some(catalog::POWERSLIDE) => self.record(row::POWERSLIDE_DISTANCE, distance),
+                        Some(catalog::GRIND) => self.record(row::GRIND_DISTANCE, distance),
+                        _ => {}
+                    }
+                }
+            }
+            StatEvent::BodyFlipAttempt => self.record(row::BODY_FLIP_ATTEMPTS, 1.0),
+            StatEvent::BodyFlips(n) => self.record(row::BODY_FLIPS, n as f32),
         }
     }
 
@@ -150,15 +184,25 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>) {
     commands.insert_resource(CareerStatsHost::load(root.join("settings/career-stats.json"), tables));
 }
 
-/// One fixed step of the local player: distance on and off the board, time played, skitching, grind length (summed
-/// while a grind is active and added when it ends; our grind runtime has no distance of its own).
+/// One fixed step of the local player: time played, distance on and off the board, skitching, bails and their
+/// distance (0x82775158, 0x82774DA0), and the scoring runtime's trick, move and body flip events.
 fn track(
     host: Option<ResMut<CareerStatsHost>>,
-    skater: Option<Res<crate::physics::SkaterRuntime>>,
+    skater: Option<ResMut<crate::physics::SkaterRuntime>>,
+    physics: Option<Res<crate::physics::GamePhysics>>,
     time: Res<Time<Fixed>>,
     transition: Res<crate::map_transition::MapTransition>,
 ) {
-    let (Some(mut host), Some(s)) = (host, skater) else { return };
+    let (Some(mut host), Some(mut s)) = (host, skater) else { return };
+    let events = std::mem::take(&mut s.scoring.stat_events);
+    for event in events {
+        host.event(event);
+    }
+    let bail_seq = s.scoring.bail_seq;
+    if let Some(last) = host.bail_seq.filter(|l| bail_seq > *l) {
+        host.record(row::WIPEOUTS, (bail_seq - last) as f32);
+    }
+    host.bail_seq = Some(bail_seq);
     let dt = time.delta_secs();
     let root = s.animated_skeleton.roots.animation_to_world;
     let at = [root[3][0], root[3][1], root[3][2]];
@@ -176,13 +220,13 @@ fn track(
         host.record(row::SKITCH_DISTANCE, step);
         host.record(row::SKITCH_TIME, dt);
     }
-    match (s.grind.active_name().is_some(), host.grind_run) {
-        (true, run) => host.grind_run = Some(run.unwrap_or(0.0) + step),
-        (false, Some(run)) => {
-            host.grind_run = None;
-            host.record(row::GRIND_DISTANCE, run);
+    if physics.is_some_and(|p| p.board_wiping_out) && step > BAIL_MIN_STEP {
+        host.bail_metres += step;
+        let whole = host.bail_metres.floor();
+        if whole >= 1.0 {
+            host.bail_metres -= whole;
+            host.record(row::BAIL_DISTANCE, whole);
         }
-        (false, None) => {}
     }
 }
 
@@ -240,6 +284,27 @@ mod tests {
         assert_eq!(hit_type("security_nsz02"), 12);
         assert_eq!(hit_type("jock02"), 0);
         assert_eq!(hit_type(""), 0);
+    }
+
+    /// Trick ends count announced tricks, flips and late flips apart, and add a move's time or distance only when it
+    /// completed (0x82773D98, 0x82774230).
+    #[test]
+    fn scoring_events_feed_the_trick_and_move_rows() {
+        use crate::scoring_runtime::StatEvent;
+        let mut host = CareerStatsHost::default();
+        let end = |id: usize, success: bool, held: f32, distance: f32| StatEvent::TrickEnd { id, success, announced: true, held, distance };
+        host.event(end(92, true, 0.0, 0.0)); // a flip
+        host.event(end(100, true, 0.0, 0.0)); // a late flip
+        host.event(end(2, true, 0.0, 4.5)); // nose manual
+        host.event(end(0, false, 0.0, 9.0)); // a failed powerslide: no distance
+        host.event(StatEvent::TrickEnd { id: 7, success: true, announced: false, held: 0.0, distance: 3.0 }); // grind
+        host.event(StatEvent::BodyFlipAttempt);
+        host.event(StatEvent::BodyFlips(2));
+        let v = |r: usize| host.stats.value(r);
+        assert_eq!((v(row::SUCCESSFUL_TRICKS), v(row::UNSUCCESSFUL_TRICKS)), (3.0, 1.0));
+        assert_eq!((v(row::FLIP_TRICKS), v(row::LATE_FLIPS)), (1.0, 1.0));
+        assert_eq!((v(row::MANUAL_DISTANCE), v(row::POWERSLIDE_DISTANCE), v(row::GRIND_DISTANCE)), (4.5, 0.0, 3.0));
+        assert_eq!((v(row::BODY_FLIP_ATTEMPTS), v(row::BODY_FLIPS)), (1.0, 2.0));
     }
 
     #[test]

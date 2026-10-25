@@ -8,6 +8,7 @@ pub const ROWS: usize = 65;
 /// Row indices the engine writes (retail's index order).
 pub mod row {
     pub const GENDER_SWITCHES: usize = 2;
+    pub const WIPEOUTS: usize = 6;
     pub const DISTANCE: usize = 7;
     pub const TIME_PLAYED: usize = 8;
     pub const DISTANCE_OFFBOARD: usize = 9;
@@ -15,12 +16,17 @@ pub mod row {
     pub const SKITCH_DISTANCE: usize = 11;
     pub const SKITCH_TIME: usize = 12;
     pub const GRIND_DISTANCE: usize = 13;
+    pub const FLIP_TRICKS: usize = 15;
     pub const BODY_FLIPS: usize = 16;
     pub const BODY_FLIP_ATTEMPTS: usize = 17;
+    pub const LATE_FLIPS: usize = 18;
     pub const PUSHES: usize = 19;
     pub const MONGO_PUSHES: usize = 20;
     pub const MANUAL_DISTANCE: usize = 21;
     pub const POWERSLIDE_DISTANCE: usize = 22;
+    pub const UNSUCCESSFUL_TRICKS: usize = 23;
+    pub const SUCCESSFUL_TRICKS: usize = 24;
+    pub const BAIL_DISTANCE: usize = 29;
     pub const MOST_COLLIDED: usize = 46;
     /// Hits per ped type, in this order: bum, jock, teen girl, teen guy, man, woman, business man, business woman,
     /// male skater, female skater, male tourist, female tourist, security guard, granny.
