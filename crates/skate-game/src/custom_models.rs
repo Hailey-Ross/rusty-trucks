@@ -271,7 +271,7 @@ impl Plugin for CustomModelsPlugin {
         .add_systems(PreUpdate, interact.after(crate::graphics_menu::MenuInput))
         .add_systems(
             Update,
-            (poll_import, publish, draw)
+            (scripted_swap, poll_import, publish, draw)
                 .chain()
                 .before(crate::customiser_parts::update)
                 .before(crate::app::FrameSet::Animation),
@@ -632,6 +632,32 @@ fn publish(
         }
     }
     state.dirty = true;
+}
+/// Test runs: `SKATE_CUSTOM_MODEL_SWAP=<id or roster key>@<seconds>` (or `stock@<seconds>`) asks for the same swap as
+/// the menus after that many seconds with no swap in flight (so the saved model loads first).
+fn scripted_swap(mut state: ResMut<CustomModels>, time: Res<Time<Real>>, mut plan: Local<Option<Option<(String, f32)>>>,
+    roots: Query<(), With<crate::world::PlayerRoot>>) {
+    let plan = plan.get_or_insert_with(|| {
+        std::env::var("SKATE_CUSTOM_MODEL_SWAP").ok().and_then(|v| {
+            let (id, at) = v.rsplit_once('@')?;
+            Some((id.to_owned(), at.parse().ok()?))
+        })
+    });
+    if roots.is_empty() || state.swapping() {
+        return;
+    }
+    if let Some((_, at)) = plan.as_mut() {
+        *at -= time.delta_secs();
+    }
+    if let Some((id, at)) = plan.as_ref().filter(|(_, at)| *at <= 0.0) {
+        bevy::log::info!("CUSTOM_MODEL scripted swap to {id} ({at:.1} s)");
+        if id == "stock" {
+            state.request_stock();
+        } else if !state.request_character(id) {
+            bevy::log::warn!("CUSTOM_MODEL scripted swap: no character {id}");
+        }
+        *plan = None;
+    }
 }
 fn stop_import(mut state: ResMut<CustomModels>, mut exit: MessageReader<AppExit>) {
     if exit.read().next().is_some() {
