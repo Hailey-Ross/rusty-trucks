@@ -249,6 +249,44 @@ fn marker_popup(delete: Option<editor::MarkerKind>) -> skate_core::fe_popup::Pop
     }
 }
 
+const CAMERA_POPUP: &str = "engine:replay.change_camera";
+
+#[derive(Clone, Copy, Debug)]
+struct CameraAsk {
+    row: usize,
+    time: f64,
+    view: Transform,
+    anchors: camera_key::Anchors,
+    shown: bool,
+}
+
+/// Retail's replace confirm (`82614148`, callback `826142F8`, b609): "Change Camera", No / Yes; Yes replaces.
+fn camera_popup() -> skate_core::fe_popup::PopupRequest {
+    skate_core::fe_popup::PopupRequest {
+        title: "ID_REPLAY_EDITOR_REPLACE_CAMERA_TITLE".into(),
+        description: "ID_REPLAY_EDITOR_REPLACE_CAMERA_DESC".into(),
+        options: vec!["ID_COMMON_NO".into(), "ID_COMMON_YES".into()],
+        callback: CAMERA_POPUP.into(),
+        cancelable: true,
+        ..Default::default()
+    }
+}
+
+/// A camera row's pick, then that key's edit mode.
+fn pick_camera(editor: &mut editor::Editor, row: usize, time: f64, view: &Transform, anchors: &camera_key::Anchors) {
+    if let Some(mode) = editor.pick_camera(row, time, view, anchors) {
+        info!("REPLAY_CAMERA key new row={row} {} view={:?} root={:?}", editor.editing_line().unwrap_or_default(),
+            view.translation.to_array(), anchors.root.translation.to_array());
+        use skate_core::replay_edit::session::EditorMode;
+        editor.session.mode = match mode {
+            7 => EditorMode::FollowKey,
+            8 => EditorMode::TripodKey,
+            9 => EditorMode::GameKey,
+            _ => EditorMode::FreeKey,
+        };
+    }
+}
+
 /// Yes to a marker question: the delete or the drop at the cursor it was asked at.
 fn apply_marker_ask(replay: &mut Replay, ask: MarkerAsk) {
     let Some(editor) = replay.editor.as_mut() else { return };
@@ -328,6 +366,8 @@ pub(crate) struct Replay {
     pub(crate) view: ReplayViewMode,
     /// A marker delete / drop waiting for its confirm popup.
     marker_ask: Option<MarkerAsk>,
+    /// A camera pick that replaces a keyed section, waiting for "Change Camera" (b609).
+    camera_ask: Option<CameraAsk>,
     /// B / Back asked for the quit warning; it opens when the button is released.
     quit_on_release: bool,
     /// Shortest recording the replay opens on (s); None = retail's [`MIN_OPEN_SECONDS`]. Data, mod-settable.
@@ -593,6 +633,7 @@ impl Replay {
         self.active = false;
         self.editor = None;
         self.marker_ask = None;
+        self.camera_ask = None;
         self.quit_pending = false;
         self.film_ask = None;
         self.view = ReplayViewMode::default();
@@ -758,6 +799,7 @@ fn editor_controls(
     let mut seek: Option<f64> = None;
     let mut play: Option<bool> = None;
     let mut ask: Option<MarkerAsk> = None;
+    let mut camera_ask: Option<CameraAsk> = None;
     let Some(editor) = replay.editor.as_mut() else { return false };
     let (mode_before, channel_before) = (editor.session.mode, editor.channel);
     let used = match editor.session.mode {
@@ -798,15 +840,11 @@ fn editor_controls(
             if !lane_row && (pressed & A != 0 || keys.just_pressed(KeyCode::Enter)) {
                 if let Some((view, root)) = view_root {
                     editor.camera_rules.fill_section = fill_section;
-                    if let Some(mode) = editor.pick_camera(editor.row, cursor, &view, &root) {
-                        info!("REPLAY_CAMERA key new row={} {} view={:?} root={:?}", editor.row, editor.editing_line().unwrap_or_default(),
-                            view.translation.to_array(), root.root.translation.to_array());
-                        editor.session.mode = match mode {
-                            7 => EditorMode::FollowKey,
-                            8 => EditorMode::TripodKey,
-                            9 => EditorMode::GameKey,
-                            _ => EditorMode::FreeKey,
-                        };
+                    if editor.pick_asks(editor.row, cursor) {
+                        camera_ask = Some(CameraAsk { row: editor.row, time: cursor, view, anchors: root, shown: false });
+                    } else {
+                        let row = editor.row;
+                        pick_camera(editor, row, cursor, &view, &root);
                     }
                 }
             }
@@ -936,6 +974,10 @@ fn editor_controls(
     }
     if ask.is_some() {
         replay.marker_ask = ask;
+        replay.playing = false;
+    }
+    if camera_ask.is_some() {
+        replay.camera_ask = camera_ask;
         replay.playing = false;
     }
     if let Some(t) = seek {
@@ -1174,6 +1216,11 @@ pub(crate) fn controls(
                 apply_marker_ask(&mut *replay, ask);
             }
         }
+        if callback == CAMERA_POPUP {
+            if let (Some(ask), Some(editor)) = (replay.camera_ask.take().filter(|_| choice == 1), replay.editor.as_mut()) {
+                pick_camera(editor, ask.row, ask.time, &ask.view, &ask.anchors);
+            }
+        }
         if callback == PHOTO_POPUP && replay.photo == Photo::Confirm {
             replay.photo = if choice == 1 { Photo::Capture } else { Photo::Idle };
         }
@@ -1248,8 +1295,19 @@ pub(crate) fn controls(
             apply_marker_ask(&mut *replay, ask);
         }
     }
+    if let Some(ask) = replay.camera_ask.filter(|a| !a.shown) {
+        if popups.stage_ready {
+            popups.engine_requests.push(camera_popup());
+            replay.camera_ask = Some(CameraAsk { shown: true, ..ask });
+        } else {
+            replay.camera_ask = None;
+            if let Some(editor) = replay.editor.as_mut() {
+                pick_camera(editor, ask.row, ask.time, &ask.view, &ask.anchors);
+            }
+        }
+    }
     // An open replay popup owns the pad: no editor or transport input underneath it (USER-ASKS 342).
-    if !replay.active || menu_open || answered || replay.quit_pending || replay.marker_ask.is_some() || replay.film_ask.is_some()
+    if !replay.active || menu_open || answered || replay.quit_pending || replay.marker_ask.is_some() || replay.camera_ask.is_some() || replay.film_ask.is_some()
         || replay.photo != Photo::Idle {
         return;
     }

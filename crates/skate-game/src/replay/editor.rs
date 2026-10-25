@@ -237,14 +237,65 @@ impl Editor {
         })
     }
 
+    /// Retail's camera type of a menu row (`82508CE8` values; rows 0..6 = items 0, 1, 3, 2, 4, 5, 6, b609).
+    fn pick_kind(row: usize) -> u8 {
+        [0, 1, 3, 2][super::camera_key::CameraKey::basic_row(row).0.min(3)]
+    }
+
+    /// Whether a pick of `row` at `time` replaces the camera's section instead of inserting a key (`82614148`, b609):
+    /// a basic row inserts only over its own camera with hard keys (or the In / Out points) on both sides, an advanced
+    /// row over its own camera. Off with `CameraRules::fill_section` false (inserts only).
+    pub fn pick_replaces(&self, row: usize, time: f64) -> bool {
+        if !self.camera_rules.fill_section {
+            return false;
+        }
+        let active = self.active(time);
+        let same = active.map_or(3, |i| self.cameras[i].camera.kind()) == Self::pick_kind(row);
+        if super::camera_key::CameraKey::basic_row(row).1 {
+            return !same;
+        }
+        let frame = self.frame(time);
+        let next_soft = self.cameras.iter().find(|k| k.frame > frame).is_some_and(|k| k.soft);
+        !(same && !active.is_some_and(|i| self.cameras[i].soft) && !next_soft)
+    }
+
+    /// A replace asks first ("Change Camera", No / Yes) unless the channel is one Game section (no keys), b609.
+    pub fn pick_asks(&self, row: usize, time: f64) -> bool {
+        self.pick_replaces(row, time) && !self.cameras.is_empty()
+    }
+
     /// A on a camera row (b405, `82C7FFB8`): a key of that camera at the playhead from the current view (a key already
-    /// there takes the new camera), then its edit mode. None when refused (the cap) or the row is not a camera.
+    /// there takes the new camera), then its edit mode. A replace (b609 / b610) first clears the soft keys of the
+    /// section around the playhead (between hard keys or the In / Out points) and re-expresses its start key as the
+    /// new camera. None when refused (the cap) or the row is not a camera.
     pub fn pick_camera(&mut self, row: usize, time: f64, view: &bevy::prelude::Transform, anchors: &super::camera_key::Anchors) -> Option<u8> {
         let (mode, _) = super::camera_key::CameraKey::edit_mode_and_state(row)?;
         let (basic, soft) = super::camera_key::CameraKey::basic_row(row);
         let from = self.pose(time, anchors).0.unwrap_or(*view);
         let camera = super::camera_key::key_from_view(basic, &from, anchors)?;
         let lens = self.active(time).map_or(self.camera_rules.lens_default, |i| self.cameras[i].lens);
+        let frame = self.frame(time);
+        if self.pick_replaces(row, time) {
+            if soft && self.cameras.len() >= MAX_CAMERA_KEYS {
+                return None;
+            }
+            let c = &self.edit.clips[self.clip];
+            let lo = self.cameras.iter().rposition(|k| !k.soft && k.frame <= frame);
+            let lo_frame = lo.map_or(c.start, |i| self.cameras[i].frame);
+            let hi_frame = self.cameras.iter().find(|k| !k.soft && k.frame > frame).map_or(c.end, |k| k.frame);
+            self.cameras.retain(|k| !(k.soft && k.frame >= lo_frame && k.frame < hi_frame));
+            match self.cameras.iter().rposition(|k| !k.soft && k.frame <= frame) {
+                Some(i) => {
+                    self.cameras[i].camera = super::camera_key::convert_key(&self.cameras[i].camera, basic, anchors).unwrap_or(camera);
+                }
+                // The section starts at the In point on the recorded camera: it holds the new key's pose (b603).
+                None if camera != super::camera_key::CameraKey::Game && frame > c.start => {
+                    let start = c.start;
+                    self.cameras.insert(0, CamKey { frame: start, camera, lens, soft });
+                }
+                None => {}
+            }
+        }
         let index = match self.key_near(time) {
             Some(i) => {
                 self.cameras[i].camera = camera;
@@ -253,14 +304,6 @@ impl Editor {
             }
             None if self.cameras.len() >= MAX_CAMERA_KEYS => return None,
             None => {
-                let frame = self.frame(time);
-                // b603 / b604: another camera picked on a clip with no keys (one Game section) replaces the whole
-                // section: the part before the playhead holds the new key's unedited pose (blends into it for the
-                // advanced rows); later edits move only the key at the playhead.
-                let start = self.edit.clips[self.clip].start;
-                if self.camera_rules.fill_section && self.cameras.is_empty() && camera != super::camera_key::CameraKey::Game && frame > start {
-                    self.cameras.push(CamKey { frame: start, camera, lens, soft });
-                }
                 let i = self.cameras.partition_point(|k| k.frame < frame);
                 self.cameras.insert(i, CamKey { frame, camera, lens, soft });
                 i
@@ -700,6 +743,41 @@ mod tests {
         assert_eq!(e.pose(9.0, &far).0.unwrap().translation, eye);
     }
 
+    /// b609 / b610: a pick of another camera inside a keyed section asks first, then replaces the section between its
+    /// hard keys: the soft keys inside go, the start key turns into the new camera (pose converted at the playhead),
+    /// one key goes in at the playhead; keys outside stay. The same camera's advanced row only inserts.
+    #[test]
+    fn a_camera_pick_on_a_keyed_clip_replaces_its_section() {
+        use super::super::camera_key::{Anchors, CameraKey};
+        use bevy::prelude::{Transform, Vec3};
+        let mut e = Editor::open(0.0, 20.0, EditLimits::default()).unwrap();
+        let anchors = Anchors::new(Transform::from_xyz(0.0, 2.0, 6.0), Transform::IDENTITY, Default::default());
+        let tripod = |x: f32| CameraKey::Tripod { eye: Vec3::new(x, 2.0, 5.0), look_height: 0.25 };
+        let free = CameraKey::Free { eye: Vec3::new(0.0, 3.0, 0.0), yaw: 0.0, pitch: 0.0 };
+        let key = |t: f64, camera, soft| CamKey { frame: e.frame(t), camera, lens: 24.0, soft };
+        let keys = vec![key(2.0, tripod(1.0), false), key(4.0, tripod(2.0), true), key(6.0, tripod(3.0), true),
+                        key(8.0, free, false), key(10.0, free, true)];
+        e.cameras = keys.clone();
+        let view = Transform::from_xyz(0.0, 2.0, 5.0);
+        assert!(e.pick_asks(0, 5.0), "Follow over a Tripod section asks");
+        assert!(!e.pick_asks(5, 5.0) && !e.pick_replaces(5, 5.0), "Advanced Tripod over Tripod only inserts");
+        assert!(e.pick_replaces(1, 5.0), "basic Tripod between soft keys replaces");
+        assert_eq!(e.pick_camera(0, 5.0, &view, &anchors), Some(7));
+        let frames: Vec<_> = e.cameras.iter().map(|k| (k.frame, k.camera.row(), k.soft)).collect();
+        assert_eq!(frames, vec![(e.frame(2.0), 0, false), (e.frame(5.0), 0, false), (e.frame(8.0), 3, false), (e.frame(10.0), 3, true)]);
+        // The start key keeps its world eye and its look height, now in the Follow eye frame.
+        let CameraKey::Follow { look_height, .. } = e.cameras[0].camera else { panic!() };
+        assert_eq!(look_height, 0.25);
+        let before = super::super::camera_key::pose(&tripod(1.0), &anchors).unwrap().translation;
+        assert!(super::super::camera_key::pose(&e.cameras[0].camera, &anchors).unwrap().translation.distance(before) < 1e-4);
+        // Without the section rule (a mod's fill_section = false) a pick only inserts.
+        e.cameras = keys;
+        e.camera_rules.fill_section = false;
+        assert!(!e.pick_asks(0, 5.0));
+        assert_eq!(e.pick_camera(0, 5.0, &view, &anchors), Some(7));
+        assert_eq!(e.cameras.len(), 6);
+    }
+
     /// Camera keys (b405): picking a basic camera inserts a hard key at the playhead (the pose holds and cuts), an
     /// advanced camera a soft key (blends into the next soft key of the same camera); A on a key re-edits it.
     #[test]
@@ -727,9 +805,10 @@ mod tests {
         assert!((mid - Vec3::new(4.0, 2.0, 0.0)).length() < 1e-3, "{mid}");
         assert_eq!(e.active_row(12.0), 6);
         assert_eq!(e.key_fractions().len(), 4);
-        assert_eq!(e.segments().iter().map(|s| s.1).collect::<Vec<_>>(), vec![1, 1, 2, 2]);
-        // A on the Tripod key re-edits it (mode 8); not on a key: None.
-        assert_eq!(e.reopen_at(5.0), Some(8));
+        // The Free pick at 10 s replaced the Tripod section (b609): its start key at 5 s became a Free key (b610).
+        assert_eq!(e.segments().iter().map(|s| s.1).collect::<Vec<_>>(), vec![1, 2, 2, 2]);
+        // A on the key at 5 s re-edits it (Free, mode 10); not on a key: None.
+        assert_eq!(e.reopen_at(5.0), Some(10));
         assert_eq!(e.reopen_at(7.0), None);
         // A on a Game camera key opens nothing (`82612C28`, kind >= 3 returns, b555) and leaves the edited key alone.
         e.cameras[2].camera = super::super::camera_key::CameraKey::Game;

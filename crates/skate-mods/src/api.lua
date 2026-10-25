@@ -438,8 +438,9 @@ end
 -- The replay cameras' world collision and leash (retail: collide on, radius 0.1 m, leash 40 m): opts.collide
 -- (false = cameras pass through walls), opts.radius, opts.leash; opts.follow_eye = 'camera' (retail: a Follow key's
 -- eye rides the recorded gameplay camera, upright), 'camera_full' (with its pitch and roll) or 'skater';
--- opts.fill_section = false keeps the recorded camera before the first key (retail true: a camera picked on a clip
--- with no keys covers the whole clip). nil restores retail's; the
+-- opts.fill_section = false keeps the recorded camera before the first key and makes every camera pick a plain insert
+-- (retail true: a camera picked on a clip with no keys covers the whole clip, and another camera picked inside a keyed
+-- section asks "Change Camera" and replaces that section). nil restores retail's; the
 -- override goes on disable.
 function sdk.replay.set_camera(opts)
   opts = opts or {}

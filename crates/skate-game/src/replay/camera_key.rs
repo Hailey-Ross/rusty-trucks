@@ -217,6 +217,26 @@ pub(crate) fn key_from_view(row: usize, view: &Transform, anchors: &Anchors) -> 
     })
 }
 
+/// A section's start key re-expressed as `row`'s camera when a pick replaces the section (b610: the stored eye / look
+/// go old space -> world -> new space with the frames at the playhead; the look height stays between Follow and
+/// Tripod, a Free source gets look height 0). None for a Game source (no stored pose: the caller keys the view).
+pub(crate) fn convert_key(old: &CameraKey, row: usize, anchors: &Anchors) -> Option<CameraKey> {
+    if old.row() == row {
+        return Some(*old);
+    }
+    let world = |eye: Vec3| anchors.eye.transform_point(eye);
+    Some(match (row, *old) {
+        (_, CameraKey::Game) => return None,
+        (2, _) => CameraKey::Game,
+        (3, _) => return key_from_view(3, &pose(old, anchors)?, anchors),
+        (0, CameraKey::Tripod { eye, look_height }) => CameraKey::Follow { eye: anchors.to_eye_frame(eye), look_height },
+        (0, CameraKey::Free { eye, .. }) => CameraKey::Follow { eye: anchors.to_eye_frame(eye), look_height: 0.0 },
+        (1, CameraKey::Follow { eye, look_height }) => CameraKey::Tripod { eye: world(eye), look_height },
+        (1, CameraKey::Free { eye, .. }) => CameraKey::Tripod { eye, look_height: 0.0 },
+        _ => return None,
+    })
+}
+
 /// One console frame of the key edit controls, scaled by `dt` x the console rate (retail steps per frame, no dt).
 /// `anchors` are the frames at the cursor: Follow and Tripod orbit their eye around the look point (b550).
 pub(crate) fn edit(key: &mut CameraKey, lens: &mut f32, height: &mut FreeHeight, input: CameraInput, rules: &CameraRules,
