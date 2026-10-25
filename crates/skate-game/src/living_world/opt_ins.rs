@@ -50,8 +50,9 @@ impl OptIn {
     }
 }
 
-/// The player's choices (all off = retail as far as it is ported).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The player's choices. NPC Skater Physics is on by default (user 2026-10-25, USER-ASKS 338: "Lets turn on by default
+/// with the ability to toggle it off"); the others are off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct OptIns {
     pub zombie: bool,
@@ -59,10 +60,16 @@ pub(crate) struct OptIns {
     pub visualize_grabs: bool,
 }
 
+impl Default for OptIns {
+    fn default() -> Self {
+        Self { zombie: false, npc_physics: true, visualize_grabs: false }
+    }
+}
+
 impl OptIns {
     /// The `SKATE_*=1` variables of this run.
     pub(crate) fn from_env() -> Self {
-        let mut s = Self::default();
+        let mut s = Self { zombie: false, npc_physics: false, visualize_grabs: false };
         for o in OptIn::ALL {
             s.set(o, o.env_on());
         }
@@ -143,9 +150,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn choices_round_trip_and_default_off() {
+    fn choices_round_trip_and_default_npc_physics_on() {
         assert_eq!(serde_json::from_str::<OptIns>("{}").unwrap(), OptIns::default());
-        let mut s = OptIns::default();
+        assert_eq!(OptIns::default(), OptIns { zombie: false, npc_physics: true, visualize_grabs: false }, "USER-ASKS 338");
+        let mut s = OptIns { npc_physics: false, ..OptIns::default() };
         for o in OptIn::ALL {
             assert!(!s.get(o));
             s.set(o, true);
@@ -173,12 +181,12 @@ mod tests {
     /// One OPT_IN_CHANGED line per opt-in that switched, naming who switched it.
     #[test]
     fn changes_name_each_toggle_and_its_source() {
-        let off = OptIns::default();
-        let zombie = OptIns { zombie: true, ..Default::default() };
+        let off = OptIns { npc_physics: false, ..OptIns::default() };
+        let zombie = OptIns { zombie: true, ..off };
         assert_eq!(changes(off, zombie, zombie), vec!["OPT_IN_CHANGED zombie off -> on by player"]);
         assert_eq!(changes(zombie, off, zombie), vec!["OPT_IN_CHANGED zombie on -> off by mod"]);
         assert!(changes(zombie, zombie, off).is_empty());
-        let both = OptIns { npc_physics: true, visualize_grabs: true, ..Default::default() };
+        let both = OptIns { npc_physics: true, visualize_grabs: true, ..off };
         assert_eq!(changes(off, both, both), vec![
             "OPT_IN_CHANGED npc_physics off -> on by player",
             "OPT_IN_CHANGED visualize_grabs off -> on by player",

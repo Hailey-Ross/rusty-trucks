@@ -11,7 +11,7 @@ pedestrian banks, their vault tuning, and the streamed speech index.
   clip ids, `skate_audio::world::speech_rules`); ~1 MB of JSON, no audio.
 - `speech_tuning(collections)`: the speech manager's per-event tuning (`Sk8::Audio::tSpeechTuning`
   and the not-follow lists) per speech bank; part of `world_tuning`.
-- `decode_speech(...)`: opt-in (`SKATE_SETUP_SPEECH=1`): each take of the chosen events decoded to a
+- `decode_speech(...)`: on by default (`SKATE_SETUP_SPEECH=0` skips it): each take of the chosen events decoded to a
   mono PCM16 WAV at its own 36 kHz (`speech/livingworld/<clip>/<take>.wav`). All free-roam events are
   ~9 h of audio (~2.4 GB), so the default setup leaves it out. The main cast's (`maincastspeech.big`)
   and the announcer's (`announcerspeech.big`, `ANNOUNCER_EVENTS`) indexes and decodes work the same.
@@ -113,11 +113,11 @@ FREE_ROAM_EVENTS = (101, 102, 104, 105, 108, 109, 110, 201, 202, 203, 204, 205, 
 # The main cast's (pros' and the special cast's) free-roam events (`maincastspeech.big`, the speech manager's bank 0):
 # the skater speech messages and reactions the port sends (grunt 201 / impact 202, crash 906, pos 101, slam 104, collide
 # 130, pro-on-pro 150 / 151, gestures 338, hit reactions 344 / 335 / 336, warn 500 / 501, greet 601, race 903 / 913,
-# bored 1014). ~3.0 h, ~0.95 GB as 44.1 kHz PCM16; decoded with the living world's (`SKATE_SETUP_SPEECH=1`).
+# bored 1014). ~3.0 h, ~0.95 GB as 44.1 kHz PCM16; decoded with the living world's (on unless `SKATE_SETUP_SPEECH=0`).
 MAIN_CAST_EVENTS = (101, 104, 130, 150, 151, 201, 202, 335, 336, 338, 344, 500, 501, 601, 903, 906, 913, 1014)
 # The announcer's events an engine sender can request (`announcerspeech.big`, speech bank 3): the NPC pro's crash
 # (480_slam_pro, 571 s, ~41 MB as 36 kHz PCM16). Free skate never plays it (no challenge announcer); the other 62
-# events belong to the challenge modes. Decoded with the living world's (`SKATE_SETUP_SPEECH=1`).
+# events belong to the challenge modes. Decoded with the living world's (on unless `SKATE_SETUP_SPEECH=0`).
 ANNOUNCER_EVENTS = (480,)
 
 
@@ -542,7 +542,8 @@ def speech_index(archive_path: Path, prefix: str = 'livingworld') -> dict:
 
 
 def speech_requested() -> bool:
-    return os.environ.get('SKATE_SETUP_SPEECH', '') == '1'
+    # On by default (USER-ASKS 338); the game passes SKATE_SETUP_SPEECH=0 when the player switched Ped Speech off.
+    return os.environ.get('SKATE_SETUP_SPEECH', '') != '0'
 
 
 def decode_speech(archive_path: Path, index: dict, output: Path, work: Path, vgmstream: Path, decode, log,

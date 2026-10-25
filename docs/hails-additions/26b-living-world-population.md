@@ -415,6 +415,16 @@ User: "anything opt in should be added as a setting to the guide overlay that ca
   example `SKATE_LIVING_WORLD=0`, `SKATE3_RETAIL_MENUS=0`, `SKATE_PRESENT_MODE`, `SKATE3_INPUT=xinput`), not opt-ins.
   Test: `pages_put_headers_in_front_of_their_groups`, `sections_expose_only_real_rows_and_all_maps` (no opt-in outside
   the Opt-Ins section), `physics_threads_default_single_and_load_saved`.
+- **On by default (2026-10-25, USER-ASKS 338: "Lets turn on by default with the ability to toggle it off: / - Ped
+  Speech / - NPC Skater Physics"):** both rows stay in Opt-Ins and switch off there or on the launcher's page.
+  `OptIns::default` has `npc_physics` on (`LivingWorldSettings::default` keeps the run's variables until the saved
+  choice arrives, as `npc_simulated` does); `SavedSettings::default` has `decode_speech` on, and setup decodes the
+  speech unless the game passes `SKATE_SETUP_SPEECH=0` (a fresh conversion decodes it). Settings files saved before
+  carry `false` for both (the old default was written with every other change), so each file has a
+  `defaults_version`: a file from before version 1 takes the new default once when the game or the launcher reads
+  it, and a later "off" is kept. The audio group's fingerprint changes (`world_audio.py`), so the next Refresh Game
+  Files redoes the audio step and decodes the speech (about 3.4 GB). Tests: `npc_physics_defaults_on_once_and_off_sticks`,
+  `speech_decode_choice_reaches_setup`, `choices_round_trip_and_default_npc_physics_on`.
 
 ## Map change: fresh NPC bodies, ids that never repeat, ped state cleared, 2026-10-18
 
