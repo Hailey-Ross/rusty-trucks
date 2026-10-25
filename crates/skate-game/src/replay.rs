@@ -316,6 +316,8 @@ pub(crate) struct Replay {
     pub(crate) camera_collision: camera_collision::CameraCollision,
     /// The frame a Follow key's eye rides (retail: the gameplay camera, m346; `sdk.replay.set_camera{follow_eye}`).
     pub(crate) follow_eye: camera_key::FollowEye,
+    /// A mod's `fill_section` (None: retail's, on; `CameraRules::fill_section`).
+    pub(crate) fill_section: Option<bool>,
     /// The mod whose `sdk.replay.set_camera` is in force (last writer wins).
     camera_owner: Option<String>,
     /// The quit warning is up (waiting for its answer).
@@ -494,17 +496,19 @@ impl Replay {
     /// `sdk.replay.set_camera`: the camera collision switch, radius and leash, and the Follow eye frame; all absent
     /// restores retail's.
     pub(crate) fn set_camera(&mut self, owner: &str, collide: Option<bool>, radius: Option<f32>, leash: Option<f32>,
-        follow_eye: Option<camera_key::FollowEye>) {
+        follow_eye: Option<camera_key::FollowEye>, fill_section: Option<bool>) {
         let retail = camera_collision::CameraCollision::default();
-        if collide.is_none() && radius.is_none() && leash.is_none() && follow_eye.is_none() {
+        if collide.is_none() && radius.is_none() && leash.is_none() && follow_eye.is_none() && fill_section.is_none() {
             if self.camera_owner.as_deref() == Some(owner) {
                 self.camera_collision = retail;
                 self.follow_eye = Default::default();
+                self.fill_section = None;
                 self.camera_owner = None;
             }
             return;
         }
         self.follow_eye = follow_eye.unwrap_or_default();
+        self.fill_section = fill_section;
         self.camera_collision = camera_collision::CameraCollision {
             enabled: collide.unwrap_or(retail.enabled),
             radius: radius.unwrap_or(retail.radius),
@@ -518,7 +522,7 @@ impl Replay {
     pub(crate) fn clear_owner(&mut self, owner: &str) {
         self.markers.retain(|m| m.owner != owner);
         self.set_limits(owner, None, None, None);
-        self.set_camera(owner, None, None, None, None);
+        self.set_camera(owner, None, None, None, None, None);
     }
 
     /// Every mod stopped.
@@ -529,6 +533,7 @@ impl Replay {
         self.limits_owner = None;
         self.camera_collision = Default::default();
         self.follow_eye = Default::default();
+        self.fill_section = None;
         self.camera_owner = None;
     }
 
@@ -744,6 +749,7 @@ fn editor_controls(
     let playing = replay.playing;
     // The recorded camera and the frames the keys ride (Follow eye, skater root).
     let follow_eye = replay.follow_eye;
+    let fill_section = replay.fill_section.unwrap_or(true);
     let view_root = replay.sample().map(|(a, b, t)| {
         let view = blend(a.camera, b.camera, t);
         (view, camera_key::Anchors::new(view, blend(a.root, b.root, t), follow_eye))
@@ -791,6 +797,7 @@ fn editor_controls(
             // A on a basic camera row: that camera from the current view, then its key edit mode (b401).
             if !lane_row && (pressed & A != 0 || keys.just_pressed(KeyCode::Enter)) {
                 if let Some((view, root)) = view_root {
+                    editor.camera_rules.fill_section = fill_section;
                     if let Some(mode) = editor.pick_camera(editor.row, cursor, &view, &root) {
                         info!("REPLAY_CAMERA key new row={} {} view={:?} root={:?}", editor.row, editor.editing_line().unwrap_or_default(),
                             view.translation.to_array(), root.root.translation.to_array());

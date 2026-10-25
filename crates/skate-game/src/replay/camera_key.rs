@@ -107,6 +107,9 @@ pub(crate) struct CameraRules {
     /// Retail 0: its look object 4 is the skater root at foot / deck level and a new key's lift starts at 0 (b406:
     /// `826824F8`, recomp trace CAMTGT; `82C7FFB8` resets LOOK_Z).
     pub look_target_height: f32,
+    /// A pick of another camera on a clip with no keys gives the whole clip that camera (retail `82614148` replace,
+    /// b603 / b604; `sdk.replay.set_camera{fill_section}`).
+    pub fill_section: bool,
 }
 
 impl Default for CameraRules {
@@ -131,6 +134,7 @@ impl Default for CameraRules {
             lens_default: 24.0,
             console_hz: 30.0,
             look_target_height: 0.0,
+            fill_section: true,
         }
     }
 }

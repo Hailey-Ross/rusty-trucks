@@ -423,8 +423,8 @@ pub enum Command {
         share_max_seconds: Option<u32>,
     },
     /// Override the replay cameras' world collision (switch, sphere radius m) and leash (m), and the frame a Follow
-    /// key's eye rides ("camera" = the recorded gameplay camera, "skater"); all absent restores retail's (on, 0.1, 40,
-    /// "camera").
+    /// key's eye rides ("camera" = the recorded gameplay camera, "skater"), and whether a camera picked on a clip with
+    /// no keys covers the whole clip (`fill_section`); all absent restores retail's (on, 0.1, 40, "camera", true).
     ReplaySetCamera {
         #[serde(default)]
         collide: Option<bool>,
@@ -434,6 +434,8 @@ pub enum Command {
         leash: Option<f32>,
         #[serde(default)]
         follow_eye: Option<String>,
+        #[serde(default)]
+        fill_section: Option<bool>,
     },
     /// Audio extension 4 (doc 16 L2): write one input of a retail MixMap controller (`value` absent
     /// = release it: the input gets back the value before this mod's first write).
@@ -2806,6 +2808,7 @@ mod world_audio_tests {
             (json!({"kind":"replay_set_camera","leash":0.5}), false),
             (json!({"kind":"replay_set_camera","follow_eye":"skater"}), true),
             (json!({"kind":"replay_set_camera","follow_eye":"board"}), false),
+            (json!({"kind":"replay_set_camera","fill_section":false}), true),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(c.validate(), ok, "{value}");
@@ -2841,7 +2844,7 @@ mod world_audio_tests {
         let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
         assert_eq!(kinds, ["world_set_tuning", "world_set_tuning", "request", "world_reset_moved_props", "world_reset_prop", "world_upright_prop", "world_spawn_prop", "world_remove_prop",
             "replay_open", "replay_marker", "replay_set_limits", "replay_set_limits", "replay_set_camera"]);
-        assert!(matches!(&cmds[12], Command::ReplaySetCamera { collide: Some(false), radius: None, leash: Some(80.0), follow_eye: None }));
+        assert!(matches!(&cmds[12], Command::ReplaySetCamera { collide: Some(false), radius: None, leash: Some(80.0), follow_eye: None, fill_section: None }));
         assert!(matches!(&cmds[11], Command::ReplaySetLimits { max_frames: None, byte_budget: None, share_max_seconds: None }), "nil restores");
         assert!(cmds.iter().all(Command::validate));
         assert!(matches!(&cmds[1], Command::WorldSetTuning { patch: None, .. }), "nil restores");

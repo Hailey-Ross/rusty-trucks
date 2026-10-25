@@ -254,6 +254,13 @@ impl Editor {
             None if self.cameras.len() >= MAX_CAMERA_KEYS => return None,
             None => {
                 let frame = self.frame(time);
+                // b603 / b604: another camera picked on a clip with no keys (one Game section) replaces the whole
+                // section: the part before the playhead holds the new key's unedited pose (blends into it for the
+                // advanced rows); later edits move only the key at the playhead.
+                let start = self.edit.clips[self.clip].start;
+                if self.camera_rules.fill_section && self.cameras.is_empty() && camera != super::camera_key::CameraKey::Game && frame > start {
+                    self.cameras.push(CamKey { frame: start, camera, lens, soft });
+                }
                 let i = self.cameras.partition_point(|k| k.frame < frame);
                 self.cameras.insert(i, CamKey { frame, camera, lens, soft });
                 i
@@ -703,27 +710,29 @@ mod tests {
         let view = Transform::from_xyz(0.0, 2.0, 5.0);
         // No keys: the recorded camera.
         assert!(e.pose(5.0, &root).0.is_none());
-        // Tripod (basic) at 5 s: holds from there.
+        // Tripod (basic) at 5 s on a clip with no keys: the whole clip takes it (b603 / b604), the part before the key
+        // holding the key's unedited pose.
         assert_eq!(e.pick_camera(1, 5.0, &view, &root), Some(8));
-        assert!(e.pose(4.0, &root).0.is_none() && e.pose(9.0, &root).0.is_some());
+        assert_eq!(e.pose(4.0, &root).0, e.pose(9.0, &root).0);
+        assert!(e.pose(4.0, &root).0.is_some() && e.active_row(2.0) == 1);
         assert_eq!(e.active_row(9.0), 1);
         // Advanced Free keys at 10 s and 14 s: soft, blending between them.
         // (A new key starts from the camera in effect at the playhead; the eyes are then edited, set here directly.)
         assert_eq!(e.pick_camera(6, 10.0, &view, &root), Some(10));
         assert_eq!(e.pick_camera(6, 14.0, &view, &root), Some(10));
-        for (i, x) in [(1, 0.0), (2, 8.0)] {
+        for (i, x) in [(2, 0.0), (3, 8.0)] {
             e.cameras[i].camera = super::super::camera_key::CameraKey::Free { eye: Vec3::new(x, 2.0, 0.0), yaw: 0.0, pitch: 0.0 };
         }
         let mid = e.pose(12.0, &root).0.unwrap().translation;
         assert!((mid - Vec3::new(4.0, 2.0, 0.0)).length() < 1e-3, "{mid}");
         assert_eq!(e.active_row(12.0), 6);
-        assert_eq!(e.key_fractions().len(), 3);
-        assert_eq!(e.segments().iter().map(|s| s.1).collect::<Vec<_>>(), vec![3, 1, 2, 2]);
+        assert_eq!(e.key_fractions().len(), 4);
+        assert_eq!(e.segments().iter().map(|s| s.1).collect::<Vec<_>>(), vec![1, 1, 2, 2]);
         // A on the Tripod key re-edits it (mode 8); not on a key: None.
         assert_eq!(e.reopen_at(5.0), Some(8));
         assert_eq!(e.reopen_at(7.0), None);
         // A on a Game camera key opens nothing (`82612C28`, kind >= 3 returns, b555) and leaves the edited key alone.
-        e.cameras[1].camera = super::super::camera_key::CameraKey::Game;
+        e.cameras[2].camera = super::super::camera_key::CameraKey::Game;
         let editing = e.editing;
         assert_eq!(e.reopen_at(10.0), None);
         assert_eq!(e.editing, editing);
@@ -791,6 +800,7 @@ mod tests {
     fn reset_timeline_clears_the_channel_or_all() {
         use bevy::prelude::Transform;
         let mut e = Editor::open(0.0, 30.0, EditLimits::default()).unwrap();
+        e.camera_rules.fill_section = false; // the key layout below, without the In-point key of a first pick
         let (root, view) = (super::super::camera_key::Anchors::new(Transform::IDENTITY, Transform::IDENTITY, Default::default()), Transform::from_xyz(0.0, 2.0, 5.0));
         assert!(e.pick_camera(1, 5.0, &view, &root).is_some());
         e.cycle_channel();
@@ -847,6 +857,7 @@ mod tests {
     fn deleting_a_clip_marker_takes_the_key_markers_on_both_sides() {
         use bevy::prelude::Transform;
         let mut e = Editor::open(0.0, 30.0, EditLimits::default()).unwrap();
+        e.camera_rules.fill_section = false; // the key layout below, without the In-point key of a first pick
         let (root, view) = (super::super::camera_key::Anchors::new(Transform::IDENTITY, Transform::IDENTITY, Default::default()), Transform::from_xyz(0.0, 2.0, 5.0));
         // Keys: hard 4, soft 8, soft 10, hard 14, soft 18, soft 20, hard 24.
         for (t, row) in [(4.0, 1), (8.0, 6), (10.0, 6), (14.0, 0), (18.0, 4), (20.0, 4), (24.0, 2)] {
