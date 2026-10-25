@@ -14,7 +14,9 @@ param(
     [int]$Seconds = 70,
     [string]$Mods = '',
     # A file held while the game runs (one game at a time); skipped when empty.
-    [string]$Lock = ''
+    [string]$Lock = '',
+    # Only the frame log (SKATE_FRAME_LOG), no trace-all: no span bookkeeping, no system timing.
+    [switch]$Plain
 )
 $ErrorActionPreference = 'Stop'
 if (Get-Process skate3rust -ErrorAction SilentlyContinue) { throw 'A game is already running (one game at a time).' }
@@ -25,7 +27,12 @@ if ($Lock) {
 $err = Join-Path $env:TEMP "frame-time-run-$PID-$(Get-Date -Format HHmmss).stderr.log"
 $empty = Join-Path $env:TEMP 'frame-time-run-nomods'
 try {
-    $env:SKATE_TRACE_ALL = '1'
+    if ($Plain) {
+        Remove-Item Env:SKATE_TRACE_ALL -ErrorAction SilentlyContinue
+        $plainDir = Join-Path $Bin "logs\plain-$(Get-Date -Format yyyyMMdd-HHmmss)"
+        New-Item -ItemType Directory -Force $plainDir | Out-Null
+        $env:SKATE_FRAME_LOG = Join-Path $plainDir 'frames.tsv'
+    } else { $env:SKATE_TRACE_ALL = '1' }
     $env:SKATE_REPORT_CHILD = '1'
     if (-not $Mods) { New-Item -ItemType Directory -Force $empty | Out-Null; $Mods = $empty }
     $env:SKATE3_MODS = $Mods
@@ -39,14 +46,14 @@ try {
     $started = $null
     while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 2
-        if (-not $started -and (Select-String -Path $err -Pattern 'TRACE_ACTIVE' -Quiet)) { $started = Get-Date }
+        if (-not $started -and ($Plain -and (Test-Path $env:SKATE_FRAME_LOG) -or (Select-String -Path $err -Pattern 'TRACE_ACTIVE' -Quiet))) { $started = Get-Date }
         if ($started -and ((Get-Date) - $started).TotalSeconds -ge $Seconds) { break }
     }
     if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force; $p.WaitForExit(10000) | Out-Null }
-    if (-not (Select-String -Path $err -Pattern 'TRACE_ACTIVE' -Quiet)) { Get-Content $err -Tail 20; throw 'No TRACE_ACTIVE line: the run did not start tracing.' }
+    if (-not $Plain -and -not (Select-String -Path $err -Pattern 'TRACE_ACTIVE' -Quiet)) { Get-Content $err -Tail 20; throw 'No TRACE_ACTIVE line: the run did not start tracing.' }
     # The TRACE_ACTIVE line's paths hold spaces; this run's frames.tsv is the newest one.
-    $tsv = Get-ChildItem (Join-Path $Bin 'logs') -Recurse -Filter frames.tsv | Sort-Object LastWriteTime |
-        Select-Object -Last 1 -ExpandProperty FullName
+    $tsv = if ($Plain) { $env:SKATE_FRAME_LOG } else { Get-ChildItem (Join-Path $Bin 'logs') -Recurse -Filter frames.tsv | Sort-Object LastWriteTime |
+        Select-Object -Last 1 -ExpandProperty FullName }
     $ms = @(Import-Csv $tsv -Delimiter "`t" | Select-Object -Skip 100 | ForEach-Object { [double]$_.frame_ms } | Sort-Object)
     if ($ms.Count -eq 0) { throw "No frames after 100 in $tsv" }
     $q = { param($f) $ms[[Math]::Min($ms.Count - 1, [int][Math]::Floor($f * $ms.Count))] }
@@ -70,4 +77,5 @@ try {
     }
     Remove-Item $err -ErrorAction SilentlyContinue
     Remove-Item Env:SKATE_MAP_SWITCH -ErrorAction SilentlyContinue
+    if ($Plain) { Remove-Item Env:SKATE_FRAME_LOG -ErrorAction SilentlyContinue }
 }
