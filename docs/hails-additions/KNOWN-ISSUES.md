@@ -10,7 +10,6 @@ The current known issues of the `hails-additions` branch, kept in step with the 
 - **Pedestrians:** they walk through a prop you are holding; one model walks stiffly and one has a flat head.
 - **Cars** pop in and out instead of fading with distance.
 - **Carrying props:** stepping up curbs while dragging is not Skate 3's yet.
-- **Loading screen:** loads started from the PC menu still show the PC menu's progress text.
 - **NPC draw distance** (Esc > GRAPHICS) is a quality-of-life option, not retail; higher settings cost frame time.
 
 ## Known missing features
