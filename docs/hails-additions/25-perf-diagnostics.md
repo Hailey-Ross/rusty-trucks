@@ -547,6 +547,25 @@ approaching skater") and the camera slow-motion subject gate (doc 21 "Camera slo
   shorter after in every pair, likely the faster fade (the loading screen is up a shorter time) or noise; not
   claimed as a gain. Every switch committed, no error lines. Main checked the medians from the sent frame logs.
 
+## Build stamp for local builds (2026-10-24, USER-ASKS 328)
+
+- **Problem:** every commit rebuilt the whole game: 2m 27s on the laptop for a docs-only commit, about 2m 10s on the
+  desktop. `crates/skate-game/build.rs` watches git's `HEAD`, `index` and `refs` so the build stamp
+  (`SKATE_BUILD_ID`, `SKATE_RELEASE_REVISION`: crash reports, the updater) always names the exact commit, and a build
+  script that runs again recompiles its whole package. The game is one binary crate, so that is all of it. Even a
+  `git add` or a `git status` that refreshes the index started a full rebuild.
+- **Change:** `SKATE_BUILD_STAMP=inputs` (opt-in; the Steam launcher's builds set it). The build script then watches
+  the build inputs (`crates/`, `vendor/`, `.cargo/`, the Cargo files, the icon) and computes `dirty` over those
+  only. While they are clean it does not watch `HEAD` / `index` / `refs`; while they hold uncommitted changes it does,
+  so the commit that follows refreshes the stamp as before. Without the variable nothing changes (upstream's exact
+  per-commit stamp; release builds run from a clean checkout either way).
+- **Trade-off:** after a commit that leaves the inputs alone (docs, tools, notes), the stamp keeps naming the
+  previous commit, whose build inputs are the same. The game's code is identical either way.
+- **Verification (desktop, `scripts/Build.ps1`):** full build 2m 10s, then an empty commit (stand-in for docs-only)
+  0.48 s (cargo `Finished`, 3 s with staging). A source edit built with `dirty=Some(true)` and the old revision; after
+  committing it, the next build recompiled and stamped the new revision with `dirty=Some(false)`. The test commits
+  were reset.
+
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 
 Status: done on `world/trace-all` (not yet played).
