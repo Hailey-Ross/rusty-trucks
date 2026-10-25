@@ -513,6 +513,31 @@ unchanged.
 - **Open:** a switch run to measure the render frames per slice (`.local/tools/frame-time-run.ps1`,
   `SKATE_MAP_SWITCH`); the largest single texture array bounds a slice.
 
+## Optimisation pass: the 2026-10-24 evening work (USER-ASKS 327)
+
+Skill `optimisation-pass` over the loading screen leftovers (doc 31: `sdk.loading` lines and holds, the autosave
+corner wheel, FE fade at 60 ticks a second), seated peds reacting to a skater (doc 26f "Seated peds avoid an
+approaching skater") and the camera slow-motion subject gate (doc 21 "Camera slow motion").
+
+- **Checklist:** nothing to change. The mod lines are merged once when the loading screen opens (not per frame);
+  `LoadingMods::holding` is a set check. The avoid scan runs only for a seated ped on its own phase (every ~1/3 s,
+  `(tick + serial) % every`), loops over the few observers and probes the navmesh only for a qualifying approach; the
+  clip vectors are built only when an avoid starts. The slow-motion gate does less work than before (no Update
+  without the subject). No file I/O, parsing or uploads were added.
+- **Desktop runs** (28 threads; `tools/claude-skills/optimisation-pass/tools/frame-time-run.ps1`, muted, University
+  with a switch to DownTown at 25 s, 70 s, before = 956bb2da, after = 8bd84c24, alternating):
+
+  | run | median ms | p90 ms | p99 ms | max ms |
+  |---|---|---|---|---|
+  | before 1 / 2 / 3 | 3.13 / 3.13 / 3.14 | 5.62 / 5.63 / 5.64 | 7.06 / 6.86 / 7.40 | 111.8 / 76.5 / 75.8 |
+  | after 1 / 2 / 3 | 3.12 / 3.15 / 3.13 | 5.62 / 5.66 / 5.63 | 6.84 / 7.34 / 6.93 | 77.1 / 77.8 / 92.5 |
+
+  No error or panic line in any run; every switch committed. The ped, menu and camera systems never reach a
+  `SYSTEM_TIMING` line's top 16 after start-up in either build except `retail_menu_stage::update` (0.005 to 0.009 ms a frame in both).
+  The max is the switch frame and varies run to run in both builds. Same outcome: no measurable cost.
+- **Laptop:** the same test in `second-pc-testing.md` "Engine frame-time test" (the laptop wakes from its screensaver
+  first with `keep-awake.ps1`); result below when it arrives.
+
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 
 Status: done on `world/trace-all` (not yet played).
