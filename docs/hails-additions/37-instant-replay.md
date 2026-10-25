@@ -367,7 +367,7 @@ A that picked Replay Mode also switched the editor Timeline -> Effects, and the 
 Cause [code, ours]: `replay::controls` stops editor and transport input while the quit warning, a marker question or
 the photo flow waits, but not while a film pack popup does (`film_ask`), and on the frame an answer arrives the
 press that gave it went on to the editor. Retail's popup takes the pad while it shows (`0x825A4F00`: input blocked
-until the next show, b555 / popup host notes).
+until the next show, as `popup_host.rs` notes).
 
 Change: the gate also covers `film_ask`, and a frame with a replay popup answer runs no editor or transport input.
 New log line `REPLAY_EDITOR play cursor=..` / `pause` whenever the replay starts or stops (`log_transport`).
