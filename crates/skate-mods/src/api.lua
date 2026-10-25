@@ -801,6 +801,7 @@ function sdk.loading.remove(key) submit{kind="loading_line",key=key} end
 function sdk.loading.retail(shown) submit{kind="loading_retail",shown=shown and true or false} end
 function sdk.loading.hold(key) submit{kind="loading_hold",key=key,held=true} end
 function sdk.loading.release(key) submit{kind="loading_hold",key=key,held=false} end
+function sdk.loading.timing(t) submit{kind="loading_timing",show=t and t.show,outro=t and t.outro} end
 -- Replace one bitmap of a menu movie by its stable id: the movie's import name plus the bitmap
 -- character id (sdk.menus.info().movies.bitmaps lists them), with a PNG in the mod's folder. The
 -- image covers the same fill area as the retail bitmap; newest mod wins; removed when the mod stops.

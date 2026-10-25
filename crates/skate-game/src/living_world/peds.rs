@@ -1916,6 +1916,8 @@ pub(crate) struct PedPluginProps {
     /// Moved seat props whose seats moved on the last think: when one stops, `PED_PLUGIN_WATER_REST` logs its water
     /// state where it came to rest (laptop 2026-10-19: a bench pushed into a canal never logged wet=true).
     pub settling: std::collections::BTreeSet<u64>,
+    /// The last `PED_PLUGIN_WATER_REST` per prop (wet, lowest seat in 10 cm steps): a prop that jitters at rest logs once.
+    pub rest_logged: BTreeMap<u64, (bool, [i32; 3])>,
 }
 
 /// Members that left the world leave their conversation; an area their leaving emptied is removed, an area nobody
@@ -2166,6 +2168,7 @@ pub(crate) fn think_peds(
                 // prop with a seat in water is off too; asked again only when a seat moved (or first seen moved).
                 let wet = if !moved {
                     pp.in_water.remove(&prop.id);
+                    pp.rest_logged.remove(&prop.id);
                     false
                 } else if let (false, Some(&cached)) = (seats_moved, pp.in_water.get(&prop.id)) {
                     cached
@@ -2192,10 +2195,13 @@ pub(crate) fn think_peds(
                 } else if pp.settling.remove(&prop.id) && pp.settings.water_disables_seats {
                     let world = physics.as_ref().map(|p| p.world());
                     let low = prop.waypoints.iter().map(|w| w.position).min_by(|a, b| a[1].total_cmp(&b[1]));
-                    let near = low.zip(world).and_then(|(p, w)| w.water_surface_at(skate_core::math::Vector3::new(p[0], p[1], p[2]), 5.0, 5.0));
-                    info!("PED_PLUGIN_WATER_REST {} {:016X} wet={wet} lowest_seat={:?} surface_within_5m={near:?} rule_above={} rule_depth={} tick={tick}",
-                        prop.class, prop.id, low.map(|p| [(p[0] * 100.0).round() / 100.0, (p[1] * 100.0).round() / 100.0, (p[2] * 100.0).round() / 100.0]),
-                        pp.settings.water_above, pp.settings.water_max_depth);
+                    let key = (wet, low.map_or([0; 3], |p| p.map(|v| (v * 10.0).round() as i32)));
+                    if pp.rest_logged.insert(prop.id, key) != Some(key) {
+                        let near = low.zip(world).and_then(|(p, w)| w.water_surface_at(skate_core::math::Vector3::new(p[0], p[1], p[2]), 5.0, 5.0));
+                        info!("PED_PLUGIN_WATER_REST {} {:016X} wet={wet} lowest_seat={:?} surface_within_5m={near:?} rule_above={} rule_depth={} tick={tick}",
+                            prop.class, prop.id, low.map(|p| [(p[0] * 100.0).round() / 100.0, (p[1] * 100.0).round() / 100.0, (p[2] * 100.0).round() / 100.0]),
+                            pp.settings.water_above, pp.settings.water_max_depth);
+                    }
                 }
                 let off = tipped || wet;
                 if off != prop.disabled {

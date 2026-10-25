@@ -230,6 +230,8 @@ struct MenuStage {
     load: skate_core::tips_loader::LoadScreen,
     load_up: bool,
     load_gone: bool,
+    /// The map the open loading screen loads (mods' loading_opened / loading_closed events).
+    load_map: Option<String>,
     /// FE 34's AS id and its `FreeSkateOption` host.
     free_skate_id: i32,
     free_skate: crate::free_skate_options_host::FreeSkateOptionsHost,
@@ -691,6 +693,7 @@ fn setup(
                 load: Default::default(),
                 load_up: false,
                 load_gone: false,
+                load_map: None,
                 free_skate_id: as_id(FREE_SKATE),
                 free_skate: Default::default(),
                 image_slots: Default::default(),
@@ -746,12 +749,12 @@ fn update(
     mut warned: Local<bool>,
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     // Mods' Trick Guide and Skate Profile layers (one parameter: the system is at Bevy's 16).
-    (guide_mods, profile_mods, credits_mods, config, loading_mods): (
+    (guide_mods, profile_mods, credits_mods, config, mut loading_mods): (
         Res<crate::trick_guide_host::TrickGuideMods>,
         Res<crate::offline_profile_host::ProfileMods>,
         Res<crate::extras_host::CreditsMods>,
         Res<crate::config::Config>,
-        Res<crate::tips_loader_host::LoadingMods>,
+        ResMut<crate::tips_loader_host::LoadingMods>,
     ),
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>),
@@ -1328,6 +1331,9 @@ fn update(
                     fe.tips_loader.tips.open();
                     let retail = ms.retail_lines.get_or_insert_with(|| fe.tips_loader.lines.clone());
                     fe.tips_loader.lines = loading_mods.lines(retail);
+                    fe.tips_loader.tips.timing = loading_mods.timing();
+                    ms.load_map = transition.loading().map(|e| e.label.clone());
+                    loading_mods.opened(ms.load_map.as_deref());
                     ms.load_up = false;
                     ms.load_gone = false;
                     open_screen(&mut ms.stage, TIPS_LOADER_PATH, TIPS_LOADER, &mut fe)?;
@@ -1340,6 +1346,7 @@ fn update(
                     ms.load_gone = true;
                     close(&mut ms.stage, ms.tips_loader_id, &mut fe)?;
                     load_tag(&mut ms.stage, false, &mut fe);
+                    loading_mods.closed(ms.load_map.take().as_deref());
                 }
                 Effect::Close(i) if Some(i) == spawn => {
                     info!("RETAIL_MENUS close SpawnSkater (FE {i})");
@@ -1491,8 +1498,8 @@ fn update(
                     ms.swap_due = Some(skater);
                 }
             }
-            // The loading screen around a map load (game state 0x82707508; doc 31 "Loading screen"); a load started
-            // from the PC overlay keeps the overlay's progress text.
+            // The loading screen around every map load (game state 0x82707508; doc 31 "Loading screen"); the PC overlay
+            // closes when a load starts (`graphics_menu`), so its loads get the screen too.
             if let Some(l) = loader {
                 use skate_core::tips_loader::LoadStep;
                 // A mod's `sdk.loading.hold` keeps a running load's screen up a while longer (tips_loader_host).

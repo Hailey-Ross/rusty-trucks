@@ -1957,7 +1957,7 @@ pass and recomp timing run), `.local/research/b581-loading-screen-port.md` (port
   - `tips_loader_host.rs`: the `TipsLoader` natives (`Is<X>Enabled` = the picked panel, `GetCoachFrankText`, `GetHint`,
     `GetStats(n)`, empty online answers). Stats rows: none yet (the engine has no stats table, see Skate Profile), so
     the Stats panel stays off, as retail with no stats.
-  - `retail_menu_stage.rs`: while a map transition runs (not one started from the PC overlay) the stage runs the load
+  - `retail_menu_stage.rs`: while a map transition runs the stage runs the load
     sequence on fader bit 2 (sub_826E08A8's bit), pushes FE 52 at black, answers its intro, posts the panel states and
     draws black under the movie while it covers. Keys are ignored while a load runs. `map_transition` waits with the
     commit until the loading screen covers the screen (`LoadingCover`, at most 5 s), so the old world never changes in
@@ -1975,8 +1975,29 @@ pass and recomp timing run), `.local/research/b581-loading-screen-port.md` (port
   (a fade 0.42 s instead of 0.83 s); the load sequence, its 4 black updates and the Trick Guide's state-4 count run on
   the same ticks. The fade runs in the FE update `sub_825D8B50`; the pause blur's tick `sub_825D8E68` is called from
   `sub_825D9168` and the menu key repeat from the input channel update, so their 30 Hz stays assumed (not measured).
-- **NOT RETAIL YET / open:** the RNG and its seed (ours: a per-boot LCG); where the "shown before" flags reset; the startup load
-  (our splash covers it); the 65 stats labels; who re-holds black at the end of a load (ours: the sequence).
+- **RNG, "shown before", end-of-load black (2026-10-25, USER-ASKS 334; research
+  `.local/research/b588-tips-loader-rng-reset.md`, main checked the reset and the hold in the recomp code):**
+  - RNG [code]: the tips object builds its own generator once (constructor `sub_82605860`, T+244; `next()` =
+    `sub_82970628`, a cascaded-sum generator over six words), seeded from the shared game generator `sub_82A8AF10`
+    (fixed start words in the image, about 100 callers). Once per boot, never per load; the first picks differ boot to
+    boot because the shared sequence has moved on [trace]. Ours (a clock-seeded per-boot LCG, kept across loads) gives
+    the same outcome, so it stays.
+  - "Shown before" [code]: `sub_82605AA0` clears T+202..207 on every open of the screen (6 x `stbu` from T+202); the
+    counts and the last shown panel stay. Ours never cleared them, so after a few loads every panel sat in the
+    "shown before" group and the least-shown rule stopped working. Fixed: `TipsLoader::open` clears them (test
+    `each_open_forgets_shown_before_but_keeps_the_counts`). The last Coach Frank / hint line globals (0x830CEBDC /
+    0x830CEBE0) are per boot and written only by a pick: `pick_line` now leaves the previous line alone for a list
+    of one or none, as retail.
+  - End-of-load black [code + trace]: the loader state `sub_82709338` holds the fader black at 0.04 on enter (not the
+    tips screen), closes the screen once it is black and the screen is up (no outro wait), and `sub_82708D00` releases
+    the fade when another thread's counter (`[[0x83083BCC]+0x50]`) has moved 6 past its value on enter (`addi r6,r10,5`
+    / `cmplw`); the recomp shows 2 to 3 FE updates from close to release. Ours held about 5: `BLACK_FRAMES` is now 0,
+    so the release comes 2 updates after the close.
+  - Still open: which thread drives that counter on the console; `sub_82709068`'s branch on byte 0x830B7C2B that skips
+    the release; T+300 / T+304 (every third open sets a flag, likely the online fetch throttle).
+- **Startup load: NOT RETAIL (ours, by design):** see "Startup: not shown, by design" below.
+- **Stats panel:** waits for a stats table (the 65 entries of the Stats object 0x83067094; the Skate Profile reads the
+  same object).
 - **Game run (2026-10-24, scripted `SKATE_MAP_SWITCH` BlackBoxPark -> University, the scratch menu set with the movie):**
   request 39.03, black 39.86 (0.83 s, `fe_fade` then at 30 updates), FE 52 open and its intro done at once (clear 40.03),
   commit 43.51, slices done 43.98, black 44.96, close, clear 45.99 (`RETAIL_MENUS fade` / `open loading screen` log
@@ -2008,7 +2029,13 @@ pass and recomp timing run), `.local/research/b581-loading-screen-port.md` (port
   retail lines when the screen opens; `retail(false)` leaves only mods' lines on a panel mods fill; `hold` / `release`
   keep a running load's screen up past the engine's own work, at most 30 s (`tips_loader_host::LoadingMods`,
   `MAX_MOD_HOLD_SECS`); all of it goes with the mod (`retail_menus::clear_owner`). The movie is replaceable through
-  the menu movie overrides. Not done: the panel timings (9.0 / 0.5 s) as mod values, open / close events for mods.
+  the menu movie overrides. Panel timings and events (2026-10-25, USER-ASKS 334): `sdk.loading.timing({show, outro})`
+  (1 to 120 s / 0 to 10 s, retail 9.0 / 0.5; the newest mod wins, gone with the mod; `LoadingMods::timing`, set on the
+  screen when it opens) and `loading_opened` / `loading_closed` on every mod's `on_event` with the map being loaded.
+- **Loads picked in the PC overlay (2026-10-25, USER-ASKS 334):** they kept the overlay open with its progress text
+  (the known issue "loads started from the PC menu still show the PC menu's progress text"). The overlay now closes
+  when a load starts and the loading screen covers it like any other load (`graphics_menu` transition branch,
+  `retail_menu_stage` load step); a menu set without the movie still gets the overlay's progress text.
 - **Startup: not shown, by design.** Retail's boot load uses the same screen; ours shows its native splash for the
   engine start (before mods, config and the menu set load) and opens the game window only when the first world is
   playable (doc 31 "Startup loading screen"), so there is no load left for the tips loader to cover (b581 3c

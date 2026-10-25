@@ -86,6 +86,10 @@ pub(crate) struct LoadingMods {
     lines: Vec<(String, String, skate_mods::menus::LoadingLine)>,
     retail_hidden: std::collections::BTreeSet<String>,
     holds: std::collections::BTreeSet<(String, String)>,
+    /// Panel timings by mod, in the order set (the newest wins).
+    timings: Vec<(String, (Option<f32>, Option<f32>))>,
+    /// `loading_opened` / `loading_closed` for every mod's `on_event`.
+    events: Vec<serde_json::Value>,
 }
 
 impl LoadingMods {
@@ -114,9 +118,35 @@ impl LoadingMods {
         }
     }
 
-    /// Drop one mod's lines and holds (None: every mod's).
+    pub(crate) fn set_timing(&mut self, owner: &str, timing: Option<(Option<f32>, Option<f32>)>) {
+        self.timings.retain(|(o, _)| o != owner);
+        if let Some(timing) = timing {
+            self.timings.push((owner.to_owned(), timing));
+        }
+    }
+
+    /// The panel timing: the newest mod's values over retail's.
+    pub(crate) fn timing(&self) -> skate_core::tips_loader::Timing {
+        let retail = skate_core::tips_loader::Timing::RETAIL;
+        self.timings.last().map_or(retail, |(_, (show, outro))| skate_core::tips_loader::Timing { show: show.unwrap_or(retail.show), outro: outro.unwrap_or(retail.outro) })
+    }
+
+    pub(crate) fn opened(&mut self, map: Option<&str>) {
+        self.events.push(serde_json::json!({"name": "loading_opened", "map": map}));
+    }
+
+    pub(crate) fn closed(&mut self, map: Option<&str>) {
+        self.events.push(serde_json::json!({"name": "loading_closed", "map": map}));
+    }
+
+    pub(crate) fn drain_events(&mut self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Drop one mod's lines, holds and timing (None: every mod's).
     pub(crate) fn clear_owner(&mut self, owner: Option<&str>) {
         let keep = |o: &String| owner.is_some_and(|owner| o != owner);
+        self.timings.retain(|(o, _)| keep(o));
         self.lines.retain(|(o, _, _)| keep(o));
         self.retail_hidden.retain(|o| keep(o));
         self.holds.retain(|(o, _)| keep(o));
@@ -181,5 +211,26 @@ mod tests {
         assert!(!mods.holding(0.0));
         mods.clear_owner(None);
         assert_eq!(mods.lines(&retail), retail);
+    }
+
+    #[test]
+    fn mod_timing_overrides_retail_and_goes_with_the_mod() {
+        use skate_core::tips_loader::Timing;
+        let mut mods = LoadingMods::default();
+        assert_eq!(mods.timing(), Timing::RETAIL);
+        mods.set_timing("a", Some((Some(4.0), None)));
+        assert_eq!(mods.timing(), Timing { show: 4.0, outro: 0.5 });
+        mods.set_timing("b", Some((None, Some(0.0))));
+        assert_eq!(mods.timing(), Timing { show: 9.0, outro: 0.0 });
+        mods.clear_owner(Some("b"));
+        assert_eq!(mods.timing(), Timing { show: 4.0, outro: 0.5 });
+        mods.set_timing("a", None);
+        assert_eq!(mods.timing(), Timing::RETAIL);
+        mods.opened(Some("University"));
+        mods.closed(None);
+        let events = mods.drain_events();
+        assert_eq!(events[0], serde_json::json!({"name": "loading_opened", "map": "University"}));
+        assert_eq!(events[1]["name"], "loading_closed");
+        assert!(mods.drain_events().is_empty());
     }
 }

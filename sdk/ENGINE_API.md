@@ -98,6 +98,12 @@ on a panel no mod fills); `retail(true)` takes that back. Lines join the next ti
 belong to their mod and go when it is disabled. The movie itself is replaced through the menu movie overrides
 (`sdk.menus.movie`). Local display only: in a session each peer shows its own loading screen.
 
+`sdk.loading.timing({show=4.5, outro=0.5})` sets how long a panel shows (1 to 120 s, retail 9.0) and how long its
+outro takes (0 to 10 s, retail 0.5); a missing field keeps the retail value, `timing(nil)` drops the change, the
+newest mod's timing wins and it goes with the mod. Every mod's `on_event` gets `{name="loading_opened", map=...}`
+when the screen comes up and `{name="loading_closed", map=...}` when it has gone (`map` is the map being loaded,
+nil when unknown).
+
 ## Trigger volumes (`sdk.triggers`, capability `triggers` 1)
 
 The engine tracks the map's named trigger volumes the way retail Skate 3 does:

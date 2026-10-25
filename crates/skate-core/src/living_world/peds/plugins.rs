@@ -22,6 +22,8 @@ pub struct PluginSettings {
     pub front_half_angle: f32,
     /// NOT RETAIL (ours, user 2026-10-18): a moved prop with a seat in water (at most `water_max_depth` under a water
     /// surface, or less than `water_above` over it) is switched off like a tipped one; back on once every seat is dry.
+    /// `water_above` 0.8 m: a bench standing in a canal keeps its seat about 0.7 m over the surface (laptop 2026-10-19,
+    /// doc 26g "A bench pushed into water").
     pub water_disables_seats: bool,
     pub water_above: f32,
     pub water_max_depth: f32,
@@ -37,7 +39,7 @@ impl Default for PluginSettings {
             height_tolerance: 1.8,
             front_half_angle: 0.523_599,
             water_disables_seats: true,
-            water_above: 0.05,
+            water_above: 0.8,
             water_max_depth: 10.0,
         }
     }
@@ -488,9 +490,23 @@ mod tests {
             (p[0] > 0.5).then_some(0.4)
         };
         assert!(seats_in_water(&bench(), &s, second_wet));
-        assert_eq!(asked[0], (0.05, 10.0));
+        assert_eq!(asked[0], (0.8, 10.0));
         let off = PluginSettings { water_disables_seats: false, ..s };
         assert!(!seats_in_water(&bench(), &off, |_, _, _| Some(0.0)));
+    }
+
+    /// The canal bench of the laptop session 2026-10-19: legs in the water, seats 0.69 m over the surface (8.934) =
+    /// in the water; the same bench 1 m up on a ledge is dry.
+    #[test]
+    fn a_bench_standing_in_a_canal_counts_as_wet() {
+        let s = PluginSettings::default();
+        let canal = |p: [f32; 3], above: f32, depth: f32| {
+            let d = 8.934 - p[1];
+            (d > -above && d <= depth).then_some(8.934)
+        };
+        let at = |y: f32| PluginProp { waypoints: vec![PluginWaypoint { position: [0.0, y, 0.0], facing: [0.0, 0.0, 1.0], occupant: None }], ..bench() };
+        assert!(seats_in_water(&at(9.62), &s, canal));
+        assert!(!seats_in_water(&at(9.95), &s, canal));
     }
 
     #[test]
