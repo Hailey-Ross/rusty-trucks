@@ -51,6 +51,7 @@ asking for the task it describes, or by name (for example `/regression-check`).
 | `retail-menus` | The retail front end on the engine's APT stage: pause menu, Game Settings, Trick Guide, Challenge Map, Extras, Skate Profile, Free Play, popups, the HUD minimap and the loading screen; exporting the menu movies, automated menu screenshots, reading a movie's code. |
 | `replay` | The instant replay and replay editor port: what is recorded, the editor model, retail's replay screens, Save to PC export, in-game test switches. |
 | `optimisation-pass` | The short optimisation pass every new feature gets before it lands: engine (off the game thread, behind the loading screen, sliced uploads, parse once) and setup (processes sized from the machine, shared work queues, per-process caches), proven same output, checked on a laptop-shaped machine. |
+| `bom-sanitise` | Find and strip byte order marks and other invisible characters (zero-width spaces / joiners, word joiner, soft hyphen) from files, staged changes, commit message files and drafts; report them in recent commits; write text without them in the first place. |
 | `setup-bench` | Time a full asset setup and prove a setup / export script change keeps the converted files the same (snapshot, per-stage timings, sha256 manifest, comparison against a second unchanged run). |
 
 ## Helper scripts included
@@ -68,6 +69,7 @@ asking for the task it describes, or by name (for example `/regression-check`).
 | `ghidra/tools` | `decompile.ps1` (pseudocode for a batch of addresses), `ghidra_headless.ps1` (AnalyzeHeadless without the .bat), `scripts/DecompileAt.java` (the post-script) |
 | `retail-menus/tools` | `apt_dump.py` (an exported menu movie's actions as text, pool names resolved), `check_trick_clips.sh` (Trick Guide demo clips: names, decode, posture) |
 | `optimisation-pass/tools` | `with_affinity.py` (run a command pinned to a CPU mask, to bench as a smaller machine), `frame-time-run.ps1` (muted frame-time run of one build, optional map switch), `keep-awake.ps1` (wake the PC from its screensaver and keep it awake during a timing test) |
+| `bom-sanitise/tools` | `bom_scrub.py` (scan / staged / msg / log / stdin; `--fix` strips, exit code 1 on findings) |
 | `setup-bench/tools` | `setup_bench.py` (timed full setup into a scratch base plus a sha256 manifest of the install) |
 
 More general tools referenced by the skills (map/collision inspection, regression checks with baselines, recomp code
