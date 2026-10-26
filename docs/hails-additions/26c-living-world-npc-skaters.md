@@ -553,7 +553,7 @@ DownTown baseline (radius 150 m, 150 s, player idle): 17 bails, 79 on/off-path s
   the character faced against the node's recorded skater, `sub_8246A700`), with a 2 degree dead zone and full stick
   at 10 (`sub_82471188`), on the same three keys. Now skate-core `living_world::air_steer` (tuning
   `SimulatedTierSettings::air_steer`). Measured at takeoff: the character forward (animation root row 2) lines up with
-  the deck forward (dot 0.9 to 1.0), so the input axis is right. **Off by default for now:** muted A/B runs (240 s,
+  the deck forward (dot 0.9 to 1.0), so the input axis is right. **Was off by default from 2026-10-13 to 2026-10-25 (on since, see below):** muted A/B runs (240 s,
   same build, `SKATE_NPC_AIR_STEER=1` to turn it on) had more bails with it: radius 150 m 48 vs 19, radius 110 m 33
   vs 24. Candidates: the board adjust write it also makes (`BoardAdjustAngle` / `BoardAdjustMag`, `sub_82471008`, not
   ported), whether retail's AI input map keeps or clears an unwritten key between ticks, the slerp fraction

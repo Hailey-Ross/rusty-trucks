@@ -982,7 +982,7 @@ so they say nothing about the gate; v2 (recomp research hooks, PROPHIT `actor` /
 "depends on the object. large dumpsters move less, smaller props move easier. Vending machines are heavy."
 
 **Reading.** Rolling into a resting prop moves it by mass (ordinary contact physics, as ours already does through
-the reduced mass of the pair in `push_from_skater`); the kick is an extra impulse while the skater bails. So the stage
+the reduced mass of the pair in `push_from_skater`; since 2026-10-25 a contact row in the shared solve, see "Skater contacts as solver rows"); the kick is an extra impulse while the skater bails. So the stage
 A patch (resting prop static to the skater) is wrong and stays unapplied.
 
 **The "kick" is a clamp [code] (research b206, `.local/research/b206-prop-bail-kick.md`, read from the generated
