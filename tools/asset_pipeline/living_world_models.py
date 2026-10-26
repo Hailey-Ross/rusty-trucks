@@ -9,7 +9,9 @@ Space: the arena's own (metres, Y up, the ped standing on y = 0), row-vector mat
 glTF column-major like ``character_glb``. Matching these bones to the 50-bone animation rig of
 ``PedestrianSkeletonPres.abin`` is the animation player's job (milestone M2), by bone name.
 Materials: diffuse (+ alpha as its alpha channel, MASK) and the normal map converted like the
-marquee pipeline (``native_roster``). Unskinned props (hand props, ``zprop_*``) get no skin.
+marquee pipeline (``native_roster``). Unskinned props (hand props, ``zprop_*``) get no skin. Extras: ``shader`` = the
+retail material type, ``attrib_material`` = the part's ``AttribulatorMaterialName`` and ``params`` = its vault
+``m_params`` rows (the engine's retail ped material, research b614).
 """
 from __future__ import annotations
 
@@ -46,14 +48,30 @@ def _bind_worlds(bones: list[dict]) -> dict[str, np.ndarray]:
     return {b['name']: np.asarray(b['bind_matrix'], dtype=np.float64) for b in bones}
 
 
-def write_glb(recipe: dict, arena_path, texture_path, output: Path, rx2) -> dict:
+def _attrib_name(path: Path) -> str | None:
+    """The arena's one ``AttribulatorMaterialName`` (as the car exporter reads it), else None."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/utt'))
+    import mdl_parser
+    try:
+        names = {m.value for m in mdl_parser.parse_rx2(Path(path).read_bytes()).materials
+                 if m.kind == 'AttribulatorMaterialName'}
+    except (ValueError, KeyError, IndexError, struct.error, OSError):
+        return None
+    return names.pop() if len(names) == 1 else None
+
+
+def write_glb(recipe: dict, arena_path, texture_path, output: Path, rx2, rows_of=None) -> dict:
     """Write one recipe. ``arena_path(lod) -> Path`` gives the extracted rx2 of a LOD entry,
-    ``texture_path(texture id) -> Path`` a decoded PNG. Returns a summary (bones, vertices, triangles)."""
+    ``texture_path(texture id) -> Path`` a decoded PNG, ``rows_of(name)`` the vault ``m_params`` rows of a material
+    name (or None). Returns a summary (bones, vertices, triangles)."""
     glb = Glb()
-    parsed = {}
+    parsed, attribs = {}, {}
     for part in recipe['parts']:
         for level, lod in enumerate(part['lods'][:2]):
-            parsed[(part['slot'], level)] = rx2.parse_rx2(str(arena_path(lod)))
+            path = arena_path(lod)
+            parsed[(part['slot'], level)] = rx2.parse_rx2(str(path))
+            attribs[(part['slot'], level)] = _attrib_name(path)
     # The skeleton: the body part's LOD0 bones (the part with the most bones), others matched by name.
     main = max(parsed.values(), key=lambda d: len(d['bones']))
     bones = main['bones']
@@ -142,8 +160,18 @@ def write_glb(recipe: dict, arena_path, texture_path, output: Path, rx2) -> dict
                 if 'alpha' in textures:
                     material['alphaCutoff'] = 0.5
                 shader = recipe.get('shaders', {}).get(lod['material'] or '')
+                extras = {}
                 if shader:  # the retail material type: the game recolours pedestrian_* mask texels
-                    material['extras'] = {'shader': shader}
+                    extras['shader'] = shader
+                attrib = attribs.get((part['slot'], level))
+                if attrib:
+                    extras['attrib_material'] = attrib
+                    rows = rows_of(attrib) if rows_of else None
+                    if rows:
+                        extras['params'] = rows
+                    stats.setdefault('attrib_materials', set()).add(attrib)
+                if extras:
+                    material['extras'] = extras
                 if 'normal' in textures:
                     material['normalTexture'] = glb.texture(_normal_png(texture_path(textures['normal'])))
                 glb.doc['materials'].append(material)
@@ -188,9 +216,10 @@ def read_glb(path: Path) -> dict:
     return json.loads(data[20:20 + chunk])
 
 
-def export_models(game_root: Path, manifest: dict, output: Path, work: Path, report=print) -> dict:
+def export_models(game_root: Path, manifest: dict, output: Path, work: Path, report=print, collections=None) -> dict:
     """Convert every recipe of ``manifest`` (``living_world.model_manifest``). Returns
-    {recipe: {status, file?, stats?, error?}}; a failed recipe does not stop the others."""
+    {recipe: {status, file?, stats?, error?}}; a failed recipe does not stop the others. ``collections`` (the vault)
+    resolves each material's ``m_params`` rows."""
     from tools.extract_default_skater import decode_texture, import_rx2_parser
     from tools.asset_pipeline.retail_character import RX2
     from tools.owned_game.big import BigArchive
@@ -212,10 +241,25 @@ def export_models(game_root: Path, manifest: dict, output: Path, work: Path, rep
             decode_texture(parser, extract(f'data/content/livingworld/texture/0x{tid}.rx2'), dest)
         return dest
 
+    from .living_world_vehicles import material_params
+    from .environment import Collections
+    rows, table = {}, []
+
+    def rows_of(material: str):
+        if not collections:
+            return None
+        if material not in rows:
+            if not table:
+                table.append(Collections({'collections': collections}))
+            rows[material] = material_params(collections, [material], table[0]).get(material, {}).get('params')
+        return rows[material]
+
     results = {}
     for name, recipe in sorted(manifest['recipes'].items()):
         try:
-            stats = write_glb(recipe, lambda lod: extract(lod['arena']), texture, output/f'{name}.glb', RX2)
+            stats = write_glb(recipe, lambda lod: extract(lod['arena']), texture, output/f'{name}.glb', RX2, rows_of)
+            if 'attrib_materials' in stats:
+                stats['attrib_materials'] = sorted(stats['attrib_materials'])
             results[name] = {'status': 'ready', 'file': f'models/{name}.glb', 'kind': recipe['kind'], **stats}
         except (ValueError, KeyError, RuntimeError, IndexError, struct.error, OSError) as error:
             if isinstance(error, OSError) and not isinstance(error, FileNotFoundError):

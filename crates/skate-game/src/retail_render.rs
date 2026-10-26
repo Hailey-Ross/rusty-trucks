@@ -2038,6 +2038,7 @@ impl Plugin for RetailRenderPlugin {
                 MaterialPlugin::<crate::retail_sky::SkyMaterial>::default(),
                 crate::retail_character::CharacterLightingPlugin,
                 crate::living_world::vehicle_material::VehicleMaterialPlugin,
+                crate::living_world::ped_material::PedMaterialPlugin,
                 crate::retail_exposure::RetailExposurePlugin,
                 crate::skater_ghost::GhostPlugin,
             ))

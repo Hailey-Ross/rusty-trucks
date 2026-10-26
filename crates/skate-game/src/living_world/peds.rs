@@ -141,6 +141,8 @@ pub(crate) struct PedLooks {
     pub overrides: PedOverrides,
     /// recipe -> GLB asset path (with the ped bone names).
     pub glb: BTreeMap<String, String>,
+    /// Material name (`character.livingworld_pedestrians_stamp`, ...) -> `m_params` rows over the export's.
+    pub material_params: BTreeMap<String, Vec<[f32; 4]>>,
 }
 
 /// One ped's identity (from its spawn record).
@@ -1511,8 +1513,14 @@ pub(crate) fn ped_material_colorized(name: Option<&str>, extras: Option<&str>) -
     }
 }
 
+/// Retail-lit ped materials by (glTF source material, tint pair); held weakly like [`PedMaterials`].
+#[derive(Resource, Default)]
+pub(crate) struct PedLitMaterials(BTreeMap<(AssetId<StandardMaterial>, [u32; 8]), AssetId<super::ped_material::PedMaterial>>);
+
 /// Paint each bound ped's body materials with its tint pair (retail's ped shader rule,
-/// `skate_core::living_world::peds::colorize`): a copy of the diffuse texture per tint pair.
+/// `skate_core::living_world::peds::colorize`): a copy of the diffuse texture per tint pair. Opaque parts of the stamp
+/// program get the retail ped material (`ped_material`, research b614) when the retail lighting runs and the part has
+/// its `m_params` rows; the rest keep their glTF material.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn present_ped_tints(
     mut commands: Commands,
@@ -1522,8 +1530,15 @@ pub(crate) fn present_ped_tints(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut cache: ResMut<PedMaterials>,
+    mut lit_cache: ResMut<PedLitMaterials>,
+    mut lit_materials: Option<ResMut<Assets<super::ped_material::PedMaterial>>>,
+    lighting: Option<Res<crate::retail_character::Lighting>>,
+    looks: Res<PedLooks>,
 ) {
     cache.0.retain(|_, id| materials.contains(*id));
+    if let Some(lit) = lit_materials.as_ref() {
+        lit_cache.0.retain(|_, id| lit.contains(*id));
+    }
     for (e, ped, puppet) in &peds {
         let (Some(scene), true) = (puppet.scene, puppet.bindings.is_some()) else { continue };
         let bits = |c: [f32; 4]| c.map(f32::to_bits);
@@ -1532,38 +1547,85 @@ pub(crate) fn present_ped_tints(
         let mut pending = false;
         for ent in children.iter_descendants(scene) {
             let Ok((handle, name, extras)) = meshes.get(ent) else { continue };
-            if !ped_material_colorized(name.map(|n| n.0.as_str()), extras.map(|x| x.value.as_str())) {
-                continue;
-            }
-            let key = (handle.0.id(), pair);
-            if let Some(m) = cache.0.get(&key).and_then(|id| materials.get_strong_handle(*id)) {
-                commands.entity(ent).insert(MeshMaterial3d(m));
-                continue;
-            }
+            let colorized = ped_material_colorized(name.map(|n| n.0.as_str()), extras.map(|x| x.value.as_str()));
+            let extras: Option<serde_json::Value> = extras.and_then(|x| serde_json::from_str(&x.value).ok());
             let Some(source) = materials.get(&handle.0).cloned() else {
                 pending = true;
                 continue;
             };
-            let Some(tex) = source.base_color_texture.clone() else { continue };
-            let Some(image) = images.get(&tex) else {
-                pending = true;
+            let rows = (lighting.is_some() && lit_materials.is_some() && super::ped_material::runs_program(extras.as_ref(), source.alpha_mode))
+                .then(|| super::ped_material::material_rows(extras.as_ref(), &looks.material_params))
+                .flatten();
+            if !colorized && rows.is_none() {
                 continue;
-            };
-            let mut tinted = image.clone();
-            match tinted.data.as_mut() {
-                Some(px) if tinted.texture_descriptor.format.block_copy_size(None) == Some(4) => {
-                    skate_core::living_world::peds::colorize::colorize_rgba8(px, ped.tint_a, ped.tint_b)
-                }
-                _ => warn!("LIVING_WORLD peds: {} base texture is not RGBA8; drawn untinted", ped.recipe),
             }
-            let mut m = source;
-            m.base_color_texture = Some(images.add(tinted));
-            let h = materials.add(m);
-            cache.0.insert(key, h.id());
-            commands.entity(ent).insert(MeshMaterial3d(h));
+            let key = (handle.0.id(), if colorized { pair } else { [0; 8] });
+            if rows.is_some()
+                && let Some(m) = lit_cache.0.get(&key).and_then(|id| lit_materials.as_mut()?.get_strong_handle(*id))
+            {
+                commands.entity(ent).remove::<MeshMaterial3d<StandardMaterial>>().insert(MeshMaterial3d(m));
+                continue;
+            }
+            if rows.is_none()
+                && let Some(m) = cache.0.get(&key).and_then(|id| materials.get_strong_handle(*id))
+            {
+                commands.entity(ent).insert(MeshMaterial3d(m));
+                continue;
+            }
+            let Some(base) = source.base_color_texture.clone() else { continue };
+            let texture = if colorized {
+                let Some(image) = images.get(&base) else {
+                    pending = true;
+                    continue;
+                };
+                let mut tinted = image.clone();
+                match tinted.data.as_mut() {
+                    Some(px) if tinted.texture_descriptor.format.block_copy_size(None) == Some(4) => {
+                        skate_core::living_world::peds::colorize::colorize_rgba8(px, ped.tint_a, ped.tint_b)
+                    }
+                    _ => warn!("LIVING_WORLD peds: {} base texture is not RGBA8; drawn untinted", ped.recipe),
+                }
+                images.add(tinted)
+            } else {
+                base
+            };
+            match (rows, lighting.as_ref(), lit_materials.as_mut()) {
+                (Some(rows), Some(lighting), Some(lit)) => {
+                    let h = lit.add(super::ped_material::PedMaterial {
+                        params: super::ped_material::params(&rows, lighting.light, source.normal_map_texture.is_some()),
+                        diffuse: Some(texture),
+                        normal: source.normal_map_texture.clone(),
+                        alpha: AlphaMode::Opaque,
+                    });
+                    lit_cache.0.insert(key, h.id());
+                    commands.entity(ent).remove::<MeshMaterial3d<StandardMaterial>>().insert(MeshMaterial3d(h));
+                }
+                _ => {
+                    let mut m = source;
+                    m.base_color_texture = Some(texture);
+                    let h = materials.add(m);
+                    cache.0.insert(key, h.id());
+                    commands.entity(ent).insert(MeshMaterial3d(h));
+                }
+            }
         }
         if !pending {
             commands.entity(e).insert(PedTinted);
+        }
+    }
+}
+
+/// Follow the character lighting's light on every ped material (as [`super::vehicles::update_car_light`]: only a
+/// material whose light differs is written).
+pub(crate) fn update_ped_light(lighting: Option<Res<crate::retail_character::Lighting>>, materials: Option<ResMut<Assets<super::ped_material::PedMaterial>>>) {
+    let (Some(lighting), Some(mut materials)) = (lighting, materials) else { return };
+    if !lighting.is_changed() {
+        return;
+    }
+    let stale: Vec<_> = materials.iter().filter(|(_, m)| m.params.light != lighting.light).map(|(id, _)| id).collect();
+    for id in stale {
+        if let Some(m) = materials.get_mut(id) {
+            m.params.light = lighting.light;
         }
     }
 }
@@ -1774,7 +1836,8 @@ pub(crate) fn install(app: &mut App) {
         .add_systems(Update, super::ped_alerts::draw_ped_alerts.after(crate::app::FrameSet::Animation))
         .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, super::ped_hand_props::sync_hand_props, apply_skater_takedowns, post_chase_messages, super::ped_alerts::update_ped_alerts, advance_peds, log_ped_readout).chain().after(super::step_population).distributive_run_if(crate::replay::world_live))
         .init_resource::<PedMaterials>()
-        .add_systems(Update, (present_ped_looks, present_ped_tints, present_ped_pose).chain().after(crate::app::FrameSet::Animation).before(super::npc_skaters::present_fade));
+            .init_resource::<PedLitMaterials>()
+        .add_systems(Update, (present_ped_looks, present_ped_tints, update_ped_light, present_ped_pose).chain().after(crate::app::FrameSet::Animation).before(super::npc_skaters::present_fade::<StandardMaterial>));
 }
 
 /// `PedMind::plugin_graph` of the conversation graph (prop graphs use their class name).

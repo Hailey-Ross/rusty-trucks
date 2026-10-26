@@ -519,6 +519,52 @@ while its plugin ignores its own prop); if so it steps toward the nearest free p
 **Open.** What NavPower does with an agent a new cut covers (a recomp hook on the release `82E3EBE0` and the first
 cut `82C477B0`, following the dropper for 2 s, would show it).
 
+## Ped material: the retail shadow side (2026-10-25, USER-ASKS 352)
+
+**Problem.** The user (2026-10-16): "the lighting of peds in the recomp are much better and smoother ours in the rust
+engine are rough and blocky feeling dark patches", "mainly on the shadowed side". Cause 1 (DXT1 normal maps read as
+two-channel, doc 26g "Ped normal maps") was fixed and play-tested ("the shadows look much better"); this is cause 2.
+
+**Retail [code, shader microcode; data, vault; research b614, `.local/research/b614-ped-character-sh-fill.md`].** The
+ped body program `livingworld_stamp_defaultPS` (material types `pedestrian_high_stamp` / `pedestrian_low`, TU3
+`shaders_final.big`) has no spherical harmonics fill, no ambient cube and no environment map: its constant table has
+`m_params` rows 0..6, the light direction, the eye, the shadow matrices and the colorize pair, and no `i_shmult` (the
+skater programs `cac_cloth_defaultPS` / `defaultcharacter_defaultPS` have it). The light: `albedo^2 x (sat(N.L) x
+m_params[1].rgb x shadow + m_params[5].w x (0.1, 0.175, 0.3) + rim x m_params[6].rgb) + spec`, rim =
+`(1 - N.V)^m_params[0].z`, then `x m_params[0].y` and the exposure tail, the car shader's layout (doc 26h "Car
+materials"). Ped body parts bind `character.livingworld_pedestrians_stamp` (rows `0 (0.05, 1, 0, 3)`, `1 (1.5, 1.4,
+1.2, 1.6)`, `2 (0, 0, 0, 9)`, `3 (0.005, ...)`, `5 (0, 0, 0, 0.275)`, `6 (0, 0, 0, 0.3)`), so the whole shadow side
+is `albedo^2 x (0.0275, 0.048, 0.0825)`: flat, dark, slightly blue and independent of the normal, which is why the
+recomp looks smooth. Ours drew peds with Bevy's StandardMaterial under a white ambient whose diffuse and specular
+parts vary with view angle and roughness, so normal-map detail showed on the shadow side.
+
+**Change.**
+- Setup (`living_world_models.py`): each ped material's extras carry `attrib_material` (the part arena's
+  `AttribulatorMaterialName`, read as the car exporter does) and `params` (its vault `m_params` rows, resolved with
+  `living_world_vehicles.material_params`, one vault table per export). Refresh Game Files once.
+- Setup fix found on the way (`install.py`): the ped hand props live in `private/living_world` (the livingworld
+  group's folder) but were only written by the maps step, so a livingworld-only refresh published without them (the
+  game then shows "Game files need a refresh: ped hand props"). A livingworld-only refresh now prepares the DMO
+  catalog (worlddmo.big only) and writes them itself.
+- Engine: `living_world/ped_material.rs` + `ped_material.wgsl` (`PedMaterial`, the program above; the colorize tint
+  stays baked into the diffuse copy per pair, the same rule). `present_ped_tints` gives opaque parts of the stamp
+  program the ped material when the retail lighting runs and the part has rows; masked parts (hair, accessories) keep
+  their glTF material until their programs are ported. `update_ped_light` follows the character lighting's light.
+  The NPC fade (`npc_skaters::present_fade`) is generic over the material (`FadeMaterial`): the ped material fades
+  through its output alpha, retail's `i_params.x`.
+- Data / mods: the rows are data per stable vault name; `PedLooks::material_params` (name -> rows) wins over the
+  export's, and a mod ped GLB can name a row (`attrib_material`) or carry its own `params`. The ambient literal is the
+  car port's constant (`vehicle_material::AMBIENT`).
+
+**Verification.** `ped_material::tests::stamp_rows_give_the_retail_shadow_side_and_mods_override_them` (ambient =
+0.275 x literal, rows from the extras, a mod's rows win, masked parts excluded); setup
+`test_living_world.Models.test_skinned_two_lod_glb_from_a_recipe` (name and rows in the extras); the living world and
+replay suites (fade).
+
+**Open.** The hair program `defaulthair_defaultPS` and the second specular lobe (colour 0.005 for peds) are not
+ported; the CSM / world-shadow combine of the program (`g_CSMSelfBias.w`) is partly decoded; the ped ground shadow
+layer (cause 3 of the todo) is separate.
+
 ## Code reference: living_world/peds.rs
 
 Detail moved out of the code comments of `crates/skate-game/src/living_world/peds.rs`; each comment there links its section here.

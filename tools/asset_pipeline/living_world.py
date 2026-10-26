@@ -945,7 +945,7 @@ def export(ctx) -> dict:
     warnings += models['errors']
     report('Building pedestrian and hand-prop models')
     from .living_world_models import export_models
-    built = export_models(game_root, models, output/'models', work/'living_world_models', report)
+    built = export_models(game_root, models, output/'models', work/'living_world_models', report, collections)
     for name, result in built.items():
         models['recipes'][name]['glb'] = result
         if result['status'] != 'ready':

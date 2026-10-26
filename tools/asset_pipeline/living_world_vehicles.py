@@ -382,14 +382,16 @@ def _colours(values) -> list[list[float]]:
     return [[v['x'], v['y'], v['z'], v['w']] for v in values or [] if isinstance(v, dict)]
 
 
-def material_params(collections: list[dict] | None, names) -> dict:
+def material_params(collections: list[dict] | None, names, table=None) -> dict:
     """``{name: {'params': m_params rows}}`` for each ``AttribulatorMaterialName`` (``class.key`` ->
     vault class ``material_<class>``, row ``key``, inheritance applied; retail ``sub_827E4F58``
-    splits the name the same way). Names whose row is missing are left out."""
+    splits the name the same way). Names whose row is missing are left out. ``table`` reuses a built
+    ``environment.Collections`` of ``collections``."""
     from .environment import Collections, key_hash
-    if not collections:
-        return {}
-    table = Collections({'collections': collections})
+    if table is None:
+        if not collections:
+            return {}
+        table = Collections({'collections': collections})
     out = {}
     for name in sorted(names):
         family, _, key = name.partition('.')

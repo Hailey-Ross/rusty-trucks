@@ -94,11 +94,15 @@ pub(crate) fn retire(commands: &mut Commands, entity: Entity) {
             use crate::living_world::npc_skaters::{NpcFade, NpcFadeMaterials};
             let fade = world.get::<NpcFade>(entity).copied();
             let materials = world.entity_mut(entity).take::<NpcFadeMaterials>();
+            let ped_materials = world.entity_mut(entity).take::<NpcFadeMaterials<crate::living_world::ped_material::PedMaterial>>();
             let mut ghost = world.spawn((Name::new("replay ghost"), ReplayGhost, actor, joints, transform, Visibility::Hidden));
             if let Some(fade) = fade {
                 ghost.insert(fade);
             }
             if let Some(materials) = materials {
+                ghost.insert(materials);
+            }
+            if let Some(materials) = ped_materials {
                 ghost.insert(materials);
             }
             let ghost = ghost.id();

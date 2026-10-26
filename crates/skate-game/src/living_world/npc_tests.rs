@@ -440,7 +440,7 @@ fn living_world_npc_skaters_fade_in_from_transparent_with_blended_copies() {
     // NPC's meshes draw with blended per-NPC copies; at 1 the shared material comes back.
     let mut a = app(5);
     a.insert_resource(Assets::<StandardMaterial>::default());
-    a.add_systems(Update, present_fade.after(advance));
+    a.add_systems(Update, present_fade::<StandardMaterial>.after(advance));
     let shared = a.world_mut().resource_mut::<Assets<StandardMaterial>>().add(StandardMaterial { base_color: Color::srgba(1.0, 0.5, 0.25, 1.0), ..default() });
     let mut fades = Vec::new();
     let mut npc = None;
