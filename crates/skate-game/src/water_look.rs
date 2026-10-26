@@ -73,6 +73,23 @@ pub(crate) struct WaterLook {
     /// Basin wave tilt gain: a flat basin colour shows the waves only through the lighting, so they need more tilt
     /// than the canal, whose own diffuse carries its ripple ("the fountain doesnt ripple enough", 2026-10-21).
     pub fountain_ripple: f32,
+    /// Props in water sink or float by their own density with water drag (`physics::prop_water`); retail props
+    /// fall through water to the floor: docs/hails-additions/09-water.md#props-in-water
+    pub prop_water: bool,
+    /// kg/m3; fresh water.
+    pub water_density: f32,
+    /// Linear / angular water drag on the submerged share of a prop, per second.
+    pub prop_water_drag: f32,
+    pub prop_water_spin_drag: f32,
+    /// Deep water carries every prop: its density counts as at most this (kg/m3), so it floats mostly under.
+    pub prop_deep_float_density: f32,
+    /// Waves props bob on in deep water: height (m) and period (s).
+    pub prop_bob_height: f32,
+    pub prop_bob_period: f32,
+    /// Material density (kg/m3) from which a prop always sinks, deep water or not (a dumpster).
+    pub prop_heavy_density: f32,
+    /// In water too deep to see the bottom, a sinking prop has faded out when its top is this far under (m); 0 = no fade.
+    pub prop_fade_depth: f32,
 }
 
 impl WaterLook {
@@ -100,6 +117,15 @@ impl WaterLook {
         fountain_colour: [0.; 3],
         fountain_reflection: 1.,
         fountain_ripple: 1.,
+        prop_water: false,
+        water_density: 1000.,
+        prop_water_drag: 0.,
+        prop_water_spin_drag: 0.,
+        prop_deep_float_density: 700.,
+        prop_bob_height: 0.,
+        prop_bob_period: 3.,
+        prop_heavy_density: 2000.,
+        prop_fade_depth: 0.,
     };
 
     fn apply(&mut self, patch: &WaterLookPatch) {
@@ -126,6 +152,15 @@ impl WaterLook {
         if let Some(v) = patch.fountain_colour { self.fountain_colour = v; }
         if let Some(v) = patch.fountain_reflection { self.fountain_reflection = v; }
         if let Some(v) = patch.fountain_ripple { self.fountain_ripple = v; }
+        if let Some(v) = patch.prop_water { self.prop_water = v; }
+        if let Some(v) = patch.water_density { self.water_density = v; }
+        if let Some(v) = patch.prop_water_drag { self.prop_water_drag = v; }
+        if let Some(v) = patch.prop_water_spin_drag { self.prop_water_spin_drag = v; }
+        if let Some(v) = patch.prop_deep_float_density { self.prop_deep_float_density = v; }
+        if let Some(v) = patch.prop_bob_height { self.prop_bob_height = v; }
+        if let Some(v) = patch.prop_bob_period { self.prop_bob_period = v; }
+        if let Some(v) = patch.prop_heavy_density { self.prop_heavy_density = v; }
+        if let Some(v) = patch.prop_fade_depth { self.prop_fade_depth = v; }
     }
 
     /// `FrameState.fountain`: tile (m), calming floor, foam and the cascade clock `clock`; all zero = off.
@@ -197,6 +232,16 @@ impl Default for WaterLook {
             fountain_colour: FOUNTAIN_COLOUR,
             fountain_reflection: FOUNTAIN_REFLECTION,
             fountain_ripple: FOUNTAIN_RIPPLE,
+            prop_water: true,
+            water_density: 1000.,
+            // About 4.4 m/s terminal sinking for a 1 m crate twice as dense as water (quadratic drag, Cd ~1).
+            prop_water_drag: 2.0,
+            prop_water_spin_drag: 1.5,
+            prop_deep_float_density: 700.,
+            prop_bob_height: 0.06,
+            prop_bob_period: 3.,
+            prop_heavy_density: 2000.,
+            prop_fade_depth: 1.5,
         }
     }
 }

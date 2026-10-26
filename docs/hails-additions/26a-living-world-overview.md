@@ -164,6 +164,8 @@ Domains:
 - `respawn`: `air_timeout_ticks` (integer, 1..=[`MAX_AIR_TIMEOUT_TICKS`]), the fixed 1/60 s ticks a skater may spend in the air before the checkpoint respawn (retail 300 = 5 s, `CalcSuggestedState` `count > 300`), e.g. after falling off the map.
 - `exposure`: the auto-exposure meter. `meter_weights = {r, g, b}` (each 0..=1; retail {0.3, 0.4, 0.3}, the channel weights retail's bloom downsample dots its tone-mapped value with) and `meter_scale` (0..=[`MAX_METER_SCALE`]; retail 2.515, the evaluator's average scale).
 - `ghost`: the skater fade-in after every placement (respawn, teleport, marker return, spawn). `enabled` (bool, retail true), `fade_in_seconds` (0..=[`MAX_GHOST_FADE_IN_SECONDS`], retail 1.0; 0 = no fade) and `hold_alpha` (0..=1, retail 0.68, the opacity the fade waits at while retail's hold condition is set; that condition is not decoded yet, so it has no effect now).
+- `video_screens`: the park videoscreens' live feed ([doc 35](35-world-shading-parity.md#videoscreen-live-feed)). `enabled` (bool, default true), `width` / `height` (16..=[`MAX_VIDEO_FEED_SIZE`], default 512 x 288), `rate_hz` (1..=240, default 30) and `max_distance` (1..=10000 m, default 300). The defaults are provisional, not retail values yet.
+- `prop_sounds`: the dynamic props' impact sounds ([doc 27](27-dynamic-props.md#prop-sounds)). `enabled` (bool, retail true) and `types`: per prop type key (the characteristics record name, e.g. `dumpster`) any of `material` / `secondary` (0..=143), `use_contact_material`, `impact_min` / `impact_max` (m/s), `cooldown` (0..=600 console evaluations), `speed_attenuation` / `spin_attenuation` (above 0) over the type's retail record; a type without one starts from a silent record.
 
 ### AI skater push fields
 
@@ -234,6 +236,8 @@ Patches are held per owner in [`WorldTuning`] (serialisable JSON, in arrival ord
 - `respawn` -> `physics::respawn::RespawnSettings` (air timeout before the checkpoint respawn),
 - `exposure` -> `retail_exposure::ExposureMeter` (auto-exposure meter weights and scale).
 - `ghost` -> `skater_ghost::GhostTuning` (skater fade-in after placements).
+- `video_screens` -> `video_screens::VideoScreenSettings` (videoscreen feed size, rate, distance, on / off).
+- `prop_sounds` -> `game_audio::prop_sounds::PropSoundSettings` (impact sounds on / off, per-type record overrides).
 - `decals` -> `retail_render::DecalSettings` (strength of every world decal, live). A mod that stops, fails or reloads loses its patches ([`clear_owner`]); [`clear_all`] when every mod goes.
 
 ## Code reference: living_world/opt_ins.rs

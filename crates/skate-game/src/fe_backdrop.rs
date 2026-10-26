@@ -249,7 +249,8 @@ fn advance(time: Res<Time<Real>>, mut backdrop: ResMut<FeBackdrop>, mut draw: Re
 #[derive(Resource)]
 struct Pipeline {
     layout: BindGroupLayoutDescriptor,
-    pipeline: CachedRenderPipelineId,
+    /// HDR and LDR views (maps without retail data and the test world have no `Hdr`), b621.
+    pipelines: [CachedRenderPipelineId; 2],
     sampler: Sampler,
     /// One uniform per pass (horizontal, then vertical + tint).
     params: [Buffer; 2],
@@ -273,7 +274,7 @@ fn initialize(
             ),
         ),
     );
-    let pipeline = cache.queue_render_pipeline(RenderPipelineDescriptor {
+    let queue = |format| cache.queue_render_pipeline(RenderPipelineDescriptor {
         label: Some("fe backdrop".into()),
         layout: vec![layout.clone()],
         vertex: fullscreen.to_vertex_state(),
@@ -282,7 +283,7 @@ fn initialize(
                 bevy::asset::AssetPath::from(bevy::asset::embedded_path!("fe_backdrop.wgsl")).with_source("embedded"),
             ),
             targets: vec![Some(ColorTargetState {
-                format: ViewTarget::TEXTURE_FORMAT_HDR,
+                format,
                 blend: None,
                 write_mask: ColorWrites::ALL,
             })],
@@ -290,6 +291,7 @@ fn initialize(
         }),
         ..default()
     });
+    let pipelines = [queue(ViewTarget::TEXTURE_FORMAT_HDR), queue(<bevy::render::render_resource::TextureFormat as bevy::image::BevyDefault>::bevy_default())];
     let buffer = |label| {
         device.create_buffer(&BufferDescriptor {
             label: Some(label),
@@ -300,7 +302,7 @@ fn initialize(
     };
     commands.insert_resource(Pipeline {
         layout,
-        pipeline,
+        pipelines,
         sampler: device.create_sampler(&SamplerDescriptor {
             mag_filter: FilterMode::Linear,
             min_filter: FilterMode::Linear,
@@ -345,7 +347,7 @@ impl ViewNode for BackdropNode {
         }
         let p = world.resource::<Pipeline>();
         let cache = world.resource::<PipelineCache>();
-        let Some(pipeline) = cache.get_render_pipeline(p.pipeline) else { return Ok(()) };
+        let Some(pipeline) = cache.get_render_pipeline(p.pipelines[usize::from(!view.is_hdr())]) else { return Ok(()) };
         // Retail strength is for its 1280 x 720 frame: scale the radius to this target's height.
         let height = view.main_texture().height() as f32;
         let radius = draw.strength * height / 720.0;

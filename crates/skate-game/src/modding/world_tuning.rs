@@ -10,6 +10,7 @@ use crate::living_world::LivingWorldSettings;
 use crate::physics::respawn::RespawnSettings;
 use crate::retail_backdrop::BackdropSettings;
 use crate::retail_exposure::ExposureMeter;
+use crate::video_screens::VideoScreenSettings;
 use crate::skater_ghost::GhostTuning;
 use crate::retail_render::{DecalSettings, WorldShadowSettings, RETAIL_WORLD_SHADOW_FLOOR};
 use crate::physics::prop_carry::{CarryButtons, CarrySettings, LocomotionOverrides};
@@ -165,6 +166,28 @@ fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
                 scale: p.meter_scale.unwrap_or(retail.scale),
             };
             match world.get_resource_mut::<ExposureMeter>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "prop_sounds" => {
+            let p = t.merged(domain, |p| if let Patch::PropSounds(p) = p { Some(p) } else { None });
+            let s = crate::game_audio::prop_sounds::PropSoundSettings { disabled: p.enabled == Some(false), types: p.types };
+            match world.get_resource_mut::<crate::game_audio::prop_sounds::PropSoundSettings>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "video_screens" => {
+            let p = t.merged(domain, |p| if let Patch::VideoScreens(p) = p { Some(p) } else { None });
+            let d = VideoScreenSettings::default();
+            let s = VideoScreenSettings {
+                enabled: p.enabled.unwrap_or(d.enabled),
+                size: UVec2::new(p.width.unwrap_or(d.size.x), p.height.unwrap_or(d.size.y)),
+                rate_hz: p.rate_hz.unwrap_or(d.rate_hz),
+                max_distance: p.max_distance.unwrap_or(d.max_distance),
+            };
+            match world.get_resource_mut::<VideoScreenSettings>() {
                 Some(mut r) => *r = s,
                 None => world.insert_resource(s),
             }
@@ -453,6 +476,7 @@ fn prop_tuning(base: &PropTuning, p: &PropTuningPatch) -> PropTuning {
         collision_box: p.collision_box.map_or(base.collision_box, |b| {
             Some(PropBox { center: Vector3::new(b.center[0], b.center[1], b.center[2]), half_extents: Vector3::new(b.half_extents[0], b.half_extents[1], b.half_extents[2]) })
         }),
+        water_density: p.water_density.or(base.water_density),
     }
 }
 
@@ -599,6 +623,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             "push_transfer": t.push_transfer, "body_push_speed": t.body_push_speed, "board_push_speed": t.board_push_speed,
             "penetration_push_speed": t.penetration_push_speed, "stuck_release_ticks": t.stuck_release_ticks,
             "collision_box": t.collision_box.map_or(Value::Null, |b| json!({"center": v3(b.center), "half_extents": v3(b.half_extents)})),
+            "water_density": t.water_density,
         })
     };
     match domain {
@@ -712,6 +737,10 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
         "respawn" => world.get_resource::<RespawnSettings>().map_or(Value::Null, |s| json!({"air_timeout_ticks": s.air_timeout_ticks})),
         "exposure" => world.get_resource::<ExposureMeter>().map_or(Value::Null, |s| json!({"meter_weights": s.weights.to_array(), "meter_scale": s.scale})),
         "decals" => world.get_resource::<DecalSettings>().map_or(Value::Null, |s| json!({"opacity": s.opacity})),
+        "prop_sounds" => world.get_resource::<crate::game_audio::prop_sounds::PropSoundSettings>().map_or(Value::Null, |s| json!({
+            "enabled": !s.disabled, "types": serde_json::to_value(&s.types).unwrap_or(Value::Null)})),
+        "video_screens" => world.get_resource::<VideoScreenSettings>().map_or(Value::Null, |s| json!({
+            "enabled": s.enabled, "width": s.size.x, "height": s.size.y, "rate_hz": s.rate_hz, "max_distance": s.max_distance})),
         "ghost" => world.get_resource::<GhostTuning>().map_or(Value::Null, |s| json!({"enabled": s.0.enabled, "fade_in_seconds": s.0.fade_in_seconds, "hold_alpha": s.0.hold_alpha})),
         _ => Value::Null,
     }
@@ -732,7 +761,23 @@ mod tests {
         w.init_resource::<ExposureMeter>();
         w.init_resource::<GhostTuning>();
         w.init_resource::<DecalSettings>();
+        w.init_resource::<VideoScreenSettings>();
         w
+    }
+
+    #[test]
+    fn video_screens_set_merge_and_reset_on_disable() {
+        let mut w = world();
+        set(&mut w, "dev.a", "video_screens", Some(json!({"width": 256, "height": 128}))).unwrap();
+        set(&mut w, "dev.b", "video_screens", Some(json!({"width": 1024, "rate_hz": 15.0, "enabled": false}))).unwrap();
+        let s = *w.resource::<VideoScreenSettings>();
+        assert_eq!((s.size, s.rate_hz, s.enabled), (UVec2::new(256, 128), 15.0, false), "first writer wins per field");
+        assert_eq!(read(&w, "video_screens")["height"], json!(128));
+        assert!(set(&mut w, "dev.a", "video_screens", Some(json!({"width": 4096}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<VideoScreenSettings>().size, UVec2::new(1024, 288));
+        clear_owner(&mut w, "dev.b");
+        assert_eq!(*w.resource::<VideoScreenSettings>(), VideoScreenSettings::default(), "mod disable restores the defaults");
     }
 
     #[test]
@@ -748,6 +793,23 @@ mod tests {
         assert_eq!(w.resource::<DecalSettings>().opacity, 0.8);
         clear_all(&mut w);
         assert_eq!(*w.resource::<DecalSettings>(), DecalSettings::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn prop_sounds_merge_per_type_and_reset_on_disable() {
+        use crate::game_audio::prop_sounds::{overridden, PropSoundSettings};
+        let mut w = world();
+        w.init_resource::<PropSoundSettings>();
+        set(&mut w, "dev.a", "prop_sounds", Some(json!({"types": {"dumpster": {"impact_min": 0.4}}}))).unwrap();
+        set(&mut w, "dev.b", "prop_sounds", Some(json!({"types": {"dumpster": {"impact_min": 0.9, "cooldown": 3}, "mailbox": {"material": 52}}}))).unwrap();
+        let s = w.resource::<PropSoundSettings>().clone();
+        assert_eq!(s.types["dumpster"].impact_min, Some(0.4), "first writer wins per field");
+        assert_eq!(s.types["dumpster"].cooldown, Some(3));
+        let r = overridden(None, &s.types["mailbox"]);
+        assert_eq!((r.material, r.impact_min), (52, 0.0), "a type without a record starts from a silent one");
+        assert!(set(&mut w, "dev.a", "prop_sounds", Some(json!({"types": {"x": {"material": 200}}}))).is_err());
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<PropSoundSettings>(), PropSoundSettings::default(), "mod disable restores retail");
     }
 
     #[test]

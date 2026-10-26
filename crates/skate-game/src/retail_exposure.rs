@@ -110,6 +110,7 @@ impl Plugin for RetailExposurePlugin {
                 ExtractResourcePlugin::<Settings>::default(),
                 ExtractResourcePlugin::<crate::colour_matrix::ColourGrade>::default(),
                 ExtractComponentPlugin::<RetailTone>::default(),
+                ExtractComponentPlugin::<crate::retail_render::ToneOnly>::default(),
             ))
             .add_systems(Startup, (load, crate::colour_matrix::load_records))
             .add_systems(PostUpdate, crate::colour_matrix::update_grade)
@@ -367,13 +368,13 @@ pub(crate) struct ExposureLabel;
 struct ExposureNode;
 
 impl ViewNode for ExposureNode {
-    type ViewQuery = (&'static ViewTarget, &'static RetailTone, Option<&'static ViewDepthTexture>);
+    type ViewQuery = (&'static ViewTarget, &'static RetailTone, Option<&'static ViewDepthTexture>, Has<crate::retail_render::ToneOnly>);
 
     fn run<'w>(
         &self,
         _: &mut RenderGraphContext,
         context: &mut RenderContext,
-        (view, _, depth): QueryItem<Self::ViewQuery>,
+        (view, _, depth, tone_only): QueryItem<Self::ViewQuery>,
         world: &'w World,
     ) -> Result<(), NodeRunError> {
         let p = world.resource::<Pipeline>();
@@ -427,7 +428,7 @@ impl ViewNode for ExposureNode {
             bindings.len() - 1
         };
         let (_, meter, output) = &bindings[index];
-        {
+        if !tone_only {
             let mut pass = context
                 .command_encoder()
                 .begin_compute_pass(&ComputePassDescriptor {

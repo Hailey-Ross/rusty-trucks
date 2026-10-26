@@ -1712,7 +1712,7 @@ pub(crate) fn present_ped_pose(
     state: Res<PopulationState>,
     settings: Res<LivingWorldSettings>,
     fixed: Res<Time<Fixed>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::video_screens::FeedCamera>)>,
     mut peds: Query<(&Pedestrian, &PedBody, &mut PedPuppet, Option<&mut super::npc_skaters::NpcFade>, Option<&super::ped_hand_props::HeldHandProp>)>,
     mut joints: Query<&mut Transform, Without<PedBody>>,
     mut vis: Query<&mut Visibility>,

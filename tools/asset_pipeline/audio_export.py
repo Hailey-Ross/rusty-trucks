@@ -743,6 +743,9 @@ MATERIAL_PITCH_ALT, MATERIAL_CATEGORY = 'Hash_3A3DD47E8DAFE796', 'Hash_D5EF68628
 # RefSpecs: +0 the contact-level windows (class 13E20D398E385A56, sub_82496C58 / sub_82496F50), +24 the
 # impact bands (class 7DAFF70B3A91CD5D, sub_82497088).
 MATERIAL_WINDOWS, MATERIAL_BANDS = 'Hash_82B1451A90152514', 'Hash_E228508FE0F53970'
+# The alternate window / band RefSpecs and their gate (byte +57): a poster passing the flag (the prop impact poster
+# sub_824E3BE0) reads them instead when the material sets the byte (sub_82496DF8 / sub_82497088).
+MATERIAL_ALT_FLAG, MATERIAL_ALT_WINDOWS, MATERIAL_ALT_BANDS = 'Hash_AA24BEE814DA6B9A', 'Hash_E007F3FC90E887D0', 'Hash_F64F891C312EFD5E'
 WINDOW_CLASS = 'Hash_13E20D398E385A56'
 WINDOW_FIELDS = ('Hash_036F313CEBC664FD', 'Hash_8001982DA2E91D6A', 'Hash_E24D9CB4000A53AC', 'Hash_1A83AD0330976744',
                  'Hash_24B725E05CEB027E', 'Hash_CBBB19E302CE1A17', 'Hash_75DC915E876A9DC9', 'Hash_711F1F54903E76C9',
@@ -883,6 +886,20 @@ def collision_tuning(resolve, by_class) -> dict:
         v = resolve(cls, key, f)
         return _words(v)[0] if v is not None and _words(v) else default
 
+    def window_bands(key, windows_field, bands_field):
+        out = {}
+        windows_key = ref_key(resolve(MATERIAL_CLASS, key, windows_field))
+        if windows_key and windows_key in by_class.get(WINDOW_CLASS, {}):
+            w = [word(WINDOW_CLASS, windows_key, f) for f in WINDOW_FIELDS]
+            w += [word(WINDOW_CLASS, windows_key, f) for f in WINDOW_FIELDS_2]
+            out['windows'] = w
+            scale = resolve(WINDOW_CLASS, windows_key, WINDOW_SCALE)
+            out['scale'] = _scalar_or_list(scale) if scale is not None else 0.0
+        bands_key = ref_key(resolve(MATERIAL_CLASS, key, bands_field))
+        if bands_key and bands_key in by_class.get(BAND_CLASS, {}):
+            out['bands'] = [(_scalar_or_list(v) if (v := resolve(BAND_CLASS, bands_key, f)) is not None else 0.0) for f in BAND_FIELDS]
+        return out
+
     rows = []
     for m in range(143):
         kind, key = MATERIAL_KINDS[m], 'Hash_%016X' % MATERIAL_KEYS[m]
@@ -904,16 +921,9 @@ def collision_tuning(resolve, by_class) -> dict:
         row['footsteps'] = word(MATERIAL_CLASS, key, MATERIAL_FOOTSTEPS) != 0
         row['step_gain'] = word(MATERIAL_CLASS, key, MATERIAL_STEP_GAIN, 32767)
         row['step_landing_gain'] = word(MATERIAL_CLASS, key, MATERIAL_STEP_LANDING_GAIN, 32767)
-        windows_key = ref_key(resolve(MATERIAL_CLASS, key, MATERIAL_WINDOWS))
-        if windows_key and windows_key in by_class.get(WINDOW_CLASS, {}):
-            w = [word(WINDOW_CLASS, windows_key, f) for f in WINDOW_FIELDS]
-            w += [word(WINDOW_CLASS, windows_key, f) for f in WINDOW_FIELDS_2]
-            row['windows'] = w
-            scale = resolve(WINDOW_CLASS, windows_key, WINDOW_SCALE)
-            row['scale'] = _scalar_or_list(scale) if scale is not None else 0.0
-        bands_key = ref_key(resolve(MATERIAL_CLASS, key, MATERIAL_BANDS))
-        if bands_key and bands_key in by_class.get(BAND_CLASS, {}):
-            row['bands'] = [(_scalar_or_list(v) if (v := resolve(BAND_CLASS, bands_key, f)) is not None else 0.0) for f in BAND_FIELDS]
+        row.update(window_bands(key, MATERIAL_WINDOWS, MATERIAL_BANDS))
+        if word(MATERIAL_CLASS, key, MATERIAL_ALT_FLAG) != 0:
+            row['alt'] = window_bands(key, MATERIAL_ALT_WINDOWS, MATERIAL_ALT_BANDS)
         rows.append(row)
     posters = {}
     for cls, key, field, name in COLLISION_POSTERS:
@@ -1286,8 +1296,10 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     placed |= set(CROSSFADE_BANKS)
     # The world sources' banks, tuning and speech index (crates/skate-audio/src/world; inert in game
     # until a ped / traffic system publishes owners).
-    from .world_audio import WORLD_BANKS, WORLD_SPLICE_BANKS, world_tuning
+    from .world_audio import WORLD_BANKS, WORLD_SPLICE_BANKS, prop_banks, world_tuning
     placed |= set(WORLD_BANKS)
+    prop_abks, prop_bnks = prop_banks(collections)
+    placed |= prop_abks | prop_bnks
     manifest['world_tuning'] = world_tuning(collections, record_names, (private/'stock', game_root))
     report('Reading audio regions')
     manifest['regions'] = regions(game_root, work, dlc_jobs)
@@ -1324,7 +1336,7 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     mixmap = mixmap_file(audio_root, output)
     if mixmap:
         manifest['aems']['mixmap'] = mixmap
-    manifest['aems']['splice'] = splice_trees(files, output, BANKS + WORLD_SPLICE_BANKS)
+    manifest['aems']['splice'] = splice_trees(files, output, BANKS + WORLD_SPLICE_BANKS + tuple(sorted(prop_bnks)))
     speech = audio_root/'english'/'livingworldspeech.big'
     if speech.is_file():
         report('Indexing world speech')

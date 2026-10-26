@@ -18,7 +18,7 @@ struct WorldParams {
     fog_ramp: vec4<f32>, fog_color: vec4<f32>, shadow_color: vec4<f32>, sun_direction: vec4<f32>, decal: vec4<f32>, water: array<vec4<f32>, 4>,
     fountain: array<vec4<f32>, 4>,
 }
-struct FrameState { shadow: vec4<f32>, clock: vec4<f32>, pca: array<vec4<f32>, 7>, pca_slow: array<vec4<f32>, 7>, water_look: vec4<f32>, water_tint: vec4<f32>, ocean_swell: vec4<f32>, fountain: vec4<f32>, fountain_body: vec4<f32>, fountain_ripple: vec4<f32>, view_dot_light: vec4<f32>, traffic_lights: array<vec4<f32>, 2> }
+struct FrameState { shadow: vec4<f32>, clock: vec4<f32>, pca: array<vec4<f32>, 7>, pca_slow: array<vec4<f32>, 7>, water_look: vec4<f32>, water_tint: vec4<f32>, ocean_swell: vec4<f32>, fountain: vec4<f32>, fountain_body: vec4<f32>, fountain_ripple: vec4<f32>, view_dot_light: vec4<f32>, traffic_lights: array<vec4<f32>, 2>, video_feed: vec4<f32> }
 
 /// Where each texture channel of one material lives.
 ///
@@ -66,6 +66,15 @@ struct ParkDraw {
     lightmap_bounds: vec4<f32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(13) var<uniform> material_park: ParkDraw;
+// The park videoscreens' live feed (video_screens.rs), sampled by mode.y bit 1024 materials while frame_state.video_feed.x is 1.
+@group(#{MATERIAL_BIND_GROUP}) @binding(14) var video_feed: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(15) var video_feed_sampler: sampler;
+
+/// The feed in the diffuse's encoding (the shader squares it): an unflipped render, so V returns to it.
+fn sample_video_feed(uv: vec2<f32>, g: Gradients) -> vec4<f32> {
+    let c = textureSampleGrad(video_feed, video_feed_sampler, vec2<f32>(uv.x, 1.0 - uv.y), vec2<f32>(g.ddx.x, -g.ddx.y), vec2<f32>(g.ddy.x, -g.ddy.y));
+    return vec4<f32>(sqrt(max(c.rgb, vec3<f32>(0.0))), 1.0);
+}
 fn page_class(packed: u32) -> u32 { return (packed >> 16u) & 0xffu; }
 fn page_layer(packed: u32) -> u32 { return packed & 0xffffu; }
 

@@ -88,6 +88,7 @@ pub(crate) mod grab_view;
 pub(crate) mod prop_carry;
 pub(crate) mod prop_dynamics;
 pub(crate) mod prop_layout;
+pub(crate) mod prop_water;
 mod settings;
 mod skeleton_grind_air;
 mod teleport_state;
@@ -136,6 +137,9 @@ pub(crate) struct GamePhysics {
     /// tick by `living_world::ped_body::push_ped_proxies` (b342); its own list, so the NPC proxy system clearing
     /// [`Self::actor_prop_volumes`] cannot drop it.
     pub(crate) ped_prop_volumes: Vec<(u64, BoardWorldVolume, f32)>,
+    /// The peds' body A displacements the last prop steps solved (`living_world::ped_body::push_ped_proxies` applies
+    /// them before the next step): (body A id, displacement, contact normal along it).
+    pub(crate) ped_prop_shoves: Vec<(u64, Vector3, Vector3, Vector3)>,
     pub(crate) network_active: bool,
     pub(crate) network_contacts: usize,
     clock: clock::SimulationClock,
@@ -404,6 +408,12 @@ impl GamePhysics {
         self.prop_dynamics.as_mut().map(shared_mut)
     }
 
+    /// Better Water's props in water ([`prop_dynamics::PropDynamics::set_water`]); how many props woke.
+    pub(crate) fn set_prop_water(&mut self, water: Option<prop_water::PropWater>) -> Option<usize> {
+        let dynamics = self.prop_dynamics.as_mut().map(shared_mut)?;
+        Some(dynamics.set_water(water, &self.world))
+    }
+
     /// Push, integrate and re-bake dynamic props against the static world.
     /// `volumes` are the skater's board and skeleton world volumes; the NPC skaters' volumes
     /// ([`Self::actor_prop_volumes`]) push props by the same rule.
@@ -426,6 +436,20 @@ impl GamePhysics {
             let mut others = self.actor_prop_volumes.clone();
             others.extend(self.ped_prop_volumes.iter().map(|(id, v, _)| (*id, *v)));
             dynamics.step_with_actors(&self.world, layer, volumes, &others);
+        }
+        let mut shoves = Vec::new();
+        dynamics.take_actor_shoves(&mut shoves);
+        for (id, shove, normal, velocity) in shoves {
+            if !self.ped_prop_volumes.iter().any(|v| v.0 == id) {
+                continue;
+            }
+            match self.ped_prop_shoves.iter_mut().find(|s| s.0 == id) {
+                Some(s) => {
+                    s.1 = Vector3::new(s.1.x + shove.x, s.1.y + shove.y, s.1.z + shove.z);
+                    s.3 = velocity;
+                }
+                None => self.ped_prop_shoves.push((id, shove, normal, velocity)),
+            }
         }
         // Each prop's retail collision type on its query meshes (heavy 12 / light 14 / held 13), which the on-foot
         // walker's queries filter.
@@ -758,6 +782,7 @@ impl GamePhysics {
             npc_sim_proxy_mark: None,
             actor_prop_volumes: Vec::new(),
             ped_prop_volumes: Vec::new(),
+            ped_prop_shoves: Vec::new(),
             network_active: false,
             network_contacts: 0,
             clock: clock::SimulationClock::default(),
@@ -798,6 +823,7 @@ impl GamePhysics {
             npc_sim_proxy_mark: None,
             actor_prop_volumes: self.actor_prop_volumes.clone(),
             ped_prop_volumes: self.ped_prop_volumes.clone(),
+            ped_prop_shoves: Vec::new(),
             network_active: self.network_active,
             network_contacts: 0,
             clock: parts.clock,
@@ -1080,7 +1106,9 @@ impl Plugin for PhysicsPlugin {
             .add_systems(FixedUpdate, manual_landing_log::log_manual_landings.after(SimulationSet::Physics))
             .add_systems(Update, present.in_set(FrameSet::Physics))
             .add_systems(Update, prop_dynamics::sync_prop_transforms.after(FrameSet::Physics))
-            .add_systems(Update, prop_dynamics::apply_better_object_mover);
+            .add_systems(Update, prop_dynamics::apply_better_object_mover)
+            .add_systems(Update, prop_water::apply_prop_water.before(FrameSet::Physics))
+            .add_systems(Update, prop_water::apply_prop_fade.after(FrameSet::Physics));
     }
 }
 

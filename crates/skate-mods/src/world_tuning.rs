@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const DOMAINS: [&str; 9] = ["living_world", "props", "carry", "shadows", "backdrop", "respawn", "exposure", "ghost", "decals"];
+pub const DOMAINS: [&str; 11] = ["living_world", "props", "carry", "shadows", "backdrop", "respawn", "exposure", "ghost", "decals", "video_screens", "prop_sounds"];
 
 /// Longest skater fade-in after a placement a mod may set (s).
 pub const MAX_GHOST_FADE_IN_SECONDS: f32 = 60.0;
@@ -491,6 +491,8 @@ pub struct PropTuningPatch {
     pub penetration_push_speed: Option<f32>,
     pub stuck_release_ticks: Option<u32>,
     pub collision_box: Option<PropBoxPatch>,
+    /// Better Water: the prop type's density in water, kg/m3 (10..=20000; unset = by its template name).
+    pub water_density: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -722,6 +724,86 @@ pub struct DecalsPatch {
     pub opacity: Option<f32>,
 }
 
+/// The park videoscreens' live feed: docs/hails-additions/35-world-shading-parity.md#videoscreen-live-feed
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoScreensPatch {
+    /// Live feed (true) or the static screen texture (false).
+    pub enabled: Option<bool>,
+    /// Feed picture size in pixels, 16..=MAX_VIDEO_FEED_SIZE.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// Feed updates per second, 1..=240.
+    pub rate_hz: Option<f32>,
+    /// The feed renders only while a screen is in view within this distance (m), 1..=10000.
+    pub max_distance: Option<f32>,
+}
+
+/// Largest accepted feed width / height.
+pub const MAX_VIDEO_FEED_SIZE: u32 = 2048;
+
+/// The dynamic props' impact sounds: docs/hails-additions/27-dynamic-props.md#prop-sounds
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropSoundsPatch {
+    /// Impact sounds on (retail true).
+    pub enabled: Option<bool>,
+    /// Per prop type key (the characteristics record name, e.g. `dumpster`): fields over its retail record.
+    #[serde(default)]
+    pub types: BTreeMap<String, PropSoundPatch>,
+}
+
+/// One prop type's impact record fields (unset = the retail record; a type without one starts silent).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropSoundPatch {
+    /// Collision materials 0..=143 (143 = none).
+    pub material: Option<i32>,
+    pub secondary: Option<i32>,
+    pub use_contact_material: Option<bool>,
+    /// Impact range (closing speed, m/s), 0..=MAX_NUMBER.
+    pub impact_min: Option<f32>,
+    pub impact_max: Option<f32>,
+    /// Console evaluations between posts, 0..=600.
+    pub cooldown: Option<i32>,
+    /// Attenuation limits (m/s, rad/s), above 0.
+    pub speed_attenuation: Option<f32>,
+    pub spin_attenuation: Option<f32>,
+    /// The loop banks' patch (w9; 0..=1000) and the speed of a full loop speed word (km/h, above 0).
+    pub patch: Option<i32>,
+    pub loop_max_kmh: Option<f32>,
+}
+
+impl PropSoundsPatch {
+    pub fn validate(&self) -> bool {
+        let material = |v: Option<i32>| v.is_none_or(|v| (0..=143).contains(&v));
+        let number = |v: Option<f32>| v.is_none_or(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(&v));
+        let limit = |v: Option<f32>| v.is_none_or(|v| v.is_finite() && v > 0.0 && v <= MAX_NUMBER);
+        self.types.iter().all(|(key, t)| {
+            !key.is_empty()
+                && material(t.material)
+                && material(t.secondary)
+                && number(t.impact_min)
+                && number(t.impact_max)
+                && t.cooldown.is_none_or(|v| (0..=600).contains(&v))
+                && limit(t.speed_attenuation)
+                && limit(t.spin_attenuation)
+                && t.patch.is_none_or(|v| (0..=1000).contains(&v))
+                && limit(t.loop_max_kmh)
+        })
+    }
+}
+
+impl VideoScreensPatch {
+    pub fn validate(&self) -> bool {
+        let size = |v: Option<u32>| v.is_none_or(|v| (16..=MAX_VIDEO_FEED_SIZE).contains(&v));
+        size(self.width)
+            && size(self.height)
+            && self.rate_hz.is_none_or(|v| v.is_finite() && (1.0..=240.0).contains(&v))
+            && self.max_distance.is_none_or(|v| v.is_finite() && (1.0..=10_000.0).contains(&v))
+    }
+}
+
 impl DecalsPatch {
     pub fn validate(&self) -> bool {
         self.opacity.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
@@ -875,7 +957,7 @@ impl Merge for PropTuningPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; contact_padding, penetration_slop, penetration_correction, max_depenetration_per_tick,
             restitution_threshold, skater_push_mass, push_transfer, body_push_speed, board_push_speed,
-            penetration_push_speed, stuck_release_ticks, collision_box);
+            penetration_push_speed, stuck_release_ticks, collision_box, water_density);
     }
 }
 impl Merge for PropSolverPatch {
@@ -1039,6 +1121,27 @@ impl Merge for ExposurePatch {
     }
 }
 
+impl Merge for PropSoundPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; material, secondary, use_contact_material, impact_min, impact_max, cooldown, speed_attenuation, spin_attenuation, patch, loop_max_kmh);
+    }
+}
+
+impl Merge for PropSoundsPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; enabled);
+        for (key, t) in &b.types {
+            self.types.entry(key.clone()).or_default().merge(t);
+        }
+    }
+}
+
+impl Merge for VideoScreensPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; enabled, width, height, rate_hz, max_distance);
+    }
+}
+
 impl Merge for DecalsPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; opacity);
@@ -1167,6 +1270,7 @@ impl PropTuningPatch {
             && self.collision_box.is_none_or(|b| {
                 b.center.iter().all(|v| finite(Some(*v))) && b.half_extents.iter().all(|v| v.is_finite() && *v > 0.0 && *v <= MAX_NUMBER)
             })
+            && self.water_density.is_none_or(|v| v.is_finite() && (10.0..=20_000.0).contains(&v))
     }
 }
 impl PropSolverPatch {
@@ -1268,6 +1372,8 @@ pub enum Patch {
     Exposure(ExposurePatch),
     Ghost(GhostPatch),
     Decals(DecalsPatch),
+    VideoScreens(VideoScreensPatch),
+    PropSounds(PropSoundsPatch),
 }
 
 /// Parse and validate a patch for `domain` (`None` = unknown domain, unknown field or bad value).
@@ -1282,6 +1388,8 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         "exposure" => Patch::Exposure(serde_json::from_value(patch.clone()).ok()?),
         "ghost" => Patch::Ghost(serde_json::from_value(patch.clone()).ok()?),
         "decals" => Patch::Decals(serde_json::from_value(patch.clone()).ok()?),
+        "video_screens" => Patch::VideoScreens(serde_json::from_value(patch.clone()).ok()?),
+        "prop_sounds" => Patch::PropSounds(serde_json::from_value(patch.clone()).ok()?),
         _ => return None,
     };
     let ok = match &p {
@@ -1294,6 +1402,8 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         Patch::Exposure(p) => p.validate(),
         Patch::Ghost(p) => p.validate(),
         Patch::Decals(p) => p.validate(),
+        Patch::VideoScreens(p) => p.validate(),
+        Patch::PropSounds(p) => p.validate(),
     };
     ok.then_some(p)
 }
@@ -1405,6 +1515,14 @@ mod tests {
         assert!(!valid_patch("exposure", &json!({"meter_weights": [0.3, 1.4, 0.3]})));
         assert!(!valid_patch("exposure", &json!({"meter_scale": -1.0})));
         assert!(!valid_patch("exposure", &json!({"target": 0.25})));
+        assert!(valid_patch("video_screens", &json!({"enabled": false, "width": 512, "height": 288, "rate_hz": 30.0, "max_distance": 300.0})));
+        assert!(!valid_patch("video_screens", &json!({"width": 8})));
+        assert!(!valid_patch("video_screens", &json!({"rate_hz": 0.0})));
+        assert!(!valid_patch("video_screens", &json!({"source": "camera"})));
+        assert!(valid_patch("prop_sounds", &json!({"enabled": true, "types": {"dumpster": {"material": 52, "impact_min": 0.2, "cooldown": 5}}})));
+        assert!(!valid_patch("prop_sounds", &json!({"types": {"dumpster": {"material": 144}}})));
+        assert!(!valid_patch("prop_sounds", &json!({"types": {"dumpster": {"speed_attenuation": 0.0}}})));
+        assert!(!valid_patch("prop_sounds", &json!({"types": {"dumpster": {"volume": 1.0}}})));
         assert!(valid_patch("backdrop", &json!({"visible": false})));
         assert!(!valid_patch("backdrop", &json!({"visible": 0})));
         assert!(valid_patch("backdrop", &json!({"proxy_terrain": false})));

@@ -80,7 +80,8 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         let lamp=min(u32(floor(4.0*i.color.x)),3u);
         if frame_state.traffic_lights[fam-19u][lamp]>1.0 { diffuse_uv=i.uv_b; g_diffuse=g_b; }
     }
-    let a = bindings::sample_diffuse(slot, diffuse_uv, g_diffuse);
+    var a = bindings::sample_diffuse(slot, diffuse_uv, g_diffuse);
+    if (flags & 1024u) != 0u && frame_state.video_feed.x > 0.5 { a = bindings::sample_video_feed(diffuse_uv, g_diffuse); }
     var lm = bindings::sample_lightmap(slot, i.uv_b, 0.0).rgb;
     // Trees, proxy, incandescent and ocean programs take one tap; so does the
     // unknown-shader fallback (0), whose retail programs vary.
@@ -564,5 +565,6 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     // The retail fence state tests the output alpha (diffuse alpha squared).
     if select(a.a, alpha, fam == 16u) < p.mode.z { discard; }
 #endif
-    return vec4<f32>(xe,alpha);
+    // material_park.tint.w: opacity of a fading prop's own blended copy (1 everywhere else).
+    return vec4<f32>(xe,alpha*bindings::material_park.tint.w);
 }

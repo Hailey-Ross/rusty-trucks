@@ -183,8 +183,7 @@ materials had cutoff -1, so nothing was alpha-tested; the shader's test compared
   Render state (decoded from the recomp code): technique setter `sub_82CF1BE0`, depth 0 / blend 0 / raster 1, the same as
   baseincandescent (`sub_82CAED90`), so family 12's class fits. In retail the big park screens show a live view:
   checked on the PS3 version in RPCS3 (user, 2026-10-09): "Confirmed its the skaters view with no HUD". The recomp
-  draws the static placeholder texture ("JUMBO TRON TEMP") instead, and so does this change; the live feed is not
-  ported yet.
+  draws the static placeholder texture ("JUMBO TRON TEMP") instead. The live feed: see "Videoscreen live feed".
 - Lit signs: new family 18 (`INCANDESCENT_TRANSPARENT_FAMILY`), converter mapping and on-load upgrade like 17;
   the shader takes the family 12 path (`lin = d`) plus `m_params` and alpha = diffuse alpha. New render class
   `BlendedDepthWriteRgba` (blend state 24: depth write, all channels written, no alpha test).
@@ -263,8 +262,70 @@ Python: `tools/asset_pipeline/test_environment.py` checks each shader's family.
   install). Collision and spawns are not touched by this change; the converter only assigns families and exports
   setup rows. No side-by-side recomp shot was taken.
 
+## Videoscreen live feed
+
+Problem: in retail the park screens (MegaPark 1, MaloofMoneyCup 7 `incandescent.videoscreen` materials) show the
+skater's view without the HUD (user, PS3 in RPCS3, 2026-10-09: "Confirmed its the skaters view with no HUD"); ours
+showed the static "JUMBO TRON TEMP" texture.
+
+Evidence (retail, research b622 / b623, 2026-10-26):
+- All 8 materials bind the same diffuse texture, GUID 0x000020d103e3870a (`blackScreenLogo_`, an ordinary resource
+  in `worldDIST_MegaPark.big`), so retail runs one feed shared by every screen [data; counted again in our
+  converted maps: Maloof 7, MegaPark 1]. The GUID is not in the TU3 image and no code builds it [code+data], so the
+  feed reaches the texture through a generic path.
+- One SceneRenderView only: constructor `sub_82811B88` has a single caller, `sub_826D35F8` [code, rechecked].
+- Ruled out as the producer: the render singleton's +0xC9D0 and +0x19940 members are shadow (light-space) views
+  (`sub_827FCC60` builds +0x19940 from the last CSM split and the light basis written by `sub_827FFFB0`) [code];
+  `sub_82790000` is the skater photo renderer (`PhotoEffects::GeneratePhoto` 0x8219D4D8,
+  `SkaterPresentationPhoto::GeneratePhotoRequest` 0x821B81B4; only caller `sub_8278F4C0`) [code+data, rechecked].
+- The frame function `sub_827FF7D0` draws the HUD (Render2D, `825D9168`) after every scene pass, so any scene-side
+  copy is HUD-free [code].
+- Not found yet: the producer itself, so the feed's resolution, update rate and camera pose are not retail values.
+  The recomp is not a reference here (it draws the placeholder). Leads: `.local/research/b623-handoff.md`.
+
+Change (`video_screens.rs`):
+- `MaterialTable::build` lists the videoscreen materials; their `mode.y` gets `VIDEO_SCREEN_FLAG` (1024), and every
+  map spawn adds one `VideoScreen` entity per screen material (id `<map>/<material index>`, world bounds).
+- One feed camera (`FeedCamera`) follows the gameplay camera's pose, field of view and tone components each frame
+  and renders into an image; a render-world copy (`copy_feed`, after the graph) puts it into `VIDEO_FEED`, which
+  every `WorldMaterial` binds (14 / 15). The world shader takes the screen's diffuse from the feed while
+  `frame_state.video_feed.x` is 1 (`sample_video_feed`: V flipped back, square root so the program's diffuse
+  squaring returns the linear feed); the static texture stays the picture when the feed is off. The copy keeps the
+  camera from rendering into the texture its own screens sample.
+- The feed camera tone-maps with the shared exposure state without metering (`ToneOnly`), so the main view's
+  adaptation is unchanged. UI never targets it (image target); the two "any 3D camera" queries
+  (`graphics_menu.rs`, `peds.rs`) exclude it.
+- Cost: the camera is active only while a screen is in the gameplay camera's frustum within `max_distance`, so
+  other maps never render it, and draws only on frames a feed update is due (`rate_hz`, frame-independent): on the
+  other frames `idle` empties its visible lists and its shadow cascades' lists, so the view stays alive but draws
+  nothing. Switching the camera itself per feed frame (the first version) let Bevy's texture cache drop the view's
+  textures (unused for 3 frames) and re-create them every feed frame.
+- Defaults (provisional, not retail): 512 x 288, 30 per second (console cadence), 300 m.
+- The feed decides before Bevy builds the directional shadow cascades (`schedule` runs before
+  `UpdateDirectionalLightCascades`): a camera switched on after that build has no cascade and `prepare_lights`
+  panics (vendored bevy_pbr `light.rs:1508`, hit in the first capture).
+- Measured 2026-10-26 (dev build, RTX 4080 SUPER, MegaPark, camera on the screen, 35 s `--verify` runs): feed off
+  3.55 ms / 1 % low 5.33 ms; feed at 30 per second 3.65 ms / 5.62 ms; feed every frame (`rate_hz` 240) 4.23 ms /
+  8.75 ms. That first version re-created the feed's textures per feed frame (render prep peaks 8 to 14 ms, one
+  33.6 ms; worst frame in 5 s 31.6 ms, 0.1 % low 15.2 ms). With `idle` (same pose, same day, noisier machine): feed
+  on 3.86 ms / 1 % low 5.99 / 0.1 % low 6.89 / worst 9.4 ms, render prep at most 2.4 ms in any hitch; feed off
+  4.05 / 7.73 / 9.04 / 9.3 ms. A laptop measurement is open.
+
+Moddability: world tuning domain `video_screens` (`sdk.world.set_tuning('video_screens', {enabled, width, height,
+rate_hz, max_distance})`), first writer wins per field, restored when the mod stops. Screens carry stable ids for a
+later per-screen source (own camera / image), which is not built yet. Multiplayer: presentation only; each machine
+shows its own player's view.
+
+Tests: `video_screens.rs` (cadence at 30 / 60 / 144 / 240 fps, frustum and distance gate),
+`modding/world_tuning.rs` (`video_screens_set_merge_and_reset_on_disable`), skate-mods patch validation.
+
 ## Open questions
 
+- Videoscreen feed camera (settled 2026-10-26, USER-ASKS 379): measured from the user's RPCS3 clip of Maloof
+  (`F:\Libraries\Videos\2026-10-26 11-06-05.mp4`, 0:15 / 0:17 / 0:45; research b643), the screen shows nearly the
+  same framing as the gameplay view (same heading, lens and tilt; at most about 0.8 m pulled back), so the feed
+  keeps copying the gameplay camera (user: "Keep as is"). The TU3 360 code has no second world camera for it
+  (research b626 / b638). Resolution and update rate are still not measured.
 - Pass and sort order of the fence draws in retail is not traced yet (two recomp trace runs did not capture a
   fence apply; the bind slot is `sub_82CA5C60`, the per-frame renderer update `sub_827FF7D0`);
   Bevy sorts them back to front in its transparent phase. With depth write and alpha test on, order matters

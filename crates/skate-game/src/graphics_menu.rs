@@ -679,7 +679,7 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<Assets<Font>>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
-    cameras: Query<Entity, With<Camera3d>>,
+    cameras: Query<Entity, (With<Camera3d>, Without<crate::video_screens::FeedCamera>)>,
     mut time: ResMut<Time<Virtual>>,
     living: Option<ResMut<crate::living_world::LivingWorldSettings>>,
 ) {

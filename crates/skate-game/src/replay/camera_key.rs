@@ -200,7 +200,7 @@ impl Anchors {
         self.eye.rotation.inverse() * (p - self.eye.translation)
     }
 
-    fn look(&self, look_height: f32) -> Vec3 {
+    pub(crate) fn look(&self, look_height: f32) -> Vec3 {
         self.root.translation + Vec3::Y * (CameraRules::default().look_target_height + look_height)
     }
 }

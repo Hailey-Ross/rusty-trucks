@@ -1476,3 +1476,87 @@ Detail moved out of the fork-added code comments of `crates/skate-core/src/playe
 - **Tests:** `contact_reduction` unit tests (a coplanar grid keeps four with the deepest point, small groups and other
   planes stay whole, chunks, determinism); the prop suites and the asset-gated Downtown prop tests pass with it on.
   Not play-tested.
+## Prop sounds
+User report (2026-10-26, RPCS3 clip of a dumpster pushed through DownTown): props made no sound at all: no rolling,
+no thumps going down stairs, no hits on other things. Retail has two sound objects per prop on MixMap slot 8
+("Dynamic", 5 instances) fed by an audio-side table the physics fills every frame. Research: b625 (first pass,
+re-checked), the m-props findings (main), b628 (loop packets), b629 (loop banks), b630 (pushed prop object). Credit:
+the retail behaviour was read from the TU3 code with skate3recomp (rexglue, Xenia) and Ghidra + Xenon360.
+
+### What retail does [code]
+- Audio table entry per prop and frame (sub_827A3FD8 / sub_827A8AD8): linear and angular velocity, the template's
+  characteristics key, and the frame's strongest contact: |relative velocity . normal| per contact point (the DMO
+  collision callback 82C54618) and that contact's surface (tag & 0x7F, minus one; 143 = none).
+- Impact = the largest of the last three frames' strongest contacts (sub_82489848, a ring per prop).
+- The manager sub_824F4108 gives at most 5 props a sound object: the pushed prop, the hardest hit, the fastest, then
+  table order; dropped props release theirs.
+- Each prop's record: the characteristics' RefSpec at 0x88 (a type that rolls, bool 0x154) or 0xB8 (sliding) names
+  a prop SFX record (class B05F7C74C63ACFB8, 141 records on the disc, e.g. dumpstergrunge, mailbox, staircase):
+  material, secondary material, impact min / max (m/s), cooldown (frames), two optional attenuations.
+- Impact post (sub_824E3BE0): after the cooldown and above the record's floor, t = clamp((impact - min) / (max -
+  min), 0, 5); material A against the contact's surface through the collision manager (sub_82486EF0), with the
+  materials' ALTERNATE band and window records (the poster's flag 1 + material byte +0x39; our export's `alt`); a
+  tier-2 side posts again as tier 1 scaled by the window record's +40; the secondary material posts against none
+  above 0.1 km/h. The message's +40 byte is 1.
+- Held loops (part B, not yet ported): c_dynamic_rolling_objects / c_dynamic_sliding_objects (34-word packets,
+  patch word w9 = record 0x13C; banks Dynamics_Objects_Roll / Slide_A (patches up to 15) / Slide_B (18 and up)).
+  Pushed prop loops (part C, not yet ported): the moveable object sub_824E48D0 with per-prop streamed banks.
+
+### Ours (part A, 2026-10-26: impacts)
+- Physics (`physics/prop_dynamics.rs`): `note_audio_contact` keeps each body's strongest |closing speed| and the
+  other surface's tag between audio reads (both solvers); `take_audio_samples` hands the awake props to the audio;
+  `dmo_type_audio` resolves each type's record from the stock vault when the types load.
+- Audio (`skate_audio::world::props`): `ContactPeak` (the ring), `pick` (the manager), `ImpactPoster` (the post) and
+  `PropSfxRecord`; `collision.rs` gains the flagged band / window / scale lookups (`*_flagged`, `Records`).
+- Game (`game_audio/prop_sounds.rs`): once per console evaluation, after the NPC skaters' process: rings, pick,
+  posts into the local player's collision manager (`PlayerAudio::post_collisions`, retail has one manager). Log line
+  `PROP_IMPACT prop=<id> impact <m/s> (min max) materials tiers levels posts`. `SKATE_PROP_SOUNDS=0` turns it off.
+- Setup (`audio_export.py` `collision_tuning`): each material's `alt` window / band records when it sets the flag.
+  Installs set up before this have none: the poster then reads the default records (no error); re-export audio to
+  get them.
+
+### Ours (part B, 2026-10-26: rolling / sliding loops)
+- `skate_audio::world::props::PropLoop`: sub_824E2790's start / release (above 0.2 m/s, in contact, the same record
+  as the last evaluation; a sliding loop only with a non-zero speed word), the 34-word packets (`loop_packet`: patch
+  w9 = record 0x13C, w13..w34 from the record's words (sliding) or its 22 optional attributes (rolling); research
+  b628) and the update's rewrites from the Dynamic owner's MixMap outputs (sub_824E2AF8 / sub_824E2E80: pan, pitch with
+  the record's 0xB0 scale, levels 1 / 5 or 8 / 9, the filters).
+- `game_audio/prop_sounds.rs`: the five slot-8 instances, each with the owner record's state (sub_824B5558: moved
+  state, the moved loop speed rising by record 0x130, "in contact" held 15 evaluations over the game time scale),
+  the position block ctl(8,0,g) and DynamicObjectPhysics in0 (the moved prop's spin); a moved prop plays its +0x88
+  record (none for the dumpster: its pushed sound is the moveable object, part C). Log line `PROP_LOOP prop=<id>
+  start <class> patch <w9> speed word <w4>`.
+- Banks `Dynamics_Objects_Roll` / `Slide_A` / `Slide_B` (export `world_audio.WORLD_BANKS`), loaded at the first loop.
+
+### Ours (part C, 2026-10-26: the pushed prop)
+Retail [code, research b630, b632, b639, b640, b641]: while the player moves a prop (owner moved state + contact) the
+moveable object (process sub_824E48D0, update sub_824E5F18, MixMap slot 8 object Moving) starts a short start loop
+(c_sliding_start / c_rolling_start, bank DMO_Starts) on the first moved frame, streams the prop's own main bank (the
+record's 0x48, e.g. Moveable_Metal_Box_Large_2 for the dumpster) and then holds a main loop (c_moveable_sliding_objects
+50 words / c_moveable_rolling_objects 54 words, patch w9 = record 0x13C, the record's two 37-field sets) and plays
+random one-shots from a Splice bank (record 0x18 -> class 74F2, e.g. SK82_Dumpster_Randoms). The dynamic-object
+manager (CSTATEMGR_DynamicObject, the same one that picks the five SFX objects) adds a random pitch judder
+(sub_824F5EB8) and owns two bus graphs `Sub0 -> Gai0 -> FSS0 -> PI20 -> PI20 -> Pn21 -> Sen0 (SFX Master)` that the
+banks' templates route the main loops (codes 2048 / 512) and the sliding start loop into: random gains by speed, a
+push / pull frequency shift (record 0xA4 / 0xA8), an LFO peaking EQ and a jittered second EQ (record class DCD364 via
+0x30); retail quirks kept (graph B's second EQ centre is never written; its jitter reads graph A's base gain; the
+second centre's timer runs twice per tick).
+- `skate_audio::world::moveable`: packets (incl. the cross-set words), the start / main updates from the Moving
+  outputs, `Judder`, `EqManager`, the one-shot interval; `bus/dynamic.rs`: the two graphs (dsp gain / fss / peaking /
+  pan), `Output::Dynamic`, the mixer routes codes 2048 / 512 mono into them.
+- `physics/prop_dynamics.rs` `moving_type`: the record sets, banks, one-shot and manager records; setup exports every
+  bank the records name (`world_audio.prop_banks`: 27 AEMS banks + 9 Splice banks).
+- `game_audio/prop_sounds.rs`: the start loop, the main bank through the prefetch worker then the main loop, the
+  judder and EQ ticks, the one-shots (Splice host). Log lines `PROP_MOVE prop=<id> start|main ...`.
+- Inferred, not traced: push vs pull = the sign of the prop's velocity against the local skater's (retail: against
+  a player vector at +0x10); the Pn21 pan = the main loop's azimuth (retail: the last routed voice's).
+
+### Not modelled / open
+- Prop-on-prop contacts post against "no material" (143): retail's other-body surface for a DMO pair is not traced.
+- The two runtime terms of the sliding choice (characteristics bool 0x14C with entry +0x4C; entry +0x4E with +0x4F)
+  need DMO flags we do not have; the type's rolls flag alone decides.
+- "Pushed" (entry +0x20, writer not traced) = the local player holds the prop with Move Object or last pushed it.
+- The whoosh-by (sub_824E3FA0) is one shared mechanism for props, peds, skaters and vehicles (b634) and follows separately; the tipped splash (sub_824E43A8, b633) too.
+
+### Mods
+World tuning domain `prop_sounds` ([doc 26a](26a-living-world-overview.md#world-tuning-domains)): `enabled` and per prop type key the record fields over the retail record (a type without one starts silent, so a mod can give a prop a sound); restored when the mod stops. Multiplayer: the posts are decided from fixed-step samples keyed by the stable prop instance id, so peers and the replay regenerate the same sounds.

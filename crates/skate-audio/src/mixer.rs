@@ -737,12 +737,16 @@ impl VoiceHost for Mixer {
             pan,
             send: Send::default(),
             routing,
-            output: routing.output_bus.map_or(Output::Master, |(i, _)| Output::Eq(i)),
+            // Codes 2048 / 512: the dynamic-object manager's graphs A / B, mono (`sub_824A3140`, research b641).
+            output: match routing.fixed {
+                Some(code) => crate::bus::dynamic::CODES.iter().position(|&c| c == code).map_or(Output::Master, |i| Output::Dynamic(i as u8)),
+                None => routing.output_bus.map_or(Output::Master, |(i, _)| Output::Eq(i)),
+            },
             // Send A is posted 0 at open; property 5 / 2 set it.
             env: Level::new(0.0),
             owner_env: Level::new(0.0),
             fx_send: Level::new(0.0),
-            mono_out: false,
+            mono_out: routing.fixed.is_some(),
             group,
             fade: None,
             env_direct: None,

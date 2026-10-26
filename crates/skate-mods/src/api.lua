@@ -396,7 +396,12 @@ function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",a
 -- auto-exposure meter ("exposure": meter_weights, retail {0.3, 0.4, 0.3}; meter_scale, retail 2.515) or the skater
 -- fade-in after every placement ("ghost": enabled, retail true; fade_in_seconds, retail 1.0, 0..60; hold_alpha,
 -- retail 0.68, 0..1) or the world decals ("decals": opacity, retail 1.0, 0..1: strength of every decal over
--- its surface, applied at once) while this mod
+-- its surface, applied at once) or the park videoscreens' live feed ("video_screens": enabled, default true;
+-- width / height in pixels, 16..2048; rate_hz, 1..240; max_distance in m, 1..10000) or the props' impact sounds
+-- ("prop_sounds": enabled, retail true; types = { [prop type key, e.g. "dumpster"] = { material / secondary 0..143,
+-- use_contact_material, impact_min / impact_max m/s, cooldown 0..600 evaluations, speed_attenuation /
+-- spin_attenuation above 0, patch 0..1000 (the loop banks' sound set), loop_max_kmh above 0 } } over the type's
+-- retail record) while this mod
 -- runs; nil restores
 -- this mod's patch of the domain, everything is restored when the mod stops. First writer wins.
 sdk.world = { version = 1 }
@@ -440,11 +445,12 @@ end
 -- eye rides the recorded gameplay camera, upright), 'camera_full' (with its pitch and roll) or 'skater';
 -- opts.fill_section = false keeps the recorded camera before the first key and makes every camera pick a plain insert
 -- (retail true: a camera picked on a clip with no keys covers the whole clip, and another camera picked inside a keyed
--- section asks "Change Camera" and replaces that section). nil restores retail's; the
+-- section asks "Change Camera" and replaces that section); opts.playback_collide = true also keeps keyed cameras out of
+-- the world during editor playback (retail false: only the instant view does). nil restores retail's; the
 -- override goes on disable.
 function sdk.replay.set_camera(opts)
   opts = opts or {}
-  submit{kind="replay_set_camera",collide=opts.collide,radius=opts.radius,leash=opts.leash,follow_eye=opts.follow_eye,fill_section=opts.fill_section}
+  submit{kind="replay_set_camera",collide=opts.collide,radius=opts.radius,leash=opts.leash,follow_eye=opts.follow_eye,fill_section=opts.fill_section,playback_collide=opts.playback_collide}
 end
 
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and

@@ -3023,6 +3023,19 @@ Detail moved out of the code comments of `crates/skate-game/src/fe_backdrop.rs`;
 
 FE backdrop: the world behind a front-end screen blurs and darkens while that screen is on top of the FE screen stack (doc 31, "Pause blur"). The ramp is `skate_core::fe_blur` (retail FE manager); which screens blur comes from the menu tables (retail screen stack info table, extracted at setup); mods override it per screen with `sdk.menus.backdrop`. The pass runs on the gameplay camera after the retail tone pass and before the UI, so the menus themselves stay sharp.
 
+### HDR and LDR views (2026-10-26, research b621)
+
+Problem: menus over the test world (and over any map without retail render data, e.g. a mod map) panicked in wgpu:
+"RenderPass uses [Rgba8UnormSrgb] but the RenderPipeline with 'fe backdrop' label uses [Rgba16Float]". Cause [code]:
+the pass queued one pipeline with the fixed HDR target format (`fe_backdrop.rs` `initialize`), while the gameplay
+camera has `Hdr` only when `RetailScene` holds (`camera.rs` spawn and `set_world_environment`), so those views are
+LDR. A player could reach it by picking "Test world" in the overlay map list and opening a menu.
+Change: `initialize` queues the same pipeline for both formats (HDR and `bevy_default()`); the node picks by
+`ViewTarget::is_hdr()`, as Bevy's own blit pipeline keys on the target format. Mod backdrops (`sdk.menus.backdrop`)
+take the same path.
+Verification: `--test-world --verify` with `SKATE_VERIFY_MENU=optin` panicked before and now saves a blurred capture;
+the same capture on DownTown (HDR) is unchanged.
+
 ## Code reference: extras_host.rs
 
 Detail moved out of the code comments of `crates/skate-game/src/extras_host.rs`; each comment there links its section here.

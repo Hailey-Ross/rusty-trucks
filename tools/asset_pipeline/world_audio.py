@@ -31,10 +31,31 @@ WORLD_BANKS = (
     'C00_heavy01.abk', 'C01_family01.abk', 'C03_sports01.abk', 'C04_taxi01.abk', 'C05_truck01.abk',
     'C06_sports02.abk', 'C07_family02.abk', 'C08_family03.abk', 'Traffic_Horn.abk', 'Traffic_Skid.abk',
     'car_alarms.abk', 'fstep_livingworld.abk', 'Tazer.abk', 'CellPhone_Rings.bnk',
+    # The dynamic props' rolling / sliding loops (skate_audio::world::props::LOOP_BANKS, doc 27 "Prop sounds").
+    'Dynamics_Objects_Roll.abk', 'Dynamics_Objects_Slide_A.abk', 'Dynamics_Objects_Slide_B.abk',
 )
 # The Splice (SPLC) banks among them: their patch trees go to the native Splice player
 # (`skate_audio::world::peds::PedSpeech`'s phone ring, retail's Splice table index 6).
 WORLD_SPLICE_BANKS = ('CellPhone_Rings.bnk',)
+
+# The pushed props' sound banks (doc 27 "Prop sounds", research b630 / b632): each prop SFX record (class B05F...)
+# names its main bank (Text at layout 0x48) and, through its RefSpec at 0x18, a one-shot record (class 74F2...)
+# whose Text at offset 0 names a Splice bank; the start loops live in DMO_Starts.
+PROP_RECORD_CLASS, PROP_MAIN_BANK = 'Hash_B05F7C74C63ACFB8', 'Hash_BE88128A30BE926E'
+PROP_ONESHOT_CLASS, PROP_ONESHOT_BANK = 'Hash_74F2B4132A1D39EA', 'Hash_A09DA314AE53C56D'
+PROP_START_BANK = 'DMO_Starts.abk'
+
+
+def prop_banks(collections: list[dict]) -> tuple[set[str], set[str]]:
+    """(AEMS banks, Splice banks) the prop records name, read from every converted collection (DLC ones too)."""
+    abks, bnks = {PROP_START_BANK}, set()
+    for c in collections:
+        field = {PROP_RECORD_CLASS: PROP_MAIN_BANK, PROP_ONESHOT_CLASS: PROP_ONESHOT_BANK}.get(c['class'])
+        name = (c['fields'].get(field) or {}).get('data', '').strip() if field else ''
+        if name:
+            (bnks if name.lower().endswith('.bnk') else abks).add(Path(name).name)
+    return abks, bnks
+
 
 ENGINE_CLASS = 'Hash_259095163B974174'  # aud_traffic_engine
 ENGINE_FIELDS = {
