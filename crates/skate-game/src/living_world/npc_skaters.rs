@@ -1173,27 +1173,62 @@ pub(crate) fn present_pose(
     }
 }
 
+/// A material an NPC fade can blend: its own base alpha and how a blended copy takes a new one.
+pub(crate) trait FadeMaterial: Material + Clone {
+    fn fade_base(&self) -> f32;
+    /// Blend the copy at `alpha` (the base alpha times the fade).
+    fn set_fade(&mut self, alpha: f32);
+}
+
+impl FadeMaterial for StandardMaterial {
+    fn fade_base(&self) -> f32 {
+        self.base_color.alpha()
+    }
+    fn set_fade(&mut self, alpha: f32) {
+        self.alpha_mode = AlphaMode::Blend;
+        self.base_color.set_alpha(alpha);
+    }
+}
+
+/// Retail's ped program draws its fade as the output alpha (`i_params.x`).
+impl FadeMaterial for super::ped_material::PedMaterial {
+    fn fade_base(&self) -> f32 {
+        self.params.options.y
+    }
+    fn set_fade(&mut self, alpha: f32) {
+        self.alpha = AlphaMode::Blend;
+        self.params.options.y = alpha;
+    }
+}
+
 /// Blended material copies of one NPC while it fades (spawn fade in, leave fade). Absent while the
 /// NPC is solid. Dropping it (despawn, mod disable, map change) frees the copies: they are only
 /// held here.
-#[derive(Component, Default)]
-pub(crate) struct NpcFadeMaterials {
+#[derive(Component)]
+pub(crate) struct NpcFadeMaterials<M: FadeMaterial = StandardMaterial> {
     /// Mesh entity and its own (shared) material, put back at alpha 1.
-    pub originals: Vec<(Entity, Handle<StandardMaterial>)>,
+    pub originals: Vec<(Entity, Handle<M>)>,
     /// Source material -> its blended copy and the source's own base alpha.
-    pub copies: BTreeMap<AssetId<StandardMaterial>, (Handle<StandardMaterial>, f32)>,
+    pub copies: BTreeMap<AssetId<M>, (Handle<M>, f32)>,
     /// Alpha the copies were last set to (NaN = not yet).
     pub alpha: f32,
 }
 
-/// Draw [`NpcFade::alpha`] with per-NPC blended material copies below 1 (render only).
-pub(crate) fn present_fade(
+impl<M: FadeMaterial> Default for NpcFadeMaterials<M> {
+    fn default() -> Self {
+        Self { originals: Vec::new(), copies: BTreeMap::new(), alpha: f32::NAN }
+    }
+}
+
+/// Draw [`NpcFade::alpha`] with per-NPC blended material copies below 1 (render only), for each material type.
+pub(crate) fn present_fade<M: FadeMaterial>(
     mut commands: Commands,
-    mut npcs: Query<(Entity, &NpcFade, Option<&mut NpcFadeMaterials>)>,
+    mut npcs: Query<(Entity, &NpcFade, Option<&mut NpcFadeMaterials<M>>)>,
     children: Query<&Children>,
-    mut meshes: Query<&mut MeshMaterial3d<StandardMaterial>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut meshes: Query<&mut MeshMaterial3d<M>>,
+    materials: Option<ResMut<Assets<M>>>,
 ) {
+    let Some(mut materials) = materials else { return };
     for (e, fade, state) in &mut npcs {
         let alpha = fade.alpha.clamp(0.0, 1.0);
         if alpha >= 1.0 {
@@ -1203,14 +1238,14 @@ pub(crate) fn present_fade(
                         m.0 = original.clone();
                     }
                 }
-                commands.entity(e).remove::<NpcFadeMaterials>();
+                commands.entity(e).remove::<NpcFadeMaterials<M>>();
             }
             continue;
         }
         let mut fresh = None;
-        let state: &mut NpcFadeMaterials = match state {
+        let state: &mut NpcFadeMaterials<M> = match state {
             Some(s) => s.into_inner(),
-            None => fresh.insert(NpcFadeMaterials { alpha: f32::NAN, ..Default::default() }),
+            None => fresh.insert(NpcFadeMaterials::default()),
         };
         let mut added = false;
         for mesh in children.iter_descendants(e) {
@@ -1224,9 +1259,8 @@ pub(crate) fn present_fade(
                 None => {
                     let Some(source) = materials.get(current) else { continue };
                     let mut blended = source.clone();
-                    let base = source.base_color.alpha();
-                    blended.alpha_mode = AlphaMode::Blend;
-                    blended.base_color.set_alpha(base * alpha);
+                    let base = source.fade_base();
+                    blended.set_fade(base * alpha);
                     let h = materials.add(blended);
                     state.copies.insert(current, (h.clone(), base));
                     added = true;
@@ -1240,7 +1274,7 @@ pub(crate) fn present_fade(
         if added || state.alpha != alpha {
             for (h, base) in state.copies.values() {
                 if let Some(mat) = materials.get_mut(h.id()) {
-                    mat.base_color.set_alpha(*base * alpha);
+                    mat.set_fade(*base * alpha);
                 }
             }
             state.alpha = alpha;
@@ -1510,7 +1544,7 @@ pub(crate) fn install(app: &mut App) {
             FixedUpdate,
             push_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),
         )
-        .add_systems(Update, (present_looks, present_pose, present_fade).chain().after(crate::app::FrameSet::Animation));
+        .add_systems(Update, (present_looks, present_pose, present_fade::<StandardMaterial>, present_fade::<super::ped_material::PedMaterial>).chain().after(crate::app::FrameSet::Animation));
 }
 
 #[cfg(test)]

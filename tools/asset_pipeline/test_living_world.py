@@ -3,6 +3,7 @@ import json
 import struct
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tools.asset_pipeline import living_world as lw
@@ -240,6 +241,20 @@ class Models(unittest.TestCase):
         self.assertEqual(len(doc['materials']), 1)  # both LODs share the material
         self.assertIn('normalTexture', doc['materials'][0])
         self.assertEqual(doc['materials'][0].get('extras'), {'shader': 'pedestrian_high_stamp'})
+        # An arena naming its vault row (research b614): the name and its m_params rows ride in the extras.
+        rows = [[0.05, 1.0, 0.0, 3.0], [1.5, 1.4, 1.2, 1.6]]
+        with mock.patch.object(models, '_attrib_name', return_value='character.livingworld_pedestrians_stamp'), \
+                tempfile.TemporaryDirectory() as temp:
+            png = Path(temp)/'t.png'
+            Image.new('RGBA', (4, 4), (10, 20, 30, 255)).save(png)
+            out = Path(temp)/'m.glb'
+            stats = models.write_glb(recipe, lambda lod: Path(temp)/'x.rx2', lambda tid: png, out, FakeRx2,
+                                     lambda name: rows if name == 'character.livingworld_pedestrians_stamp' else None)
+            doc = models.read_glb(out)
+        self.assertEqual(doc['materials'][0]['extras'], {'shader': 'pedestrian_high_stamp',
+                                                         'attrib_material': 'character.livingworld_pedestrians_stamp',
+                                                         'params': rows})
+        self.assertEqual(stats['attrib_materials'], {'character.livingworld_pedestrians_stamp'})
 
     def test_recipe_xml_material_types(self):
         xml = (b'<compositeasset n="x"><mat id="0x0000313703E38817" type="pedestrian_high_stamp">'

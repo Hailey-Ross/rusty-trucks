@@ -479,9 +479,18 @@ soft Free 10; Follow at 5 asks, clears the soft keys, turns the 2 s Tripod key i
 look height, keeps 8 and 10; Advanced Tripod over Tripod only inserts; `fill_section = false` only inserts);
 `camera_keys_hold_cut_and_blend` now expects the Advanced Free pick inside the Tripod section to turn its 5 s key into
 Free. Not play-tested.
-Open (b610): a Free start converted to Follow / Tripod keeps its look in one frame but retail relabels it subject 4
-(ours: look height 0); what a Game section's records hold; the popup's cancelable flag and default (`82D0B0B0` defaults
-assumed cancelable like the other editor questions); a pick inside the minimum spacing during a replace.
+Open (b610, b613 `.local/research/b613-replace-open-points.md`, code only, no trace yet):
+- Free start -> Follow: retail stores the world look point in the Follow eye frame but labels it object 4, so each
+  frame it is re-applied at the skater root (the look lands about one camera distance past the skater); -> Tripod: the
+  look is the pick-time point carried with the skater. Ours keeps only a look height (0 for a Free source); parity
+  needs a root-frame look offset in Follow / Tripod keys and Free's look distance.
+- Game section records: a fresh clip copies the take's live elements (likely zeros, unproven); a Game key from a pick
+  holds the old camera's local pose then zeros. Ours keys a Game start from the view, which matches retail's eye for
+  zeros; retail's look is the root origin, ours root + target height.
+- Settling hook (RCAMCV, in b613): `82C856C8` / `82C854B8` entry and exit plus `82C7F728` exit, scripted Free then
+  Follow and Game then Follow picks.
+- The popup's cancelable flag and default (assumed cancelable like the other editor questions); a pick inside the
+  minimum spacing during a replace.
 
 ### Replay popups own the pad (2026-10-25, USER-ASKS 342)
 

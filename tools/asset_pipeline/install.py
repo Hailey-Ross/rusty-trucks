@@ -641,7 +641,18 @@ def _install_stages(iso,base,game_exe,report,game_root=None,refresh=False,finali
             if 'audio' in groups:
                 exports.audio(game_root,stage,work,report,log,base/'tools',dlc_jobs,dlc_vaults)
             if living_job is not None:living_job.join()
-            if 'maps' in groups and catalog_ok:
+            # The hand props live in private/living_world (the livingworld group's folder) but read the maps' DMO
+            # catalog: a livingworld-only refresh prepares the catalog itself, or it would publish without them.
+            hand_props_catalog='maps' in groups and catalog_ok
+            if 'livingworld' in groups and 'maps' not in groups:
+                from .optional_content import CONTENT_ERRORS, note
+                from .dynamic_props import prepare_catalog
+                try:
+                    prepare_catalog(game_root,work/'dmo')
+                    hand_props_catalog=True
+                except CONTENT_ERRORS as error:
+                    report(f'Hand props skipped: movable-object catalog unavailable ({error})')
+            if hand_props_catalog:
                 # Ped hand props (DMO_Global templates) need the livingworld group's tables.json with dmo_models.
                 try:
                     tables=private/'living_world/tables.json'
