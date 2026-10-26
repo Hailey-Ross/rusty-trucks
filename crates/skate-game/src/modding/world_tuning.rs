@@ -482,6 +482,8 @@ pub(crate) fn props_table(p: &PropsPatch) -> PropTuningTable {
             bail_blend: v.bail_blend.unwrap_or(d.bail_blend),
             walkable_mass: v.walkable_mass.unwrap_or(d.walkable_mass),
             skater_push_box: v.skater_push_box.unwrap_or(d.skater_push_box),
+            skater_rows: v.skater_rows.unwrap_or(d.skater_rows),
+            board_row_mass: v.board_row_mass.unwrap_or(d.board_row_mass),
             ground_reduction: skate_core::physics::contact_reduction::ReductionRules {
                 enabled: v.ground_reduction.unwrap_or(d.ground_reduction.enabled),
                 normal_dot: v.reduction_normal_dot.map_or(d.ground_reduction.normal_dot, |x| x.clamp(-1.0, 1.0)),
@@ -661,7 +663,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "row_solver": v.row_solver, "iterations": v.iterations, "sleep_energy": v.sleep_energy,
                 "sleep_frames": v.sleep_frames, "max_sleeps_per_step": v.max_sleeps_per_step, "rest_snap": v.rest_snap,
                 "bail_clamp": v.bail_clamp, "bail_linear_factor": v.bail_linear_factor, "bail_angular_factor": v.bail_angular_factor,
-                "bail_heavy_mass": v.bail_heavy_mass, "bail_blend": v.bail_blend, "walkable_mass": v.walkable_mass, "skater_push_box": v.skater_push_box,
+                "bail_heavy_mass": v.bail_heavy_mass, "bail_blend": v.bail_blend, "walkable_mass": v.walkable_mass, "skater_push_box": v.skater_push_box, "skater_rows": v.skater_rows, "board_row_mass": v.board_row_mass,
                 "ground_reduction": v.ground_reduction.enabled, "reduction_normal_dot": v.ground_reduction.normal_dot,
                 "reduction_plane_distance": v.ground_reduction.plane_distance, "reduction_chunk": v.ground_reduction.chunk,
             }, "upright": {
