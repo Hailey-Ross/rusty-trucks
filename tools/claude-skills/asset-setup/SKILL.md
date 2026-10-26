@@ -105,3 +105,9 @@ In the current set `assets\private\customisation\sets\<set id from current.json>
    stage as damaged.
 4. Check `customiser_cache.complete(set)` is True, `summary(install)` is empty, and `--check-assets` passes. Back up
    the two JSON files first.
+
+## Refreshing one group (2026-10-25)
+`installed`, `changed_groups` and `fingerprints` live in `tools/asset_pipeline/versions.py`. To rebuild a group whose
+fingerprint already matches (after an exporter change you want to test), back up `data/installation.json`, set
+`pipelines.<group>` to a dummy value and run `install(..., refresh=True)`. A livingworld-only refresh also writes the
+ped hand props (they live in `private/living_world`); the log says `Hand props: N of M exported`.

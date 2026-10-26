@@ -74,3 +74,10 @@ tests with a seeded RNG, behaviour-graph unit tests, collision thresholds (knock
 cadence normalised to the 360's ~30 fps. Gameplay feel and NPC encounters come from passive sessions where a person
 plays (scripts can't steer to NPCs). Run skill `regression-check` before calling anything done, and document each
 change with its retail evidence and tests.
+
+## Ped material (2026-10-25, doc 26f "Ped material: the retail shadow side")
+Ped bodies (opaque `pedestrian_high_stamp` / `pedestrian_low` parts) draw with `living_world/ped_material.rs`, a port of
+`livingworld_stamp_defaultPS`: the shadow side is a flat ambient literal times `m_params[5].w`, no SH. Rows ride in the
+ped GLB's material extras (`attrib_material`, `params`); `PedLooks::material_params` overrides them by name. The NPC
+fade is generic over the material (`npc_skaters::FadeMaterial`): a new NPC material needs an impl and a
+`present_fade::<M>` registration.

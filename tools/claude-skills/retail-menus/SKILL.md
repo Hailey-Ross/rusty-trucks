@@ -67,3 +67,8 @@ The foundation went upstream as #59; the rest is part of #52.
 The "NOT RETAIL YET" lines of doc 31's sections; inline button tags in menu text (`<B:B_hud> Back`) are not laid out
 yet; the loading screen's "Loading..." position, spinner and text tint; the FE 62 preview (MarqueeViewer); the
 minimap's challenge icon groups (they need a challenge system).
+
+## Popup kinds (2026-10-25, doc 31 "Popup kinds")
+A popup with an OK / Continue option is `Standard` (Sk8Popup, the default). `Small` (small_popup) shows a title and
+text only and closes by B when cancelable or by code; retail never pushes a small popup with options. The host show
+`0x825EF440` maps kind 2 / 3 to the small movie, 1 to the autosave one, anything else to Sk8Popup.
