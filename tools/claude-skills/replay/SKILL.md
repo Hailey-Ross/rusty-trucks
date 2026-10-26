@@ -47,3 +47,13 @@ upstream PR #52.
 ## Open
 See doc 37's Open lines (for example the id 2 playback reader and the DMO state entries). Online instant replay and the
 replay upload are not ported.
+
+## Cameras (2026-10-25; doc 37 "The Follow eye frame is upright", "A camera picked on a keyed clip asks, then replaces its section")
+- A Follow key's eye rides the recorded gameplay camera made upright (heading only, up = world up):
+  `camera_key::upright`, `FollowEye::Camera`; mods pick `camera_full` or `skater` with `sdk.replay.set_camera`.
+  Retail re-evaluates it every frame (`82C8A960` -> `82C8B9F8` -> `82C8C470`, object 2, no smoothing; recomp trace).
+- A camera pick inside a keyed section asks "Change Camera" (No / Yes) and replaces that section between hard keys
+  (`Editor::pick_replaces` / `pick_asks`, `camera_key::convert_key`); `fill_section = false` keeps plain inserts.
+- Retail's camera constraint gate (`0x83037414`) is written by the editor mode every frame: the instant view
+  constrains every frame, Timeline playback does not.
+- `REPLAY_OPEN actors / bytes` count only world actors (peds, NPC skaters, cars, props); the player has its own track.

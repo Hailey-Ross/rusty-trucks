@@ -199,3 +199,8 @@ teleports, scripted skating or asking someone to drive.
   read with a second small hook instead of guessed.
 - **Speech echo:** ped and main-cast speech has an echo path: a pre-gain send, then high-pass, a delay from the camera
   distance, low-pass, into the environment bus. It was settled from code plus existing traces, without new sessions.
+
+## Replay camera hooks (2026-10-25, category `replay`)
+`RCAMN` (calls per second per caller), `RCAMF` (the frame `82C84CF8` returns), `RCAMRAW` (the raw camera matrix
+`82672118` copies), `RCAMP` (the per-frame resolve `82C8C470`). Hook each function once across the research hook
+files: grep for `sub_X` before adding one, and call a helper from the existing hook when it is taken.
