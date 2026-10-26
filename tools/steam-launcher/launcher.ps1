@@ -326,6 +326,8 @@ function Rebuild-LauncherExe {
         return $true
     } catch { Remove-Item $new -ErrorAction SilentlyContinue; return $false }
 }
+# The start screen's current step (SkateLauncher.exe RenderStart).
+function Start-Stage([string]$Text) { if ($env:SKATE_LAUNCHER_UI -eq '2') { Write-Host "LAUNCHER_STAGE`t$Text" } }
 # One line for the result. Writes restart.txt when the window's exe was rebuilt (SkateLauncher.exe restarts into it).
 function Self-Update([switch]$Force) {
     $ErrorActionPreference = 'Continue'
@@ -335,6 +337,7 @@ function Self-Update([switch]$Force) {
         if (-not (Test-Path (Join-Path $SelfGit 'HEAD'))) { & git init -q --bare $SelfGit 2>$null | Out-Null }
         # A start check skipped with B (the window kills it during this fetch, b522) can leave a lock behind.
         Get-ChildItem $SelfGit -Recurse -Filter *.lock -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-2) } | Remove-Item -ErrorAction SilentlyContinue
+        Start-Stage 'Checking GitHub for a newer launcher'
         if ($env:SKATE_LAUNCHER_UI -eq '2') { Write-Host "LAUNCHER_SELF`tfetching" }
         & git -C $SelfGit -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch -q --depth 1 $SelfUrl "+refs/heads/$($SelfBranch):refs/heads/self" 2>$null | Out-Null
         $ok = $LASTEXITCODE -eq 0
@@ -346,6 +349,7 @@ function Self-Update([switch]$Force) {
     # The fork's files with this checkout's line endings (core.autocrlf=true, as the Windows checkouts have them).
     $tmp = Join-Path $env:TEMP ('skate-launcher-update-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     $zip = "$tmp.zip"
+    Start-Stage "Installing the launcher update ($(Self-Short $sha))"
     try {
         & git -C $SelfGit -c core.autocrlf=true archive --format=zip -o $zip refs/heads/self -- @SelfPaths 2>$null
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zip)) { $r = "Launcher update: could not unpack $(Self-Short $sha); kept the current launcher."; Self-Log $r; return $r }
@@ -1101,12 +1105,14 @@ if ($Entry -eq 'pending') {
     if ((Setting 'self_update' $true) -ne $false -and $env:SKATE_LAUNCHER_NO_SELF -ne '1' -and (Running-Games).Count -eq 0) { $selfSaid = Self-Update }
     # A pulled or patched launcher updates its own exe too: SkateLauncher.cs newer than SkateLauncher.exe = build it again.
     if (-not (Test-Path $SelfRestart) -and (Test-Path $cs) -and (Test-Path $exe) -and (Get-Item $cs).LastWriteTime -gt (Get-Item $exe).LastWriteTime) {
+        Start-Stage 'Building the updated launcher'
         if (Rebuild-LauncherExe) { Set-Content -Path $SelfRestart -Value 'local' -Encoding ASCII }
     }
     # An update that changed files is shown at start like a session result (with the session check's, when one runs).
     if ($selfSaid -like 'Launcher: up to date*') { $selfSaid = '' }
     # A refresh in any copy can leave the others' assets links dangling: repair them at every start.
-    if ((Running-Games).Count -eq 0) { Repair-AllAssetLinks | ForEach-Object { Write-Host "  $_" } }
+    if ((Running-Games).Count -eq 0) { Start-Stage 'Checking the game file links'; Repair-AllAssetLinks | ForEach-Object { Write-Host "  $_" } }
+    Start-Stage 'Looking for your last session'
     $since = [datetime]::MinValue
     if (Test-Path $LastSession) { $since = (Get-Item $LastSession).LastWriteTime }
     $log = Get-ChildItem $StateLogs -Filter 'state_*.tsv' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -1132,8 +1138,10 @@ if ($Entry -eq 'pending') {
     $summary = ''
     if ($kind) {
         Write-Host '  Checking the last session (it closed before its check)...'
+        Start-Stage 'Checking your last session'
         $summary = Check-Session $kind $t0 $null
     }
+    if ($missedSend) { Start-Stage 'Sending your last session' }
     if ($missedSend) { $summary = (@($summary, (Send-Sessions)) | Where-Object { $_ }) -join "`r`n" }
     if ($selfSaid) { $summary = "$selfSaid`r`n$summary" }
     Save-Result ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "  (checked at next start)`r`n$summary")

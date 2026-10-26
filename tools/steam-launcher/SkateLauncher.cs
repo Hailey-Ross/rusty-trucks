@@ -166,7 +166,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     string waitEntry, waitLabel, waitName;   // waiting for another game to close before starting
     bool cancelArmed, cancelled, cancelledInFetch;  // B pressed once / twice while a build or its fetch waits
     ushort prevPad; int held; string lastAction = ""; bool lastFromPad; DateTime lastActionTime = DateTime.MinValue;
-    Font monoFont, titleFont, itemFont, smallFont, heroFont, markFont, markLight, playFont, iconFont, iconSmall, itemBold, smallBold, bodyFont;
+    Font monoFont, titleFont, itemFont, smallFont, heroFont, markFont, markLight, playFont, iconFont, iconSmall, itemBold, smallBold, bodyFont, splashMark, splashLight;
 
     public LauncherForm(string[] argv) {
         // --after-update: started by the previous exe after it updated itself (shows what changed), not a direct entry.
@@ -205,6 +205,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         bodyFont = new Font("Segoe UI", h / 42f, GraphicsUnit.Pixel);
         markFont = new Font("Segoe UI Black", h / 30f, GraphicsUnit.Pixel);
         markLight = new Font("Segoe UI Light", h / 30f, GraphicsUnit.Pixel);
+        splashMark = new Font("Segoe UI Black", h / 11f, GraphicsUnit.Pixel);
+        splashLight = new Font("Segoe UI Light", h / 11f, GraphicsUnit.Pixel);
         playFont = new Font("Segoe UI Black", h / 26f, GraphicsUnit.Pixel);
         iconFont = new Font("Segoe MDL2 Assets", h / 26f, GraphicsUnit.Pixel);
         iconSmall = new Font("Segoe MDL2 Assets", h / 40f, GraphicsUnit.Pixel);
@@ -247,7 +249,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         using (var bmp = new Bitmap(w, h)) {
             // Twice: the first frame starts the screen-change fade; the second draws it finished.
-            using (var g = Graphics.FromImage(bmp)) { Render(g, w, h); screenAt = selAt = -10; Render(g, w, h); }
+            using (var g = Graphics.FromImage(bmp)) { Render(g, w, h); screenAt = selAt = stageAt = -10; Render(g, w, h); }
             bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
         }
     }
@@ -343,11 +345,22 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     bool starting, skipArmed; DateTime startSince;
     // The start check's process, whether its self-update fetch is done (LAUNCHER_SELF) and whether B skipped it.
     readonly object startLock = new object(); Process startProc; volatile bool selfFetching, selfFetched, skipped;
+    // The start check's current step (LAUNCHER_STAGE lines), shown under the rolling board.
+    volatile string startStage;
+    // The step shown, the one fading out and when it changed (the status line cross-fades).
+    string stageShown, stagePrev; float stageAt = -10;
+    const double SplashMinSeconds = 1.1;
+    Bitmap splashShot; float outroAt = -10;
     void Start() {
         Activate(); Native.Front(Handle);
-        starting = true; startSince = DateTime.Now; selfFetching = selfFetched = skipped = skipArmed = false; Invalidate();
-        Task.Run(() => RunPending(false))
-            .ContinueWith(t => BeginInvoke((Action)(() => FinishStart(t.IsFaulted ? 0 : t.Result))));
+        starting = true; startSince = DateTime.Now; selfFetching = selfFetched = skipped = skipArmed = false; startStage = null; Invalidate();
+        // The splash stays at least SplashMinSeconds, so a fast check does not flash it.
+        Task.Run(() => {
+            int code = RunPending(false);
+            int left = (int)((SplashMinSeconds - (DateTime.Now - startSince).TotalSeconds) * 1000);
+            if (left > 0) Task.Delay(left).Wait();
+            return code;
+        }).ContinueWith(t => BeginInvoke((Action)(() => FinishStart(t.IsFaulted ? 0 : t.Result))));
     }
     // launcher.ps1 pending; killed by B during the fetch, it runs again without the self update so the rest still happens.
     int RunPending(bool noSelf) {
@@ -361,6 +374,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             while ((line = p.StandardOutput.ReadLine()) != null) {
                 if (line.StartsWith("LAUNCHER_SELF\tfetching")) selfFetching = true;
                 else if (line.StartsWith("LAUNCHER_SELF\tfetched")) selfFetched = true;
+                else if (line.StartsWith("LAUNCHER_STAGE\t")) startStage = line.Substring(15);
             }
             p.WaitForExit(); code = p.ExitCode;
             lock (startLock) startProc = null;
@@ -384,6 +398,12 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         string ent = "", lbl = "", ver = "";
         foreach (var a in direct) { if (a.StartsWith("@")) ver = a.Substring(1); else if (ent == "") ent = a; else if (lbl == "") lbl = a; }
         if (ent != "") { Direct(ent, lbl, ver); return; }
+        // The last splash frame dissolves over the menu (Outro).
+        if (ClientSize.Width > 0 && ClientSize.Height > 0) {
+            splashShot = new Bitmap(ClientSize.Width, ClientSize.Height);
+            using (var g = Graphics.FromImage(splashShot)) RenderSplash(g, ClientSize.Width, ClientSize.Height);
+            outroAt = (float)clock.Elapsed.TotalSeconds;
+        }
         Prefetch();
         RefreshStatus();
         pages.Push(MainPage());
@@ -699,13 +719,33 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         foreach (var h in hits) if (h.Key.Contains(pt)) return h.Value;
         return -1;
     }
+    // The A / B prompts drawn last paint (Prompt), clickable like the buttons they show.
+    readonly List<KeyValuePair<RectangleF, string>> promptHits = new List<KeyValuePair<RectangleF, string>>();
+    string hoverPrompt;
+    string PromptAt(Point pt) {
+        foreach (var h in promptHits) if (h.Key.Contains(pt)) return h.Value;
+        return null;
+    }
+    // A clicked prompt does what its button does in the current state (ProcessCmdKey's Back / Enter).
+    void PromptPress(string key) {
+        if (key == "B") {
+            if (job != null && ((build.Waiting != null && !build.Ended) || build.FetchWaiting())) CancelPress();
+            else if (starting) SkipPress();
+            else if (job == null) Act("back", false);
+        }
+        else if (key == "A" && job == null) Act("ok", false);
+    }
     protected override void OnMouseMove(MouseEventArgs e) {
         base.OnMouseMove(e);
+        string over = PromptAt(e.Location);
+        if (over != hoverPrompt) { hoverPrompt = over; Cursor = over != null ? Cursors.Hand : Cursors.Default; Invalidate(); }
         int i = HitAt(e.Location);
         if (job == null && i >= 0 && pages.Count > 0 && pages.Peek().Sel != i) { pages.Peek().Sel = i; Invalidate(); }
     }
     protected override void OnMouseClick(MouseEventArgs e) {
         base.OnMouseClick(e);
+        string prompt = e.Button == MouseButtons.Left ? PromptAt(e.Location) : null;
+        if (prompt != null) { PromptPress(prompt); return; }
         if (job != null) return;
         if (e.Button == MouseButtons.Right) { Act("back", false); return; }
         if (e.Button != MouseButtons.Left) return;
@@ -765,12 +805,12 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     readonly Stopwatch clock = Stopwatch.StartNew();
     DateTime jobStart;
 
-    protected override void OnPaint(PaintEventArgs ev) { Render(ev.Graphics, ClientSize.Width, ClientSize.Height); }
+    protected override void OnPaint(PaintEventArgs ev) { Render(ev.Graphics, ClientSize.Width, ClientSize.Height); Outro(ev.Graphics, ClientSize.Width, ClientSize.Height); }
 
     // Screen and selection animations (seconds on `clock`): short and eased out, so input never waits on them.
     string screenKey = ""; int screenDepth, screenDir = 1, selIndex = -1; float screenAt = -1, selAt = -1, selEase = 1;
     static float Ease(float x) { x = Math.Max(0, Math.Min(1, x)); float r = 1 - x; return 1 - r * r * r; }
-    bool Animating() { float t = (float)clock.Elapsed.TotalSeconds; return t - screenAt < 0.2f || t - selAt < 0.14f; }
+    bool Animating() { float t = (float)clock.Elapsed.TotalSeconds; return t - screenAt < 0.2f || t - selAt < 0.14f || splashShot != null; }
     // The incoming screen fades up from the backdrop (the top bar stays).
     static void Veil(Graphics g, int w, int h, float barH, float ease) {
         if (ease >= 1) return;
@@ -863,6 +903,10 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     // A, B, X / Y badges like the controller's.
     void Prompt(Graphics g, ref float x, float y, string key, Color c, string label) {
         float d = smallFont.Height * 1.25f;
+        // Clickable for mouse users (user 2026-10-26): the badge and its label, a pill behind it on hover.
+        var area = new RectangleF(x - d * 0.3f, y - d * 0.2f, d * 1.35f + g.MeasureString(label, smallFont).Width + d * 0.6f, d * 1.4f);
+        promptHits.Add(new KeyValuePair<RectangleF, string>(area, key));
+        if (hoverPrompt == key) Card(g, area, area.Height / 2, Fade(PanelHi, 220), Fade(Panel, 220), Fade(c, 140), 1);
         using (var b = new SolidBrush(c)) g.FillEllipse(b, x, y, d, d);
         Write(g, key, smallBold, Color.FromArgb(16, 18, 24), new RectangleF(x, y, d, d), StringAlignment.Center, StringAlignment.Center, false);
         x += d + d * 0.35f;
@@ -878,7 +922,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     void Render(Graphics g, int w, int h) {
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-        hits.Clear();
+        hits.Clear(); promptHits.Clear();
+        if (starting && job == null && pages.Count == 0) { RenderSplash(g, w, h); return; }
         var all = new RectangleF(0, 0, w, h);
         using (var b = new System.Drawing.Drawing2D.LinearGradientBrush(all, Bg1, Bg2, 90f)) g.FillRectangle(b, all);
         // A soft glow behind the top left, like a lit backdrop.
@@ -927,12 +972,6 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         g.TranslateTransform(screenDir * (1 - ease) * w * 0.03f, 0);
         if (job != null) { RenderJob(g, w, h, m, top, bottom, t); g.Restore(content); Veil(g, w, h, barH, ease); return; }
         if (pages.Count == 0) {
-            if (starting) {
-                var el = DateTime.Now - startSince;
-                string text = (skipped ? "Skipped the update check; finishing the start..." : "Checking for launcher updates...") + (el.TotalSeconds >= 3 ? " " + BuildView.Clock(el) : "");
-                Write(g, text, itemFont, Dim, new RectangleF(m, top, w - 2 * m, bottom - top), StringAlignment.Center, StringAlignment.Center, false);
-                if (CanSkip()) Write(g, skipArmed ? "B again to skip it" : "B: skip the update check", smallFont, Dim, new RectangleF(m, (top + bottom) / 2 + itemFont.Height, w - 2 * m, smallFont.Height * 1.4f), StringAlignment.Center, StringAlignment.Near, false);
-            }
             g.Restore(content); return;
         }
         var p = pages.Peek();
@@ -1260,8 +1299,11 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         y += itemBold.Height * 1.4f;
         if (!build.Ended && build.Waiting != null) {
             // Who holds the folder (when launcher.ps1 knew) and how to stop waiting.
-            string why = (build.WaitWho ?? "Cargo does not say who; it continues by itself once that build ends.") + "\n" + (cancelArmed ? "B again to cancel this build" : "B: cancel");
-            Write(g, why, smallFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, smallFont.Height * 2.6f), StringAlignment.Near, StringAlignment.Near, true);
+            string why = build.WaitWho ?? "Cargo does not say who; it continues by itself once that build ends.";
+            Write(g, why, smallFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+            float bx = card.X + pad + smallFont.Height * 0.4f;
+            Prompt(g, ref bx, y + smallFont.Height * 1.5f, "B", Color.FromArgb(228, 76, 70), cancelArmed ? "Press again to cancel this build" : "Cancel");
+            y += smallFont.Height * 1.2f;
         }
         else if (build.Now != "" && !build.Ended) Write(g, "Now: " + build.Now, smallFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
         y += smallFont.Height * 2f;
@@ -1271,6 +1313,95 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             float ep = h * 0.016f;
             Write(g, "First error", smallBold, Color.FromArgb(255, 120, 110), new RectangleF(eb.X + ep, eb.Y + ep, eb.Width - 2 * ep, smallBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
             Write(g, string.Join("\n", build.Error), monoFont, Color.FromArgb(236, 226, 226), new RectangleF(eb.X + ep, eb.Y + ep + smallBold.Height * 1.5f, eb.Width - 2 * ep, eb.Height - 2 * ep - smallBold.Height * 1.5f), StringAlignment.Near, StringAlignment.Near, true);
+        }
+    }
+
+    // The start splash while the start check runs (self update, links, last session): wordmark, the board rolling on a
+    // lit line and the current step, fading in, so a slow fetch never looks frozen (user 2026-10-26, USER-ASKS 366).
+    void RenderSplash(Graphics g, int w, int h) {
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        float t = (float)clock.Elapsed.TotalSeconds, since = (float)(DateTime.Now - startSince).TotalSeconds;
+        var all = new RectangleF(0, 0, w, h);
+        using (var b = new System.Drawing.Drawing2D.LinearGradientBrush(all, Bg1, Bg2, 90f)) g.FillRectangle(b, all);
+        float cx = w / 2f, cy = h * 0.46f;
+        // A slow breathing glow behind the mark.
+        float breathe = 0.5f + 0.5f * (float)Math.Sin(t * 1.6);
+        using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
+            path.AddEllipse(cx - w * 0.42f, cy - h * 0.5f, w * 0.84f, h * 0.95f);
+            using (var pg = new System.Drawing.Drawing2D.PathGradientBrush(path)) {
+                pg.CenterColor = Color.FromArgb((int)(34 + 18 * breathe), Cool); pg.SurroundColors = new[] { Color.FromArgb(0, Cool) };
+                g.FillPath(pg, path);
+            }
+        }
+        // Wordmark, centred; it rises a little as it fades in.
+        float rise = (1 - Ease(since / 0.6f)) * h * 0.02f;
+        var skate = g.MeasureString("SKATE", splashMark); var launcher = g.MeasureString("LAUNCHER", splashLight);
+        float markW = skate.Width * 0.94f + launcher.Width, mx = cx - markW / 2, my = cy - skate.Height * 0.95f + rise;
+        Write(g, "SKATE", splashMark, Ink, new RectangleF(mx, my, skate.Width + 8, skate.Height), StringAlignment.Near, StringAlignment.Near, false);
+        Write(g, "LAUNCHER", splashLight, Dim, new RectangleF(mx + skate.Width * 0.94f, my, launcher.Width + 8, skate.Height), StringAlignment.Near, StringAlignment.Near, false);
+        // The board rolls along a thin line under the mark; both ends fade into the backdrop.
+        float trackW = markW * 1.05f, boardLen = trackW * 0.2f;
+        var track = new RectangleF(cx - trackW / 2, cy + h * 0.075f + rise, trackW, Math.Max(2f, h * 0.004f));
+        using (var tb = new System.Drawing.Drawing2D.LinearGradientBrush(new RectangleF(track.X - 1, track.Y, track.Width + 2, track.Height), Stroke, Stroke, 0f)) {
+            tb.InterpolationColors = new System.Drawing.Drawing2D.ColorBlend { Colors = new[] { Fade(Stroke, 0), Stroke, Stroke, Fade(Stroke, 0) }, Positions = new[] { 0f, 0.2f, 0.8f, 1f } };
+            g.FillRectangle(tb, track);
+        }
+        float run = (t * 0.45f) % 1f, sx = track.X + run * track.Width * 1.4f - track.Width * 0.4f;
+        var seg = RectangleF.Intersect(track, new RectangleF(sx, track.Y, track.Width * 0.4f, track.Height));
+        if (seg.Width > 0) using (var lb = new System.Drawing.Drawing2D.LinearGradientBrush(new RectangleF(sx - 1, track.Y, track.Width * 0.4f + 2, track.Height), Fade(Accent, 0), Accent, 0f)) g.FillRectangle(lb, seg);
+        // The board fades in at the left end of the line and out at the right.
+        // Starting partway along, so the board is on screen from the first frame.
+        float bx = Rolling(track, boardLen, t + 1.6f), mid = bx + boardLen / 2, edge = trackW * 0.2f;
+        float alpha = Math.Max(0, Math.Min(1, Math.Min(mid - track.X, track.Right - mid) / edge));
+        if (alpha > 0) {
+            var bmp = BoardImage(boardLen);
+            using (var ia = new System.Drawing.Imaging.ImageAttributes()) {
+                ia.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = alpha });
+                g.DrawImage(bmp, new Rectangle((int)bx - 1, (int)(track.Y - boardLen * 0.19f), bmp.Width, bmp.Height), 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, ia);
+            }
+        }
+        // The current step, cross-fading when it changes.
+        string stage = skipped ? "Finishing the start" : (startStage ?? "Checking for a newer launcher");
+        if (stage != stageShown) { stagePrev = stageShown; stageShown = stage; stageAt = t; }
+        float k = Ease((t - stageAt) / 0.35f), sy = track.Bottom + h * 0.045f;
+        var line = new RectangleF(0, sy, w, itemFont.Height * 1.4f);
+        if (stagePrev != null && k < 1) Write(g, stagePrev, itemFont, Fade(Dim, (int)(255 * (1 - k))), new RectangleF(0, sy - k * h * 0.012f, w, line.Height), StringAlignment.Center, StringAlignment.Near, false);
+        Write(g, stageShown, itemFont, Fade(Dim, (int)(255 * k)), new RectangleF(0, sy + (1 - k) * h * 0.012f, w, line.Height), StringAlignment.Center, StringAlignment.Near, false);
+        // Quiet corners: how long it has run (from 3 s), and the skip prompt during a slow fetch.
+        float fy = h - h * 0.07f;
+        if (since >= 3) Write(g, BuildView.Clock(DateTime.Now - startSince), smallFont, Faint, new RectangleF(0, fy, w - w * 0.045f, smallFont.Height * 1.4f), StringAlignment.Far, StringAlignment.Near, false);
+        if (CanSkip()) {
+            string skip = skipArmed ? "Press again to skip the update check" : "Skip the update check";
+            float d = smallFont.Height * 1.25f, px = cx - (d * 1.35f + g.MeasureString(skip, smallFont).Width) / 2;
+            Prompt(g, ref px, fy, "B", Color.FromArgb(228, 76, 70), skip);
+        }
+        // Fade in from black.
+        float fade = Ease(since / 0.45f);
+        if (fade < 1) using (var veil = new SolidBrush(Color.FromArgb((int)(255 * (1 - fade)), Bg2))) g.FillRectangle(veil, all);
+    }
+    // The splash board drawn once per size, so it can fade as a whole.
+    Bitmap boardImage; int boardImageLen;
+    Bitmap BoardImage(float len) {
+        int l = (int)len;
+        if (boardImage == null || boardImageLen != l) {
+            if (boardImage != null) boardImage.Dispose();
+            boardImage = new Bitmap(l + 2, (int)(len * 0.23f) + 2); boardImageLen = l;
+            using (var g = Graphics.FromImage(boardImage)) { g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias; Board(g, 1, 0, len); }
+        }
+        return boardImage;
+    }
+
+    // The last splash frame dissolving over the menu, easing a little larger as it goes.
+    void Outro(Graphics g, int w, int h) {
+        if (splashShot == null) return;
+        float k = Ease(((float)clock.Elapsed.TotalSeconds - outroAt) / 0.6f);
+        if (k >= 1) { splashShot.Dispose(); splashShot = null; return; }
+        float s = 1 + 0.05f * k;
+        var dest = new RectangleF(w / 2f - w * s / 2, h / 2f - h * s / 2, w * s, h * s);
+        using (var ia = new System.Drawing.Imaging.ImageAttributes()) {
+            ia.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = 1 - k });
+            g.DrawImage(splashShot, Rectangle.Round(dest), 0, 0, splashShot.Width, splashShot.Height, GraphicsUnit.Pixel, ia);
         }
     }
 
@@ -1302,9 +1433,11 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         Write(g, status, itemFont, Ink, new RectangleF(card.X + pad, ly, card.Width - 2 * pad, itemFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
         ly += itemFont.Height * 1.6f;
         if (fetchWait) {
-            string why = "git stops by itself if nothing arrives for 30 s; cancelling keeps the last fetched version.\n" + (cancelArmed ? "B again to cancel" : "B: cancel");
-            Write(g, why, smallFont, Dim, new RectangleF(card.X + pad, ly, card.Width - 2 * pad, smallFont.Height * 2.6f), StringAlignment.Near, StringAlignment.Near, true);
-            ly += smallFont.Height * 2.8f;
+            string why = "git stops by itself if nothing arrives for 30 s; cancelling keeps the last fetched version.";
+            Write(g, why, smallFont, Dim, new RectangleF(card.X + pad, ly, card.Width - 2 * pad, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+            float bx = card.X + pad + smallFont.Height * 0.4f;
+            Prompt(g, ref bx, ly + smallFont.Height * 1.5f, "B", Color.FromArgb(228, 76, 70), cancelArmed ? "Press again to cancel" : "Cancel");
+            ly += smallFont.Height * 3.2f;
         }
         var logBox = new RectangleF(card.X + pad, ly, card.Width - 2 * pad, card.Bottom - pad - ly);
         Card(g, logBox, h * 0.012f, Color.FromArgb(12, 14, 19), Color.FromArgb(12, 14, 19), Fade(Stroke, 140), 1);
