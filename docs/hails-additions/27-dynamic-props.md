@@ -609,8 +609,8 @@ Move Object, NPC pushes, layout); `prop_solver_settings_set_validate_and_reset` 
 
 **NOT RETAIL YET.** An asleep prop touched by an awake one is an immovable support and wakes only on a hit closing
 faster than 1 m/s (ours; retail merges touching bodies into the island). Contacts are not passed through the
-agCollision retention buffer the board uses (8277C23C duplicate removal). Skater pushes are still our impulse
-transfer, not solver rows. Held placement (`carry_to`) still bypasses sleep.
+agCollision retention buffer the board uses (8277C23C duplicate removal). Skater mesh contacts are solver rows since
+2026-10-25 (see "Skater contacts as solver rows"); the box fallback still uses our impulse transfer. Held placement (`carry_to`) still bypasses sleep.
 
 **Open questions.** Whether retail wakes a sleeping DMO on any contact (island merge rule not read); per-row slop or
 cap inside 82AE27D0 (none found in the board port, the review's item 5 note); an in-game check that placed props now
@@ -1402,9 +1402,42 @@ Detail moved out of the fork-added code comments of `crates/skate-core/src/playe
   layer with the world triangle test (`primitive_triangle_world_contacts`, the same one-sided test the skater's ground
   uses); the deepest contact drives the push. The box stays as the cheap bounds reject and as the fallback for a prop
   with no triangles. Mesh contacts get no overlap nudge (the nudge is ours).
-- **Still ours (NOT RETAIL YET):** the push itself is the impulse model above (share of the closing speed through the
-  reduced mass), not skater rows in the prop solve.
+- **Still ours (NOT RETAIL YET), replaced 2026-10-25 by the rows below:** the push itself was the impulse model above
+  (share of the closing speed through the reduced mass), not skater rows in the prop solve.
 - **Test:** `riding_up_a_ramp_prop_does_not_shove_it` (a wheel gliding up a wedge prop's slope leaves it in place).
+
+### Skater contacts as solver rows (2026-10-25, USER-ASKS 357, research b617)
+
+- **Problem (desktop session game-20261025-200102, Black Box park, DMO_Glbl_mediumQuarterPipe_1003, 250 kg):** "ramp
+  prop on blackbox map still moves when I skate into it." "I tried to ride into it in its original position and it
+  didn't work. and then i moved it and tried again and it moved worse." Log: rides at the spawn pose 02:09:11 to
+  02:09:25 (the board reaches the wood about 0.9 m up, then goes airborne), carried 02:09:28 to 02:09:34 (set down at
+  [-4.57, 1.03, 9.17], asleep), rides 02:09:36 to 02:09:40. No line logged the prop's pose outside carrying.
+- **Cause [code, main checked]:** the mesh change above still pushed with our impulse: closing speed x reduced mass
+  (75 kg pusher) x `push_transfer` 0.5, capped at `board_push_speed` 6 m/s (`prop_dynamics.rs` defaults), applied
+  before and outside the prop solve, and to resting (asleep) props too. The old test glided along the face (no closing
+  speed), so it never saw a board driving into the slope.
+- **Retail [code, b617; builds on p20, b182, b230, b231, b234]:** board parts, skeleton bodies and DMOs are bodies of
+  one `rw::physics` simulation; a skater-vs-DMO pair is an ordinary two-body contact row (8277A508 -> 82AD43A8 ->
+  rows 82AE10C8 / 82AE1778 / 82AE1AE8 -> solve 82AE27D0; materials 82763078). No push mass, transfer share or speed
+  cap. 82AE1AE8 fills each side's mass terms only under its own `state & 4` (re-checked in Ghidra): a sleeping DMO is
+  an immovable support. Nothing in the physics core wakes a body on contact (only 82ADF7B8, no contact caller).
+- **Change:** with `props.solver.skater_rows` (default on) a skater volume's mesh contacts are rows in the prop's row
+  solve (`row_corrections`), solved in the same iterations as its floor rows: the volume is a body with its own
+  velocity, its own reaction slot and mass `board_row_mass` (8 kg, our board solver's `board_mass`) for board volumes,
+  the actor's push mass (75 kg default, peds 10) for body volumes; only the prop's correction is used. A closing touch
+  wakes a resting prop (OURS: retail's wake source is not found; the user's account is that props move by mass). A
+  bailing actor's contacts add no rows (the bail clamp handles them). The box fallback (props with no mesh) and
+  `skater_rows = false` keep the impulse push. Mod keys `set_tuning('props', {solver = {skater_rows, board_row_mass}})`,
+  validated (mass 0..=1000), read back, reset on mod disable.
+- **Diagnostics:** `PROP_PUSHED prop= moved <m> by <n> skater pushes (...) from [..] to [..]` when a skater-touched
+  prop falls asleep again.
+- **Test:** `a_board_driving_into_a_heavy_ramp_does_not_slide_it` (a board at 6 m/s driving into a 250 kg wedge's
+  slope for 30 ticks: under 2 cm as rows); prop tests pass, data-gated `downtown_dragged_props_rest_on_the_floor`,
+  `dmo_streaming_keeps_49_live_props_round_the_spawn` and `installed_map_props_resolve_retail_type_data` pass.
+- **Open:** retail's wake source for a resting DMO (BODYWAKE hook on 82ADF7B8, spec b231); whether the skeleton is
+  dynamic or keyframed while riding (body volume mass); the retail slide distance of a ridden 250 kg ramp (no trace);
+  why the first ride at the spawn pose went airborne at 0.9 m (needs the new log).
 
 ## Prop watch line
 

@@ -217,6 +217,11 @@ pub(crate) struct PropSolverSettings {
     /// true = the skater pushes props through their box (the older model, NOT RETAIL, mod option); false = through
     /// their mesh: docs/hails-additions/27-dynamic-props.md#skater-vs-prop-mesh
     pub skater_push_box: bool,
+    /// true = skater mesh contacts are rows in the prop's row solve, against its floor friction (retail: one shared
+    /// solve, 82AE1AE8 / 82AE27D0, research b617); false = the older impulse push (NOT RETAIL, mod option).
+    pub skater_rows: bool,
+    /// Mass (kg) of the board side of a skater row (our board solver's `board_mass`, 8).
+    pub board_row_mass: f32,
     /// Retail's ground contact reduction for the row solver (`82779EB0`): docs/hails-additions/27-dynamic-props.md#ground-contact-reduction
     pub ground_reduction: skate_core::physics::contact_reduction::ReductionRules,
 }
@@ -237,6 +242,8 @@ impl Default for PropSolverSettings {
             bail_blend: 0.5,
             walkable_mass: 5.5,
             skater_push_box: false,
+            skater_rows: true,
+            board_row_mass: 8.0,
             ground_reduction: Default::default(),
         }
     }
@@ -405,6 +412,8 @@ pub(crate) struct PropBody {
     /// ([`LOCAL_PUSHER`] or an NPC skater proxy id): the authority owner a
     /// future host uses for the moved prop. `None` until something pushes it.
     pushed_by: Option<u64>,
+    /// `PROP_PUSHED` diagnostics since it last slept: start position, pushes, largest dv, and that push's closing speed, direction and source (board / body).
+    push_log: Option<(Vector3, u32, f32, f32, Vector3, bool)>,
     /// Pose last written to the collision layer; an unchanged pose skips the
     /// (identical) rebake.
     baked: Option<(Vector3, Basis3)>,
@@ -723,6 +732,9 @@ pub(crate) struct PropDynamics {
     grind_rails: std::collections::BTreeMap<String, std::sync::Arc<[crate::grind_world::props::PropRail]>>,
     /// The prop the local skater grinds now (`set_grinded`): the skater's volumes do not push it.
     grinded: Option<u32>,
+    /// This tick's skater mesh contacts for the row solve (`PropSolverSettings::skater_rows`): prop index, manifold
+    /// (prop toward the skater volume), the volume's velocity, its mass and material.
+    skater_contacts: Vec<(usize, PrimitiveContactManifold, Vector3, f32, RetailContactMaterial)>,
     /// Pushers (actor ids, [`LOCAL_PUSHER`] for the local skater) bailing this tick (`set_bailing`): their contacts
     /// apply the bail clamp.
     bailing: Vec<u64>,
@@ -999,6 +1011,7 @@ impl PropDynamics {
             next_runtime_id: RUNTIME_PROP_ID_BASE,
             grind_rails: std::collections::BTreeMap::new(),
             grinded: None,
+            skater_contacts: Vec::new(),
             bailing: Vec::new(),
             actor_push_mass: Vec::new(),
             props_only: None,
@@ -1168,6 +1181,7 @@ impl PropDynamics {
             axis_scale: Vector3::new(axis_scale[0], axis_scale[1], axis_scale[2]),
             stuck_ticks: 0,
             pushed_by: None,
+            push_log: None,
             baked: None,
             contacts: 0,
             rest_y: center.y,
@@ -2107,6 +2121,7 @@ impl PropDynamics {
         self.stats = PropStepStats::default();
         let time_step = self.step_simulation().time_step;
         self.apply_upright(time_step);
+        self.skater_contacts.clear();
         for index in 0..self.bodies.len() {
             if self.bodies[index].dormant {
                 continue;
@@ -2144,9 +2159,25 @@ impl PropDynamics {
                     };
                     let pushes = self.stats.skater_pushes;
                     let push_mass = self.actor_push_mass.iter().find(|a| a.0 == actor).map(|a| a.1);
-                    let contact = self.push_from_skater(index, volume, &manifold, push_mass, on_mesh);
+                    let rows = on_mesh && self.tuning.solver.skater_rows && self.tuning.solver.row_solver;
+                    let contact = self.push_from_skater(index, volume, &manifold, push_mass, on_mesh, rows);
                     if self.stats.skater_pushes > pushes {
                         self.bodies[index].pushed_by = Some(actor);
+                    }
+                    // A bailing actor's contacts only clamp the prop (bail clamp below), so they add no rows.
+                    if rows && contact != SkaterContact::Separate && !self.bailing.contains(&actor) {
+                        let board = matches!(volume.body, skate_core::physics::board_step::CollisionBody::Board(_));
+                        let mass = if board { self.tuning.solver.board_row_mass } else { push_mass.unwrap_or(self.bodies[index].tuning.skater_push_mass) };
+                        // A closing touch wakes a resting prop (ours until retail's wake source is found, b617); the rows then
+                        // push it only as far as the contact and its floor friction allow.
+                        if contact == SkaterContact::Closing {
+                            self.bodies[index].wake();
+                            self.bodies[index].pushed_by = Some(actor);
+                        }
+                        self.skater_contacts.push((index, manifold, volume.motion.linear_velocity, mass, volume.material));
+                        let body = &mut self.bodies[index];
+                        let log = body.push_log.get_or_insert((body.rates.position, 0, 0.0, 0.0, scale(manifold.normal, -1.0), board));
+                        log.1 += 1;
                     }
                     match contact {
                         SkaterContact::Closing => closing = true,
@@ -2248,6 +2279,12 @@ impl PropDynamics {
                 body.asleep = true;
                 body.rates.cool_down = simulation.cool_down;
                 body.rest_y = body.rates.position.y;
+                // How far skater pushes moved it before it came to rest (ask 357: the logs could not show a slide).
+                if let Some((from, pushes, max_dv, closing, dir, board)) = body.push_log.take() {
+                    let p = body.rates.position;
+                    let moved = ((p.x - from.x).powi(2) + (p.y - from.y).powi(2) + (p.z - from.z).powi(2)).sqrt();
+                    info!("PROP_PUSHED prop={} moved {moved:.2} m by {pushes} skater pushes (max dv {max_dv:.3} m/s: {} closing {closing:.2} m/s along [{:.2}, {:.2}, {:.2}]) from [{:.2}, {:.2}, {:.2}] to [{:.2}, {:.2}, {:.2}]", body.id, if board { "board" } else { "body" }, dir.x, dir.y, dir.z, from.x, from.y, from.z, p.x, p.y, p.z);
+                }
             }
             // The held prop's triangles stay parked (set_held/HELD_PARK) so
             // skater queries never see them while carrying.
@@ -2281,6 +2318,7 @@ impl PropDynamics {
         manifold: &PrimitiveContactManifold,
         push_mass: Option<f32>,
         on_mesh: bool,
+        rows: bool,
     ) -> SkaterContact {
         let tuning = self.bodies[index].tuning;
         // The overlap nudge (ours, box only) stops once the volume has sat inside for
@@ -2314,7 +2352,7 @@ impl PropDynamics {
         } else {
             SkaterContact::Separate
         };
-        if strongest <= 0.0 {
+        if strongest <= 0.0 || rows {
             return contact;
         }
         // dv = strongest x transfer x M/(M+m); board and body pushes are both capped along the push direction.
@@ -2341,6 +2379,13 @@ impl PropDynamics {
         self.stats.skater_pushes += 1;
         // Diagnostics: a big shove (2 m/s or more in one tick), with what the push saw.
         let dv = amount / mass;
+        let body = &mut self.bodies[index];
+        let board = matches!(volume.body, skate_core::physics::board_step::CollisionBody::Board(_));
+        let log = body.push_log.get_or_insert((body.rates.position, 0, 0.0, 0.0, push, board));
+        log.1 += 1;
+        if dv > log.2 {
+            *log = (log.0, log.1, dv, strongest, push, board);
+        }
         if dv >= 2.0 {
             let id = self.bodies[index].id;
             let board = matches!(volume.body, skate_core::physics::board_step::CollisionBody::Board(_));
@@ -2524,7 +2569,32 @@ impl PropDynamics {
                 push_rows(&mut rows, &manifold, material, a, b);
             }
         }
-        let mut reactions = vec![RetailReactionCorrections::default(); count + 1];
+        // Skater mesh contacts (b617): the volume is body A with its own mass and velocity and a reaction slot of its
+        // own, the prop body B; only the prop's correction is used (the board solver handles the skater side).
+        let skaters = std::mem::take(&mut self.skater_contacts);
+        for (k, (index, manifold, velocity, mass, material)) in skaters.iter().enumerate() {
+            if !awake.contains(index) || *mass <= 0.0 {
+                continue;
+            }
+            let skater = RetailContactBodyState {
+                contact_body_id: u32::MAX - 1 - k as u32,
+                reaction_id: (count + 1 + k) as u32,
+                center_of_mass: manifold.points[0].a,
+                inverse_inertia_full: Vector3::ZERO,
+                inverse_inertia_split: Vector3::ZERO,
+                inverse_mass: 1.0 / mass,
+                state: ACTIVE_BODY,
+                force_acceleration: Vector3::ZERO,
+                torque_acceleration: Vector3::ZERO,
+                linear_velocity: *velocity,
+                angular_velocity: Vector3::ZERO,
+                kinetic_energy: 0.0,
+                cool_down: 0,
+            };
+            self.bodies[*index].contacts += 1;
+            push_rows(&mut rows, manifold, self.contact_material(*index, *material), skater, self.row_body(*index));
+        }
+        let mut reactions = vec![RetailReactionCorrections::default(); count + 1 + skaters.len()];
         solve_constraints(&mut rows, &mut [], &mut [], &mut reactions, iterations);
         for other in wake {
             self.bodies[other].wake();
@@ -3360,11 +3430,47 @@ mod tests {
         assert!(moved < 0.01, "the ramp moved {moved} m under the rider");
     }
 
+    /// Ask 357 (Black Box quarter pipe, 250 kg): a board driving into the slope (closing on the face every tick) must not
+    /// slide the ramp; as skater rows (b617) the floor friction holds it, the older impulse push slid it.
+    #[test]
+    fn a_board_driving_into_a_heavy_ramp_does_not_slide_it() {
+        let ride = |rows: bool| {
+            let corners = vec![
+                [-1., -0.5, -1.], [1., -0.5, -1.], [1., -0.5, 1.], [-1., -0.5, 1.], [1., 0.5, -1.], [1., 0.5, 1.],
+            ];
+            let faces = vec![[0, 1, 2], [0, 2, 3], [0, 3, 5], [0, 5, 4], [1, 4, 5], [1, 5, 2], [0, 4, 1], [3, 2, 5]];
+            let (world, mut layer, mut dynamics) = shape_fixture([0., REST_Y, 0.], corners, faces);
+            dynamics.set_tuning(PropTuningTable { solver: PropSolverSettings { skater_rows: rows, ..Default::default() }, ..Default::default() });
+            dynamics.bodies[0].inertia.inverse_mass = 1.0 / 250.0;
+            let start = dynamics.bodies[0].rates.position;
+            let normal = scale(Vector3::new(-1., 2., 0.), 1. / 5f32.sqrt());
+            let radius = 0.1;
+            for tick in 0..30 {
+                let p = dynamics.bodies[0].rates.position;
+                let x = p.x - 0.6 + tick as f32 * 0.03;
+                let surface = Vector3::new(x, p.y + (x - p.x) * 0.5, p.z);
+                let volumes = [BoardWorldVolume {
+                    collision_group: 4,
+                    body: CollisionBody::Board(BodyId::Deck),
+                    primitive: ContactPrimitive::Sphere(Sphere { center: add(surface, scale(normal, radius - 0.01)), radius }),
+                    motion: skate_core::physics::board_world::VolumeMotion { linear_velocity: Vector3::new(6., 0., 0.), ..Default::default() },
+                    material: material(),
+                }];
+                dynamics.step(&world, &mut layer, &volumes);
+            }
+            let d = sub(dynamics.bodies[0].rates.position, start);
+            (d.x * d.x + d.z * d.z).sqrt()
+        };
+        let (old, new) = (ride(false), ride(true));
+        assert!(new < 0.02, "the ramp slid {new} m as skater rows (impulse push: {old} m)");
+    }
+
     #[test]
     fn board_push_speed_is_capped() {
         let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 0.]);
         let mut table = PropTuningTable::default();
         table.default.board_push_speed = 0.8;
+        table.solver.skater_rows = false;
         dynamics.set_tuning(table);
         let mut fastest = 0.0_f32;
         for tick in 0..60 {

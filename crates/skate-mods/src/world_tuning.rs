@@ -540,6 +540,10 @@ pub struct PropSolverPatch {
     pub bail_blend: Option<f32>,
     pub walkable_mass: Option<f32>,
     pub skater_push_box: Option<bool>,
+    /// Skater mesh contacts as rows in the prop solve (retail, b617; default on) and the board side's mass (kg, 0..=1000;
+    /// default 8).
+    pub skater_rows: Option<bool>,
+    pub board_row_mass: Option<f32>,
     pub ground_reduction: Option<bool>,
     pub reduction_normal_dot: Option<f32>,
     pub reduction_plane_distance: Option<f32>,
@@ -877,7 +881,7 @@ impl Merge for PropTuningPatch {
 impl Merge for PropSolverPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; row_solver, iterations, sleep_energy, sleep_frames, max_sleeps_per_step, rest_snap, bail_clamp,
-            bail_linear_factor, bail_angular_factor, bail_heavy_mass, bail_blend, walkable_mass, skater_push_box,
+            bail_linear_factor, bail_angular_factor, bail_heavy_mass, bail_blend, walkable_mass, skater_push_box, skater_rows, board_row_mass,
             ground_reduction, reduction_normal_dot, reduction_plane_distance, reduction_chunk);
     }
 }
@@ -1171,6 +1175,7 @@ impl PropSolverPatch {
             && self.sleep_energy.is_none_or(|e| e.is_finite() && (0.0..=MAX_NUMBER).contains(&e))
             && self.sleep_frames.is_none_or(|n| (1..=10_000).contains(&n))
             && self.max_sleeps_per_step.is_none_or(|n| n >= 1)
+            && self.board_row_mass.is_none_or(|v| v.is_finite() && v > 0.0 && v <= 1000.0)
             && [self.bail_linear_factor, self.bail_angular_factor, self.bail_heavy_mass, self.walkable_mass]
                 .iter()
                 .all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(&v)))
