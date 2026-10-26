@@ -38,8 +38,8 @@ pub(crate) struct SimulatedTierSettings {
     pub ground_steer: skate_core::living_world::ground_steer::GroundSteerTuning,
     /// ... and in the air (`sub_8246B358` / `sub_82471188`, b123; retail values).
     pub air_steer: skate_core::living_world::air_steer::AirSteerTuning,
-    /// The air arm. Ported but OFF by default until it is understood: muted A/B runs (2026-10-14, 240 s) had more bails
-    /// with it (radius 150 m: 48 vs 19; 110 m: 33 vs 24). Test knob `SKATE_NPC_AIR_STEER=1` turns it on.
+    /// The air arm (retail on, every airborne tick; b616). Mod: `npc_simulated.air_steer*`; A/B knob
+    /// `SKATE_NPC_AIR_STEER=0`.
     pub air_steer_on: bool,
     /// The takeoff board yaw (`sub_8246B1F8`, posted in the air arm; research b113): retail on, independent of the
     /// air steer switch (same arm, separate signals). Mod: `npc_simulated.board_yaw*`.
@@ -67,7 +67,7 @@ impl Default for SimulatedTierSettings {
     fn default() -> Self {
         // `SKATE_NPC_SIM_RADIUS` (m): a test knob so an unattended run sees many switches to physics.
         let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(f32::MAX);
-        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, respawn_hold_seconds: 8.0 / 60.0, reactions: Default::default(), push: Default::default(), brake: Default::default() }
+        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() != Some("0"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, respawn_hold_seconds: 8.0 / 60.0, reactions: Default::default(), push: Default::default(), brake: Default::default() }
     }
 }
 
@@ -92,6 +92,13 @@ pub(crate) const WIPEOUT_BIT: u32 = 0x0004_0000;
 
 /// `NPC_SKATER_BACKWARDS` line for a simulated NPC, read from its body (b352): docs/hails-additions/26e-living-world-skater-ai.md#simulated-backwards-line
 pub(crate) fn backwards_line(id: super::LivingWorldId, character: &str, sim: &NpcSim) -> Option<String> {
+    // Ground frames on the board only: air, off-board and wipeout frames are not a backwards ride (b616).
+    let p = &sim.body.runtime.player_input.processed;
+    let state = sim.body.runtime.player_state.current() as u32;
+    let airborne = (200..300).contains(&state) && p.wheel_count_2556 == 0;
+    if airborne || p.flags_2484 & 0x0800_0000 != 0 || p.flags_2480 & 0x4 != 0 || p.flags_2468 & WIPEOUT_BIT != 0 {
+        return None;
+    }
     let forward = GamePhysics::context_effective_forward(&sim.context);
     let velocity = GamePhysics::context_deck_velocity(&sim.context);
     let speed = (velocity[0] * velocity[0] + velocity[2] * velocity[2]).sqrt();
@@ -102,8 +109,9 @@ pub(crate) fn backwards_line(id: super::LivingWorldId, character: &str, sim: &Np
     }
     let p = GamePhysics::context_deck(&sim.context).translation;
     Some(format!(
-        "NPC_SKATER_BACKWARDS #{} {character} tier sim heading {:.0} velocity_yaw {:.0} off {:.0} deg {speed:.1} m/s riding_fakie {} pos {:.1} {:.1} {:.1}",
+        "NPC_SKATER_BACKWARDS #{} {character} tier sim state {state} flip {} heading {:.0} velocity_yaw {:.0} off {:.0} deg {speed:.1} m/s riding_fakie {} pos {:.1} {:.1} {:.1}",
         id.serial,
+        sim.air.flip,
         yaw(forward).to_degrees(),
         yaw(velocity).to_degrees(),
         off.abs().to_degrees(),
@@ -1286,6 +1294,11 @@ pub(crate) fn simulate(
                 let (char_forward, char_up) = ([character[2][0], character[2][1], character[2][2]], [character[1][0], character[1][1], character[1][2]]);
                 if let Some(line) = lines.get(&replay.cursor.line) {
                     let node_forward = skate_core::living_world::air_steer::node_skater_forward(line, replay.cursor.node);
+                    if sim.air.airborne && !airborne_now {
+                        // The air steer's check (b616): the landing facing against the recorded one, sign expected = latch.
+                        let d = char_forward[0] * node_forward[0] + char_forward[2] * node_forward[2];
+                        info!("NPC_SKATER_LAND #{} {} node {} flip {} char.node {d:.2} aligned {}", npc.id.serial, npc.character, replay.cursor.node, sim.air.flip, (d < 0.0) == sim.air.flip);
+                    }
                     if sim.air.tick(airborne_now, char_forward, node_forward) {
                         // `sub_8246B1F8`: the cursor node's recorded board-vs-skater yaw, posted while airborne.
                         let n = &line.nodes[(replay.cursor.node as usize).min(line.nodes.len() - 1)];

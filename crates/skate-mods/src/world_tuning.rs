@@ -174,6 +174,11 @@ pub struct NpcSimulatedPatch {
     pub board_yaw: Option<bool>,
     pub board_yaw_dead_zone: Option<f32>,
     pub board_yaw_mag_scale: Option<f32>,
+    /// The air steer toward the recorded skater forward (`sub_8246B358`, b123; retail on), its dead zone and full-stick
+    /// angle (deg, 0..=180; retail 2 and 10).
+    pub air_steer: Option<bool>,
+    pub air_steer_dead_zone_deg: Option<f32>,
+    pub air_steer_full_deg: Option<f32>,
     /// The `Manual` value an NPC holds a manual with (+ nosemanual, - tailmanual; 0..=1; retail 0.5).
     pub manual_value: Option<f32>,
     /// The player and simulated NPCs bump as full skaters (a hard hit knocks one down; retail on).
@@ -919,7 +924,7 @@ impl Merge for FreePlayPatch {
 
 impl Merge for NpcSimulatedPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, respawn_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, manual_value, bump, reactions, reaction_radius, push, push_factor, push_reduce, push_fast_speed, push_downhill_slope, push_max_heading_deg, push_right_foot, brake, brake_factor, brake_ramp);
+        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, respawn_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, air_steer, air_steer_dead_zone_deg, air_steer_full_deg, manual_value, bump, reactions, reaction_radius, push, push_factor, push_reduce, push_fast_speed, push_downhill_slope, push_max_heading_deg, push_right_foot, brake, brake_factor, brake_ramp);
     }
 }
 
@@ -1127,6 +1132,7 @@ impl LivingWorldPatch {
                     && n.walk_stuck_ticks.is_none_or(|v| v <= 36000)
                     && n.board_yaw_dead_zone.is_none_or(|v| v.is_finite() && (0.0..=core::f32::consts::FRAC_PI_2).contains(&v))
                     && n.board_yaw_mag_scale.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v))
+                    && [n.air_steer_dead_zone_deg, n.air_steer_full_deg].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=180.0).contains(&v)))
                     && n.manual_value.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
             })
             && self.npc_avoid.as_ref().is_none_or(NpcAvoidPatch::validate)

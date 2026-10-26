@@ -558,6 +558,15 @@ DownTown baseline (radius 150 m, 150 s, player idle): 17 bails, 79 on/off-path s
   vs 24. Candidates: the board adjust write it also makes (`BoardAdjustAngle` / `BoardAdjustMag`, `sub_82471008`, not
   ported), whether retail's AI input map keeps or clears an unwritten key between ticks, the slerp fraction
   (`sub_82459F68`). Ported anyway so the next step is a switch, not a rewrite.
+  **On by default since 2026-10-25 (b616, ask 354):** with it off, sim skaters kept their takeoff yaw through every
+  air, so recorded 180s and quarter pipe airs landed backwards (92 of 269 `NPC_SKATER_BACKWARDS` in laptop session
+  game-20261025-171928 came within 2.5 s of an air), rode the line backwards, went LOST and were bailed by stuck
+  stage 5. Retail calls the air steer on every airborne tick with no gate (call at `0x8246ADE4`). The board adjust
+  write named above has since been ported (board yaw, on by default), so the A/B in the table is out of date and was
+  re-run (see the table). Mod: `npc_simulated {air_steer, air_steer_dead_zone_deg, air_steer_full_deg}`; A/B knob
+  `SKATE_NPC_AIR_STEER=0`. `NPC_SKATER_LAND` logs each sim landing's facing against the node's recorded skater
+  (`aligned` = sign matches the takeoff latch); `NPC_SKATER_BACKWARDS` for sim skaters now counts ground frames on the
+  board only and prints the state and the latch.
 - `NPC_SKATER_BAIL` now says what the skater was doing: previous state, speed, node, cursor A, on path, distance to
   the path and position (logs must diagnose).
 
@@ -577,6 +586,12 @@ DownTown baseline (radius 150 m, 150 s, player idle): 17 bails, 79 on/off-path s
 | + line-end retry, switch reset, airborne gate, ground steer | 300 s | 72 (70 at two line ends) | 14 |
 | + line-end fallback, retry on the last node | 300 s | 19 | 12 |
 | + air steer (A/B, 240 s, radius 150 / 110) | 240 s | 48 / 33 on, 19 / 24 off | 7 / 4 on, 7 / 8 off |
+| air steer re-run after the board yaw port (2026-10-25, b616) | 240 s | 6 / 7 on, 6 / 6 off; no stuck stage 5 | 2 / 2 on, 2 / 3 off |
+
+The 2026-10-25 re-run also counted `NPC_SKATER_LAND`: on, 123 / 117 landings, all aligned with the recording; off,
+10 / 7 of 120 / 116 landed against it. Sim `NPC_SKATER_BACKWARDS` (ground, on board) was 36 / 28 on vs 16 / 25 off,
+mostly `riding_fakie` (27 / 19 on), which retail allows after a latched landing; one skater (#2 at radius 150) gave 9
+around its own bail / respawn cycle. Logs: `.local/poc-tests/out/b616/`.
 
 The long frames left (100 to 165 ms) show no physics steps and nothing in the instrumented stages or the living
 world systems: not the NPCs; open.

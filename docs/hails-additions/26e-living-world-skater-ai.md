@@ -1482,6 +1482,8 @@ Retail's analog steer of an AI skater in the air (research `.local/research/npc/
 
 Pure and deterministic. Retail tunables are the defaults (data, a mod may change them).
 
+On by default since 2026-10-25 (retail has no gate on the call; b616, ask 354): with it off, sim skaters landed recorded 180s and quarter pipe airs backwards and were bailed by the stuck tracker. Mod keys and the A/B are in [26c "Air steer"](26c-living-world-npc-skaters.md#verification).
+
 ## Code reference: physics/board_path.rs
 
 Detail moved out of the code comments of `crates/skate-game/src/physics/board_path.rs`; each comment there links its section here.
