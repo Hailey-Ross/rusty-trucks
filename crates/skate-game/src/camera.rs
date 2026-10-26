@@ -66,6 +66,7 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
     replay: Res<crate::replay::Replay>,
     customiser: Option<Res<crate::customiser::Customiser>>,
     mut guard: Local<crate::replay::CameraGuard>,
+    physics: Option<Res<crate::physics::GamePhysics>>,
     mut cameras: Query<(&mut Camera, &mut Transform, &mut Projection), With<GameplayCamera>>) {
     if let Ok(window) = windows.single() {
         // A minimized window reports 0x0, and 0/0 is NaN. That poisons the
@@ -88,7 +89,9 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
                 // The editor's camera key on the skater root (Follow / Tripod / Free; Game keeps the recording).
                 let root = crate::presentation::blend(previous.root, current.root, alpha);
                 let recorded = crate::presentation::blend(previous.camera, current.camera, alpha);
-                let (key_pose, fov) = replay.guarded_editor_camera(&recorded, &root, &mut guard);
+                let world = physics.as_deref().map(crate::physics::GamePhysics::world);
+                let (key_pose, fov) = replay.guarded_editor_camera(&recorded, &root, &mut guard,
+                    |from, to, radius| world.and_then(|w| crate::replay::camera_collision::sweep(w, from, to, radius)));
                 if let Some(pose) = key_pose {
                     *transform = pose;
                 }

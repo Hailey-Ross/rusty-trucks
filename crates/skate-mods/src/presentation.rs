@@ -187,11 +187,36 @@ pub struct WaterLookPatch {
     pub fountain_reflection: Option<f32>,
     /// Basin wave tilt gain, 0..8 (1 = the waves as the large water draws them).
     pub fountain_ripple: Option<f32>,
+    /// Props in water sink or float by their own density, with water drag (retail: they fall through to the floor).
+    pub prop_water: Option<bool>,
+    /// Water density for prop buoyancy, kg/m3 (100..5000).
+    pub water_density: Option<f32>,
+    /// Linear water drag on submerged props, per second (0..20).
+    pub prop_water_drag: Option<f32>,
+    /// Angular water drag on submerged props, per second (0..20).
+    pub prop_water_spin_drag: Option<f32>,
+    /// Deep water carries every prop: its density counts as at most this, kg/m3 (10..5000).
+    pub prop_deep_float_density: Option<f32>,
+    /// Waves props bob on in deep water: height in m (0..1) and period in s (0.5..30).
+    pub prop_bob_height: Option<f32>,
+    pub prop_bob_period: Option<f32>,
+    /// Material density from which a prop always sinks, kg/m3 (10..20000).
+    pub prop_heavy_density: Option<f32>,
+    /// In water too deep to see the bottom: how far under (m) a sinking prop has faded out, 0..20 (0 = no fade).
+    pub prop_fade_depth: Option<f32>,
 }
 impl WaterLookPatch {
     pub fn validate(&self) -> bool {
         let ok = |v: Option<f32>, lo: f32, hi: f32| v.is_none_or(|v| range(v, lo, hi));
         ok(self.ripple_scale, 0.1, 16.0)
+            && ok(self.water_density, 100.0, 5000.0)
+            && ok(self.prop_water_drag, 0.0, 20.0)
+            && ok(self.prop_water_spin_drag, 0.0, 20.0)
+            && ok(self.prop_deep_float_density, 10.0, 5000.0)
+            && ok(self.prop_bob_height, 0.0, 1.0)
+            && ok(self.prop_bob_period, 0.5, 30.0)
+            && ok(self.prop_heavy_density, 10.0, 20000.0)
+            && ok(self.prop_fade_depth, 0.0, 20.0)
             && ok(self.fountain_tile, 0.5, 100.0)
             && ok(self.fountain_waves, 0.0, 1.0)
             && ok(self.cascade_rate, 0.0, 8.0)

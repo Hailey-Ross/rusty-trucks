@@ -64,12 +64,31 @@ pub(crate) struct PedProxy {
     pub half_length: f32,
     /// kg.
     pub mass: f32,
+    /// Collision sliding (ped +5936 bit 0x40 from ped attribute 0xB168050B3E6FC967: on for every generic ped type,
+    /// research b635): a side contact the ped walks or faces into moves its root with body A (82E38400 kind 1).
+    pub slide: bool,
+    /// The side test `|up x n| >` this (0x8208E95C).
+    pub slide_side: f32,
+    /// sub_82E35160: a posed ped's body A is centred on this bone's position (upright, root rotation; a lying ped's
+    /// capsule drops with its spine, research b644); unposed: root + `unposed_height` / 2 + `unposed_lift` up
+    /// (sub_82E0E210; the height is inferred).
+    pub centre_bone: &'static str,
+    pub unposed_height: f32,
+    pub unposed_lift: f32,
 }
 
 impl Default for PedProxy {
     fn default() -> Self {
-        Self { radius: 0.3125, half_length: 0.5375, mass: 10.0 }
+        Self { radius: 0.3125, half_length: 0.5375, mass: 10.0, slide: true, slide_side: 0.45, centre_bone: "Spine1", unposed_height: 1.7, unposed_lift: 0.2 }
     }
+}
+
+/// 82E38400's kind 1 for a contact whose normal `n` points into the ped: a side contact (`|up x n| > side`) the ped
+/// faces into or moves into (`facing . n < 0` or `velocity . n < 0`). The handler sub_82E38FB8 then moves the root
+/// to body A's solved X / Z (Y kept): docs/hails-additions/26g-living-world-ped-interactions.md#ped-body-a
+pub(crate) fn slides(n: Vec3, facing: Vec3, velocity: Vec3, side: f32) -> bool {
+    let up_cross = Vec3::Y.cross(n).length();
+    up_cross > side && (facing.dot(n) < 0.0 || velocity.dot(n) < 0.0)
 }
 
 /// Retail group of body A.
@@ -82,8 +101,13 @@ pub(crate) fn body_a_id(serial: u32) -> u64 {
     PED_PROXY_TAG | PED_BODY_A_BIT | (serial as u64) << 2
 }
 
-/// Body A as a prop-step volume: an upright capsule standing on the root, moving with the ped.
+/// Body A as a prop-step volume without a pose: an upright capsule above the root (sub_82E0E210), moving with the ped.
 pub(crate) fn body_a_volume(position: Vec3, velocity: Vec3, p: &PedProxy) -> skate_core::physics::board_world::BoardWorldVolume {
+    body_a_volume_at(position + Vec3::Y * (0.5 * p.unposed_height + p.unposed_lift), velocity, p)
+}
+
+/// Body A as a prop-step volume: an upright capsule centred at `centre`, moving with the ped.
+pub(crate) fn body_a_volume_at(centre: Vec3, velocity: Vec3, p: &PedProxy) -> skate_core::physics::board_world::BoardWorldVolume {
     use skate_core::math::Vector3;
     let v = |a: Vec3| Vector3::new(a.x, a.y, a.z);
     let half = p.half_length.max(0.0);
@@ -92,7 +116,7 @@ pub(crate) fn body_a_volume(position: Vec3, velocity: Vec3, p: &PedProxy) -> ska
         collision_group: PED_PROXY_GROUP,
         // Not a board: the prop's body-bump cap applies.
         body: skate_core::physics::board_step::CollisionBody::Attached(0),
-        primitive: skate_core::physics::world_contact::ContactPrimitive::Capsule { center: v(position + Vec3::Y * (radius + half)), axis: v(Vec3::Y), half_length: half, radius },
+        primitive: skate_core::physics::world_contact::ContactPrimitive::Capsule { center: v(centre), axis: v(Vec3::Y), half_length: half, radius },
         motion: skate_core::physics::board_world::VolumeMotion { linear_velocity: v(velocity), ..Default::default() },
         material: skate_core::physics::contact::RetailContactMaterial { static_friction: 0.0, dynamic_friction: 0.0, restitution: 0.0 },
     }
@@ -181,7 +205,7 @@ pub(crate) fn bone_world(position: Vec3, heading: f32, global: &Mat4) -> Vec3 {
 
 /// Add near peds' bodies to the skater solve each tick; they stay through reactions (b203): docs/hails-additions/26g-living-world-ped-interactions.md#ped-proxies-in-the-solve
 pub(crate) fn push_ped_proxies(
-    peds: Query<(&Pedestrian, &PedBody)>,
+    mut peds: Query<(&Pedestrian, &mut PedBody)>,
     data: Res<PedData>,
     settings: Res<super::LivingWorldSettings>,
     observers: Res<super::LivingWorldObservers>,
@@ -190,14 +214,47 @@ pub(crate) fn push_ped_proxies(
     replay: Res<crate::replay::Replay>,
 ) {
     let s = &settings.ped_body;
+    // The last prop steps' body A displacements (sub_82E38FB8): sliding peds' roots follow them before body A is
+    // placed again, so a pushed prop shoves a ped aside instead of stopping on a body that never moves (USER-ASKS 375).
+    let shoves = std::mem::take(&mut physics.ped_prop_shoves);
+    // A sliding ped's body A keeps its solved velocity into the next step (retail's body A is one persistent body).
+    let mut carried: Vec<(u64, Vec3)> = Vec::new();
+    if let Some(proxy) = s.proxy.as_ref().filter(|p| p.slide && !replay.active) {
+        for (ped, mut body) in &mut peds {
+            let Some((_, shove, normal, solved)) = shoves.iter().find(|x| x.0 == body_a_id(ped.id.serial)) else { continue };
+            let n = Vec3::new(normal.x, normal.y, normal.z);
+            let facing = Quat::from_rotation_y(body.heading) * Vec3::Z;
+            if slides(n, facing, body.velocity, proxy.slide_side) {
+                body.position += Vec3::new(shove.x, 0.0, shove.z);
+                carried.push((body_a_id(ped.id.serial), Vec3::new(solved.x, 0.0, solved.z)));
+                info!("PED_PROP_SHOVE ped=#{} by [{:.3}, {:.3}] at [{:.2}, {:.2}, {:.2}]", ped.id.serial, shove.x, shove.z, body.position.x, body.position.y, body.position.z);
+            }
+        }
+    }
     physics.ped_prop_volumes.clear();
     if replay.active || !s.enabled {
         return;
     }
     // Body A for the prop step: every near ped, whether or not body B can be posed (b342).
     if let Some(proxy) = s.proxy.as_ref() {
+        let spine_bone = data.rig.names.iter().position(|n| n.eq_ignore_ascii_case(proxy.centre_bone));
         let near = |p: Vec3| observers.observers.iter().any(|o| Vec3::from_array(o.position).distance(p) <= s.range);
-        let mut a: Vec<_> = peds.iter().filter(|(_, body)| near(body.position)).map(|(ped, body)| (body_a_id(ped.id.serial), body_a_volume(body.position, body.velocity, proxy), proxy.mass)).collect();
+        let mut a: Vec<_> = peds
+            .iter()
+            .filter(|(_, body)| near(body.position))
+            .map(|(ped, body)| {
+                let id = body_a_id(ped.id.serial);
+                let velocity = carried.iter().find(|c| c.0 == id).map_or(body.velocity, |c| c.1);
+                // Posed: on the centre bone (it follows a knock-down's lying spine); else above the root.
+                let spine = spine_bone
+                    .and_then(|i| super::peds::ped_globals(&data.rig, body, &*data, 0.0, &[])?.get(i).map(|g| bone_world(body.position, body.heading, g)));
+                let volume = match spine {
+                    Some(centre) => body_a_volume_at(centre, velocity, proxy),
+                    None => body_a_volume(body.position, velocity, proxy),
+                };
+                (id, volume, proxy.mass)
+            })
+            .collect();
         a.sort_by_key(|x| x.0);
         physics.ped_prop_volumes = a;
     }
@@ -239,7 +296,7 @@ mod tests {
         let v = body_a_volume(Vec3::new(1.0, 2.0, 3.0), Vec3::X, &p);
         assert_eq!(v.collision_group, 9);
         let skate_core::physics::world_contact::ContactPrimitive::Capsule { center, axis, half_length, radius } = v.primitive else { panic!("capsule") };
-        assert!((center.y - (2.0 + 0.3125 + 0.5375)).abs() < 1e-5 && axis.y == 1.0 && half_length == 0.5375 && radius == 0.3125);
+        assert!((center.y - (2.0 + 0.5 * 1.7 + 0.2)).abs() < 1e-5 && axis.y == 1.0 && half_length == 0.5375 && radius == 0.3125, "unposed: root + height / 2 + 0.2 (sub_82E0E210)");
         // Body A's id never equals a body B part id of any ped, and still names the ped.
         let a = body_a_id(7);
         assert!((0..4).all(|part| a != proxy_id(7, part)) && proxy_serial(a) == Some(7));
@@ -315,5 +372,20 @@ mod tests {
         let (bottom, top) = (hips.y - part.half_length - part.radius, hips.y + part.half_length + part.radius);
         assert!((0.7..1.2).contains(&hips.y) && head.y > hips.y + 0.4, "hips {hips:?} head {head:?}");
         assert!(bottom < 0.4 && top > head.y - 0.2, "part 0 spans {bottom:.2}..{top:.2} m");
+    }
+}
+
+#[cfg(test)]
+mod slide_tests {
+    use super::slides;
+    use bevy::prelude::Vec3;
+
+    #[test]
+    fn kind_one_needs_a_side_contact_the_ped_faces_or_walks_into() {
+        let n = Vec3::X;
+        assert!(slides(n, -Vec3::X, Vec3::ZERO, 0.45), "facing into the prop (n points into the ped)");
+        assert!(slides(n, Vec3::Z, Vec3::new(-1.0, 0.0, 0.0), 0.45), "walking into it");
+        assert!(!slides(n, Vec3::X, Vec3::new(1.0, 0.0, 0.0), 0.45), "hit from behind while walking away: kind 0");
+        assert!(!slides(Vec3::Y, -Vec3::X, Vec3::ZERO, 0.45), "a contact from above is no side contact");
     }
 }

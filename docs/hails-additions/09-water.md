@@ -1245,6 +1245,49 @@ Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes 
 - **Verification:** `basins_take_their_colour_and_reflection_from_the_look`, `fountains_only_with_better_water_and_mods_can_set_them`
   (`water_look`), the frame-state encoder test. Not looked at by the user yet.
 
+## Props in water
+
+- **Retail (Better Water off):** water is not solid to props; they fall through to the floor under it, with no lift,
+  drag or splash. Evidence: the user's RPCS3 clip (2026-10-26, `F:\Libraries\Videos\2026-10-26 11-00-29.mp4`, 0:38): a
+  dumpster pushed into the Aletown canal tips over the edge and goes under the surface within about half a second,
+  no spray. Research b624 (`.local/research/b624-props-in-water.md`) read the opposite from the code (DMO groups 12 /
+  13 / 14 are not in the stock water exclusion `82767D60`, so the surface would be a floor); its last link (part +0x5C
+  to the query volume's group) was inferred, and the clip overrules it. Retail has no buoyancy, drag or density code
+  for props (b624, high confidence); the only automatic DMO reset is below y -1000 (`82588380`, 0x822272E0).
+  Ours: both prop contact loops skip water triangles (`is_water_tag`, `prop_dynamics.rs`).
+- **Better Water (ours, user 2026-10-26):** "if the water is deep, allow the prop to bounce, bob and float with the
+  water, if its shallow, have it sink if heavy and float near the top if small/light enough"; "the heavy dumpster
+  should always sink since its so heavy. If the water is deep enough (like the ocean) for the prop to dissapear, have
+  it fade out as it sinks." (`physics/prop_water.rs`, `PropDynamics::apply_water`):
+  - Buoyancy from 8 box samples (octant centres, submerged share each), so a prop tips and settles naturally; the
+    displaced volume is the solver mass over the prop's material density, because retail masses are pushing masses
+    (the converted DownTown props come out at 13 to 20 kg/m3 by box volume).
+  - Material density per type: `PropTuning::water_density` (mod world tuning `props`), else by template name
+    (`density_for_template`: bags 300, cones / wood 600, bins / benches 1400, dumpsters 2400, solid street furniture
+    2500, other 1200 kg/m3; ours, retail has none).
+  - Deep water (deeper than the prop is tall, at least the 0.5 m shallow depth): props under `prop_heavy_density`
+    (2000) float with their density capped at `prop_deep_float_density` (700) and bob on two crossing swells
+    (`prop_bob_height` 0.06 m, `prop_bob_period` 3 s, from the physics tick: deterministic). Heavy props sink.
+  - Shallow water: the material density decides; heavier than water sinks to the floor, lighter floats.
+  - Drag `prop_water_drag` 2.0 / s (scaled by the displaced water, at most stopping the motion in a step; about the
+    4.4 m/s terminal sinking of a 1 m crate twice as dense as water) and `prop_water_spin_drag` 1.5 / s.
+  - Water too deep to see the bottom (prop height + `prop_fade_depth` 1.5 m): a sinking prop fades by how far its top
+    is under; at 0 it rests asleep and hidden (`PROP_WATER_GONE`); a reset brings it back. Rendering: the prop's meshes
+    get their own blended copy of their world material with the opacity in `park.tint.w` (`apply_prop_fade`).
+  - Entry splash (the water plume, sized to the prop) and a `PROP_WATER_ENTRY` log line (deep / shallow, depth,
+    prop height, density).
+- **Mods:** `sdk.graphics.water_look({prop_water, water_density, prop_water_drag, prop_water_spin_drag,
+  prop_deep_float_density, prop_bob_height, prop_bob_period, prop_heavy_density, prop_fade_depth})`; per type
+  `sdk.world.set_tuning('props', {by_template = {[name] = {water_density = ...}}})`.
+- **Verification:** `props_fall_through_water_or_float_with_better_water` (retail floor, heavy sinks in deep water,
+  medium floats 70 % under, shallow heavy on the floor, shallow light floats a quarter under, the abyss fade stops it
+  mid-water), `prop_water` unit tests (Archimedes float heights, drag never reverses motion, tilted lift, bob range).
+  In game (DownTown, dev mod `.local/poc-tests/water-mods/prop-drop`): a garbage bag dropped into the Aletown canal
+  (1.73 m deep) floats, a dumpster copy (1.88 m tall) sinks to the canal floor. The sinking fade has not been seen on
+  screen yet (no deep spot found by coordinates).
+- **Open:** user check of the feel; the canal dumpster stands upright with its lid just above the surface, where the
+  retail one had tipped over the edge and went under on its side.
+
 ## Code reference: water_look.rs
 
 Detail moved out of the code comments of `crates/skate-game/src/water_look.rs`; each comment there links its section here.

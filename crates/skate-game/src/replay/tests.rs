@@ -441,11 +441,12 @@ fn one_shot_sounds_fire_again_when_playback_crosses_them() {
 fn a_mod_camera_override_goes_on_restore_and_disable() {
     let mut replay = Replay::default();
     assert_eq!(replay.follow_eye, camera_key::FollowEye::Camera, "retail: the gameplay camera (m346)");
-    replay.set_camera("m", Some(false), None, Some(80.), Some(camera_key::FollowEye::Skater), Some(false));
+    replay.set_camera("m", Some(false), None, Some(80.), Some(camera_key::FollowEye::Skater), Some(false), Some(true));
     assert!(!replay.camera_collision.enabled && replay.camera_collision.leash == 80.);
+    assert!(replay.camera_collision.playback, "playback_collide");
     assert_eq!(replay.camera_collision.radius, 0.1, "unset fields keep retail's");
     assert_eq!((replay.follow_eye, replay.fill_section), (camera_key::FollowEye::Skater, Some(false)));
-    replay.set_camera("other", None, None, None, None, None);
+    replay.set_camera("other", None, None, None, None, None, None);
     assert!(!replay.camera_collision.enabled, "only the owner restores");
     replay.clear_owner("m");
     assert_eq!(replay.camera_collision, camera_collision::CameraCollision::default());
@@ -870,4 +871,28 @@ fn a_follow_key_pitched_down_on_downtown_stays_above_the_ground() {
     let eye = e.pose(10.0, &anchors).0.unwrap().translation;
     println!("eye {eye} ground {:?} lowest clearance {lowest}", ground(eye));
     assert!(lowest > -0.01, "the eye went {lowest} m under the ground");
+}
+
+#[test]
+fn keyed_cameras_are_constrained_in_the_instant_view_not_in_playback() {
+    use skate_core::replay_edit::session::EditorMode;
+    let root = Transform::from_xyz(0.0, 1.0, 0.0);
+    let camera = Transform::from_xyz(0.0, 3.0, 8.0).looking_at(root.translation, Vec3::Y);
+    let anchors = camera_key::Anchors::new(camera, root, camera_key::FollowEye::Camera);
+    let mut replay = Replay::default();
+    let mut e = editor::Editor::open(0.0, 20.0, skate_core::replay_edit::EditLimits::default()).unwrap();
+    assert!(e.pick_camera(4, 10.0, &camera, &anchors).is_some());
+    replay.editor = Some(e);
+    replay.cursor = 10.0;
+    let wall = |from: Vec3, to: Vec3, _: f32| Some(camera_collision::Hit { fraction: 0.5, normal: (from - to).normalize() });
+    let eye = |replay: &mut Replay, mode| {
+        replay.editor.as_mut().unwrap().session.mode = mode;
+        replay.guarded_editor_camera(&camera, &root, &mut CameraGuard::default(), wall).0.unwrap().translation
+    };
+    let stored = replay.editor_camera(&camera, &root).0.unwrap().translation;
+    assert_ne!(eye(&mut replay, EditorMode::Instant), stored, "retail mode 5 constrains every frame (b615, m353)");
+    assert_eq!(eye(&mut replay, EditorMode::Playback), stored, "retail mode 1 plays the stored key");
+    assert_eq!(eye(&mut replay, EditorMode::Timeline), stored);
+    replay.set_camera("m", None, None, None, None, None, Some(true));
+    assert_ne!(eye(&mut replay, EditorMode::Playback), stored, "a mod's playback_collide");
 }

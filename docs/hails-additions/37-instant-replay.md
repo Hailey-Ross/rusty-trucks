@@ -357,6 +357,32 @@ record space mapping of b401 (Follow SPACE_EYE) is settled: see "The Follow eye 
 Tests: `editor::tests::a_key_edit_stores_the_leashed_eye_and_playback_keeps_it`,
 `camera_key::tests::set_eye_round_trips_a_follow_eye`, the `camera_collision` tests.
 
+### Keyed cameras in the instant view (2026-10-26, USER-ASKS 353, research b615, recomp run m353)
+
+Problem (laptop session `game-20261025-171928`, the user: "Camera in replay went through ramps in the Skate.Park
+stadium full portion of the run", after adding camera keys). The Follow key was edited 1.37 m below the root; the
+user played it from the Timeline.
+
+Retail [code, b615 `.local/research/b615-replay-camera-geometry.md`]: the gate byte 0x83037414 of the constraint
+`82683680` is written every frame by the editor update `82610F18` per mode: mode 5 (the instant view) sets 1, mode 1
+(RB playback) sets 0, the key edits (7 / 8 / 10) set 1 through their openers, replay entry `82833CF0` sets 1.
+[trace, recomp run m353 (hook RCOLL on `82683680`, Mega-Park spawn, a Follow key orbited low, then RB play)]: mode 5
+before the editor: gate 1; Follow edit mode 7: gate 1, one correction at commit; RB playback mode 1: gate 0 for
+14 s, the function returns at once (no corrections); back to the timeline mode 6: gate 0. So retail Timeline playback
+does not keep keyed cameras out of the world either; the instant view does.
+
+Change: `Replay::guarded_editor_camera` runs `camera_collision::constrain` on the evaluated keyed camera every frame
+while our editor session is in `EditorMode::Instant` (sweep from last frame's constrained eye, snap on a cut;
+Follow / Tripod re-aim at their look point, Free keeps its rotation). The stored key is not changed. Playback and the
+timeline play the stored key as before. Mod data: `CameraCollision::playback` (retail false) and
+`sdk.replay.set_camera{playback_collide = true}` also constrain editor playback; `collide = false` turns both off.
+
+Open: whether retail shows the ramp clip in Timeline playback (the user's RPCS3 check); which camera kinds the
+AVATAR_LOOK element (0x5C) gates (ours constrains Follow, Tripod and Free, as the edit does).
+
+Tests: `replay::tests::keyed_cameras_are_constrained_in_the_instant_view_not_in_playback`,
+`replay::tests::a_mod_camera_override_goes_on_restore_and_disable`, skate-mods `replay_set_camera` validation.
+
 ### The Follow eye rides the gameplay camera (2026-10-25, USER-ASKS 346 / 349)
 
 Problem (laptop sessions `game-20261025-130256` and `-144414`, the user: "advanced follow camera at a low angle can

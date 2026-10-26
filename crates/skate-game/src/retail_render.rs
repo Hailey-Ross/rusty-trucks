@@ -73,6 +73,10 @@ pub(crate) const TRAFFIC_LIGHT_TWO_FAMILY: u32 = 20;
 /// Family 21: retail `animated.flag` (`vertexanimate_defaultPS` / `_defaultVS` cloth sway): docs/hails-additions/35-world-shading-parity.md#animated-flag-family-21
 pub(crate) const ANIMATED_FLAG_FAMILY: u32 = 21;
 
+/// `mode.y` bit of `incandescent.videoscreen` materials: diffuse from the live feed while it runs: docs/hails-additions/35-world-shading-parity.md#videoscreen-live-feed
+pub(crate) const VIDEO_SCREEN_FLAG: u32 = 1 << 10;
+pub(crate) const VIDEO_SCREEN_SHADER: &str = "incandescent.videoscreen";
+
 /// Shared per-frame state: shadow floor, animation clock and authored ocean PCA.
 /// Map-independent, so it is a fixed handle rather than a staged asset.
 pub(crate) const FRAME_STATE: Handle<ShaderStorageBuffer> =
@@ -246,6 +250,8 @@ pub(crate) struct FrameStateData {
     pub view_dot_light: Vec4,
     /// Retail `g_TrafficLightsStatus_1` / `_2`: one component per lamp slot; above 1 the lamp is on.
     pub traffic_lights: [Vec4; 2],
+    /// x: 1 while the videoscreen feed is live (`video_screens.rs`), else the static screen texture.
+    pub video_feed: Vec4,
 }
 
 impl Default for FrameStateData {
@@ -263,6 +269,7 @@ impl Default for FrameStateData {
             fountain_ripple: Vec4::ZERO,
             view_dot_light: RETAIL_VIEW_DOT_LIGHT,
             traffic_lights: [Vec4::ZERO; 2],
+            video_feed: Vec4::ZERO,
         }
     }
 }
@@ -309,7 +316,7 @@ impl ViewDotLightParams {
 }
 
 impl FrameStateData {
-    const SIZE: usize = 25 * 16;
+    const SIZE: usize = 26 * 16;
 
     /// Turns the world's dynamic-shadow reads on with `floor` as the lightest
     /// value a dynamic shadow can leave on the baked world (see
@@ -327,6 +334,7 @@ impl FrameStateData {
             .chain([self.water_look, self.water_tint, self.ocean_swell, self.fountain, self.fountain_body, self.fountain_ripple])
             .chain(std::iter::once(self.view_dot_light))
             .chain(self.traffic_lights)
+            .chain(std::iter::once(self.video_feed))
     }
 
     /// The buffer bytes, little-endian f32 lanes, in a fixed array: no allocation per frame (b250).
@@ -349,6 +357,7 @@ impl FrameStateData {
             .chain([self.water_look, self.water_tint, self.ocean_swell, self.fountain, self.fountain_body, self.fountain_ripple])
             .chain(std::iter::once(self.view_dot_light))
             .chain(self.traffic_lights)
+            .chain(std::iter::once(self.video_feed))
         {
             for component in row.to_array() {
                 out.extend_from_slice(&component.to_le_bytes());
@@ -367,6 +376,11 @@ impl FrameStateData {
 /// everything bright to white.
 #[derive(Component, ExtractComponent, Clone, Copy, Default, Debug)]
 pub(crate) struct RetailTone;
+
+/// A [RetailTone] view that applies the tone curve without metering (the exposure state is shared; the
+/// videoscreen feed must not adapt it a second time per frame).
+#[derive(Component, ExtractComponent, Clone, Copy, Default, Debug)]
+pub(crate) struct ToneOnly;
 
 // ---------------------------------------------------------------------------
 // Render classes
@@ -417,7 +431,7 @@ impl RenderClass {
         }
     }
 
-    fn two_sided(self) -> bool {
+    pub(crate) fn two_sided(self) -> bool {
         matches!(
             self,
             Self::OpaqueTwoSided | Self::CutoutTwoSided | Self::BlendedTwoSided
@@ -508,6 +522,10 @@ pub(crate) struct WorldMaterial {
     /// The per-draw inputs of the environmentpark programs (skate.Park pieces; [ParkDraw]).
     #[uniform(13)]
     pub park: ParkDraw,
+    /// The videoscreen feed (`video_screens::VIDEO_FEED`), sampled by [VIDEO_SCREEN_FLAG] materials.
+    #[texture(14)]
+    #[sampler(15)]
+    pub video_feed: Handle<Image>,
     pub class: RenderClass,
 }
 
@@ -533,6 +551,7 @@ impl WorldMaterial {
             page_7: pages[7].clone(),
             cubes,
             park: ParkDraw::default(),
+            video_feed: crate::video_screens::VIDEO_FEED,
             class,
         }
     }
@@ -541,6 +560,7 @@ impl WorldMaterial {
 /// Per-draw inputs of the environmentpark programs (b439, b442 / b443): tint and shadow colours.
 #[derive(bevy::render::render_resource::ShaderType, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ParkDraw {
+    /// rgb: the piece's tint; w: opacity, 1 except on a sinking prop's blended copy (`physics::prop_water`).
     pub tint: Vec4,
     pub dynamic_shadow: Vec4,
     pub exponential_shadow: Vec4,
@@ -736,7 +756,7 @@ impl Definition {
             TRANSPARENT_ENVIRONMENT_FAMILY
         } else if stored_family == 0 && shader == "advertisement.default" {
             ADVERTISEMENT_FAMILY
-        } else if stored_family == 0 && shader == "incandescent.videoscreen" {
+        } else if stored_family == 0 && shader == VIDEO_SCREEN_SHADER {
             // videoscreen_defaultPS is byte-identical to baseincandescent_defaultPS.
             12
         } else if stored_family == 0 && shader == "incandescent.transparent" {
@@ -1015,6 +1035,8 @@ pub(crate) struct MaterialTable {
     values: HashMap<(u16, RenderClass), WorldMaterial>,
     tinted: HashMap<(u16, RenderClass, [u32; 13]), Handle<WorldMaterial>>,
     slabs: u16,
+    /// Source indices of the `incandescent.videoscreen` materials.
+    pub(crate) screens: Vec<usize>,
 }
 
 impl MaterialTable {
@@ -1078,7 +1100,8 @@ impl MaterialTable {
         let mut families = std::collections::BTreeMap::<u32, usize>::new();
         let mut water = Vec::with_capacity(map.materials.len());
         let mut flowing = Vec::with_capacity(map.materials.len());
-        for material in &map.materials {
+        let mut screens = Vec::new();
+        for (index, material) in map.materials.iter().enumerate() {
             let definition = material
                 .retail_definition
                 .as_deref()
@@ -1097,6 +1120,9 @@ impl MaterialTable {
             *families.entry(definition.family).or_default() += 1;
             water.push(definition.family == 33);
             flowing.push(definition.family == 30);
+            if definition.shader == VIDEO_SCREEN_SHADER {
+                screens.push(index);
+            }
             requests.push(Some(Request::new(
                 material,
                 &definition,
@@ -1187,6 +1213,7 @@ impl MaterialTable {
             values: HashMap::new(),
             tinted: HashMap::new(),
             slabs: 0,
+            screens,
         };
         let mut slab = Slab::new(&page_sizes);
         for (source, request) in requests.iter().enumerate() {
@@ -1383,7 +1410,8 @@ impl Request {
             | (u32::from(specular.is_some()) << 4)
             | (u32::from(lightmap.is_some()) << 5)
             | (u32::from(environment.is_some()) << 6)
-            | (u32::from(detail.is_some()) << 7);
+            | (u32::from(detail.is_some()) << 7)
+            | if definition.shader == VIDEO_SCREEN_SHADER { VIDEO_SCREEN_FLAG } else { 0 };
 
         let blended = material.alpha_mode == 2
             || definition.family == 32
@@ -2041,6 +2069,7 @@ impl Plugin for RetailRenderPlugin {
                 crate::living_world::ped_material::PedMaterialPlugin,
                 crate::retail_exposure::RetailExposurePlugin,
                 crate::skater_ghost::GhostPlugin,
+                crate::video_screens::VideoScreensPlugin,
             ))
             .add_plugins(ExtractResourcePlugin::<FrameStateData>::default())
             .add_systems(Startup, (initialize_frame_state, load_pca, crate::water_look::load, load_view_dot_light))

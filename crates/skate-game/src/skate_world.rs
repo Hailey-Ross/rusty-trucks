@@ -82,6 +82,10 @@ fn spawn_static<T: Bundle + Clone>(
     tag: T,
 ) -> (SceneStats, [usize; RenderClass::ALL.len()]) {
     let table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
+    for screen in video_screens(map, &table.screens) {
+        info!("VIDEO_SCREEN id={} min={:.1} max={:.1}", screen.id, screen.min, screen.max);
+        commands.spawn((screen, tag.clone()));
+    }
 
     let mut triangles: Vec<Triangle> = Vec::with_capacity(map.geometry.indices.len() / 3);
     for tri in map.geometry.indices.chunks_exact(3) {
@@ -137,6 +141,24 @@ fn spawn_static<T: Bundle + Clone>(
         }
     }
     (stats, per_class)
+}
+
+/// One [crate::video_screens::VideoScreen] per videoscreen material with geometry, bounds of its vertices.
+fn video_screens(map: &SkateMap, screens: &[usize]) -> Vec<crate::video_screens::VideoScreen> {
+    if screens.is_empty() {
+        return Vec::new();
+    }
+    let mut bounds = std::collections::BTreeMap::<usize, (Vec3, Vec3)>::new();
+    for v in &map.geometry.vertices {
+        let Some(m) = (v.material as usize).checked_sub(1).filter(|m| screens.contains(m)) else { continue };
+        let p = Vec3::from_array(v.position);
+        let b = bounds.entry(m).or_insert((p, p));
+        *b = (b.0.min(p), b.1.max(p));
+    }
+    bounds
+        .into_iter()
+        .map(|(m, (min, max))| crate::video_screens::VideoScreen { id: format!("{}/{m}", map.name), min, max })
+        .collect()
 }
 
 /// The district's backdrop model: docs/hails-additions/39-skatepark-layouts.md#code-reference-skate_worldrs
@@ -2111,7 +2133,11 @@ pub(crate) fn load_types(
                     warn!("SKATE_PROP_TYPES: {map_name} template {template}: priority: {error}");
                     Some(100)
                 });
-                types.insert(template.clone(), DmoType { key: key.to_owned(), blocks, priority });
+                let audio = crate::physics::prop_dynamics::dmo_type_audio(&collections, key).unwrap_or_else(|error| {
+                    warn!("SKATE_PROP_TYPES: {map_name} template {template}: audio: {error}");
+                    None
+                });
+                types.insert(template.clone(), DmoType { key: key.to_owned(), blocks, priority, audio });
             }
             Err(error) => warn!("SKATE_PROP_TYPES: {map_name} template {template}: {error}"),
         }

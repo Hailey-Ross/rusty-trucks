@@ -1235,13 +1235,13 @@ fn apply_one(
         }
         Command::ReplayMarker { label } => world.resource_mut::<crate::replay::Replay>().add_marker(id, label)?,
         Command::ReplaySetLimits { max_frames, byte_budget, share_max_seconds } => world.resource_mut::<crate::replay::Replay>().set_limits(id, max_frames, byte_budget, share_max_seconds),
-        Command::ReplaySetCamera { collide, radius, leash, follow_eye, fill_section } => {
+        Command::ReplaySetCamera { collide, radius, leash, follow_eye, fill_section, playback_collide } => {
             let follow_eye = follow_eye.map(|f| match f.as_str() {
                 "skater" => crate::replay::camera_key::FollowEye::Skater,
                 "camera_full" => crate::replay::camera_key::FollowEye::CameraFull,
                 _ => crate::replay::camera_key::FollowEye::Camera,
             });
-            world.resource_mut::<crate::replay::Replay>().set_camera(id, collide, radius, leash, follow_eye, fill_section)
+            world.resource_mut::<crate::replay::Replay>().set_camera(id, collide, radius, leash, follow_eye, fill_section, playback_collide)
         }
         Command::WorldResetMovedProps {} => {
             if let Some(mut physics) = world.get_resource_mut::<crate::physics::GamePhysics>() {
