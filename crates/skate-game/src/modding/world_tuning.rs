@@ -395,6 +395,10 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         b.values.warn_speech = f.warn_speech.unwrap_or(b.values.warn_speech);
         b.run_from_honker.side_distance = f.run_from_honker_distance.unwrap_or(b.run_from_honker.side_distance);
         b.run_from_honker.run_speed = f.run_from_honker_speed.unwrap_or(b.run_from_honker.run_speed);
+        b.object_flee.enabled = f.object_flee.unwrap_or(b.object_flee.enabled);
+        b.object_flee.radius = f.object_flee_radius.unwrap_or(b.object_flee.radius);
+        b.object_flee.min_speed = f.object_flee_min_speed.unwrap_or(b.object_flee.min_speed);
+        b.object_flee.lane_margin = f.object_flee_lane_margin.unwrap_or(b.object_flee.lane_margin);
         b.plugins.water_disables_seats = f.water_disables_seats.unwrap_or(b.plugins.water_disables_seats);
         b.plugins.water_max_depth = f.water_max_depth.unwrap_or(b.plugins.water_max_depth);
         b.plugins.water_above = f.water_above.unwrap_or(b.plugins.water_above);
@@ -642,7 +646,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             let lc = &s.npc_simulated.controller;
             let npc_line_controller = fields!(lc; wipe_out, safe_slope, stuck_clear_distance, stuck_start_fraction, stuck_start_approach, reposition_ahead, reposition_past, remembered_window, reposition_interval, safe_jump_frames, safe_flag_frames, safe_run, stuck_clear_ticks, stuck_hold_ticks, stuck_gate_ticks, resnap_frames, stuck_limits);
             let npc_simulated = json!({"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max, "respawn_seconds": s.npc_simulated.respawn_seconds, "respawn_min": s.npc_simulated.respawn_min, "respawn_max": s.npc_simulated.respawn_max, "placement_hold_seconds": s.npc_simulated.placement_hold_seconds, "respawn_hold_seconds": s.npc_simulated.respawn_hold_seconds, "anticipation_distance": s.npc_simulated.signals.anticipation_distance, "anticipation_frames": s.npc_simulated.signals.anticipation_frames, "max_crossed_nodes": s.npc_simulated.signals.max_crossed_nodes, "walk_back": s.npc_simulated.walk_back, "walk_arrive_distance": s.npc_simulated.navmesh.arrive_h, "walk_stuck_ticks": s.npc_simulated.navmesh.stuck_waypoint_ticks, "board_yaw": s.npc_simulated.board_yaw_on, "board_yaw_dead_zone": s.npc_simulated.board_yaw.dead_zone, "manual_value": s.npc_simulated.signals.manual_value, "board_yaw_mag_scale": s.npc_simulated.board_yaw.mag_scale, "air_steer": s.npc_simulated.air_steer_on, "air_steer_dead_zone_deg": s.npc_simulated.air_steer.dead_zone_deg, "air_steer_full_deg": s.npc_simulated.air_steer.full_deg, "bump": s.npc_simulated.bump});
-            json!({
+            let mut out = json!({
                 "npc_walk_back": npc_walk_back,
                 "npc_line_controller": npc_line_controller,
                 "npc_draw_distance": s.npc_draw_distance,
@@ -678,7 +682,13 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                     let table = |t: &Option<Vec<(i16, f32)>>| t.as_ref().map(|t| t.iter().map(|e| json!({"trick": e.0, "weight": e.1})).collect::<Vec<_>>());
                     (k.clone(), json!({"regular": table(&v.regular), "nollie": table(&v.nollie)}))
                 }).collect::<serde_json::Map<_, _>>(),
-            })
+            });
+            // Inserted after: one more key in the literal passes json!'s recursion limit.
+            if let Some(b) = out.get_mut("ped_brain").and_then(|v| v.as_object_mut()) {
+                let f = s.ped_brain.object_flee;
+                b.extend([("object_flee".into(), json!(f.enabled)), ("object_flee_radius".into(), json!(f.radius)), ("object_flee_min_speed".into(), json!(f.min_speed)), ("object_flee_lane_margin".into(), json!(f.lane_margin))]);
+            }
+            out
         }),
         "props" => world.get_resource::<PropTuningSettings>().map_or(Value::Null, |s| {
             let by: serde_json::Map<String, Value> = s.0.by_template.iter().map(|(k, t)| (k.clone(), tuning(t))).collect();
