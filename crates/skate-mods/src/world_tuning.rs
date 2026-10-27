@@ -309,6 +309,13 @@ pub struct PedBrainPatch {
     pub skater_avoid_jump_speed: Option<f32>,
     pub skater_avoid_sector: Option<f32>,
     pub skater_avoid_period: Option<f32>,
+    /// A prop moving at a ped makes it flee (retail on): within `object_flee_radius` m of the prop (8.0), the prop
+    /// at least `object_flee_min_speed` m/s (0.75), the ped inside its swept lane plus `object_flee_lane_margin` m
+    /// (0.75); 0..=100.
+    pub object_flee: Option<bool>,
+    pub object_flee_radius: Option<f32>,
+    pub object_flee_min_speed: Option<f32>,
+    pub object_flee_lane_margin: Option<f32>,
 }
 
 /// The names `PedBrainPatch::trip_kind` / `trip_direction` take (skate-core `ReactionKind` / `ReactionDirection`).
@@ -1016,7 +1023,7 @@ impl Merge for NpcSimulatedPatch {
 
 impl Merge for PedBrainPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, unreachable_radius, reach_check_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech, water_disables_seats, water_max_depth, water_above, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed, zombie_arrive_distance, trip_kind, trip_direction, skater_avoid_sense, skater_avoid_min_speed, skater_avoid_look_ahead, skater_avoid_radius, skater_avoid_jump_radius, skater_avoid_jump_speed, skater_avoid_sector, skater_avoid_period);
+        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, unreachable_radius, reach_check_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech, water_disables_seats, water_max_depth, water_above, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed, zombie_arrive_distance, trip_kind, trip_direction, skater_avoid_sense, skater_avoid_min_speed, skater_avoid_look_ahead, skater_avoid_radius, skater_avoid_jump_radius, skater_avoid_jump_speed, skater_avoid_sector, skater_avoid_period, object_flee, object_flee_radius, object_flee_min_speed, object_flee_lane_margin);
     }
 }
 
@@ -1246,7 +1253,7 @@ impl LivingWorldPatch {
             && self.npc_walk_back.as_ref().is_none_or(NpcWalkBackPatch::validate)
             && self.npc_line_controller.as_ref().is_none_or(NpcLineControllerPatch::validate)
             && self.ped_brain.as_ref().is_none_or(|p| {
-                [p.wander_speed, p.warn_seconds, p.know_about_seconds, p.mood_want_memory_seconds, p.conversation_turn_seconds, p.conversation_gather_seconds, p.unreachable_radius, p.reach_check_seconds, p.run_from_honker_distance, p.run_from_honker_speed, p.attack_throw_speed, p.attack_throw_lead_seconds, p.attack_throw_jitter, p.attack_throw_lift, p.light_throw_speed, p.zombie_follow_distance, p.zombie_sprint_distance, p.zombie_ring_min, p.zombie_ring_max, p.zombie_sprint_speed, p.zombie_walk_speed, p.zombie_arrive_distance, p.skater_avoid_sense, p.skater_avoid_min_speed, p.skater_avoid_look_ahead, p.skater_avoid_radius, p.skater_avoid_jump_radius, p.skater_avoid_jump_speed, p.skater_avoid_sector, p.skater_avoid_period].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
+                [p.wander_speed, p.warn_seconds, p.know_about_seconds, p.mood_want_memory_seconds, p.conversation_turn_seconds, p.conversation_gather_seconds, p.unreachable_radius, p.reach_check_seconds, p.run_from_honker_distance, p.run_from_honker_speed, p.attack_throw_speed, p.attack_throw_lead_seconds, p.attack_throw_jitter, p.attack_throw_lift, p.light_throw_speed, p.zombie_follow_distance, p.zombie_sprint_distance, p.zombie_ring_min, p.zombie_ring_max, p.zombie_sprint_speed, p.zombie_walk_speed, p.zombie_arrive_distance, p.skater_avoid_sense, p.skater_avoid_min_speed, p.skater_avoid_look_ahead, p.skater_avoid_radius, p.skater_avoid_jump_radius, p.skater_avoid_jump_speed, p.skater_avoid_sector, p.skater_avoid_period, p.object_flee_radius, p.object_flee_min_speed, p.object_flee_lane_margin].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
                     && p.warn_speech.is_none_or(|v| (0..=127).contains(&v))
                     && [p.water_max_depth, p.water_above].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
                     && p.trip_kind.as_deref().is_none_or(|k| TRIP_KINDS.contains(&k))
@@ -1436,6 +1443,8 @@ mod tests {
         assert!(!valid_patch("living_world", &json!({"traffic_horn": {"all": {"honk": 1}}})));
         assert!(!valid_patch("living_world", &json!({"ped_brain": {"warn_speech": 128}})));
         assert!(valid_patch("living_world", &json!({"ped_brain": {"water_disables_seats": false, "water_max_depth": 2.5}})));
+        assert!(valid_patch("living_world", &json!({"ped_brain": {"object_flee": false, "object_flee_radius": 12.0, "object_flee_min_speed": 0.5}})));
+        assert!(!valid_patch("living_world", &json!({"ped_brain": {"object_flee_radius": -1.0}})));
         assert!(!valid_patch("living_world", &json!({"ped_brain": {"water_max_depth": 200.0}})));
         assert!(!valid_patch("living_world", &json!({"npc_avoid": {"radius_vehicle": -1.0}})));
         assert!(!valid_patch("living_world", &json!({"npc_avoid": {"max_entries": 100}})));

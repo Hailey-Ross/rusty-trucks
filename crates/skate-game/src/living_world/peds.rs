@@ -208,6 +208,14 @@ pub(crate) fn prop_obstacle_inputs(d: &crate::physics::prop_dynamics::PropDynami
         .collect()
 }
 
+/// A prop as the object flee sees it: box centre, velocity and the footprint corners of its x / z faces.
+fn moving_object(o: &ObstacleInput) -> skate_core::living_world::peds::object_flee::MovingObject {
+    let (c, a, b) = (o.center, o.axes[0], o.axes[2]);
+    let (ha, hb) = (o.half_extents[0], o.half_extents[2]);
+    let corner = |sa: f32, sb: f32| [c[0] + a[0] * ha * sa + b[0] * hb * sb, c[2] + a[2] * ha * sa + b[2] * hb * sb];
+    skate_core::living_world::peds::object_flee::MovingObject { centre: c, velocity: o.velocity, corners: [corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)] }
+}
+
 /// Diagnostics for moved props as ped obstacles (2026-10-07: "Moving objects does not update the
 /// collision for peds", and the sessions had no obstacle lines). Spawn = where an id was first seen.
 #[derive(Resource, Default)]
@@ -2079,6 +2087,8 @@ pub(crate) fn post_chase_messages(
 
 /// Obstacle / want target ids of the players (above every living-world id).
 pub(crate) const PLAYER_TARGET_BASE: u64 = u64::MAX - 64;
+/// Want target ids of the props (top byte 0xFE: no living-world kind, below the players): base | DMO body id.
+pub(crate) const PROP_TARGET_BASE: u64 = 0xFE << 56;
 
 /// Run every ped's AI graph once per population tick (before the bodies step), in id order.
 /// Wants come from the mood system (not ported yet) or a mod; without them a ped wanders as
@@ -2164,11 +2174,20 @@ pub(crate) fn think_peds(
     let players: Vec<[f32; 3]> = observers.observers.iter().map(|o| o.position).collect();
     let mut list: Vec<_> = peds.iter_mut().collect();
     list.sort_by_key(|(_, p, ..)| p.id);
-    // Entity type and position of every id this tick (players are the `skater` type).
+    // The streamed-in props as want targets (the object flee), and the moving ones the flee rule tests.
+    let props_now = physics.as_deref().and_then(|p| p.prop_dynamics()).map(prop_obstacle_inputs).unwrap_or_default();
+    let object_flee = settings.ped_brain.object_flee;
+    let moving_props: Vec<(u64, skate_core::living_world::peds::object_flee::MovingObject)> = if object_flee.enabled {
+        props_now.iter().map(|o| (PROP_TARGET_BASE | o.id, moving_object(o))).collect()
+    } else {
+        Vec::new()
+    };
+    // Entity type and position of every id this tick (players are the `skater` type, props `prop`).
     let entities: BTreeMap<u64, (String, [f32; 3])> = list
         .iter()
         .map(|(_, p, b, _)| (p.id.to_u64(), (p.entity.clone(), b.position.to_array())))
         .chain(players.iter().enumerate().map(|(i, p)| (PLAYER_TARGET_BASE + i as u64, ("skater".to_string(), *p))))
+        .chain(props_now.iter().map(|o| (PROP_TARGET_BASE | o.id, ("prop".to_string(), o.center))))
         .collect();
     // A hit ped that is gone no longer waits for its Colliding state.
     touchers.retain(|id, _| entities.contains_key(id));
@@ -2177,6 +2196,7 @@ pub(crate) fn think_peds(
         .iter()
         .map(|(_, p, b, _)| (p.id.to_u64(), b.velocity.to_array()))
         .chain(observers.observers.iter().enumerate().map(|(i, o)| (PLAYER_TARGET_BASE + i as u64, o.velocity)))
+        .chain(props_now.iter().map(|o| (PROP_TARGET_BASE | o.id, o.velocity)))
         .collect();
     let velocity_of = |id: u64| velocities.get(&id).copied();
     // World-prop plugins: the map's props, then the offer scan every 11th world tick (`826C0058` -> `826BFE18`).
@@ -2618,6 +2638,14 @@ pub(crate) fn think_peds(
                     mind.brain.raise_mood_want(&w.want, w.target, w.flag_40, settings.ped_brain.values.mood_want_memory_seconds);
                 }
                 events.write(PedEvent::Mood { id: ped.id, result: reaction.result.clone(), passed: reaction.passed, wants: reaction.wants.iter().map(|w| w.want.clone()).collect() });
+            }
+        }
+        // A prop moving at the ped (`82E2EDC0`): flee it, outside the mood system (ask 374).
+        if let Some((prop, _)) = moving_props.iter().find(|(_, o)| skate_core::living_world::peds::object_flee::in_path(at, o, &object_flee)) {
+            let fresh = mind.brain.wants.get("flee").is_none_or(|w| w.target != *prop || !w.needs_addressing);
+            mind.brain.flee_object(*prop);
+            if fresh {
+                info!("PED_FLEE_OBJECT ped=#{} prop={} at [{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, prop & 0xFFFF_FFFF, at[0], at[1], at[2]);
             }
         }
         let due = tick.saturating_sub(ped.spawn_tick);
@@ -3324,7 +3352,7 @@ pub(crate) fn think_peds(
             (Some(skate_core::living_world::peds::brain::motion::FLEE), Some(threat), Some(mesh)) => {
                 if mind.flee_goal.is_none_or(|g| skate_core::living_world::peds::flee::arrived(at, g, &flee)) {
                     if let Some(threat_at) = target(threat) {
-                        let velocity = observers.observers.get(threat.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
+                        let velocity = velocity_of(threat).unwrap_or([0.0; 3]);
                         let mut goal = skate_core::living_world::peds::flee::goal(at, threat_at, velocity, &flee);
                         // The navmesh cast (`sub_82C465A8`): a blocked leg ends at the last clear
                         // point along it (`sub_82C46208`'s rewrite, inferred).

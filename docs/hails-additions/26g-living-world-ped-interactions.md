@@ -2766,6 +2766,16 @@ Where a fleeing pedestrian runs (doc 26 "Ped behaviour runtime"). Retail (TU3, e
 - the goal = position + direction x 15 m (`0x820BD16C`), then a navmesh cast (`sub_82C465A8`; a blocked goal is rewritten by `sub_82C46208`: we stop at the last clear point, inferred);
 - a new leg when the ped is within the arrival radius of its goal (`sub_82E2BC70`, 3D). The run speed is the ped type's chase record (`CD65`, 11 for pedestrians) turned into a gait (`sub_82E2D260`); our body plays the run cycle and moves by its root motion.
 
+### Object flee
+
+A ped flees a prop moving at it (ask 374, 2026-10-26). Retail (TU3, evidence only; re-implemented; main read `82E2EDC0`, `82E2F018` and `82E2EF40` in Ghidra and the generated code, `.local/research/b646/`):
+- the gate (`82E2EDC0`): the flat distance from the ped to the prop's position squared is at most 64.0 (8 m, `0x820ED958`) and the prop's velocity squared at least 0.5625 (0.75 m/s, `0x822F915C`);
+- the lane (`82E2F018`): side = the prop's flat motion direction x up; the prop's four footprint corners (plugin object `0x8269B3D0` vt+0x94) give the lane's two edges along side (each at least 0, the prop's centre); the ped's offset along side must lie strictly inside the lane widened by 0.75 m (`0x821814A0`) each way; then the ped must be ahead of the edge corner on its side: (ped - corner) . velocity > 0, flat;
+- the write (`82E2EF40`): all 17 want slots lose "needs addressing" (`& 0x7F`), then the flee slot (`brain+0x214`) gets the prop's handle and flags 0x80 (needs addressing, 0x40 cleared). No mood event, no roll: the ped graph's Flee state (`pedestrian_wanttoflee.xml`) takes it from there.
+- a sibling for vehicles (`82E2C0C8`, IVehicle `0x82C34050`, 10 m, moving at the ped) is not part of this change.
+
+Ours: `skate_core::living_world::peds::object_flee::in_path` (the gate and lane, `ObjectFleeParams` with the retail values), `PedBrain::flee_object` (the write), `think_peds` tests every streamed-in prop per ped and tick (props in id order; prop want targets are `PROP_TARGET_BASE | body id`, top byte 0xFE, so a prop resolves as a flee target and the Flee state's `HasEscaped` distance works), log `PED_FLEE_OBJECT ped=#N prop=id at [..]`. The flee legs now read the threat's velocity for any target (peds, players, props), not only players. Engine choices: the footprint corners are the box's x / z faces (retail's corner source for a tipped prop is not read); how often retail runs the gate is not proven (ours: every think tick). Tuning (mods): `ped_brain.object_flee`, `object_flee_radius`, `object_flee_min_speed`, `object_flee_lane_margin` (0..=100; retail on, 8.0, 0.75, 0.75). Multiplayer: decided on the ped authority from positions and velocities, no random rolls. Tests: skate-core `object_flee` (2), `brain` (1), skate-mods `world_tuning`.
+
 ## Code reference: living_world/ped_plugins.rs
 
 Detail moved out of the code comments of `crates/skate-game/src/living_world/ped_plugins.rs`; each comment there links its section here.

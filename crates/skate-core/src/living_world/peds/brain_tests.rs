@@ -1058,3 +1058,12 @@ fn trip_reaction_names_round_trip_for_mod_data() {
     let s = BrainSettings::default();
     assert_eq!((s.trip_kind, s.trip_direction), (ReactionKind::Knockdown, ReactionDirection::FromBack), "retail 826A5068");
 }
+
+#[test]
+fn a_prop_moving_at_the_ped_takes_over_its_wants_with_flee() {
+    let mut brain = PedBrain::default();
+    brain.raise_want("greet", 7, false);
+    brain.flee_object(0xFE00_0000_0000_0042);
+    assert!(!brain.wants["greet"].needs_addressing);
+    assert_eq!(brain.wants["flee"], Want { target: 0xFE00_0000_0000_0042, needs_addressing: true, forget_on_unset: false });
+}

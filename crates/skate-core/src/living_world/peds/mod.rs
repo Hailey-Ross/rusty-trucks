@@ -15,6 +15,7 @@ pub mod crosswalk;
 pub mod fade;
 pub mod hand_prop;
 pub mod flee;
+pub mod object_flee;
 pub mod honk;
 pub mod mood;
 pub mod nav;

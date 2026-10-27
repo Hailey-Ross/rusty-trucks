@@ -1147,6 +1147,14 @@ impl PedBrain {
     pub fn raise_want(&mut self, want: &str, target: u64, forget_on_unset: bool) {
         self.wants.insert(want.to_ascii_lowercase(), Want { target, needs_addressing: true, forget_on_unset });
     }
+    /// `82E2EF40`: a prop moving at the ped ([`super::object_flee::in_path`]) sets the flee want straight, outside the
+    /// mood system: every want stops needing addressing, then flee needs addressing with the prop as its target.
+    pub fn flee_object(&mut self, target: u64) {
+        for w in self.wants.values_mut() {
+            w.needs_addressing = false;
+        }
+        self.wants.insert("flee".to_owned(), Want { target, needs_addressing: true, forget_on_unset: false });
+    }
     /// A passed mood result's want (`sub_82E41B98`): raised, and its target known for at least `memory` seconds
     /// ([`BrainSettings::mood_want_memory_seconds`], `82E42868`), so the entry that counts finished reactions exists.
     pub fn raise_mood_want(&mut self, want: &str, target: u64, forget_on_unset: bool, memory: f32) {

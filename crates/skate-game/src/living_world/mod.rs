@@ -904,6 +904,8 @@ pub(crate) struct PedBrainSettings {
     pub flee: skate_core::living_world::peds::flee::FleeParams,
     /// RunFromHonker's goal and speeds (`826A1358`).
     pub run_from_honker: skate_core::living_world::peds::honk::RunFromHonkerParams,
+    /// A prop moving at a ped makes it flee (`82E2EDC0`, retail values).
+    pub object_flee: skate_core::living_world::peds::object_flee::ObjectFleeParams,
     pub values: skate_core::living_world::peds::brain::BrainSettings,
     /// The world-prop plugins' values (offer scan, refusals, the seats-in-water rule); copied into the plugin props
     /// every think, so a mod's change is in effect at once.
@@ -912,6 +914,6 @@ pub(crate) struct PedBrainSettings {
 
 impl Default for PedBrainSettings {
     fn default() -> Self {
-        Self { enabled: true, mood: true, flee: Default::default(), run_from_honker: Default::default(), values: Default::default(), plugins: Default::default() }
+        Self { enabled: true, mood: true, flee: Default::default(), run_from_honker: Default::default(), object_flee: Default::default(), values: Default::default(), plugins: Default::default() }
     }
 }
