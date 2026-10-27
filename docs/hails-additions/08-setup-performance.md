@@ -454,4 +454,14 @@ Detail moved out of the code comments of `crates/skate-game/src/startup_loading.
 
 The start's loading phase behind the splash (`splash.rs`): the game window is created hidden and stays hidden until every hold is released, gameplay waits meanwhile (virtual time paused, as the menu pauses it, so the game starts in the same order as before), then the window is shown and brought forward and the splash closes.
 
+The game is silent while the splash is up (`AudioSettings::master` is 0 until `splash::close`, 2026-10-27, ask 384): the world's beds and random one-shots start ticking behind the splash and were heard for over a minute before the game showed (session game-20261027-073320: splash 95 s, ambience from 18 s).
+
 The slowest hold is the native audio runtime's first start (~40 s on an HDD with a cold file cache; `game_audio::native::begin_launch` builds it on its own thread). Engine systems and mods hold the phase with [`StartupLoading::hold`] / [`StartupLoading::release`] (a label each, shown as the splash's step) and report the item being read with [`detail`].
+
+### The setup window (2026-10-27, ask 385)
+
+**Problem.** The setup / update window showed a long paragraph (asset version list, reuse notes, where to keep the game data) and its button even when nothing had to be picked; the user: "can we make this screen less cluttered and just look better? it reads like shit."
+
+**Change** (`tools/setup.py`, `tools/asset_pipeline/install.py`; ours, setup is not a retail screen). Title "Updating game files" / "Set up Skate 3 Rust Engine", one lead line (what is converted, or what to pick), one grey note, one status line over a thin progress bar; the file button shows only when a file must be picked, and again after an error; window 700 x 320. The conversion itself is unchanged.
+
+**Verification.** Both layouts (update and first setup) rendered and checked; setup tests unchanged. Not seen by the user in a real refresh yet.

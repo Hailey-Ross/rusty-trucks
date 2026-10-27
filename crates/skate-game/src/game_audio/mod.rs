@@ -275,9 +275,9 @@ impl AudioSettings {
         }
         Self { saved, path, muted: config.mute, volume_overrides: RetailVolumeOverrides::default(), speech_decoded }
     }
-    /// Linear master gain (0 when muted).
+    /// Linear master gain (0 when muted, and while the startup splash is up: the world loads and ticks behind it).
     pub(crate) fn master(&self) -> f32 {
-        if self.muted { 0.0 } else { self.saved.master as f32 / 100.0 }
+        if self.muted || crate::splash::active() { 0.0 } else { self.saved.master as f32 / 100.0 }
     }
     /// The non-retail "more audible" world layout (see `SavedSettings::more_audible_world`).
     pub(crate) fn more_audible_world(&self) -> bool {

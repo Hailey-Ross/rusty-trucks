@@ -415,6 +415,11 @@ User: "anything opt in should be added as a setting to the guide overlay that ca
   example `SKATE_LIVING_WORLD=0`, `SKATE3_RETAIL_MENUS=0`, `SKATE_PRESENT_MODE`, `SKATE3_INPUT=xinput`), not opt-ins.
   Test: `pages_put_headers_in_front_of_their_groups`, `sections_expose_only_real_rows_and_all_maps` (no opt-in outside
   the Opt-Ins section), `physics_threads_default_single_and_load_saved`.
+- **Fly Cam opt-in (2026-10-27, user: "Make it so the Fly cam is an opt in toggle in the overlay guide."):** a
+  "Fly Cam" row under the Debug header (off by default, saved as `fly_cam` in `settings/graphics.json`). The debug fly
+  cam's chord (D-pad Right + R3, `debug_cam.rs`) works only while it is on; switching it off while flying leaves the fly
+  cam. Before, the chord was always live. Tests: `sections_expose_only_real_rows_and_all_maps`,
+  `pages_put_headers_in_front_of_their_groups` (row order).
 - **On by default (2026-10-25, USER-ASKS 338: "Lets turn on by default with the ability to toggle it off: / - Ped
   Speech / - NPC Skater Physics"):** both rows stay in Opt-Ins and switch off there or on the launcher's page.
   `OptIns::default` has `npc_physics` on (`LivingWorldSettings::default` keeps the run's variables until the saved

@@ -341,15 +341,15 @@ noise, greeted).
 speed gate `0x8231A844` and the 0.5 blend `0x8209975C` in `sub_82E318F8`).** The Flee intent installs a goal
 provider (`sub_82E35E80`) with a 2.0 m arrival radius. Each leg goes 15 m from the ped: straight away from the
 threat when the threat moves slower than 1 m/s or the ped is behind its motion, else `0.5 x (side + away)` (side =
-the threat's motion x up, on the ped's side; not renormalised), then a navmesh cast. A new leg starts when the ped
+the threat's motion x up, on the ped's side; not renormalised), then the navmesh goal test (not a cast, b650). A new leg starts when the ped
 is within 2 m of its goal (`sub_82E2BC70`). The speed is the ped type's chase record field `CD65` (11 for
 pedestrians), sent to the motion graph as a run gait (`sub_82E2D260`).
 
 **Change.** skate-core `living_world::peds::flee` (direction, goal, arrival; `FleeParams` with the retail values);
 the ped animation gains the run gait (`Intent::Run`, `Locomotion::Run`, logical clip `FwdChaseRunCyc`, the stock
 `*_CHASE_RUN_N_0_CYC`, hash `7746273E01422734`). `think_peds` turns a fleeing brain into nav legs (a one-point
-route per leg, cleared when the flee ends; a blocked leg ends at the last clear point along it, our stand-in for
-`sub_82C46208`), logged `PED_FLEE`; `advance_peds` runs where the nav walks while fleeing. Settings
+route per leg, cleared when the flee ends; the goal test and rewrite as in "Flee legs go round rails and walls"
+below), logged `PED_FLEE`; `advance_peds` runs where the nav walks while fleeing. Settings
 `ped_brain.flee` (retail values).
 
 **Engine choices.** The run's own start, stop and turn clips are not wired (it enters from standing or walking and
@@ -362,7 +362,32 @@ failures. Not seen in a game run yet (a ped flees only on a raised flee want; fo
 female reaction set's `fleeperp` after repeated hits).
 
 **Open.** Which stock reactions raise `flee` for which ped types in practice (play-test), the run start / stop
-clips, retail's exact blocked-goal rewrite.
+clips. (The blocked-goal rewrite: see the next section.)
+
+### Flee legs go round rails and walls (2026-10-27, ask 393)
+
+**Problem.** Fleeing peds ran into rails and walls and ran in place (session game-20261027-101012). The user: "peds
+fleeing still will run into rails and walls and get stuck trying to flee on a path that isn't traversible."
+
+**Root cause** (research b650, `.local/research/b650-ped-nav-failures.md`; main checked the code lines). Retail
+[code]: the leg goal test `82C465A8` is not a line cast but the chase reachability test (ped and goal on the navmesh,
+connected); a reachable goal stays even with a wall between, and the NavPower path goes round. Only an unreachable goal
+is rewritten (`82C46208` -> `82933E18`) to the nearest navmesh point reachable from the ped's polygon (unbounded
+range). Ours cut the 15 m leg at the first wall or rail along a straight line (8-step bisection of `clear_line`): the
+cut goal often lay within the 2 m arrival radius, so a new leg was planned every tick and the ped ran in place.
+
+**Change.** skate-core `flee::goal_on_mesh` (reach test via `chase::reach_failed`, rewrite via
+`NavMesh::locate_nearest`, the existing port of `82933E18`; no result keeps the raw goal, retail code 3); `think_peds`
+uses it instead of the bisection. Mod keys `ped_brain.flee_leg`, `flee_arrival_radius`, `flee_threat_speed_gate`,
+`flee_side_blend` (doc 26a). The path itself stays the wander planner's `find_path` + obstacle detour (our NavPower
+stand-in).
+
+**Open.** Retail's 0.5 m snap window and the poly class test `82C47D60` in the reach test (shared with the chase
+check, ask 392); a cornered ped (goal within 2 m of the reachable edge) re-plans every update in retail too, and
+whether it then stands or jogs in place is not checked.
+
+**Verification.** skate-core `a_flee_goal_stays_behind_a_wall_and_moves_off_an_island`; skate-mods
+`valid_patch` asserts for the new keys. Not play-checked.
 
 ## Peds speak from their AI graph (2026-10-09)
 
@@ -979,6 +1004,29 @@ warn gestures do not use the channel yet; `StopChannel` (Avoid / Collision state
 
 **Verification.** skate-data data-gated `carry_clips_carry_per_bone_channel_weights` (the four carry clips: 5 of 50
 bones, the right arm chain; throws / tazer 17); skate-core `the_channel_overrides_only_its_weighted_bones_and_fades`.
+
+### A ped on the phone drops it for a chase (2026-10-27, ask 391)
+
+**Problem.** A ped on the phone that started an angry chase kept the talk pose for the whole chase (session
+game-20261027-101012, ped #189). The user: "got chased by a ped on a phone, but he kept being on the phone while
+chasing which looks weird and incorrect."
+
+**Root cause** (research b649, `.local/research/b649-phone-ped-chase.md`; main checked the code lines). Retail
+[data] `pedestrian_newchasee.xml` `HoldBeforeChaseStart` drops a prop that cannot be attack-thrown (`CantThrowHandProp`
+-> `DropHandProp`, no hang-up clip); [code] the idle action update `82E3F470` runs only in the held branch of
+`82E3ED50`, so the talk is never asked for after the drop; the unlink `82E3FAE0` stops whatever clip the channel plays
+with a 0.2 s fade (`DAT_82099280`). Ours dropped the phone as retail but kept the stored talk cue and asked for it again
+every time the channel idled, and the unlink stopped only `NPC_CARRY` clips (every frame, not once).
+
+**Change.** `peds.rs` `cue_clip`: an action cue plays only while the prop is held; `ped_hand_props.rs` clears the cue
+on the release and the removal. The unlink (box test, prop gone, release without a body, prop removed) counts
+`PedMind::unlink_seq`; `advance_peds` stops the channel once per new count (`unlink_due`) with
+`HandPropSettings::unlink_fade` (retail 0.2, a mod setting next to `unlink_box`); the per-frame `NPC_CARRY` stop is
+gone. Ours, not read in retail: the object flee skips the ped's own linked hand prop (the ped fled its own falling
+phone, `PED_FLEE_OBJECT prop=536870912` tick 40124, cutting `HoldBeforeChaseStart` short; retail's class cast
+`0x8269B3D0` in the flee scan not read).
+
+**Verification.** skate-game `a_dropped_phone_stops_the_talk_and_the_unlink_stops_the_channel_once`. Not play-checked.
 
 ### Ped attack throw at the skater
 
@@ -2595,6 +2643,8 @@ The body (group 11, `sub_82E268C8`) has three capsule parts, measured in the rec
 Body A (retail `sub_82E38400`, group 9; b146 radius / half length / mass, b342): one upright capsule from the ped root. Retail pairs group 9 with the static map, cars (8) and DMOs (12..14), never with the skater or another ped (the collision-type table `40122C30`, read in the recomp, b342 section 7). Ours: props meet it through the pusher rule skater volumes use (`PropDynamics::push_from_skater`) with its mass; cars still push the root through `vehicle_contacts` (retail's kind 2 does it through body A).
 
 Pushed props shove peds aside (2026-10-26, USER-ASKS 375 "When I hit a ped with the dumpster I came to a full stop, even though the ped was on the ground"; research b635, b636, b644). Retail [code]: body A is a finite-mass body in the solve, and the contact classifier `sub_82E38400` gives a prop touching body A kind 1 ("collision sliding", ped +5936 bit 0x40 from ped attribute `0xB168050B3E6FC967`: on for every generic ped type) when the contact is a side contact (`|up x n| > 0.45`, `0x8208E95C`) the ped faces into or moves into; the handler `sub_82E38FB8` then moves the ped's root to body A's solved X / Z (height kept, no stumble, no mood event). A prop never knocks a ped down (kind 0 on body B). Body A's pose (`sub_82E35160`): an upright capsule centred on the Spine1 bone's position (root rotation), so it drops with a knocked-down ped's spine; without a pose it sits at root + height / 2 + 0.2. Ours before: body A was rebuilt at the root every step with zero velocity, so it acted as a wall (the dumpster stopped dead). Ours now: the prop step reports each actor's solved body A displacement and velocity (`PropDynamics::take_actor_shoves`, the row reactions are displacements), `GamePhysics::ped_prop_shoves` carries them to `push_ped_proxies`, which moves a sliding ped's root by the shove when `slides()` holds and builds the next body A at the moved root with the solved velocity, centred on Spine1 when the rig has it (`PedProxy::centre_bone`, `unposed_height` 1.7 inferred, `unposed_lift` 0.2, `slide`, `slide_side`). Log line `PED_PROP_SHOVE ped=#<serial> by [dx, dz] at [...]`. Open: the contact normal's sign is inferred from logic (b636: it points into the ped); a ped hit from behind while walking away gets kind 0 and still stops a light prop, as retail's rule says; the per-type sliding attribute is not read (all ours are generic); the hold bits (0x40 / 0x80) and the +0.25 lift are not ported. Tests: `a_sliding_bin_shoves_a_ped_whose_body_a_follows`, `kind_one_needs_a_side_contact_the_ped_faces_or_walks_into`.
+
+A carried prop meets peds too (2026-10-27, USER-ASKS 387: "it went through one of the peds, which shouldn't happen", then "trapped a ped inside the dumpster"). Cause [code + log]: `PropDynamics::step_with_actors` skipped every actor contact for the held prop (the carrier's pushes fight the drag), so peds and NPC skaters met nothing either; session game-20261027-073605 has no shove during any dumpster carry. Change: only the local skater (the carrier) is skipped for the held prop; peds and other actors get the contact pass and its shove. Test `a_carried_bin_shoves_a_ped_instead_of_passing_through`.
 
 ### Ped proxies in the solve
 

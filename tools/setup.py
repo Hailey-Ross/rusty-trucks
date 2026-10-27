@@ -147,17 +147,28 @@ def main():
     window=tk.Tk()
     brand=os.environ.get('SKATE_BRAND') or 'Skate 3 Rust Engine'  # the game passes its build's display name
     window.title(brand+' setup')
-    window.geometry('700x420');window.resizable(False,False)
+    window.geometry('700x320');window.resizable(False,False)
     icon=ROOT/'docs/images/skating-crab.ico'
     if icon.is_file():window.iconbitmap(str(icon))
     frame=ttk.Frame(window,padding=24);frame.pack(fill='both',expand=True)
-    ttk.Label(frame,text='Update game assets' if updating else 'Set up '+brand,font=('Segoe UI',20)).pack(anchor='w',pady=(0,16))
-    ttk.Label(frame,text=('Asset version changes: '+(', '.join(sorted(changed)) or 'none')+'.\nSetup first checks your installed files; only changed or incomplete groups\nwill be prepared again.\nYour previous character data remains until preparation succeeds.\n'
-              +('Reusing the Xbox source from the previous setup when possible.\nKeep the game data beside default.xex.' if reuse else 'Select your Skate 3 default.xex (or ISO) to continue.\nKeep the game data beside default.xex.')) if updating else 'Select your Skate 3 Xbox 360 ISO, or default.xex inside an\nextracted game folder. Keep the game data beside default.xex.\nSetup prepares the skater, customiser, animations and disc maps.\nNo other apps need installing.\n\nISO extraction needs internet access. Allow free disk space\nand time for the first conversion.',
-              font=('Segoe UI',11),justify='left').pack(anchor='w')
-    status=tk.StringVar(value=('Reusing your previous Xbox source…' if reuse else 'Choose your game to begin.') if updating else 'Choose your game to begin.')
-    ttk.Label(frame,textvariable=status,wraplength=600).pack(anchor='w',pady=(18,8))
-    progress=ttk.Progressbar(frame,mode='indeterminate');progress.pack(fill='x')
+    style=ttk.Style(window)
+    style.configure('Note.TLabel',foreground='#666666',font=('Segoe UI',10))
+    style.configure('Status.TLabel',font=('Segoe UI',10))
+    style.configure('Setup.Horizontal.TProgressbar',thickness=8)
+    ttk.Label(frame,text='Updating game files' if updating else 'Set up '+brand,font=('Segoe UI',20)).pack(anchor='w',pady=(0,12))
+    if updating:
+        names={'hud':'HUD'}
+        parts=[names.get(g,g) for g in sorted(changed)]
+        lead=('Converting what changed: '+', '.join(parts)+'.') if parts else 'Checking your game files.'
+        note='Your current files stay in place until this finishes.'
+    else:
+        lead='Pick your Skate 3 Xbox 360 ISO, or default.xex in an extracted game folder.'
+        note='The first conversion takes a while. ISO extraction needs an internet connection.'
+    ttk.Label(frame,text=lead,font=('Segoe UI',11),wraplength=640,justify='left').pack(anchor='w')
+    ttk.Label(frame,text=note,style='Note.TLabel',wraplength=640,justify='left').pack(anchor='w',pady=(4,0))
+    status=tk.StringVar(value='Starting…' if updating and reuse else 'Choose your game to begin.')
+    ttk.Label(frame,textvariable=status,style='Status.TLabel',wraplength=640).pack(anchor='w',side='top',pady=(36,6))
+    progress=ttk.Progressbar(frame,mode='indeterminate',style='Setup.Horizontal.TProgressbar');progress.pack(fill='x')
     messages=queue.Queue();running=False;success=False
     def begin(iso):
         nonlocal running
@@ -186,8 +197,12 @@ def main():
         if running:
             messagebox.showinfo('Setup running','Wait for the current conversion to finish. Your source game files are not modified.',parent=window)
         else:window.destroy()
-    buttons=ttk.Frame(frame);buttons.pack(anchor='e',pady=18)
-    button=ttk.Button(buttons,text='Select ISO or default.xex',command=start);button.pack(side='left')
+    buttons=ttk.Frame(frame);buttons.pack(anchor='e',side='bottom')
+    button=ttk.Button(buttons,text='Select ISO or default.xex',command=start)
+    # Only when a file has to be picked: an update that reuses the recorded source starts on its own.
+    def show_button():
+        if not button.winfo_ismapped():button.pack(side='left')
+    if not (updating and reuse):show_button()
     def poll():
         nonlocal running,success
         while not messages.empty():
@@ -196,7 +211,7 @@ def main():
                 if text!='Ready':messagebox.showwarning('Setup completed with warnings',text,parent=window)
                 running=False;success=True;progress.stop();window.destroy();return
             if kind in ('error','error-source'):
-                running=False;progress.stop();button.config(state='normal')
+                running=False;progress.stop();button.config(state='normal');show_button()
                 if reuse and text and kind=='error-source':
                     status.set('Could not reuse the previous Xbox source. Select default.xex or an ISO.')
                 messagebox.showerror('Setup could not finish',text+'\n\nDetails: '+str(args.base/'setup-error.log'),parent=window)

@@ -106,6 +106,8 @@ pub struct HandPropSettings {
     pub half_gravity: f32,
     /// The unlink box half sizes around the ped, metres x / y (up) / z (`82E3F090`: 0.5, 2.0, 0.5).
     pub unlink_box: [f32; 3],
+    /// The unlink stops whatever clip the ped channel plays with this fade (`82E3FAE0`, `DAT_82099280` 0.2 s, b649).
+    pub unlink_fade: f32,
     /// A released prop takes part in the skater's body contact (retail: an ordinary DMO contact, b92 Q2 / b94); a mod
     /// may turn it off.
     pub skater_contact: bool,
@@ -143,6 +145,7 @@ impl Default for HandPropSettings {
             aim_lift: 1.0,
             half_gravity: 4.9,
             unlink_box: [0.5, 2.0, 0.5],
+            unlink_fade: 0.2,
             skater_contact: true,
             starting_props: true,
             heavy_group: 12,

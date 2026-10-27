@@ -950,9 +950,11 @@ pub(crate) fn advance_peds(
     npcs: Query<(&super::npc_skaters::NpcSkater, &super::npc_skaters::NpcReplay)>,
     settings: Res<LivingWorldSettings>,
     mut ped_contacts: Local<Vec<PedContact>>,
-    mut played_cues: Local<BTreeMap<LivingWorldId, u32>>,
+    // The hand prop cues played and the unlinks stopped, per ped.
+    mut hand_prop_seen: Local<(BTreeMap<LivingWorldId, u32>, BTreeMap<LivingWorldId, u32>)>,
 ) {
     let _span = super::timing::span(super::timing::ADVANCE_PEDS);
+    let (played_cues, stopped_unlinks) = &mut *hand_prop_seen;
     let obstacles = &obstacles.0;
     let hz = state.world.clock().hz as u64;
     let tick = state.world.tick();
@@ -1235,35 +1237,27 @@ pub(crate) fn advance_peds(
                 None => body.player.intent = body.path.intent(dt, body.player.state),
             }
             // The carry pose (`82E3F048`): while the hand prop is held and the channel is free, its record's carry
-            // animation is requested again (blend 0.2); a released or dropped prop stops it with a 0.2 s fade (unlink
-            // `82E3FAE0`). Retail requests it only while the prop is linked; ours: while held.
+            // animation is requested again (blend 0.2); the unlink (`82E3FAE0`) stops any channel clip once with its
+            // fade (b649). Retail requests it only while the prop is linked; ours: while held.
+            if mind.is_some_and(|m| unlink_due(stopped_unlinks, ped.id, m.unlink_seq)) && !body.player.channel_idle() {
+                body.player.channel_stop(settings.ped_brain.values.hand_prop.unlink_fade);
+            }
             if let Some(h) = mind.map(|m| &m.brain.hand_prop) {
                 let carry = h.key.as_ref().and_then(|k| data.hand_props.props.get(k)).and_then(|r| r.carry_channel.as_deref());
-                // The idle action's cue (`82E3F470`): a new cue plays once; the talk / read cycles are asked for every
-                // frame in retail, so ours asks again when their clip ends early.
-                use skate_core::living_world::peds::hand_prop::ActionCue;
+                // The idle action's cue (`82E3F470`, only while held): a new cue plays once; the talk / read cycles are
+                // asked for every frame in retail, so ours asks again when their clip ends early.
                 if let Some((cue, seq)) = mind.and_then(|m| m.action_cue.map(|c| (c, m.action_seq))) {
                     let blend = settings.ped_brain.values.hand_prop.actions.clip_blend;
                     let new = played_cues.get(&ped.id) != Some(&seq);
-                    match cue {
-                        ActionCue::Clip(name) if new || (body.player.channel_idle() && matches!(name, "HandPropPhoneTalk" | "HandPropReadCyc")) => {
-                            body.player.channel_request(set, name, blend, blend);
-                        }
-                        ActionCue::Carry if new => {
-                            if let Some(name) = carry {
-                                body.player.channel_request(set, name, blend, blend);
-                            }
-                        }
-                        _ => {}
+                    if let Some(name) = cue_clip(cue, h.holding, new, body.player.channel_idle(), carry) {
+                        body.player.channel_request(set, name, blend, blend);
                     }
                     played_cues.insert(ped.id, seq);
                 }
-                match (h.holding, carry) {
-                    (true, Some(name)) if body.player.channel_idle() => {
+                if let (true, Some(name)) = (h.holding, carry) {
+                    if body.player.channel_idle() {
                         body.player.channel_request(set, name, 0.2, 0.2);
                     }
-                    (false, _) if body.player.channel_clip().is_some_and(|c| c.starts_with("NPC_CARRY")) => body.player.channel_stop(0.2),
-                    _ => {}
                 }
             }
             let out = body.player.step(dt, set, &*data);
@@ -1873,6 +1867,23 @@ pub(crate) fn ended_move_drops_route(chase_goal: &mut Option<[f32; 3]>, approach
     chase_goal.take().is_some() | std::mem::take(approach_route)
 }
 
+/// The clip a hand prop action cue asks for this frame (`82E3F470`, run only while held, b649): a new cue once; the
+/// talk / read cycles again whenever the channel idles.
+fn cue_clip<'a>(cue: skate_core::living_world::peds::hand_prop::ActionCue, holding: bool, new: bool, idle: bool, carry: Option<&'a str>) -> Option<&'a str> {
+    use skate_core::living_world::peds::hand_prop::ActionCue;
+    match cue {
+        _ if !holding => None,
+        ActionCue::Clip(name) if new || (idle && matches!(name, "HandPropPhoneTalk" | "HandPropReadCyc")) => Some(name),
+        ActionCue::Carry if new => carry,
+        _ => None,
+    }
+}
+
+/// True once per new unlink count of a ped (the unlink's channel stop, `82E3FAE0`).
+fn unlink_due(stopped: &mut BTreeMap<LivingWorldId, u32>, id: LivingWorldId, seq: u32) -> bool {
+    seq != 0 && stopped.insert(id, seq) != Some(seq)
+}
+
 /// A ped's behaviour brain and its controller on the stock ped AI graph (behaviour runtime,
 /// doc 26). Host-owned plain data.
 #[derive(Component, Default)]
@@ -1922,6 +1933,8 @@ pub(crate) struct PedMind {
     refusals: skate_core::living_world::peds::plugins::RefusalMemory,
     /// A release the brain posted (DropHandProp) for `sync_hand_props`: the velocity, m/s.
     pub hand_prop_release: Option<[f32; 3]>,
+    /// Hand prop unlinks so far: `advance_peds` stops the channel once per new count (`82E3FAE0`, b649).
+    pub unlink_seq: u32,
     /// Log repeat limiter for PED_BRAIN / PED_MOOD lines (a refused startconversation re-raises its want every few
     /// ticks, retail by b28 / b29, and filled the log with 27k lines in 4 minutes).
     log_repeats: LogRepeats,
@@ -2113,7 +2126,7 @@ pub(crate) fn think_peds(
     mut events: ResMut<bevy::ecs::message::Messages<PedEvent>>,
     mut cursor: Local<Option<bevy::ecs::message::MessageCursor<PedEvent>>>,
     mut touchers: Local<BTreeMap<u64, u64>>,
-    (mut traffic_events, cars, mut plugin_props, physics): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>, Option<Res<crate::physics::GamePhysics>>),
+    (mut traffic_events, cars, mut plugin_props, physics, linked_props): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>, Option<Res<crate::physics::GamePhysics>>, Query<&super::ped_hand_props::ReleasedHandProp>),
 ) {
     let _span = super::timing::span(super::timing::THINK_PEDS);
     // A map change (b216; not the first map, whose key goes from none to some): the conversations, chase groups,
@@ -2640,8 +2653,10 @@ pub(crate) fn think_peds(
                 events.write(PedEvent::Mood { id: ped.id, result: reaction.result.clone(), passed: reaction.passed, wants: reaction.wants.iter().map(|w| w.want.clone()).collect() });
             }
         }
-        // A prop moving at the ped (`82E2EDC0`): flee it, outside the mood system (ask 374).
-        if let Some((prop, _)) = moving_props.iter().find(|(_, o)| skate_core::living_world::peds::object_flee::in_path(at, o, &object_flee)) {
+        // A prop moving at the ped (`82E2EDC0`): flee it, outside the mood system (ask 374). Ours: never the ped's own
+        // dropped hand prop (b649; retail's class cast 0x8269B3D0 not read).
+        let own = linked_props.get(entity_id).ok().map(|r| PROP_TARGET_BASE | u64::from(r.body));
+        if let Some((prop, _)) = moving_props.iter().find(|(id, o)| Some(*id) != own && skate_core::living_world::peds::object_flee::in_path(at, o, &object_flee)) {
             let fresh = mind.brain.wants.get("flee").is_none_or(|w| w.target != *prop || !w.needs_addressing);
             mind.brain.flee_object(*prop);
             if fresh {
@@ -3354,22 +3369,8 @@ pub(crate) fn think_peds(
                     if let Some(threat_at) = target(threat) {
                         let velocity = velocity_of(threat).unwrap_or([0.0; 3]);
                         let mut goal = skate_core::living_world::peds::flee::goal(at, threat_at, velocity, &flee);
-                        // The navmesh cast (`sub_82C465A8`): a blocked leg ends at the last clear
-                        // point along it (`sub_82C46208`'s rewrite, inferred).
                         if let Some(here) = mesh.locate(at) {
-                            if !mesh.clear_line(here, goal) {
-                                let (mut lo, mut hi) = (0.0f32, 1.0f32);
-                                for _ in 0..8 {
-                                    let mid = (lo + hi) * 0.5;
-                                    let p = [at[0] + (goal[0] - at[0]) * mid, at[1], at[2] + (goal[2] - at[2]) * mid];
-                                    if mesh.clear_line(here, p) {
-                                        lo = mid;
-                                    } else {
-                                        hi = mid;
-                                    }
-                                }
-                                goal = [at[0] + (goal[0] - at[0]) * lo, at[1], at[2] + (goal[2] - at[2]) * lo];
-                            }
+                            goal = skate_core::living_world::peds::flee::goal_on_mesh(mesh, here.poly, goal);
                         }
                         body.nav.set_route(Some(skate_core::living_world::peds::PedRoute { points: vec![goal], looped: false }));
                         mind.flee_goal = Some(goal);
@@ -3452,6 +3453,26 @@ pub(super) fn sync_nav_settings(settings: Res<super::LivingWorldSettings>, mut n
 #[cfg(test)]
 mod stall_tests {
     use super::*;
+
+    /// b649 (ask 391): a phone ped that drops its phone for a chase stops asking for the talk, and the unlink stops
+    /// the channel once.
+    #[test]
+    fn a_dropped_phone_stops_the_talk_and_the_unlink_stops_the_channel_once() {
+        use skate_core::living_world::peds::hand_prop::ActionCue;
+        let talk = ActionCue::Clip("HandPropPhoneTalk");
+        assert_eq!(cue_clip(talk, true, false, true, None), Some("HandPropPhoneTalk"), "held: the talk loops");
+        assert_eq!(cue_clip(talk, false, false, true, None), None, "dropped: no talk");
+        assert_eq!(cue_clip(talk, false, true, true, None), None, "dropped: not even a new cue");
+        assert_eq!(cue_clip(ActionCue::Carry, true, true, false, Some("NPC_CARRY_x")), Some("NPC_CARRY_x"));
+        let id = LivingWorldId { kind: Kind::Pedestrian, serial: 189 };
+        let mut stopped = BTreeMap::new();
+        assert!(!unlink_due(&mut stopped, id, 0), "never unlinked");
+        assert!(stopped.is_empty());
+        assert!(unlink_due(&mut stopped, id, 1), "the unlink stops the channel");
+        assert!(!unlink_due(&mut stopped, id, 1), "once");
+        assert!(unlink_due(&mut stopped, id, 2), "the next unlink stops it again");
+        assert_eq!(skate_core::living_world::peds::hand_prop::HandPropSettings::default().unlink_fade, 0.2);
+    }
 
     /// b511: a ped creeping 0.3 m over minutes never counted as still (0.1 m); the 0.5 m stall watch reports it after
     /// the report period, and a real step resets it.

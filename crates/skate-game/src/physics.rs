@@ -133,6 +133,9 @@ pub(crate) struct GamePhysics {
     /// id. Rewritten each tick before the solve by `living_world::npc_skaters::push_proxies`
     /// (NPC skater body + board, doc 26 fix 19); empty when nothing fills it.
     pub(crate) actor_prop_volumes: Vec<(u64, BoardWorldVolume)>,
+    /// The traffic cars as on-foot ground this tick (`living_world::vehicles::publish_on_foot_solids`); only the
+    /// on-foot queries (`biped_world`) read them.
+    pub(crate) on_foot_vehicles: Option<std::sync::Arc<crate::modding::bridge::MovingQueries>>,
     /// Near peds' body A for the dynamic prop step: (body A id, volume, push mass kg), sorted by id. Rewritten each
     /// tick by `living_world::ped_body::push_ped_proxies` (b342); its own list, so the NPC proxy system clearing
     /// [`Self::actor_prop_volumes`] cannot drop it.
@@ -384,7 +387,7 @@ impl GamePhysics {
 
     /// What the on-foot queries see: the map and the prop world (`offboard::BipedWorld`).
     pub(crate) fn biped_world(&self) -> offboard::BipedWorld<'_> {
-        offboard::BipedWorld { map: &self.world, props: self.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world) }
+        offboard::BipedWorld { map: &self.world, props: self.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world), vehicles: self.on_foot_vehicles.as_deref() }
     }
 
     pub(crate) fn prop_world(&self) -> Option<&BoardWorld> {
@@ -781,6 +784,7 @@ impl GamePhysics {
             network_proxies: network::Proxies::default(),
             npc_sim_proxy_mark: None,
             actor_prop_volumes: Vec::new(),
+            on_foot_vehicles: None,
             ped_prop_volumes: Vec::new(),
             ped_prop_shoves: Vec::new(),
             network_active: false,
@@ -822,6 +826,7 @@ impl GamePhysics {
             network_proxies: self.network_proxies.clone(),
             npc_sim_proxy_mark: None,
             actor_prop_volumes: self.actor_prop_volumes.clone(),
+            on_foot_vehicles: self.on_foot_vehicles.clone(),
             ped_prop_volumes: self.ped_prop_volumes.clone(),
             ped_prop_shoves: Vec::new(),
             network_active: self.network_active,

@@ -460,7 +460,7 @@ def _install_stages(iso,base,game_exe,report,game_root=None,refresh=False,finali
     stage.mkdir(parents=True)
     shared=[]  # (file, stat when linked): hard links shared with the previous installation
     if previous:
-        report('Preparing an asset update; keeping the previous installation until it succeeds')
+        report('Preparing the update…')
         immutable_maps = ({(previous[0]/item['path']).resolve() for item in
                            json.loads((previous[0]/'maps.json').read_text())}
                           if 'maps' not in groups else set())

@@ -10,11 +10,13 @@ pub(crate) mod air_feet;
 pub(crate) struct BipedWorld<'a> {
     pub map: &'a skate_core::physics::board_world::BoardWorld,
     pub props: Option<&'a skate_core::physics::board_world::BoardWorld>,
+    /// The traffic cars as moving solids (Ground pool, after the map's own; b648).
+    pub vehicles: Option<&'a crate::modding::bridge::MovingQueries>,
 }
 
 impl<'a> From<&'a skate_core::physics::board_world::BoardWorld> for BipedWorld<'a> {
     fn from(map: &'a skate_core::physics::board_world::BoardWorld) -> Self {
-        Self { map, props: None }
+        Self { map, props: None, vehicles: None }
     }
 }
 

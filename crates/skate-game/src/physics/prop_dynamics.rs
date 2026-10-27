@@ -2148,7 +2148,7 @@ impl PropDynamics {
         self.held
     }
 
-    /// Mark the carried prop: it stops receiving skater pushes and its layer
+    /// Mark the carried prop: it stops receiving the carrier's pushes (peds still meet it) and its layer
     /// triangles stay parked until the drop rebakes them.
     pub(crate) fn set_held(&mut self, held: Option<u32>) {
         if self.held == held {
@@ -2563,8 +2563,9 @@ impl PropDynamics {
             let held = self.is_held(index);
             // Skater push: cheap bounds reject, then the retail pair query.
             // The carried prop is velocity-driven by the carrier; letting the
-            // skater push it (or be pushed by it) fights the drag.
-            if !held {
+            // carrier push it (or be pushed by it) fights the drag. Peds and other
+            // actors still meet it, so a carried prop shoves them instead of passing through.
+            {
                 let body_bounds = self.bodies[index].bounds();
                 let mut overlapping = false;
                 let mut closing = false;
@@ -2574,7 +2575,7 @@ impl PropDynamics {
                 let spared = self.grinded == Some(self.bodies[index].id);
                 let actors = skater_volumes
                     .iter()
-                    .filter(|_| !spared)
+                    .filter(|_| !spared && !held)
                     .map(|v| (LOCAL_PUSHER, v))
                     .chain(others.iter().map(|(actor, v)| (*actor, v)));
                 for (actor, volume) in actors {
@@ -2584,7 +2585,8 @@ impl PropDynamics {
                     if !body_bounds.overlaps(volume_bounds) {
                         continue;
                     }
-                    let mesh = if self.tuning.solver.skater_push_box { None } else { self.skater_mesh_manifold(layer, index, volume) };
+                    // The carried prop's layer triangles are parked away from it, so it meets actors by its box.
+                    let mesh = if self.tuning.solver.skater_push_box || held { None } else { self.skater_mesh_manifold(layer, index, volume) };
                     let on_mesh = mesh.is_some();
                     let Some(manifold) = mesh.unwrap_or_else(|| {
                         primitive_pair_contacts(volume.primitive, self.bodies[index].box_primitive(), self.pair_for(index))
@@ -2593,7 +2595,8 @@ impl PropDynamics {
                     };
                     let pushes = self.stats.skater_pushes;
                     let push_mass = self.actor_push_mass.iter().find(|a| a.0 == actor).map(|a| a.1);
-                    let rows = on_mesh && self.tuning.solver.skater_rows && self.tuning.solver.row_solver;
+                    // The held prop's mesh is parked while carried, so its box contact gives the rows (and the ped its shove).
+                    let rows = (on_mesh || held) && self.tuning.solver.skater_rows && self.tuning.solver.row_solver;
                     let contact = self.push_from_skater(index, volume, &manifold, push_mass, on_mesh, rows);
                     if self.stats.skater_pushes > pushes {
                         self.bodies[index].pushed_by = Some(actor);
@@ -5154,6 +5157,31 @@ mod tests {
         let speed = length(dynamics.bodies[0].rates.linear_velocity);
         let mass = 1.0 / dynamics.bodies[0].inertia.inverse_mass;
         assert!(speed <= 2.0 * 5.0 / mass + 1e-3, "speed {speed} for {mass} kg");
+    }
+
+    /// A carried bin (the carrier drives its velocity) still meets a ped's body A (USER-ASKS 387).
+    #[test]
+    fn a_carried_bin_shoves_a_ped_instead_of_passing_through() {
+        use crate::living_world::ped_body::{body_a_id, body_a_volume, PedProxy};
+        let half = [0.3, 0.45, 0.3];
+        let rest = super::super::ground::HEIGHT + 0.45;
+        let (world, mut layer, mut dynamics) = box_fixture([0., rest, 0.], half);
+        let held = dynamics.bodies[0].id;
+        dynamics.set_held(Some(held));
+        dynamics.bodies[0].wake();
+        let proxy = PedProxy::default();
+        let id = body_a_id(3);
+        dynamics.set_actor_push_mass(&[(id, proxy.mass)]);
+        let feet = bevy::prelude::Vec3::new(1.2, super::super::ground::HEIGHT, 0.0);
+        let (mut shoves, mut pushed) = (Vec::new(), 0.0);
+        for _ in 0..90 {
+            // The carrier drives the carried prop's velocity every tick.
+            dynamics.bodies[0].rates.linear_velocity = Vector3::new(2.0, 0.0, 0.0);
+            dynamics.step_with_actors(&world, &mut layer, &[], &[(id, body_a_volume(feet, bevy::prelude::Vec3::ZERO, &proxy))]);
+            dynamics.take_actor_shoves(&mut shoves);
+            pushed += shoves.drain(..).map(|s| s.1.x).sum::<f32>();
+        }
+        assert!(pushed > 0.0, "the ped in the carried bin's way is shoved: {pushed:.3}, bin x {:.2} held {:?} stats {:?}", dynamics.bodies[0].rates.position.x, dynamics.held, dynamics.stats.skater_pushes);
     }
 
     /// A bin slid into a ped's body A (group 9, 10 kg): the solve reports body A's displacement; a ped whose root does

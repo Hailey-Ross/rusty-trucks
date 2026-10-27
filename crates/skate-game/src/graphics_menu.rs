@@ -65,6 +65,8 @@ struct GraphicsSettings {
     /// Debug Menus (not retail; user 2026-10-21): shows the menus retail ships hidden (the Challenge Map's debug
     /// listings first; research b479), through the retail menus' `debug_menus` fact.
     debug_menus: bool,
+    /// Fly Cam (dev tool, not retail; user 2026-10-27): the D-pad Right + R3 fly cam (`debug_cam`) works only while on.
+    fly_cam: bool,
     /// Physics Step Threads (doc 25 "Fixed step executor"): false = the physics step on one thread (the default),
     /// true = Bevy's multi-threaded scheduler. Read at start-up (`physics_threads_multi`); the launcher's Tools page
     /// writes the same field.
@@ -94,6 +96,7 @@ impl Default for GraphicsSettings {
             replay_seconds: REPLAY_LENGTHS[0],
             better_object_mover: false,
             debug_menus: false,
+            fly_cam: false,
             physics_threads_multi: false,
             defaults_version: DEFAULTS_VERSION,
         }
@@ -202,6 +205,10 @@ impl Menu {
     /// Debug Menus: retail's hidden debug menus are shown (not retail).
     pub(crate) fn debug_menus(&self) -> bool {
         self.settings.debug_menus
+    }
+    /// Whether the fly cam chord works (OPT_INS "Fly Cam", saved).
+    pub(crate) fn fly_cam(&self) -> bool {
+        self.settings.fly_cam
     }
     /// The player's instant replay length (Extended Replays), s; None = retail's window.
     pub(crate) fn replay_seconds(&self) -> Option<u32> {
@@ -356,7 +363,7 @@ impl Menu {
             4 => [11, 14, 19].into_iter().chain((!crate::setup::stale_groups().is_empty()).then_some(REFRESH_ROW)).collect(),
             // Every opt-in (off by default or not retail) in one place, in row order (user 2026-10-25, USER-ASKS 336).
             5 => [NPC_DRAW_DISTANCE_ROW, BETTER_WATER_ROW, MORE_AUDIBLE_ROW, SPEECH_ROW, EXTENDED_REPLAYS_ROW, REPLAY_LENGTH_ROW,
-                BETTER_MOVER_ROW, DEBUG_MENUS_ROW, PHYSICS_THREADS_ROW].into_iter().chain(OPT_IN_ROWS).collect(),
+                BETTER_MOVER_ROW, DEBUG_MENUS_ROW, FLY_CAM_ROW, PHYSICS_THREADS_ROW].into_iter().chain(OPT_IN_ROWS).collect(),
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
         }
@@ -572,6 +579,9 @@ impl Menu {
             DEBUG_MENUS_ROW => RowView::new(Kind::Enum { index: s.debug_menus as usize, count: 2, wrap: false }, "Debug Menus",
                 if s.debug_menus { "On  (not retail)" } else { "Retail" },
                 "Shows the debug menus Skate 3 ships hidden, such as the Challenge Map's debug_list_all tab. They are developer leftovers and may not all work.").reset(),
+            FLY_CAM_ROW => RowView::new(Kind::Enum { index: s.fly_cam as usize, count: 2, wrap: false }, "Fly Cam",
+                if s.fly_cam { "On  (not retail)" } else { "Off" },
+                "Lets D-pad Right + R3 switch to a free-flying camera while skating (B drops you at the camera, Y logs its position). A developer tool, off by default.").reset(),
             PHYSICS_THREADS_ROW => RowView::new(Kind::Enum { index: s.physics_threads_multi as usize, count: 2, wrap: false }, "Physics Step Threads",
                 if s.physics_threads_multi { "Multi" } else { "Single (default)" },
                 "Runs the physics step on one thread (faster and steadier on the test PCs) or on Bevy's multi-threaded scheduler. Applies at the next start; the launcher's Tools page sets it too.").reset(),
@@ -805,7 +815,7 @@ const AUDIO_ROWS: std::ops::RangeInclusive<usize> = 16..=18;
 const MORE_AUDIBLE_ROW: usize = 32;
 const SPEECH_ROW: usize = 33;
 /// Physics Step Threads (header "Performance"; `physics_threads_multi`).
-const PHYSICS_THREADS_ROW: usize = 38;
+const PHYSICS_THREADS_ROW: usize = 39;
 /// The living world opt-ins (header "Opt-In Features"), in `OptIn::ALL` order (zombie mode, NPC skater physics,
 /// visualize grabs). One row per opt-in: the range follows the list.
 const OPT_IN_ROWS: std::ops::Range<usize> = 40..40 + crate::living_world::opt_ins::OptIn::ALL.len();
@@ -821,6 +831,8 @@ const REPLAY_LENGTH_ROW: usize = 35;
 const BETTER_MOVER_ROW: usize = 36;
 /// EXTRAS row: retail's hidden debug menus (not retail).
 const DEBUG_MENUS_ROW: usize = 37;
+/// OPT_INS row: the fly cam chord (`debug_cam`; header "Debug").
+const FLY_CAM_ROW: usize = 38;
 const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time. None turns off all NPC skaters, peds and cars.";
 fn draw_distance_label(multiplier: f32) -> String {
     if multiplier == skate_core::living_world::DrawDistance::NONE { "None  (no NPCs, not retail)".into() } else if multiplier == skate_core::living_world::DrawDistance::RETAIL { "Retail".into() } else { format!("{multiplier}x  (not retail)") }
@@ -1210,7 +1222,7 @@ pub(crate) fn interact(
         info!("PC_OVERLAY now {:?} = {:?}", now.label, now.value);
     }
     if let Some(row) = saved_row {
-        if ((row < 3 || row == FRAME_STATS_ROW || row == NPC_DRAW_DISTANCE_ROW || row == EXTENDED_REPLAYS_ROW || row == REPLAY_LENGTH_ROW || row == BETTER_MOVER_ROW || row == DEBUG_MENUS_ROW || row == PHYSICS_THREADS_ROW || OPT_IN_ROWS.contains(&row)) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
+        if ((row < 3 || row == FRAME_STATS_ROW || row == NPC_DRAW_DISTANCE_ROW || row == EXTENDED_REPLAYS_ROW || row == REPLAY_LENGTH_ROW || row == BETTER_MOVER_ROW || row == DEBUG_MENUS_ROW || row == FLY_CAM_ROW || row == PHYSICS_THREADS_ROW || OPT_IN_ROWS.contains(&row)) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
             let save = (|| -> Result<(), String> {
                 std::fs::create_dir_all(menu.path.parent().unwrap()).map_err(|e| e.to_string())?;
                 std::fs::write(
@@ -1397,6 +1409,7 @@ fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
                 crate::living_world::opt_ins::log_opt_in_changed("physics_threads_multi", !menu.settings.physics_threads_multi, menu.settings.physics_threads_multi, "player");
             }
             DEBUG_MENUS_ROW => menu.settings.debug_menus = !menu.settings.debug_menus,
+            FLY_CAM_ROW => menu.settings.fly_cam = !menu.settings.fly_cam,
             REPLAY_LENGTH_ROW => menu.settings.replay_seconds = cycle(REPLAY_LENGTHS, menu.settings.replay_seconds, direction),
             FRAME_STATS_ROW => {
                 // Off, Simple, Verbose (the original readout).
@@ -1466,6 +1479,7 @@ fn reset_row(menu: &mut Menu, row: usize, audio: &mut crate::game_audio::AudioSe
         BETTER_MOVER_ROW => s.better_object_mover = defaults.better_object_mover,
         PHYSICS_THREADS_ROW => s.physics_threads_multi = defaults.physics_threads_multi,
         DEBUG_MENUS_ROW => s.debug_menus = defaults.debug_menus,
+        FLY_CAM_ROW => s.fly_cam = defaults.fly_cam,
         REPLAY_LENGTH_ROW => s.replay_seconds = defaults.replay_seconds,
         NPC_DRAW_DISTANCE_ROW => {
             s.npc_draw_distance = defaults.npc_draw_distance;
@@ -1733,7 +1747,7 @@ mod tests {
         assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW]);
         m.select_section(5);
         assert_eq!(m.page(), vec![911, NPC_DRAW_DISTANCE_ROW, 914, BETTER_WATER_ROW, 902, MORE_AUDIBLE_ROW, SPEECH_ROW, 915, EXTENDED_REPLAYS_ROW,
-            REPLAY_LENGTH_ROW, 916, BETTER_MOVER_ROW, 917, DEBUG_MENUS_ROW, 918, PHYSICS_THREADS_ROW, 913, 40, 41, 42]);
+            REPLAY_LENGTH_ROW, 916, BETTER_MOVER_ROW, 917, DEBUG_MENUS_ROW, FLY_CAM_ROW, 918, PHYSICS_THREADS_ROW, 913, 40, 41, 42]);
         m.select_section(1);
         assert_eq!(m.page(), vec![904, 3, 906, CAMERA_ANGLE_ROW, 907, 8, 10]);
         m.select_section(4);
@@ -1804,7 +1818,7 @@ mod tests {
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
             // Audio, controller identity, and frame-time rows are spawned.
-            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || *id == BETTER_WATER_ROW || *id == EXTENDED_REPLAYS_ROW || *id == REPLAY_LENGTH_ROW || *id == BETTER_MOVER_ROW || *id == DEBUG_MENUS_ROW || *id == PHYSICS_THREADS_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
+            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || *id == BETTER_WATER_ROW || *id == EXTENDED_REPLAYS_ROW || *id == REPLAY_LENGTH_ROW || *id == BETTER_MOVER_ROW || *id == DEBUG_MENUS_ROW || *id == FLY_CAM_ROW || *id == PHYSICS_THREADS_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
@@ -1814,11 +1828,11 @@ mod tests {
         menu.select_section(5);
         assert_eq!(menu.category_name(5), "Opt-Ins");
         assert_eq!(menu.rows(), [NPC_DRAW_DISTANCE_ROW, BETTER_WATER_ROW, MORE_AUDIBLE_ROW, SPEECH_ROW, EXTENDED_REPLAYS_ROW, REPLAY_LENGTH_ROW,
-            BETTER_MOVER_ROW, DEBUG_MENUS_ROW, PHYSICS_THREADS_ROW].into_iter().chain(OPT_IN_ROWS).collect::<Vec<_>>());
+            BETTER_MOVER_ROW, DEBUG_MENUS_ROW, FLY_CAM_ROW, PHYSICS_THREADS_ROW].into_iter().chain(OPT_IN_ROWS).collect::<Vec<_>>());
         assert_eq!(menu.page()[0], 911);
         // Every opt-in is in the Opt-Ins section and nowhere else.
         menu.select_section(4);
-        assert!(!menu.rows().iter().any(|id| [BETTER_WATER_ROW, EXTENDED_REPLAYS_ROW, BETTER_MOVER_ROW, DEBUG_MENUS_ROW].contains(id)));
+        assert!(!menu.rows().iter().any(|id| [BETTER_WATER_ROW, EXTENDED_REPLAYS_ROW, BETTER_MOVER_ROW, DEBUG_MENUS_ROW, FLY_CAM_ROW].contains(id)));
         menu.select_section(5);
         menu.custom_sections=vec![("Challenges".into(),vec![("test.mod".into(),"race".into(),"Race".into())])];
         menu.select_section(SECTIONS.len());

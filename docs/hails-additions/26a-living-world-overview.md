@@ -173,7 +173,7 @@ AI skaters push while slower than their line (retail on): below `push_factor` x 
 
 ### Ped behaviour fields
 
-The ped behaviour runtime: `enabled`, `mood` (the mood system raises wants), `wander_speed` (m/s), `warn_seconds`, `know_about_seconds`, `mood_want_memory_seconds`, `conversation_turn_seconds`, `conversation_gather_seconds` (s); 0..=100 each (retail 2.0, 3.5, 30.0, 30.0, 3.0, 30.0); `run_from_honker_distance` (m sideways of a honking car's line) and `run_from_honker_speed` (m/s), 0..=100 (retail 10.0, 6.0); `warn_speech`, the warn's speech value 0..=127 (retail 53); `object_flee` (a prop moving at a ped makes it flee, retail on), `object_flee_radius` (m), `object_flee_min_speed` (m/s), `object_flee_lane_margin` (m), 0..=100 (retail 8.0, 0.75, 0.75; doc 26g "Object flee").
+The ped behaviour runtime: `enabled`, `mood` (the mood system raises wants), `wander_speed` (m/s), `warn_seconds`, `know_about_seconds`, `mood_want_memory_seconds`, `conversation_turn_seconds`, `conversation_gather_seconds` (s); 0..=100 each (retail 2.0, 3.5, 30.0, 30.0, 3.0, 30.0); `run_from_honker_distance` (m sideways of a honking car's line) and `run_from_honker_speed` (m/s), 0..=100 (retail 10.0, 6.0); `warn_speech`, the warn's speech value 0..=127 (retail 53); `object_flee` (a prop moving at a ped makes it flee, retail on), `object_flee_radius` (m), `object_flee_min_speed` (m/s), `object_flee_lane_margin` (m), 0..=100 (retail 8.0, 0.75, 0.75; doc 26g "Object flee"). `flee_leg` (m), `flee_arrival_radius` (m), `flee_threat_speed_gate` (m/s), `flee_side_blend`, 0..=100 (retail 15.0, 2.0, 1.0, 0.5; doc 26g "Flee legs go round rails and walls").
 
 ### Traffic horn fields
 

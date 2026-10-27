@@ -290,7 +290,7 @@ fn biped_lines_see_the_prop_world_as_pool_two() {
     let down = [skate_core::player::offboard::ground_query::Line { start: Vector3::new(0., 2., 0.), end: Vector3::new(0., -1., 0.), radius: 0. }];
     let height = |scene: &StaticScene| scene.lines(&down, -1).unwrap()[0].as_ref().map(|h| h.position.y);
     fn with<'a>(map: &'a BoardWorld, props: &'a BoardWorld) -> StaticScene<'a> {
-        StaticScene::new(crate::physics::offboard::BipedWorld { map, props: Some(props) }).unwrap()
+        StaticScene::new(crate::physics::offboard::BipedWorld { map, props: Some(props), vehicles: None }).unwrap()
     }
     assert!((height(&StaticScene::new(&map).unwrap()).unwrap() - 0.).abs() < 1e-4, "map only: the floor");
     assert!((height(&with(&map, &bench)).unwrap() - 0.45).abs() < 1e-4, "the bench top through pool 2");
@@ -299,7 +299,23 @@ fn biped_lines_see_the_prop_world_as_pool_two() {
     assert!((height(&with(&map, &light)).unwrap() - 0.45).abs() < 1e-4, "mask 0: a light prop still answers these lines");
     // The same height in both: the map (pool 1) wins the tie.
     let level = raised(0.0, 75);
-    let tie = StaticScene::new(crate::physics::offboard::BipedWorld { map: &map, props: Some(&level) }).unwrap();
+    let tie = StaticScene::new(crate::physics::offboard::BipedWorld { map: &map, props: Some(&level), vehicles: None }).unwrap();
     let picked = tie.lines(&down, -1).unwrap()[0].clone().unwrap();
     assert_eq!(picked.packed_surface, 17, "ties keep the earlier pool: the map");
+}
+
+#[test]
+fn biped_lines_land_on_a_car_roof_when_cars_are_on_foot_ground() {
+    use skate_dynamics::{BodyDesc, BodyType, DynamicsWorld, Shape};
+    let map = plane(0);
+    let mut dynamics = DynamicsWorld::default();
+    dynamics
+        .spawn(BodyDesc { body_type: BodyType::Kinematic, shape: Shape::Box { half_extents: [1., 0.7, 2.] }, position: [0., 0.7, 0.], ..Default::default() })
+        .unwrap();
+    let cars = crate::modding::bridge::MovingQueries(dynamics.solid_bodies());
+    let down = [skate_core::player::offboard::ground_query::Line { start: Vector3::new(0., 3., 0.), end: Vector3::new(0., -1., 0.), radius: 0. }];
+    let height = |scene: &StaticScene| scene.lines(&down, -1).unwrap()[0].as_ref().map(|h| h.position.y);
+    assert!(height(&StaticScene::new(&map).unwrap()).unwrap().abs() < 1e-4, "no cars: the street under the roof");
+    let with = StaticScene::new(crate::physics::offboard::BipedWorld { map: &map, props: None, vehicles: Some(&cars) }).unwrap();
+    assert!((height(&with).unwrap() - 1.4).abs() < 1e-3, "the roof: {:?}", height(&with));
 }

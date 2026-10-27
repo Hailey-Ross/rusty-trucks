@@ -1245,6 +1245,24 @@ Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes 
 - **Verification:** `basins_take_their_colour_and_reflection_from_the_look`, `fountains_only_with_better_water_and_mods_can_set_them`
   (`water_look`), the frame-state encoder test. Not looked at by the user yet.
 
+## Better Water: falls match their water (2026-10-27)
+
+- **Problem:** the user, DownTown canal: "The waterfalls in the canal look terrible with better water mode on. it
+  causes them to become pure white and look like shit, they should match the rest of the water." (ShareX
+  skate3rust_Ud4n8xsgfn / skate3rust_ZxJlTpJFLK, Better Water vs retail look).
+- **Cause [code]:** steep family 30 pixels (cascades) kept retail's own diffuse, a full reflection share and retail's
+  specular, and got white foam (`cascade_foam` 0.6) that also raised their alpha; the fully steep ones skipped the
+  look block altogether (`steep<1.0` gate). So the falls drew as bright opaque sheets next to the dark canal.
+- **Change (look layer, not retail):** `cascade_foam` defaults to 0 (the key stays for mods); the falls keep retail's
+  shading. A first version also gave every family 30 pixel the basin look (`fountain_body` colour and reflection
+  share); the user then found the DownTown falls drawn as "incomplete and mispositioned" grey cards (ShareX
+  skate3rust_OOOr6Nploq, a clip of 2026-10-27). Fly cam captures (`DEBUG_CAM_POSE` spots [-215.97, 5.62, 498.61] and
+  [-242.81, 2.55, 563.18], `.local/poc-tests/falls-capture.sh`): with Better Water off both falls are dark reflective
+  water filling the opening, with it on a flat pale sheet. That part was taken out again. The dark band on the right of
+  the large falls is there in both looks (map lighting, not the look layer).
+- **Verification:** `fountains_only_with_better_water_and_mods_can_set_them` (`water_look`), naga validation, the fly cam
+  captures above with the look on and off.
+
 ## Props in water
 
 - **Retail (Better Water off):** water is not solid to props; they fall through to the floor under it, with no lift,
@@ -1317,3 +1335,40 @@ Detail moved out of the code comments of `crates/skate-game/src/water_bodies.rs`
 ### Water body sizes
 
 Water body sizes for the water shader. Maps split one body of water into several render materials along a 100 m grid (DownTown's Aletown canal is six chunks, some a few metres wide), so a material's own extent says little. Triangles of the water materials that share a vertex position are grouped into bodies; each material gets the surface area of the largest body it belongs to. The shader calms small bodies (fountains): a project choice.
+
+## Fly cam pose log
+
+- **Why:** water look checks need a fixed camera at the spot the user saw, and the fly cam's B (spawn the skater there)
+  only works over solid ground, not above a canal or falls.
+- **Change (dev tool, not retail):** while the debug fly cam is on (D-pad right + R3; since 2026-10-27 only with the overlay's Opt-Ins > Debug > Fly Cam on, doc 26b), Y logs
+  `DEBUG_CAM_POSE eye=[x, y, z] look=[x, y, z] fov=deg` read from the drawn gameplay camera (look = 10 m along the
+  view; the first version logged the fly cam matrix, which did not match the drawn view). The values go straight into
+  `.local/poc-tests/falls-capture.sh` (muted `--verify` capture with the same camera).
+- **Files:** `crates/skate-game/src/debug_cam.rs`.
+
+## Better Water settings file
+
+- **Problem:** `settings/water-look.json` held a full dump of the look, so a changed default never reached a player
+  who had switched Better Water on before: the user's file kept `cascade_foam` 0.6 after the default went to 0, and
+  that foam drew the DownTown falls as opaque pale sheets (fly cam capture with `cascade_foam = 0`: dark water again).
+- **Change:** the menu saves only `{"version": 2, "enabled": ...}`. A file without `version` (written by older builds)
+  gives only `enabled`; a version 2 file still honours hand-edited keys. Mods keep using their patch.
+- **Verification:** `missing_or_partial_file_keeps_the_defaults` (old dump, save, reload).
+
+## Better Water: falls keep retail flow
+
+- **Problem:** with the foam gone the DownTown falls were dark but matte, without retail's bright swirls; the user:
+  "not quite nice looking", then "the transition from the waterfall and the other water pieces needs some work so that
+  its not such a harsh edge between them."
+- **Cause (fly cam captures, look keys one at a time):** the flowing-water look (`flowing_water`: ripple scale 2,
+  reflection blur, tint), made for University's flat fountains, also hit steep family 30 pixels; `flowing_water = false`
+  matched the retail falls, `reflection_blur = 0` alone did not.
+- **Change (look layer):** `retail_world.wgsl` weights the flowing look by `1 - steep` (the cascade steepness,
+  smoothstep 0.55..0.8 of the normal's height), so flat flowing water keeps the look, falls get the retail program and
+  the lip blends between them. Family 33 is unchanged.
+- **Basin tuning (user chose to tune, not drop, the basin look):** the speckled, rough canal and pool next to the falls
+  came from `fountain_ripple` 7 (basin wave tilt gain); default now 2. Fountain water (family 30 with the look on) no
+  longer gets the reflection blur. Captures at the user's spot (`DEBUG_CAM_POSE` [-215.25, 10.20, 496.95], fov 68.9):
+  frame-to-frame wave phase changes the darkness about as much as these values, so the final check is in game.
+- **Open:** the curved lip (partly steep, half basin look) still catches more sky than retail's.
+- **Verification:** `world_shader_validates_under_non_uniform_material_slots`, captures at the `DEBUG_CAM_POSE` spots.

@@ -9,7 +9,7 @@ use skate_mods::presentation::WaterLookPatch;
 /// Better Water basin colour and reflection share: matched to the Aletown canal by capture (doc 09).
 const FOUNTAIN_COLOUR: [f32; 3] = [0.018, 0.024, 0.032];
 const FOUNTAIN_REFLECTION: f32 = 0.15;
-const FOUNTAIN_RIPPLE: f32 = 7.;
+const FOUNTAIN_RIPPLE: f32 = 2.;
 
 /// Every value of the look layer; default off (retail water), others the approved look (doc 09); see `RETAIL`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -228,7 +228,7 @@ impl Default for WaterLook {
             fountain_tile: 2.,
             fountain_waves: 1.,
             cascade_rate: 1.5,
-            cascade_foam: 0.6,
+            cascade_foam: 0.,
             fountain_colour: FOUNTAIN_COLOUR,
             fountain_reflection: FOUNTAIN_REFLECTION,
             fountain_ripple: FOUNTAIN_RIPPLE,
@@ -264,22 +264,35 @@ impl WaterLookSettings {
         Self { selected, patched: None, path }
     }
 
-    /// A missing file is the default; an unreadable one is reported and ignored.
+    /// A missing file is the default; an unreadable one is reported and ignored. Files without `version` are
+    /// full dumps of older builds: only `enabled` is taken, so changed defaults reach them
+    /// (docs/hails-additions/09-water.md#better-water-settings-file).
     pub fn load(asset_root: &Path) -> Self {
         let path = Self::path(asset_root);
         let selected = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<WaterLook>(&bytes).unwrap_or_else(|e| {
-                warn!("Water look settings {}: {e}", path.display());
-                WaterLook::default()
-            }),
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(v) if v.get("version").is_none() => WaterLook {
+                    enabled: v.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false),
+                    ..WaterLook::default()
+                },
+                v => v.and_then(|mut v| {
+                    v.as_object_mut().map(|o| o.remove("version"));
+                    serde_json::from_value::<WaterLook>(v)
+                }).unwrap_or_else(|e| {
+                    warn!("Water look settings {}: {e}", path.display());
+                    WaterLook::default()
+                }),
+            },
             Err(_) => WaterLook::default(),
         };
         Self::new(selected, path)
     }
 
+    /// Only the player's switch is saved; every other value follows the defaults unless hand-edited in.
     pub fn save(&self) -> Result<(), String> {
         std::fs::create_dir_all(self.path.parent().unwrap()).map_err(|e| e.to_string())?;
-        std::fs::write(&self.path, serde_json::to_vec_pretty(&self.selected).map_err(|e| e.to_string())?)
+        let body = serde_json::json!({ "version": 2, "enabled": self.selected.enabled });
+        std::fs::write(&self.path, serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())
     }
 
@@ -339,7 +352,7 @@ mod tests {
         std::fs::create_dir_all(&assets).unwrap();
         assert_eq!(WaterLookSettings::load(&assets).selected, WaterLook::default());
         std::fs::create_dir_all(root.join("settings")).unwrap();
-        std::fs::write(WaterLookSettings::path(&assets), br#"{"enabled":false,"ripple_scale":2}"#).unwrap();
+        std::fs::write(WaterLookSettings::path(&assets), br#"{"version":2,"enabled":false,"ripple_scale":2}"#).unwrap();
         let s = WaterLookSettings::load(&assets);
         assert!(!WaterLook::default().enabled, "retail water by default");
         assert!(!s.selected.enabled);
@@ -349,8 +362,16 @@ mod tests {
         assert_eq!(s.active().effective(), WaterLook::RETAIL);
         assert_eq!(WaterLook::RETAIL.flowing_lane(), 0., "off: flowing water keeps the retail program");
         assert_eq!(WaterLook { enabled: true, ..WaterLook::default() }.effective().flowing_lane(), 2.);
-        std::fs::write(WaterLookSettings::path(&assets), br#"{"ripples":2}"#).unwrap();
+        std::fs::write(WaterLookSettings::path(&assets), br#"{"version":2,"ripples":2}"#).unwrap();
         assert_eq!(WaterLookSettings::load(&assets).selected, WaterLook::default());
+        // An old full dump: only the switch survives, so a changed default (cascade_foam 0.6 -> 0) reaches it.
+        std::fs::write(WaterLookSettings::path(&assets), br#"{"enabled":true,"cascade_foam":0.6}"#).unwrap();
+        let old = WaterLookSettings::load(&assets);
+        assert_eq!(old.selected, WaterLook { enabled: true, ..WaterLook::default() });
+        old.save().unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(WaterLookSettings::path(&assets)).unwrap()).unwrap();
+        assert_eq!(saved, serde_json::json!({ "version": 2, "enabled": true }));
+        assert!(WaterLookSettings::load(&assets).selected.enabled);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -376,7 +397,7 @@ mod tests {
         assert_eq!(WaterLook::RETAIL.cascade_rate, 1.);
         assert_eq!(WaterLook::default().effective().fountain_row(5.), [0.; 4], "Better Water off by default");
         let on = WaterLook { enabled: true, ..WaterLook::default() }.effective();
-        assert_eq!(on.fountain_row(5.), [2., 1., 0.6, 5.]);
+        assert_eq!(on.fountain_row(5.), [2., 1., 0., 5.], "no cascade foam: falls read as the same water as their basin");
         assert!(on.cascade_rate > 1.);
         let mut s = WaterLookSettings::new(WaterLook { enabled: true, ..WaterLook::default() }, PathBuf::from("unused/water-look.json"));
         let patch = WaterLookPatch { fountain_tile: Some(8.), cascade_foam: Some(0.), ..Default::default() };
