@@ -15,6 +15,9 @@ What it does:
   for the play options, what it records (FILES / GAME LOG rows from launcher.ps1 `entries` columns 8 and 9).
   `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|play|play-traceall|waiting|fetching|checking|job|build|failed]` draws one screen at 1920x1080
   into a PNG and exits (checking the look without opening the window).
+  The window opens centred on the main monitor. `SkateLauncher.exe --same-monitor` (or Tools > "Open on", saved as
+  `open-on-launching-monitor.txt` in the state folder) opens it on the monitor of the window it was started from
+  (Steam, Explorer), or under the mouse when there is none.
 - **Builds:** while a version builds, the window shows cargo's own step count as a progress bar, the crate being
   built, the warning count and, if it fails, the first error in a fixed-width block. The whole output goes to
   `<version>\logs\launcher-build-<id>-<time>.log` (the newest 10 per version are kept), named on the result screen.

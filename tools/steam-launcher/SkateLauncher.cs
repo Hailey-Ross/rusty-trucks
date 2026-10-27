@@ -171,12 +171,15 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     public LauncherForm(string[] argv) {
         // --after-update: started by the previous exe after it updated itself (shows what changed), not a direct entry.
         afterUpdate = Array.IndexOf(argv, "--after-update") >= 0;
-        direct = Array.FindAll(argv, a => a != "--after-update");
+        sameMonitorFlag = Array.IndexOf(argv, "--same-monitor") >= 0;
+        direct = Array.FindAll(argv, a => a != "--after-update" && a != "--same-monitor");
         Text = "Skate launcher";
-        // A normal window: 70 % of the screen's work area at 16:10, centred, resizable (the layout scales with it).
-        var area = Screen.PrimaryScreen.WorkingArea;
+        // A normal window: 70 % of the screen's work area at 16:10, centred, resizable (the layout scales with it). On the
+        // main monitor, or with --same-monitor / the Tools setting on the monitor of the window it was started from.
+        var area = StartScreen().WorkingArea;
         int h = Math.Min(area.Height * 7 / 10, area.Width * 7 / 10 * 10 / 16);
-        StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(h * 16 / 10, h);
+        StartPosition = FormStartPosition.Manual; ClientSize = new Size(h * 16 / 10, h);
+        Location = new Point(area.Left + (area.Width - Width) / 2, area.Top + (area.Height - Height) / 2);
         MinimumSize = new Size(800, 540);
         BackColor = Color.FromArgb(18, 20, 24); ForeColor = Color.White;
         DoubleBuffered = true; KeyPreview = true;
@@ -306,6 +309,23 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (here.StartsWith(Path.Combine(repo, "tools") + "\\", StringComparison.OrdinalIgnoreCase)) return Path.Combine(repo, ".local", "steam-launcher");
         return here;
     }
+    bool sameMonitorFlag;
+    static string SameMonitorFile() { return Path.Combine(StateDir(), "open-on-launching-monitor.txt"); }
+    static bool SameMonitorSetting() { return File.Exists(SameMonitorFile()); }
+    Screen StartScreen() {
+        if (!sameMonitorFlag && !SameMonitorSetting()) return Screen.PrimaryScreen;
+        IntPtr fg = Native.GetForegroundWindow();
+        return fg != IntPtr.Zero ? Screen.FromHandle(fg) : Screen.FromPoint(Cursor.Position);
+    }
+    Item SameMonitorItem() {
+        Func<string> text = () => "Open on: " + (SameMonitorSetting() ? "the monitor it was started from" : "the main monitor");
+        Item item = null;
+        item = new Item(text(), "Where the launcher window opens. --same-monitor on the command line does the same for one start.", true, delegate {
+            try { if (SameMonitorSetting()) File.Delete(SameMonitorFile()); else File.WriteAllText(SameMonitorFile(), "on\n"); } catch { }
+            item.Text = text();
+        });
+        return item;
+    }
     static string LastSession() { string f = Path.Combine(StateDir(), "last_session.txt"); return File.Exists(f) ? File.ReadAllText(f).Trim() : "No session yet."; }
     static string VerArg(string v) { return string.IsNullOrEmpty(v) ? "" : " -Version " + v; }
     static string RunningGames() {
@@ -333,6 +353,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (!File.Exists(exe)) return false;
         var args = new List<string>(direct);
         if (showLast) args.Add("--after-update");
+        if (sameMonitorFlag) args.Add("--same-monitor");
         Process child;
         SkateLauncher.ReleaseInstance();
         try { child = Process.Start(new ProcessStartInfo(exe, string.Join(" ", args.ConvertAll(a => "\"" + a + "\"").ToArray())) { UseShellExecute = false }); } catch { return false; }
@@ -461,6 +482,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         if (group == "rust" || group == "tools") p.Items.Add(ShareItem());
         if (group == "tools") p.Items.Add(new Item("Opt-ins and settings", "The game's opt-ins and settings, the same ones as its Guide / F1 overlay.", true, delegate { pages.Push(GameSettingsPage("Opt-ins")); }));
+        if (group == "tools") p.Items.Add(SameMonitorItem());
         if (group == "tools") p.Items.Add(new Item("Clear builds and build caches", "Frees disk space: everything, or one version's build cache or whole build. Asks before deleting.", true, delegate { pages.Push(ClearPage()); }));
         if (p.Items.Count == 0) p.Items.Add(new Item("Nothing here yet", "See README.md to set these up.", false, null));
         return p;
