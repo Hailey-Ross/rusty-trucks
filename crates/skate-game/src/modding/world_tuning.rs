@@ -242,6 +242,9 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.skaters = f.skaters.unwrap_or(c.skaters);
         c.skater_half_extents = f.skater_half_extents.map_or(c.skater_half_extents, |v| v.map(|x| x.max(0.0)));
     }
+    if let Some(v) = p.on_foot_vehicle_ground {
+        s.on_foot_vehicle_ground = v;
+    }
     if let Some(f) = &p.ped_vehicle_contact {
         let c = &mut s.ped_vehicle_contact;
         c.enabled = f.enabled.unwrap_or(c.enabled);
@@ -399,6 +402,10 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         b.object_flee.radius = f.object_flee_radius.unwrap_or(b.object_flee.radius);
         b.object_flee.min_speed = f.object_flee_min_speed.unwrap_or(b.object_flee.min_speed);
         b.object_flee.lane_margin = f.object_flee_lane_margin.unwrap_or(b.object_flee.lane_margin);
+        b.flee.leg = f.flee_leg.unwrap_or(b.flee.leg);
+        b.flee.arrival_radius = f.flee_arrival_radius.unwrap_or(b.flee.arrival_radius);
+        b.flee.threat_speed_gate = f.flee_threat_speed_gate.unwrap_or(b.flee.threat_speed_gate);
+        b.flee.side_blend = f.flee_side_blend.unwrap_or(b.flee.side_blend);
         b.plugins.water_disables_seats = f.water_disables_seats.unwrap_or(b.plugins.water_disables_seats);
         b.plugins.water_max_depth = f.water_max_depth.unwrap_or(b.plugins.water_max_depth);
         b.plugins.water_above = f.water_above.unwrap_or(b.plugins.water_above);
@@ -664,6 +671,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                     "reaction_part": s.ped_body.reaction_part,
                     "parts": s.ped_body.parts.iter().map(|p| json!({"from": p.from, "to": p.to, "centre": p.centre, "radius": p.radius, "half_length": p.half_length, "mass": p.mass, "friction": p.friction})).collect::<Vec<_>>()},
                 "ped_vehicle_contact": {"enabled": s.ped_vehicle_contact.enabled, "push": s.ped_vehicle_contact.push},
+                "on_foot_vehicle_ground": s.on_foot_vehicle_ground,
                 "skater_clips": s.skater_clips,
                 "skater_blend_seconds": s.skater_blend_seconds,
                 "skater_stance": s.skater_stance.iter().map(|(k, v)| (k.clone(), v.name())).collect::<std::collections::BTreeMap<_, _>>(),
@@ -687,6 +695,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             if let Some(b) = out.get_mut("ped_brain").and_then(|v| v.as_object_mut()) {
                 let f = s.ped_brain.object_flee;
                 b.extend([("object_flee".into(), json!(f.enabled)), ("object_flee_radius".into(), json!(f.radius)), ("object_flee_min_speed".into(), json!(f.min_speed)), ("object_flee_lane_margin".into(), json!(f.lane_margin))]);
+                let l = s.ped_brain.flee;
+                b.extend([("flee_leg".into(), json!(l.leg)), ("flee_arrival_radius".into(), json!(l.arrival_radius)), ("flee_threat_speed_gate".into(), json!(l.threat_speed_gate)), ("flee_side_blend".into(), json!(l.side_blend))]);
             }
             out
         }),

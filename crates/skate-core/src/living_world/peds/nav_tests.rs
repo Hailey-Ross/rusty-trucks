@@ -525,3 +525,20 @@ fn an_approach_goal_with_no_path_leaves_the_ped_standing() {
     bodies[0].nav.set_route(Some(PedRoute { points: vec![goal], looped: false }));
     assert!(!bodies[0].nav.hold_on_fail);
 }
+/// b650 (ask 393): a flee leg behind a wall the mesh goes round keeps its far goal (the old straight-line cut stopped
+/// it at the wall); a goal on an unconnected island moves to the nearest reachable point.
+#[test]
+fn a_flee_goal_stays_behind_a_wall_and_moves_off_an_island() {
+    use super::flee::goal_on_mesh;
+    // 20 x 3 m strip; column 5 is a wall except its top row.
+    let walled = mesh(&grid(20, 3, 1.0, |i, j| (i != 5 || j == 2).then_some(AREA_DEFAULT)));
+    let start = walled.locate([0.5, 0.0, 0.5]).unwrap();
+    let far = [15.5, 0.0, 0.5];
+    assert!(!walled.clear_line(start, far), "the straight line hits the wall");
+    assert_eq!(goal_on_mesh(&walled, start.poly, far), far, "connected round the wall: the goal stays");
+    // Column 9 is a full gap: cells 10.. are an island.
+    let split = mesh(&grid(20, 3, 1.0, |i, _| (i != 9).then_some(AREA_DEFAULT)));
+    let start = split.locate([0.5, 0.0, 0.5]).unwrap();
+    let g = goal_on_mesh(&split, start.poly, far);
+    assert!((g[0] - 9.0).abs() < 1e-3 && (g[2] - 0.5).abs() < 1e-3, "nearest reachable edge: {g:?}");
+}

@@ -231,6 +231,8 @@ pub(crate) fn sync_hand_props(
                 commands.entity(e).remove::<HeldHandProp>();
                 // The held frames keep their hand-space track on a hidden copy; the dropped prop starts its own (b453).
                 crate::replay::keep_model(&mut commands, h.entity);
+                // The idle action runs only while held (`82E3ED50`, b649): no talk after the drop.
+                mind.action_cue = None;
                 let room = released.0.len() < s.max_live;
                 let id = physics.as_deref_mut().and_then(|p| release(&mut commands, p, h, pose, velocity, &globals, &children, &mesh_parts, &meshes, room));
                 match id {
@@ -242,6 +244,7 @@ pub(crate) fn sync_hand_props(
                     None => {
                         commands.entity(h.entity).despawn();
                         mind.brain.hand_prop.clear();
+                        mind.unlink_seq = mind.unlink_seq.wrapping_add(1);
                         info!("PED_HAND_PROP ped=#{} {} released without a body tick={tick}", ped.id.serial, h.key);
                     }
                 }
@@ -253,6 +256,8 @@ pub(crate) fn sync_hand_props(
                 commands.entity(h.entity).despawn();
                 commands.entity(e).remove::<HeldHandProp>();
                 mind.brain.hand_prop.holding = false;
+                mind.action_cue = None;
+                mind.unlink_seq = mind.unlink_seq.wrapping_add(1);
                 info!("PED_HAND_PROP ped=#{} {} removed tick={tick}", ped.id.serial, h.key);
                 continue;
             }
@@ -279,6 +284,7 @@ pub(crate) fn sync_hand_props(
                 }
             };
             if out {
+                mind.unlink_seq = mind.unlink_seq.wrapping_add(1);
                 commands.entity(e).remove::<ReleasedHandProp>();
                 info!("PED_HAND_PROP ped=#{} unlinked body={} tick={tick}", ped.id.serial, r.body);
             }

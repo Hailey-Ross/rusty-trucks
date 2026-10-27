@@ -1855,6 +1855,14 @@ What a traffic car sees ahead (V4, doc 26h "Traffic: obstacles ahead"). Retail (
 - a record is in the way when its circle touches the quad's side / front edges or its centre is inside (`sub_82C41BD0`, `sub_82C41A90`); its free distance is `|pos - car| - radius - 0.68 x speed` (`0x82099764`); below 20 km/h soft records count only for drivers that opt in (`+4401` bit 0x08, every stock driver does);
 - the nearest one becomes the planner's obstacle (`sub_82C412D8`): braking `-v^2 / (2 (d - standoff) + 0.001)` when `standoff < d <= v + standoff`, `-v` inside the standoff (`sub_82C3FA08`).
 
+## On foot on a car roof (2026-10-27)
+
+- **Problem:** the user: "for some reason I autobail when jumping ontop of a car with no skateboard, which is incorrect." Log game-20261027-073605 13:59:48: BipedAir -> WipeoutGround, `WIPEOUT_REASONS [(32, 0.0)] vehicle_contact=true vehicle_force=0.9`.
+- **Retail [code, research b648 `.local/research/b648-onfoot-car-bail.md`]:** wipeout 32 is retail's rule: `82BEBEA8` sets the extra errors (parts 24 / 25 minus their targets), `82BD9FB0` copies them in partial ragdoll, `82D2F748` requests a wipeout when either error's vertical part or residual passes 0.2 (`0x82099280`), with no vehicle filter. The on-foot launch / requery arc (`82D6CA58`, `82D6E798`) goes through `82E099A0` over the pools of `82764CF8` mask 7: the static map and the two dynamic island pools (world +0x5580 / +0x5584), where physics islands are added (`82768878`, `82768918`). That cars are among those islands is inferred (medium).
+- **Cause in ours [code]:** `GamePhysics::biped_world` was the map plus the prop world only, so the on-foot arc planned the landing on the street under the roof; parts 24 / 25 then met the car (groups 20 and 8 collide) and the error passed 0.2.
+- **Change:** `living_world::vehicles::publish_on_foot_solids` (after `push_vehicle_proxies`) puts the car proxies (contact group 8) in `GamePhysics::on_foot_vehicles`; `BipedWorld::vehicles` and `StaticScene` answer them with the Ground pool (lines, the trajectory, nearby triangles), after the map's own solids. Only the on-foot queries see them (the camera, board air and foot IK keep their geometry). Mod key `living_world.on_foot_vehicle_ground` (default on).
+- **Verification:** `biped_lines_land_on_a_car_roof_when_cars_are_on_foot_ground`. Not play-tested. Open: the reason-32 bails at 14:00:03 / 14:00:09 without a car (other geometry); whether retail carries a moving car's velocity into the on-foot landing.
+
 ## Code reference: living_world/traffic/spots.rs
 
 Detail moved out of the code comments of `crates/skate-core/src/living_world/traffic/spots.rs`; each comment there links its section here.

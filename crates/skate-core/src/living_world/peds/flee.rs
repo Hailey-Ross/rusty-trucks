@@ -53,6 +53,16 @@ pub fn arrived(position: Vec3, goal: Vec3, p: &FleeParams) -> bool {
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= p.arrival_radius * p.arrival_radius
 }
 
+/// The leg goal test (`82C465A8`, b650): a goal on a polygon reachable from the ped's polygon `from` stays, walls or
+/// rails between included (the path goes round); else it moves to the nearest reachable navmesh point (`82C46208` ->
+/// `82933E18`, unbounded); no result keeps the raw goal (retail code 3).
+pub fn goal_on_mesh(mesh: &super::nav::NavMesh, from: u32, goal: Vec3) -> Vec3 {
+    if !super::chase::reach_failed(mesh, Some(from), mesh.locate(goal).map(|p| p.poly)) {
+        return goal;
+    }
+    mesh.locate_nearest(goal, from, f32::MAX).map_or(goal, |p| p.position)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

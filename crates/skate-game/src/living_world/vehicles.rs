@@ -904,6 +904,19 @@ pub(crate) fn push_vehicle_proxies(
     physics.network_proxies = proxies;
 }
 
+/// The car proxies (contact group 8) as on-foot ground this tick, unless a mod switched it off: the on-foot launch /
+/// requery arc and ground lines then land on a car roof instead of the street under it, where the body's extra
+/// volumes met the car and bailed the skater (wipeout 32, b648; retail sweeps the dynamic island pools, `82764CF8`).
+pub(crate) fn publish_on_foot_solids(mut physics: ResMut<crate::physics::GamePhysics>, settings: Res<super::LivingWorldSettings>) {
+    let group = crate::physics::VEHICLE_GROUP;
+    let cars: Vec<_> = if settings.on_foot_vehicle_ground {
+        physics.network_proxies.solids.iter().filter(|(_, s)| s.contact_group == group).map(|(_, s)| s.clone()).collect()
+    } else {
+        Vec::new()
+    };
+    physics.on_foot_vehicles = (!cars.is_empty()).then(|| std::sync::Arc::new(crate::modding::bridge::MovingQueries(cars)));
+}
+
 /// Grab-scene ids of the cars: object `CAR_GRAB_TAG | serial`, spline / geometry `CAR_GRAB_TAG | serial << 3 | index`
 /// (ours: stable per car; retail numbers splines from a global counter, b34).
 pub(crate) const CAR_GRAB_TAG: u32 = 0x8000_0000;
@@ -1222,6 +1235,7 @@ pub(crate) fn install(app: &mut App) {
                 super::ped_hand_props::push_hand_prop_proxies.after(push_vehicle_proxies),
                 super::ped_body::push_ped_proxies.after(super::ped_hand_props::push_hand_prop_proxies),
                 push_vehicle_grab_splines,
+                publish_on_foot_solids.after(push_vehicle_proxies),
             )
                 .after(crate::app::SimulationSet::Controls)
                 .before(crate::app::SimulationSet::Physics),

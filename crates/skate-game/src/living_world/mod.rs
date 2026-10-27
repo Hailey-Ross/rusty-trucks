@@ -94,6 +94,9 @@ pub(crate) struct LivingWorldSettings {
     /// knock-down: `skate_core::living_world::peds::vehicle_contact`). A mod may switch the
     /// detection or the push off; `LivingWorldSettings::default()` restores retail.
     pub ped_vehicle_contact: skate_core::living_world::peds::VehicleContactParams,
+    /// Traffic cars are ground for the on-foot skater's landing and ground queries (retail: the on-foot arc sweeps
+    /// the dynamic island pools, `82764CF8` mask 7, b648). A mod may switch it off.
+    pub on_foot_vehicle_ground: bool,
     /// NPC skaters push dynamic props like the player's board and body (fix 19; retail NPC skaters
     /// are full skaters). A mod may switch it off; `LivingWorldSettings::default()` restores retail.
     pub npc_skater_props: npc_skaters::NpcSkaterPropContact,
@@ -174,6 +177,7 @@ impl Default for LivingWorldSettings {
             ped_fade: skate_core::living_world::peds::PedFadeConfig::default(),
             ped_obstacles: skate_core::living_world::peds::ObstacleParams::default(),
             ped_vehicle_contact: skate_core::living_world::peds::VehicleContactParams::default(),
+            on_foot_vehicle_ground: true,
             npc_skater_props: npc_skaters::NpcSkaterPropContact::default(),
             ped_body: ped_body::PedBodySettings::default(),
             ped_nav: Default::default(),

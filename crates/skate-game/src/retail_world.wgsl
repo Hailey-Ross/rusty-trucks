@@ -209,7 +209,10 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         let look=select(vec4<f32>(1.0,0.0,0.0,0.0),frame_state.water_look,fam==33u);
         // Flowing water (family 30, University's fountains) gets the look's ripple scale (water_tint.w), blur and
         // tint when it is on; 0 = the retail flowingwater_defaultPS.
-        let flow=fam==30u && frame_state.water_tint.w>0.0;
+        // Steep flowing water (falls) fades back to the retail program over the lip; the look's dense ripples and blur flatten it: docs/hails-additions/09-water.md#better-water-falls-keep-retail-flow
+        let steep=1.0-smoothstep(0.55,0.8,abs(normalize(i.world_normal).y));
+        let flow=select(0.0,1.0-steep,fam==30u && frame_state.water_tint.w>0.0);
+        let lookw=select(flow,1.0,fam==33u);
         // Water look fountains (frame_state.fountain, not retail): flowing water scrolls on the cascade clock
         // (fountain.w), and the scroll follows the ripple scale so the surface keeps retail's speed.
         let cascade=fam==30u && frame_state.fountain.x>0.0;
@@ -217,7 +220,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         // Convert to original UVs for scale/scroll, then back to flipped rows.
         let raw_uv=vec2<f32>(i.uv.x,1.0-i.uv.y);
         // water_defaultPS 11..13: c20 * c21.x, times the look's ripple scale.
-        let uv_scale=select(select(1.0,frame_state.water_tint.w,flow),p.water[3].x*look.x,fam==33u);
+        let uv_scale=select(mix(1.0,frame_state.water_tint.w,flow),p.water[3].x*look.x,fam==33u);
         let sk=select(1.0,uv_scale,cascade);
         let uv1=raw_uv*p.water[2].xy*uv_scale+p.water[1].xy*tc*sk;
         let uv2=raw_uv*p.water[2].zw*uv_scale+p.water[1].zw*tc*sk;
@@ -289,7 +292,6 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         var spec_power=p.water[3].z;
         var foam=0.0;
         if cascade {
-            let steep=1.0-smoothstep(0.55,0.8,abs(normalize(i.world_normal).y));
             foam=steep*frame_state.fountain.z*saturate(n1.b*2.0-1.0+0.5*(n2.r-0.5));
             if steep<1.0 && p.fountain[0].y>0.0 {
                 let q=p.fountain;
@@ -356,9 +358,10 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             // mip bias or color multiplier; the water look adds both (family
             // 33: an even steel-blue reflection as in the Aletown canal
             // footage, where the sharp cube read grey with bright/dark bands).
-            let blur=select(0.0,frame_state.water_look.y,fam==33u || flow);
+            // Fountain water (flat basins included) keeps a sharp reflection: the blur greyed it next to the falls (09-water.md#better-water-falls-keep-retail-flow).
+            let blur=frame_state.water_look.y*select(lookw,0.0,cascade);
             let cube=bindings::sample_environment(slot,vec3<f32>(-rv.x,-rv.y,rv.z),log2(frame::view.viewport.w/640.0)+blur).rgb;
-            let tint=select(vec3<f32>(1.0),frame_state.water_tint.rgb,fam==33u || flow);
+            let tint=mix(vec3<f32>(1.0),frame_state.water_tint.rgb,lookw);
             let lum=0.3*saturate(4.0*wm.y-2.6);
             spec+=cube*tint*(lml.g+lum*(1.0-lml.g))*wm.y*1.5;
         }
