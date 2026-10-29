@@ -81,3 +81,10 @@ Ped bodies (opaque `pedestrian_high_stamp` / `pedestrian_low` parts) draw with `
 ped GLB's material extras (`attrib_material`, `params`); `PedLooks::material_params` overrides them by name. The NPC
 fade is generic over the material (`npc_skaters::FadeMaterial`): a new NPC material needs an impl and a
 `present_fade::<M>` registration.
+
+## 2026-10-29 (#52 a96b72f7 .. 6bc80506)
+- Opt-in Ped Vehicle Flee (`OptIn::VehicleFlee`, `SKATE_PED_VEHICLE_FLEE=1`, `ped_brain.vehicle_flee*` mod keys): a car
+  within 10 m moving along the ped-to-car line past retail's 3.0 dot (`82E2C0C8`), either way; cars are want targets.
+  The steer-around branch (b656) is not ported: its consumer is unknown. Doc 26g "Vehicle flee opt-in".
+- NPC per-frame allocations second pass behind golden digest tests (doc 34); 1f (fakie tree cache) needs research.
+- Full DMO pool evicts the farthest / behind-the-camera live prop first (doc 27 "Live props evict farthest first").

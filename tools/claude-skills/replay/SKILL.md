@@ -55,5 +55,13 @@ replay upload are not ported.
 - A camera pick inside a keyed section asks "Change Camera" (No / Yes) and replaces that section between hard keys
   (`Editor::pick_replaces` / `pick_asks`, `camera_key::convert_key`); `fill_section = false` keeps plain inserts.
 - Retail's camera constraint gate (`0x83037414`) is written by the editor mode every frame: the instant view
-  constrains every frame, Timeline playback does not.
+  constrains every frame, Timeline playback reads 0. Retail's camera still never clips through the ground or ramps,
+  so ours constrains keyed cameras in every play mode (`playback_collide = false` restores the gate reading).
 - `REPLAY_OPEN actors / bytes` count only world actors (peds, NPC skaters, cars, props); the player has its own track.
+
+## 2026-10-29 (doc 37 "Look lift since the pick", playback constraint)
+- D-pad look lift: `camera_key::lift_look` + `FreeHeight::lift` (retail `82C80EA0`: the lift since the pick is held to
+  +-1.0 and the key moves only while it stays inside; no partial step). Retail zeroes the lateral look every edit
+  frame (`82C80A78`), so keys keep only a look height (b655).
+- Keyed cameras never clip while the clip plays (`CameraCollision::playback` default true, every non-key-edit mode).
+- Open: Tripod height along the skater's tilt (b655 item 3, next after the clear).

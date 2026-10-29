@@ -183,3 +183,10 @@ proofs, pitfalls and the review checklist that worked there. Helper scripts are 
   folders). A change to a fingerprinted setup script makes every user's refresh redo that group.
 - **Recomp research hooks** on an audio render thread can delay the game's command-queue drain until it overflows:
   keep hooks light (skill `recomp-research`).
+
+## Golden digest pattern (2026-10-29, b620 second pass, doc 34)
+- Before touching per-frame code, write a seeded headless test that hashes every output the code drives (components'
+  Debug text, Transform bit patterns, event streams) per frame, and a data-gated variant for the asset-backed path;
+  take the digest BEFORE the change, then it must not move. Example: `npc_present_pose_and_advance_match_golden` and
+  `npc_present_pose_posed_matches_golden` (living_world/npc_tests.rs). Keep old functions as wrappers over `_into`
+  variants so other callers see literally the same output.
