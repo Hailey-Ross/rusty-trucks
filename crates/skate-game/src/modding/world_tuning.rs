@@ -405,6 +405,11 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         b.object_flee.radius = f.object_flee_radius.unwrap_or(b.object_flee.radius);
         b.object_flee.min_speed = f.object_flee_min_speed.unwrap_or(b.object_flee.min_speed);
         b.object_flee.lane_margin = f.object_flee_lane_margin.unwrap_or(b.object_flee.lane_margin);
+        b.vehicle_flee.enabled = f.vehicle_flee.unwrap_or(b.vehicle_flee.enabled);
+        b.vehicle_flee.radius = f.vehicle_flee_radius.unwrap_or(b.vehicle_flee.radius);
+        b.vehicle_flee.min_dot = f.vehicle_flee_min_dot.unwrap_or(b.vehicle_flee.min_dot);
+        b.vehicle_flee.away = f.vehicle_flee_away.unwrap_or(b.vehicle_flee.away);
+        b.vehicle_flee.toward = f.vehicle_flee_toward.unwrap_or(b.vehicle_flee.toward);
         b.flee.leg = f.flee_leg.unwrap_or(b.flee.leg);
         b.flee.arrival_radius = f.flee_arrival_radius.unwrap_or(b.flee.arrival_radius);
         b.flee.threat_speed_gate = f.flee_threat_speed_gate.unwrap_or(b.flee.threat_speed_gate);
@@ -699,6 +704,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             if let Some(b) = out.get_mut("ped_brain").and_then(|v| v.as_object_mut()) {
                 let f = s.ped_brain.object_flee;
                 b.extend([("object_flee".into(), json!(f.enabled)), ("object_flee_radius".into(), json!(f.radius)), ("object_flee_min_speed".into(), json!(f.min_speed)), ("object_flee_lane_margin".into(), json!(f.lane_margin))]);
+                let v = s.ped_brain.vehicle_flee;
+                b.extend([("vehicle_flee".into(), json!(v.enabled)), ("vehicle_flee_radius".into(), json!(v.radius)), ("vehicle_flee_min_dot".into(), json!(v.min_dot)), ("vehicle_flee_away".into(), json!(v.away)), ("vehicle_flee_toward".into(), json!(v.toward))]);
                 let l = s.ped_brain.flee;
                 b.extend([("flee_leg".into(), json!(l.leg)), ("flee_arrival_radius".into(), json!(l.arrival_radius)), ("flee_threat_speed_gate".into(), json!(l.threat_speed_gate)), ("flee_side_blend".into(), json!(l.side_blend))]);
             }

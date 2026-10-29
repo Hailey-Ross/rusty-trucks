@@ -2211,12 +2211,16 @@ pub(crate) fn think_peds(
     } else {
         Vec::new()
     };
-    // Entity type and position of every id this tick (players are the `skater` type, props `prop`).
+    let vehicle_flee = settings.ped_brain.vehicle_flee;
+    let moving_cars: Vec<(u64, ([f32; 3], [f32; 3]))> =
+        if vehicle_flee.enabled { cars.iter().map(|(c, m)| (c.id.to_u64(), (m.curr.translation.to_array(), m.velocity.to_array()))).collect() } else { Vec::new() };
+    // Entity type and position of every id this tick (players are the `skater` type, props `prop`, cars their entity).
     let entities: BTreeMap<u64, (String, [f32; 3])> = list
         .iter()
         .map(|(_, p, b, _)| (p.id.to_u64(), (p.entity.clone(), b.position.to_array())))
         .chain(players.iter().enumerate().map(|(i, p)| (PLAYER_TARGET_BASE + i as u64, ("skater".to_string(), *p))))
         .chain(props_now.iter().map(|o| (PROP_TARGET_BASE | o.id, ("prop".to_string(), o.center))))
+        .chain(cars.iter().map(|(c, m)| (c.id.to_u64(), (c.entity.clone(), m.curr.translation.to_array()))))
         .collect();
     // A hit ped that is gone no longer waits for its Colliding state.
     touchers.retain(|id, _| entities.contains_key(id));
@@ -2226,6 +2230,7 @@ pub(crate) fn think_peds(
         .map(|(_, p, b, _)| (p.id.to_u64(), b.velocity.to_array()))
         .chain(observers.observers.iter().enumerate().map(|(i, o)| (PLAYER_TARGET_BASE + i as u64, o.velocity)))
         .chain(props_now.iter().map(|o| (PROP_TARGET_BASE | o.id, o.velocity)))
+        .chain(cars.iter().map(|(c, m)| (c.id.to_u64(), m.velocity.to_array())))
         .collect();
     let velocity_of = |id: u64| velocities.get(&id).copied();
     // World-prop plugins: the map's props, then the offer scan every 11th world tick (`826C0058` -> `826BFE18`).
@@ -2679,6 +2684,13 @@ pub(crate) fn think_peds(
             mind.brain.flee_object(*prop);
             if fresh {
                 info!("PED_FLEE_OBJECT ped=#{} prop={} at [{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, prop & 0xFFFF_FFFF, at[0], at[1], at[2]);
+            }
+        } else if let Some((car, _)) = moving_cars.iter().find(|(_, (p, v))| skate_core::living_world::peds::object_flee::flees_vehicle(at, *p, *v, &vehicle_flee)) {
+            // A car near the ped moving along the line between them (`82E2C0C8`, opt-in, W8).
+            let fresh = mind.brain.wants.get("flee").is_none_or(|w| w.target != *car || !w.needs_addressing);
+            mind.brain.flee_object(*car);
+            if fresh {
+                info!("PED_FLEE_VEHICLE ped=#{} car={car} at [{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, at[0], at[1], at[2]);
             }
         }
         let due = tick.saturating_sub(ped.spawn_tick);

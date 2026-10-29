@@ -65,6 +65,40 @@ pub fn in_path(ped: Vec3, object: &MovingObject, p: &ObjectFleeParams) -> bool {
     (ped[0] - corner[0]) * v[0] + (ped[2] - corner[1]) * v[2] > 0.0
 }
 
+/// A ped fleeing a car near it (`82E2C0C8`, IVehicle path, W8): an opt-in still in test (user 2026-10-29: "I would
+/// think both"): docs/hails-additions/26g-living-world-ped-interactions.md#vehicle-flee-opt-in-2026-10-29-w8-research-b656
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VehicleFleeParams {
+    pub enabled: bool,
+    /// Distance to the car (10 m: 100.0 squared at 0x820ED57C).
+    pub radius: f32,
+    /// Dot of the flat ped-to-car vector and the car's velocity (3.0 at 0x82063B08).
+    pub min_dot: f32,
+    /// Retail's code test: the car moving away along the ped-to-car line (dot > `min_dot`).
+    pub away: bool,
+    /// The car moving at the ped (dot < -`min_dot`).
+    pub toward: bool,
+}
+
+impl Default for VehicleFleeParams {
+    fn default() -> Self {
+        Self { enabled: false, radius: 10.0, min_dot: 3.0, away: true, toward: true }
+    }
+}
+
+/// Whether a ped at `ped` flees a car at `car` moving with `velocity`.
+pub fn flees_vehicle(ped: Vec3, car: Vec3, velocity: Vec3, p: &VehicleFleeParams) -> bool {
+    if !p.enabled {
+        return false;
+    }
+    let d = [car[0] - ped[0], car[1] - ped[1], car[2] - ped[2]];
+    if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] >= p.radius * p.radius {
+        return false;
+    }
+    let dot = d[0] * velocity[0] + d[2] * velocity[2];
+    (p.away && dot > p.min_dot) || (p.toward && dot < -p.min_dot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +124,18 @@ mod tests {
         assert!(in_path([1.3, 0.0, 4.0], &b, &p), "0.7 m outside the 0.6 m half width");
         assert!(!in_path([1.4, 0.0, 4.0], &b, &p), "0.8 m outside");
         assert!(!in_path([0.0, 0.0, 5.0], &b, &ObjectFleeParams { enabled: false, ..p }), "a mod turned it off");
+    }
+
+    #[test]
+    fn a_car_within_ten_metres_moving_along_the_line_either_way_makes_the_ped_flee() {
+        let on = VehicleFleeParams { enabled: true, ..Default::default() };
+        let ped = [0.0, 0.0, 0.0];
+        assert!(flees_vehicle(ped, [0.0, 0.0, 6.0], [0.0, 0.0, -5.0], &on), "driving at the ped");
+        assert!(flees_vehicle(ped, [0.0, 0.0, 6.0], [0.0, 0.0, 5.0], &on), "driving away (retail's code test)");
+        assert!(!flees_vehicle(ped, [0.0, 0.0, 6.0], [5.0, 0.0, 0.0], &on), "crossing: no motion along the line");
+        assert!(!flees_vehicle(ped, [0.0, 0.0, 6.0], [0.0, 0.0, -0.4], &on), "dot 2.4 under 3.0");
+        assert!(!flees_vehicle(ped, [0.0, 0.0, 10.0], [0.0, 0.0, -9.0], &on), "10 m is outside");
+        assert!(!flees_vehicle(ped, [0.0, 0.0, 6.0], [0.0, 0.0, -5.0], &VehicleFleeParams::default()), "off by default");
+        assert!(!flees_vehicle(ped, [0.0, 0.0, 6.0], [0.0, 0.0, -5.0], &VehicleFleeParams { toward: false, ..on }), "retail's direction only");
     }
 }

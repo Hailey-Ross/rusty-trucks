@@ -2959,3 +2959,19 @@ The graph op `SendChaseStateMessage` (`826A77A8`) posts {ped, state} for a playe
   a D-pad Down gesture near peds) would confirm the byte. User (2026-10-28), asked whether the D-pad Down gesture near
   peds makes them run off in retail: "Yes that sounds correct." Multiplayer: the host owns the timer; with several players
   retail reads only the local player (online is open). Not play-checked.
+
+## Vehicle flee opt-in (2026-10-29, W8, research b656)
+- Retail [code, `82E2C0C8`, the ped's VehicleAvoidance modifier; b646 pseudocode, generated code checked by main]: a car
+  (IVehicle `0x82C34050`) within 10 m (100.0 squared at 0x820ED57C, 3D) makes the ped flee when the flat dot of
+  (car - ped) and the car's velocity is above 3.0 (0x82063B08): read literally, the car moving AWAY along the line.
+  Then every want's active bit is cleared and the flee want takes the car (same write as the prop rule).
+- The user (2026-10-29): "I would think both, for now lets do that and add the feature in as an optin for testing."
+- Change: skate-core `object_flee::VehicleFleeParams` / `flees_vehicle` (either direction past the dot); opt-in "Ped
+  Vehicle Flee" (overlay Opt-Ins, `SKATE_PED_VEHICLE_FLEE=1`, off by default) sets `ped_brain.vehicle_flee.enabled`;
+  `think_peds` raises the flee want after the prop rule (log `PED_FLEE_VEHICLE`); cars are want targets (entity type
+  and velocity) so the flee leg resolves. Mod keys `ped_brain.vehicle_flee`, `vehicle_flee_radius`,
+  `vehicle_flee_min_dot`, `vehicle_flee_away`, `vehicle_flee_toward`. Test
+  `a_car_within_ten_metres_moving_along_the_line_either_way_makes_the_ped_flee`. Not play-checked.
+- Open: retail's gates IVehicle vf+0x60 and the ped's vf+200 (not read); the non-flee branch (a ray test of the car's
+  4 corners from 1.5 m up along the ped's heading, 4.0 x lookahead, 0.4 / 0.09 thresholds, "Avoid" event) is decoded
+  in b656 but its consumer is not found, so the steer-around is not ported.
