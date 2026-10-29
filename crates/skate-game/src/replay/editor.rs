@@ -77,7 +77,7 @@ pub(crate) fn log_key(camera: &super::camera_key::CameraKey, lens: f32) -> Strin
         CameraKey::Game => format!("game lens={lens}"),
         CameraKey::Follow { eye, look_height } => format!("follow eye={:?} look={look_height:.2} lens={lens}", eye.to_array()),
         CameraKey::Tripod { eye, look_height } => format!("tripod eye={} look={look_height:.2} lens={lens}", v(eye)),
-        CameraKey::Free { eye, yaw, pitch } => format!("free eye={} yaw={yaw:.1} pitch={pitch:.1} lens={lens}", v(eye)),
+        CameraKey::Free { eye, yaw, pitch, distance } => format!("free eye={} yaw={yaw:.1} pitch={pitch:.1} distance={distance:.2} lens={lens}", v(eye)),
     }
 }
 
@@ -753,7 +753,7 @@ mod tests {
         let mut e = Editor::open(0.0, 20.0, EditLimits::default()).unwrap();
         let anchors = Anchors::new(Transform::from_xyz(0.0, 2.0, 6.0), Transform::IDENTITY, Default::default());
         let tripod = |x: f32| CameraKey::Tripod { eye: Vec3::new(x, 2.0, 5.0), look_height: 0.25 };
-        let free = CameraKey::Free { eye: Vec3::new(0.0, 3.0, 0.0), yaw: 0.0, pitch: 0.0 };
+        let free = CameraKey::Free { eye: Vec3::new(0.0, 3.0, 0.0), yaw: 0.0, pitch: 0.0, distance: 5.0 };
         let key = |t: f64, camera, soft| CamKey { frame: e.frame(t), camera, lens: 24.0, soft };
         let keys = vec![key(2.0, tripod(1.0), false), key(4.0, tripod(2.0), true), key(6.0, tripod(3.0), true),
                         key(8.0, free, false), key(10.0, free, true)];
@@ -799,7 +799,7 @@ mod tests {
         assert_eq!(e.pick_camera(6, 10.0, &view, &root), Some(10));
         assert_eq!(e.pick_camera(6, 14.0, &view, &root), Some(10));
         for (i, x) in [(2, 0.0), (3, 8.0)] {
-            e.cameras[i].camera = super::super::camera_key::CameraKey::Free { eye: Vec3::new(x, 2.0, 0.0), yaw: 0.0, pitch: 0.0 };
+            e.cameras[i].camera = super::super::camera_key::CameraKey::Free { eye: Vec3::new(x, 2.0, 0.0), yaw: 0.0, pitch: 0.0, distance: 5.0 };
         }
         let mid = e.pose(12.0, &root).0.unwrap().translation;
         assert!((mid - Vec3::new(4.0, 2.0, 0.0)).length() < 1e-3, "{mid}");

@@ -1023,7 +1023,11 @@ pub(crate) struct CarLook {
 impl CarLook {
     /// The wheel joints, for the replay recorder.
     pub(crate) fn wheel_joints(&self) -> Vec<Entity> {
-        self.wheels.iter().map(|(e, _)| *e).collect()
+        self.wheel_joints_iter().collect()
+    }
+
+    pub(crate) fn wheel_joints_iter(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.wheels.iter().map(|(e, _)| *e)
     }
 }
 

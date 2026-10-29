@@ -349,6 +349,7 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         n.air_steer_on = f.air_steer.unwrap_or(n.air_steer_on);
         n.air_steer.dead_zone_deg = f.air_steer_dead_zone_deg.unwrap_or(n.air_steer.dead_zone_deg);
         n.air_steer.full_deg = f.air_steer_full_deg.unwrap_or(n.air_steer.full_deg);
+        n.ground_steer.avoid_anchor_ticks = f.avoid_anchor_ticks.unwrap_or(n.ground_steer.avoid_anchor_ticks);
         n.signals.manual_value = f.manual_value.unwrap_or(n.signals.manual_value);
         n.bump = f.bump.unwrap_or(n.bump);
         n.reactions.enabled = f.reactions.unwrap_or(n.reactions.enabled);
@@ -394,6 +395,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         b.values.conversation_turn_seconds = f.conversation_turn_seconds.unwrap_or(b.values.conversation_turn_seconds);
         b.values.conversation_gather_seconds = f.conversation_gather_seconds.unwrap_or(b.values.conversation_gather_seconds);
         b.values.unreachable_radius = f.unreachable_radius.unwrap_or(b.values.unreachable_radius);
+        b.values.reach_snap_window = f.reach_snap_window.unwrap_or(b.values.reach_snap_window);
+        b.values.scatter_seconds = f.scatter_seconds.unwrap_or(b.values.scatter_seconds);
         b.values.reach_check_seconds = f.reach_check_seconds.unwrap_or(b.values.reach_check_seconds);
         b.values.warn_speech = f.warn_speech.unwrap_or(b.values.warn_speech);
         b.run_from_honker.side_distance = f.run_from_honker_distance.unwrap_or(b.run_from_honker.side_distance);
@@ -652,7 +655,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             let npc_walk_back = fields!(nb; plan_path_h, plan_path_v, goal_locate_radius, start_locate_radius, plan_direct_h, plan_direct_v, arrive_h, arrive_v, arrive_heading, line_up_h, line_up_v, leg_h, leg_v, leg_epsilon_sq, steer_full_lock, steer_gain, throttle_gain, slow_along, slow_gain, throttle_floor, floor_along, stall_steer, magnitude_cap, move_step_sq, move_anchor_sq, turn_step, turn_anchor, stall_ticks, push_period, stuck_waypoint_ticks, stuck_stall_ticks, stall_recovery_ticks);
             let lc = &s.npc_simulated.controller;
             let npc_line_controller = fields!(lc; wipe_out, safe_slope, stuck_clear_distance, stuck_start_fraction, stuck_start_approach, reposition_ahead, reposition_past, remembered_window, reposition_interval, safe_jump_frames, safe_flag_frames, safe_run, stuck_clear_ticks, stuck_hold_ticks, stuck_gate_ticks, resnap_frames, stuck_limits);
-            let npc_simulated = json!({"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max, "respawn_seconds": s.npc_simulated.respawn_seconds, "respawn_min": s.npc_simulated.respawn_min, "respawn_max": s.npc_simulated.respawn_max, "placement_hold_seconds": s.npc_simulated.placement_hold_seconds, "respawn_hold_seconds": s.npc_simulated.respawn_hold_seconds, "anticipation_distance": s.npc_simulated.signals.anticipation_distance, "anticipation_frames": s.npc_simulated.signals.anticipation_frames, "max_crossed_nodes": s.npc_simulated.signals.max_crossed_nodes, "walk_back": s.npc_simulated.walk_back, "walk_arrive_distance": s.npc_simulated.navmesh.arrive_h, "walk_stuck_ticks": s.npc_simulated.navmesh.stuck_waypoint_ticks, "board_yaw": s.npc_simulated.board_yaw_on, "board_yaw_dead_zone": s.npc_simulated.board_yaw.dead_zone, "manual_value": s.npc_simulated.signals.manual_value, "board_yaw_mag_scale": s.npc_simulated.board_yaw.mag_scale, "air_steer": s.npc_simulated.air_steer_on, "air_steer_dead_zone_deg": s.npc_simulated.air_steer.dead_zone_deg, "air_steer_full_deg": s.npc_simulated.air_steer.full_deg, "bump": s.npc_simulated.bump});
+            let ped_brain = json!({"enabled": s.ped_brain.enabled, "mood": s.ped_brain.mood, "wander_speed": s.ped_brain.values.wander_speed, "warn_seconds": s.ped_brain.values.warn_seconds, "know_about_seconds": s.ped_brain.values.know_about_seconds, "mood_want_memory_seconds": s.ped_brain.values.mood_want_memory_seconds, "conversation_turn_seconds": s.ped_brain.values.conversation_turn_seconds, "conversation_gather_seconds": s.ped_brain.values.conversation_gather_seconds, "unreachable_radius": s.ped_brain.values.unreachable_radius, "reach_check_seconds": s.ped_brain.values.reach_check_seconds, "reach_snap_window": s.ped_brain.values.reach_snap_window, "scatter_seconds": s.ped_brain.values.scatter_seconds, "run_from_honker_distance": s.ped_brain.run_from_honker.side_distance, "run_from_honker_speed": s.ped_brain.run_from_honker.run_speed, "warn_speech": s.ped_brain.values.warn_speech, "water_disables_seats": s.ped_brain.plugins.water_disables_seats, "water_max_depth": s.ped_brain.plugins.water_max_depth, "water_above": s.ped_brain.plugins.water_above});
+            let npc_simulated = json!({"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max, "respawn_seconds": s.npc_simulated.respawn_seconds, "respawn_min": s.npc_simulated.respawn_min, "respawn_max": s.npc_simulated.respawn_max, "placement_hold_seconds": s.npc_simulated.placement_hold_seconds, "respawn_hold_seconds": s.npc_simulated.respawn_hold_seconds, "anticipation_distance": s.npc_simulated.signals.anticipation_distance, "anticipation_frames": s.npc_simulated.signals.anticipation_frames, "max_crossed_nodes": s.npc_simulated.signals.max_crossed_nodes, "walk_back": s.npc_simulated.walk_back, "walk_arrive_distance": s.npc_simulated.navmesh.arrive_h, "walk_stuck_ticks": s.npc_simulated.navmesh.stuck_waypoint_ticks, "board_yaw": s.npc_simulated.board_yaw_on, "board_yaw_dead_zone": s.npc_simulated.board_yaw.dead_zone, "manual_value": s.npc_simulated.signals.manual_value, "board_yaw_mag_scale": s.npc_simulated.board_yaw.mag_scale, "air_steer": s.npc_simulated.air_steer_on, "air_steer_dead_zone_deg": s.npc_simulated.air_steer.dead_zone_deg, "air_steer_full_deg": s.npc_simulated.air_steer.full_deg, "avoid_anchor_ticks": s.npc_simulated.ground_steer.avoid_anchor_ticks, "bump": s.npc_simulated.bump});
             let mut out = json!({
                 "npc_walk_back": npc_walk_back,
                 "npc_line_controller": npc_line_controller,
@@ -684,7 +688,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "free_play": s.free_play.map(|f| json!({"traffic": f.traffic, "pedestrians": f.pedestrians, "ai_skaters": f.ai_skaters})),
                 "npc_simulated": npc_simulated,
                 "npc_avoid": npc_avoid,
-                "ped_brain": {"enabled": s.ped_brain.enabled, "mood": s.ped_brain.mood, "wander_speed": s.ped_brain.values.wander_speed, "warn_seconds": s.ped_brain.values.warn_seconds, "know_about_seconds": s.ped_brain.values.know_about_seconds, "mood_want_memory_seconds": s.ped_brain.values.mood_want_memory_seconds, "conversation_turn_seconds": s.ped_brain.values.conversation_turn_seconds, "conversation_gather_seconds": s.ped_brain.values.conversation_gather_seconds, "unreachable_radius": s.ped_brain.values.unreachable_radius, "reach_check_seconds": s.ped_brain.values.reach_check_seconds, "run_from_honker_distance": s.ped_brain.run_from_honker.side_distance, "run_from_honker_speed": s.ped_brain.run_from_honker.run_speed, "warn_speech": s.ped_brain.values.warn_speech, "water_disables_seats": s.ped_brain.plugins.water_disables_seats, "water_max_depth": s.ped_brain.plugins.water_max_depth, "water_above": s.ped_brain.plugins.water_above},
+                "ped_brain": ped_brain,
                 "npc_tricks": {"mode": s.npc_tricks.mode.name(), "gate_window": s.npc_tricks.params.gate_window, "min_air_frames": s.npc_tricks.params.min_air_frames},
                 "skater_trick_profiles": s.skater_trick_profiles.iter().map(|(k, v)| {
                     let table = |t: &Option<Vec<(i16, f32)>>| t.as_ref().map(|t| t.iter().map(|e| json!({"trick": e.0, "weight": e.1})).collect::<Vec<_>>());
@@ -992,6 +996,19 @@ mod tests {
         assert_eq!((back.air_steer_on, back.air_steer), (retail.air_steer_on, retail.air_steer), "mod disable restores retail");
     }
 
+    /// b612: the avoid anchor of the far aim is mod-reachable and reset on disable.
+    #[test]
+    fn npc_avoid_anchor_is_mod_reachable_and_reset_on_disable() {
+        let mut w = world();
+        assert_eq!(LivingWorldSettings::default().npc_simulated.ground_steer.avoid_anchor_ticks, 15.0);
+        set(&mut w, "dev.a", "living_world", Some(json!({"npc_simulated": {"avoid_anchor_ticks": 30.0}}))).unwrap();
+        assert_eq!(w.resource::<LivingWorldSettings>().npc_simulated.ground_steer.avoid_anchor_ticks, 30.0);
+        assert_eq!(read(&w, "living_world")["npc_simulated"]["avoid_anchor_ticks"], json!(30.0));
+        assert!(set(&mut w, "dev.b", "living_world", Some(json!({"npc_simulated": {"avoid_anchor_ticks": -1.0}}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<LivingWorldSettings>().npc_simulated.ground_steer.avoid_anchor_ticks, 15.0);
+    }
+
     #[test]
     fn ped_nav_is_mod_reachable_and_reset_on_disable() {
         use skate_core::living_world::peds::CrosswalkRule;
@@ -1154,7 +1171,7 @@ mod tests {
         data.profiles.insert("default".into(), TrickProfile { regular: vec![(96, 1.0)], nollie: vec![(117, 1.0)] });
         data.profiles.insert("street_medium".into(), TrickProfile { regular: vec![(92, 1.0)], nollie: vec![] });
         data.character_profile.insert("jake".into(), "street_medium".into());
-        let profile = |w: &World, key: &str| npc_trick_profile(&data, &w.resource::<LivingWorldSettings>().skater_trick_profiles, key);
+        let profile = |w: &World, key: &str| npc_trick_profile(&data, &w.resource::<LivingWorldSettings>().skater_trick_profiles, key).map(std::borrow::Cow::into_owned);
         assert_eq!(read(&w, "living_world")["npc_tricks"], json!({"mode": "profile", "gate_window": 300, "min_air_frames": 50}), "retail by default");
         assert_eq!(profile(&w, "jake").unwrap().regular, [(92, 1.0)], "the character's aiprofile");
         set(&mut w, "dev.a", "living_world", Some(json!({"npc_tricks": {"mode": "recorded"}, "skater_trick_profiles": {"street_medium": {"regular": [{"trick": 128, "weight": 2.0}]}}}))).unwrap();

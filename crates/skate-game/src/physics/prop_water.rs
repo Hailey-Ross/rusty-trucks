@@ -23,6 +23,8 @@ pub(crate) struct PropWater {
     /// How far under the surface (m) a sinking prop's top has gone when it has faded out, in water too deep to see
     /// the bottom; 0 = no fade.
     pub fade_depth: f32,
+    /// Below this speed a prop denser than the water that touched the floor last step gets no water forces (m/s).
+    pub settle_speed: f32,
 }
 
 /// Opacity of a prop whose top is at `top` under a surface at `surface`: 1 at the surface, 0 at `fade_depth` under.
@@ -135,6 +137,7 @@ pub(crate) fn from_look(look: &crate::water_look::WaterLook) -> Option<PropWater
         bob_period: look.prop_bob_period,
         heavy_density: look.prop_heavy_density,
         fade_depth: look.prop_fade_depth,
+        settle_speed: look.prop_settle_speed,
     })
 }
 
@@ -209,7 +212,7 @@ mod tests {
 
     const UP: [[f32; 3]; 3] = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
     const G: Vector3 = Vector3::new(0., -9.81, 0.);
-    const WATER: PropWater = PropWater { density: 1000., drag: 1.5, spin_drag: 1.5, deep_float_density: 700., bob_height: 0., bob_period: 3., heavy_density: 2000., fade_depth: 1.5 };
+    const WATER: PropWater = PropWater { density: 1000., drag: 1.5, spin_drag: 1.5, deep_float_density: 700., bob_height: 0., bob_period: 3., heavy_density: 2000., fade_depth: 1.5, settle_speed: 0.2 };
 
     /// A 1 m cube of `density` dropped into still water at y = 0, stepped at 60 Hz with gravity and the water impulses.
     fn settle(density: f32) -> f32 {

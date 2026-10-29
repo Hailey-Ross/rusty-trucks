@@ -2126,7 +2126,7 @@ pub(crate) fn think_peds(
     mut events: ResMut<bevy::ecs::message::Messages<PedEvent>>,
     mut cursor: Local<Option<bevy::ecs::message::MessageCursor<PedEvent>>>,
     mut touchers: Local<BTreeMap<u64, u64>>,
-    (mut traffic_events, cars, mut plugin_props, physics, linked_props): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>, Option<Res<crate::physics::GamePhysics>>, Query<&super::ped_hand_props::ReleasedHandProp>),
+    (mut traffic_events, cars, mut plugin_props, physics, linked_props, skater, mut scatter): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>, Option<Res<crate::physics::GamePhysics>>, Query<&super::ped_hand_props::ReleasedHandProp>, Option<Res<crate::physics::SkaterRuntime>>, Local<(f32, Option<u64>, bool)>),
 ) {
     let _span = super::timing::span(super::timing::THINK_PEDS);
     // A map change (b216; not the first map, whose key goes from none to some): the conversations, chase groups,
@@ -2184,6 +2184,22 @@ pub(crate) fn think_peds(
     let program = &graph.graph.runtime.program;
     let dt = tick_seconds(state.world.clock().hz);
     let tick = state.world.tick();
+    // The scatter alarm (`sub_826C1348` once per world step, copied to every ped by `sub_826BDB50`; b654): raised while
+    // the local player's gesture runs on D-pad Down (MotionGraph +5989, `sub_8258FB30`).
+    {
+        let raised = skater.as_ref().and_then(|s| s.animation.motion.gesture_publication.as_ref()).is_some_and(|g| g.down);
+        let steps = scatter.1.map_or(1, |last| tick.saturating_sub(last));
+        if steps > 0 {
+            let length = settings.ped_brain.values.scatter_seconds;
+            let was = scatter.2;
+            scatter.2 = skate_core::living_world::peds::scatter::step(&mut scatter.0, raised && length > 0.0, settings.zombie, dt * steps as f32, length);
+            scatter.1 = Some(tick);
+            if scatter.2 != was {
+                info!("PED_SCATTER {} timer {:.1} s tick={tick}", if scatter.2 { "on" } else { "off" }, scatter.0);
+            }
+        }
+    }
+    let scattering = scatter.2;
     let players: Vec<[f32; 3]> = observers.observers.iter().map(|o| o.position).collect();
     let mut list: Vec<_> = peds.iter_mut().collect();
     list.sort_by_key(|(_, p, ..)| p.id);
@@ -2541,6 +2557,8 @@ pub(crate) fn think_peds(
                     mind.zombie_timer = 0.0;
                 }
             }
+            // ShouldScatter (brain +3281 bit 0x80): the world alarm, the same for every live ped.
+            mind.brain.scatter = scattering;
             if let Some(&car) = honked.get(&me) {
                 mind.brain.honker = Some(car);
             }
@@ -3319,10 +3337,8 @@ pub(crate) fn think_peds(
             (Some(skate_core::living_world::peds::brain::motion::INTERCEPT), Some(chasee), Some(mesh)) => {
                 use skate_core::living_world::peds::chase;
                 // InterceptChasee Update 826A3BF0 (b306): destination each think: docs/hails-additions/26f-living-world-peds.md#intercept-chasee
-                let here = mesh.locate(at);
                 if let Some(q) = target(chasee) {
-                    let chasee_poly = mesh.locate(q).map(|p| p.poly);
-                    let reachable = !chase::reach_failed(mesh, here.map(|p| p.poly), chasee_poly);
+                    let reachable = !chase::reach_failed_at(mesh, at, q, settings.ped_brain.values.reach_snap_window);
                     let velocity = observers.observers.get(chasee.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
                     let speed = record.and_then(|r| r.run_speed()).unwrap_or(0.0);
                     // No record: the max lead time reads 0.0, so no intercept (the chasee itself is the destination).
@@ -3342,7 +3358,7 @@ pub(crate) fn think_peds(
                 if let Some(q) = target(chasee).filter(|_| mind.reach_clock >= settings.ped_brain.values.reach_check_seconds) {
                     mind.reach_clock = 0.0;
                     let destination = mind.chase_goal.unwrap_or(q);
-                    let failed = chase::reach_failed(mesh, here.map(|p| p.poly), mesh.locate(destination).map(|p| p.poly));
+                    let failed = chase::reach_failed_at(mesh, at, destination, settings.ped_brain.values.reach_snap_window);
                     let near = (q[0] - at[0]).hypot(q[2] - at[2]) <= settings.ped_brain.values.unreachable_radius;
                     let was = mind.brain.target_unreachable;
                     chase::apply_reach_report(&mut mind.brain.target_unreachable, failed, near);

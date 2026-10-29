@@ -45,12 +45,17 @@ pub(crate) struct NpcTrickTables {
     pub nollie: Option<Vec<(i16, f32)>>,
 }
 
+/// `a` is `b` or a sequence `<x>+b` (no allocation; b620).
+fn sequence_ends_in(a: &str, b: &str) -> bool {
+    a.len() > b.len() && a.ends_with(b) && a.as_bytes()[a.len() - b.len() - 1] == b'+'
+}
+
 /// The trick tables an NPC uses: the disc's table of its `aiprofile` (else `default`), each table
 /// replaced by a mod's for the character key, else for the profile name.
-pub(crate) fn npc_trick_profile(data: &skate_data::living_world::SkaterTrickProfiles, overrides: &BTreeMap<String, NpcTrickTables>, character: &str) -> Option<TrickProfile> {
-    let base = data.for_character(character).cloned();
+pub(crate) fn npc_trick_profile<'a>(data: &'a skate_data::living_world::SkaterTrickProfiles, overrides: &BTreeMap<String, NpcTrickTables>, character: &str) -> Option<std::borrow::Cow<'a, TrickProfile>> {
+    let base = data.for_character(character);
     if overrides.is_empty() {
-        return base;
+        return base.map(std::borrow::Cow::Borrowed);
     }
     let profile_name = data.character_profile.get(character).map_or("default", String::as_str);
     let by_key = overrides.get(character);
@@ -60,7 +65,7 @@ pub(crate) fn npc_trick_profile(data: &skate_data::living_world::SkaterTrickProf
     };
     let regular = pick(|o| &o.regular, base.as_ref().map(|b| &b.regular));
     let nollie = pick(|o| &o.nollie, base.as_ref().map(|b| &b.nollie));
-    (regular.is_some() || nollie.is_some()).then(|| TrickProfile { regular: regular.unwrap_or_default(), nollie: nollie.unwrap_or_default() })
+    (regular.is_some() || nollie.is_some()).then(|| std::borrow::Cow::Owned(TrickProfile { regular: regular.unwrap_or_default(), nollie: nollie.unwrap_or_default() }))
 }
 
 /// A trick id for logs: the catalog name, `none` for -1.
@@ -350,7 +355,7 @@ pub(crate) fn puppet_layers(history: &[(PhaseEntry, f32)], resolve: impl Fn(Phas
         // An older phase whose clip is this one, or a sequence ending in it (`<ground>+<air>`
         // before `<air>`), is the same playing clip: continue it from the older start.
         let mut j = i;
-        while j + 1 < resolved.len() && (resolved[j + 1].0 == resolved[j].0 || resolved[j + 1].0.ends_with(&format!("+{}", resolved[j].0))) {
+        while j + 1 < resolved.len() && (resolved[j + 1].0 == resolved[j].0 || sequence_ends_in(&resolved[j + 1].0, &resolved[j].0)) {
             j += 1;
         }
         let (ref clip, seconds, time, since) = resolved[j];
@@ -691,7 +696,7 @@ pub(crate) fn advance(
             if let Some(s) = replay.cursor.sample(&*lines, 0.0) {
                 let others: Vec<([u8; 16], u32)> = order.iter().filter(|o| o.0 != npc.id).map(|o| (o.1, o.2)).collect();
                 let in_use: Vec<[u8; 16]> = others.iter().map(|o| o.0).collect();
-                let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_ref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
+                let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_deref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
                 // Retail's mode 1 fallback (b122): the physics skater takes the nearest free start at any distance.
                 let chain = skate_core::living_world::replay::ChainConfig { fallback: true, ..chain };
                 let ctx = BranchContext { position: s.position, forward: s.velocity, speed: length(s.velocity), players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online, chain, tricks };
@@ -700,20 +705,20 @@ pub(crate) fn advance(
                 }
             }
         }
+        // The loop only moves this NPC's own `order` entry, which `others` leaves out (b620).
+        let others: Vec<([u8; 16], u32)> = order.iter().filter(|o| o.0 != npc.id).map(|o| (o.1, o.2)).collect();
+        let in_use: Vec<[u8; 16]> = others.iter().map(|o| o.0).collect();
         while replay.cursor.frames < target && !replay.cursor.finished {
             if replay.cursor.frames + FRAMES_PER_TICK >= target {
                 replay.previous = Some(replay.cursor.clone());
             }
             let s = replay.cursor.sample(&*lines, 0.0);
-            let others: Vec<([u8; 16], u32)> = order.iter().filter(|o| o.0 != npc.id).map(|o| (o.1, o.2)).collect();
-            let in_use: Vec<[u8; 16]> = others.iter().map(|o| o.0).collect();
             let (position, forward, speed) = s.as_ref().map_or(([0.0; 3], [0.0, 0.0, 1.0], 0.0), |s| (s.position, s.velocity, length(s.velocity)));
-            let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_ref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
+            let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_deref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
             let ctx = BranchContext { position, forward, speed, players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online, chain, tricks };
-            let records = replay.branches.clone();
-            let trick_records = replay.tricks.clone();
-            let mut decider = if mirror { Decider::Mirror(&records, &trick_records) } else { Decider::Decide(ctx) };
-            replay.cursor.step(&*lines, &mut decider, &mut out);
+            let r = &mut *replay;
+            let mut decider = if mirror { Decider::Mirror(&r.branches, &r.tricks) } else { Decider::Decide(ctx) };
+            r.cursor.step(&*lines, &mut decider, &mut out);
             if let Some(o) = order.iter_mut().find(|o| o.0 == npc.id) {
                 o.1 = replay.cursor.line;
                 o.2 = replay.cursor.node;
@@ -1007,7 +1012,11 @@ pub(crate) struct NpcPuppet {
 impl NpcPuppet {
     /// The bound joints, for the replay recorder.
     pub(crate) fn joints(&self) -> Vec<Entity> {
-        self.bindings.as_ref().map(|b| b.joints()).unwrap_or_default()
+        self.joints_iter().collect()
+    }
+
+    pub(crate) fn joints_iter(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.bindings.iter().flat_map(|b| b.joints_iter())
     }
 }
 
@@ -1550,6 +1559,17 @@ pub(crate) fn install(app: &mut App) {
 #[cfg(test)]
 mod peer_name_tests {
     use super::*;
+
+    /// b620: the allocation-free sequence test gives the old `ends_with(format!("+{b}"))` result for every pair.
+    #[test]
+    fn sequence_ends_in_matches_the_format_reference() {
+        let names = ["", "+", "a", "b", "ab", "a+b", "+b", "b+", "a+a", "x+ab", "ab+b", "kick+", "ollie+kickflip", "kickflip", "é+b", "aé", "é"];
+        for a in names {
+            for b in names {
+                assert_eq!(sequence_ends_in(a, b), a.ends_with(&format!("+{b}")), "{a:?} {b:?}");
+            }
+        }
+    }
 
     /// NPC_SKATER_CONTACT names the player, a simulated NPC by serial (body or board half), anything else raw.
     #[test]

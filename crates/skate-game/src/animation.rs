@@ -26,7 +26,11 @@ impl AnimationStatus {
 
     /// The bound joint entities in binding order (the replay records their local transforms).
     pub(crate) fn joints(&self) -> Vec<Entity> {
-        self.bindings.iter().map(|b| b.entity).collect()
+        self.joints_iter().collect()
+    }
+
+    pub(crate) fn joints_iter(&self) -> impl Iterator<Item = Entity> + Clone + '_ {
+        self.bindings.iter().map(|b| b.entity)
     }
 
     pub(crate) fn online_bindings(&self) -> Vec<(Entity,usize,Option<usize>)> {

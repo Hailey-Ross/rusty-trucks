@@ -224,6 +224,14 @@ pub fn point(line: &ReplayLine, c: (u32, f32)) -> Vec3 {
     }
 }
 
+/// The line at cursor `c` as an avoider path point (widths blended like [`super::replay::project_on_line`]).
+pub fn path_point(line: &ReplayLine, c: (u32, f32)) -> super::avoid::PathPoint {
+    let i = (c.0 as usize).min(line.nodes.len() - 1);
+    let (a, b) = (line.nodes[i].width, line.nodes.get(i + 1).map_or(line.nodes[i].width, |n| n.width));
+    let w = |k: usize| (f32::from(a[k]) + (f32::from(b[k]) - f32::from(a[k])) * c.1) * WIDTH_SCALE;
+    super::avoid::PathPoint { point: point(line, c), direction: forward(line, c), width_left: w(0), width_right: w(1), node: c.0, t: c.1 }
+}
+
 /// Recorded frames from `from` to `to` along the line (negative when `to` is behind).
 pub fn along(line: &ReplayLine, from: (u32, f32), to: (u32, f32)) -> f32 {
     let pos = |c: (u32, f32)| -> f32 { (0..c.0).map(|i| line.segment_frames(i) as f32).sum::<f32>() + c.1 * line.segment_frames(c.0) as f32 };

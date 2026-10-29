@@ -74,3 +74,16 @@ Detail moved out of the code comments of `crates/skate-game/src/physics/world_ha
 ### World handle
 
 The static collision world as the physics step sees it: the geometry shared behind an `Arc`, plus this step's own query scratch. The player's `GamePhysics` and every simulated NPC skater's worker hold a handle to the same world, so their steps can run on separate threads (a query only reads the world). Reads go through `Deref`; the few writes (map load, prop streaming, tests) need the world not to be shared at that moment.
+
+## NPC and replay per-frame allocations, first pass (2026-10-28, research b620)
+Behaviour-identical by construction, each change with a reference test or no arithmetic moved:
+- `npc_skaters.rs` advance: the Mirror decider borrows `branches` / `tricks` instead of cloning the whole history each
+  tick; `others` / `in_use` built once per NPC per tick, not per step (the loop only moves this NPC's own entry,
+  which `others` leaves out); `npc_trick_profile` returns a `Cow` (borrowed unless a mod override applies; still read
+  every tick, so overrides stay live).
+- `puppet_layers`: `sequence_ends_in` replaces `ends_with(format!("+{b}"))` (test `sequence_ends_in_matches_the_format_reference`).
+- `ReplayBuffer::record`: `encode_into` writes into a reused scratch, no `moved` / `mask` Vecs; a key is cloned only
+  when it is new (test `encode_into_matches_reference`, 10 000 generated poses, byte equality with the old encoder).
+- `replay/world.rs` `refresh_joints`: compares joint lists via iterators, collects only on a change.
+Not done (b620 items 1b..1f, 2, 3d): the present_pose scratch buffers and the fakie tree cache (needs the golden
+digest test first). No timings measured.

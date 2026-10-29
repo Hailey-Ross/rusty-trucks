@@ -121,6 +121,8 @@ pub(crate) fn stream_dmos(
     let Some(stream) = st.stream.as_mut() else { return };
     // Kept: a prop moved off its authored pose (NOT RETAIL YET: retail keep from 82C485C0 / 82C56AE8, b184).
     let moved: std::collections::BTreeSet<u32> = physics.prop_dynamics().map(|d| d.moved_ids().into_iter().collect()).unwrap_or_default();
+    // Moved objects cull by where they are now (b651); the spawn keeps the authored placement.
+    stream.live_at = physics.prop_dynamics().map(|d| moved.iter().filter_map(|&id| d.origin_of(id).map(|o| (id, [o.x, o.y, o.z]))).collect()).unwrap_or_default();
     let decisions = stream.step_kept(&views, &core, fill, &|id| held == Some(id) || layout.contains(&id), &|id| moved.contains(&id));
     if decisions.is_empty() && !fill {
         return;
@@ -144,6 +146,10 @@ pub(crate) fn stream_dmos(
         };
         if !fill {
             debug!("DMO_STREAM_CHANGE {d:?}");
+            // A moved prop going away is the "cleaned up" a player sees: say where it was (ask 394, logs must diagnose).
+            if let Some(at) = stream.live_at.get(&id) {
+                info!("DMO_STREAM_MOVED {d:?} at [{:.1}, {:.1}, {:.1}]", at[0], at[1], at[2]);
+            }
         }
         pass.push((id, out, s.respawn_authored));
     }

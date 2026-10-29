@@ -21,6 +21,7 @@ pub mod mood;
 pub mod nav;
 pub mod plugin_motion;
 pub mod plugins;
+pub mod scatter;
 pub mod obstacles;
 pub mod skater_contact;
 pub mod vehicle_contact;

@@ -1426,7 +1426,7 @@ Detail moved out of the fork-added code comments of `crates/skate-core/src/playe
   solve (`row_corrections`), solved in the same iterations as its floor rows: the volume is a body with its own
   velocity, its own reaction slot and mass `board_row_mass` (8 kg, our board solver's `board_mass`) for board volumes,
   the actor's push mass (75 kg default, peds 10) for body volumes; only the prop's correction is used. A closing touch
-  wakes a resting prop (OURS: retail's wake source is not found; the user's account is that props move by mass). A
+  wakes a resting prop (OURS: retail's wake source is not found; the user's account is that props move by mass); 2026-10-28, asked whether riding into a resting cone or trash can without bailing moves it in retail, the user: "Yes", so research b619's bail-only reading is incomplete and is not ported). A
   bailing actor's contacts add no rows (the bail clamp handles them). The box fallback (props with no mesh) and
   `skater_rows = false` keep the impulse push. Mod keys `set_tuning('props', {solver = {skater_rows, board_row_mass}})`,
   validated (mass 0..=1000), read back, reset on mod disable.
@@ -1560,3 +1560,43 @@ second centre's timer runs twice per tick).
 
 ### Mods
 World tuning domain `prop_sounds` ([doc 26a](26a-living-world-overview.md#world-tuning-domains)): `enabled` and per prop type key the record fields over the retail record (a type without one starts silent, so a mod can give a prop a sound); restored when the mod stops. Multiplayer: the posts are decided from fixed-step samples keyed by the stable prop instance id, so peers and the replay regenerate the same sounds.
+
+## Carried props keep their moveable sound (2026-10-28, USER-ASKS 389)
+- Problem (user, 2026-10-27): "dragging the blue dumpster on wheels did not sound correct", "dragging the yellow metal
+  dumpster sounded almost right, its a little off".
+- Root cause (session game-20261027-073605): the moveable object (start + main loop on the prop's own bank) runs only
+  while the audio entry says "moved by the player" (+0x20). Ours read `commanded`, which the physics step clears every
+  step, before the audio pass reads it. A carried prop counted as pushed only on reads that landed before a step.
+  Result: DMO_DT_DumpsterMedium_1000 was carried 7 times and got 1 start and no main loop; DMO_DT_DumpsterSmallYellow_1014
+  was carried 4 times and got nothing; the shopping cart's loop restarted about once a second. The dumpsters played only
+  the generic dynamic sliding loop.
+- Checked and not the cause: rolling vs sliding. The disc data (livingworld_dynamicobject_characteristics bool
+  Hash_7E9838A590602713) marks every dumpster and cart as sliding, wheeled ones included; only round props (globe,
+  pipes, cans, boulders) roll.
+- Change: `take_audio_samples` marks the held prop, and any prop commanded in the last step, as pushed
+  (`prop_dynamics.rs`). Test `audio_samples_mark_the_carried_prop_pushed_for_the_whole_carry`.
+- Umbrella table "keeps its drag / roll sound in water": the table rested on the canal floor (0.88 m deep) and kept
+  jiggling under the buoyancy samples, so it fired floor impacts and restarted its sliding loop. Same cause as the
+  sunk benches (USER-ASKS 390); fixed with that item, not here. Not play-checked.
+
+## Sunk props come to rest; moved props cull where they are (2026-10-28, USER-ASKS 390, 394, research b651)
+- Problem (user, 2026-10-27): "the water bob might be a bit much, pushed a metal bench in the water and its bobbing
+  kinda weird"; "the benches i pushed in the water never got cleaned up, but the dumpster did."
+- Jiggle, root cause (ours, Better Water): every buoyancy / drag sample went through `apply_impulse`, which wakes the
+  body and resets its sleep counter; and a sunk prop resting on the canal floor got a fresh small velocity from the
+  samples every step (about 0.004 m/s), so the integrator's energy test never counted toward sleep. Bench
+  2079070948 logged 588 loop starts and dozens of small impacts in that state; the umbrella table's "sound in the
+  water" (ask 389) was the same.
+- Change: water impulses use `add_impulse` (no wake); a prop denser than the water that touched the floor last step and
+  moves slower than `prop_settle_speed` (Better Water setting, 0.2 m/s, mod key in the water look patch, 0..5) gets no
+  water forces, so it rests and sleeps like on land. Test `a_prop_sunk_in_shallow_water_comes_to_rest`.
+- Cleanup, retail [code, b651]: retail has no water reset. The census culls a live DMO by its CURRENT position
+  (`826BAD98`, vfunc +16, 100 m) and respawns it at its placement. Ours culled by the authored placement, so the
+  dumpster (placed ~95 m away) was culled and respawned while the benches (placed near the canal) stayed.
+- Change: `DmoStream::live_at` (skate-core `living_world/dmo.rs`) holds moved objects' current origins, set by the host
+  each pass (`living_world/dmo_stream.rs`, `PropDynamics::origin_of`); the cull and the live score read it, a spawn
+  keeps the placement. Log line `DMO_STREAM_MOVED <decision> at [x, y, z]` for a moved prop that goes away. Test
+  `a_moved_object_culls_by_its_current_position`.
+- Open: retail groups the cull by the live object's linked group (`sub_82C4A5C0`), ours by authored touching
+  clusters; whether a push breaks retail's link is not read. A `dmo_stream` world tuning domain (cull 100, spawn 90,
+  pool 49) for mods is not added yet. Not play-checked.

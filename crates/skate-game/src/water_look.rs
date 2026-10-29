@@ -90,6 +90,9 @@ pub(crate) struct WaterLook {
     pub prop_heavy_density: f32,
     /// In water too deep to see the bottom, a sinking prop has faded out when its top is this far under (m); 0 = no fade.
     pub prop_fade_depth: f32,
+    /// A prop denser than the water that touches the floor below this speed (m/s) gets no water forces, so it
+    /// settles and sleeps instead of jiggling (USER-ASKS 390; ours, Better Water only).
+    pub prop_settle_speed: f32,
 }
 
 impl WaterLook {
@@ -126,6 +129,7 @@ impl WaterLook {
         prop_bob_period: 3.,
         prop_heavy_density: 2000.,
         prop_fade_depth: 0.,
+        prop_settle_speed: 0.2,
     };
 
     fn apply(&mut self, patch: &WaterLookPatch) {
@@ -161,6 +165,7 @@ impl WaterLook {
         if let Some(v) = patch.prop_bob_period { self.prop_bob_period = v; }
         if let Some(v) = patch.prop_heavy_density { self.prop_heavy_density = v; }
         if let Some(v) = patch.prop_fade_depth { self.prop_fade_depth = v; }
+        if let Some(v) = patch.prop_settle_speed { self.prop_settle_speed = v; }
     }
 
     /// `FrameState.fountain`: tile (m), calming floor, foam and the cascade clock `clock`; all zero = off.
@@ -242,6 +247,7 @@ impl Default for WaterLook {
             prop_bob_period: 3.,
             prop_heavy_density: 2000.,
             prop_fade_depth: 1.5,
+            prop_settle_speed: 0.2,
         }
     }
 }
