@@ -989,7 +989,7 @@ Found by it (2026-10-04): the event tags (`pop`, `land`) are computed only when 
 already runs (`AudioApi::subscribe`; refreshed otherwise only by a `player` tuning write). A mod that subscribes in
 `on_load` (before the native audio starts) keeps the empty default for the whole session: pops arrive untagged and a
 Skate_Collisions Splice with id 0 is tagged `land`. Rules are not affected (they read the tags from the native player).
-Open: refresh the tags when the native audio starts / restarts (engine fix, not done here).
+Fixed the same day (cc190888): `events_frame` takes the ids from the running player every frame, so the order of subscribe and native start / restart no longer matters (test `event_tags_follow_the_player_whatever_the_subscription_order`).
 
 ### M9. Open questions
 
