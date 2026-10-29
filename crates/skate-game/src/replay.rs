@@ -1048,8 +1048,9 @@ impl Replay {
                 root.translation.to_array());
         }
         let mode = self.editor.as_ref().map(|e| e.session.mode);
-        let constrain = mode == Some(skate_core::replay_edit::session::EditorMode::Instant)
-            || (self.camera_collision.playback && mode == Some(skate_core::replay_edit::session::EditorMode::Playback));
+        use skate_core::replay_edit::session::EditorMode as M;
+        let editing_key = matches!(mode, Some(M::FollowKey | M::TripodKey | M::GameKey | M::FreeKey));
+        let constrain = mode == Some(M::Instant) || (self.camera_collision.playback && mode.is_some() && !editing_key);
         let mut last = None;
         if constrain {
             let free = matches!(key, camera_key::CameraKey::Free { .. });

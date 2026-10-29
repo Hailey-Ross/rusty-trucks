@@ -874,7 +874,8 @@ fn a_follow_key_pitched_down_on_downtown_stays_above_the_ground() {
 }
 
 #[test]
-fn keyed_cameras_are_constrained_in_the_instant_view_not_in_playback() {
+/// Retail's replay camera never clips through the ground or ramps (user 2026-10-29): every play mode is constrained.
+fn keyed_cameras_are_constrained_whenever_the_clip_plays() {
     use skate_core::replay_edit::session::EditorMode;
     let root = Transform::from_xyz(0.0, 1.0, 0.0);
     let camera = Transform::from_xyz(0.0, 3.0, 8.0).looking_at(root.translation, Vec3::Y);
@@ -890,9 +891,10 @@ fn keyed_cameras_are_constrained_in_the_instant_view_not_in_playback() {
         replay.guarded_editor_camera(&camera, &root, &mut CameraGuard::default(), wall).0.unwrap().translation
     };
     let stored = replay.editor_camera(&camera, &root).0.unwrap().translation;
-    assert_ne!(eye(&mut replay, EditorMode::Instant), stored, "retail mode 5 constrains every frame (b615, m353)");
-    assert_eq!(eye(&mut replay, EditorMode::Playback), stored, "retail mode 1 plays the stored key");
-    assert_eq!(eye(&mut replay, EditorMode::Timeline), stored);
-    replay.set_camera("m", None, None, None, None, None, Some(true));
-    assert_ne!(eye(&mut replay, EditorMode::Playback), stored, "a mod's playback_collide");
+    for mode in [EditorMode::Instant, EditorMode::Playback, EditorMode::Timeline, EditorMode::Trim] {
+        assert_ne!(eye(&mut replay, mode), stored, "{mode:?}: kept out of the wall");
+    }
+    replay.set_camera("m", None, None, None, None, None, Some(false));
+    assert_eq!(eye(&mut replay, EditorMode::Playback), stored, "a mod's playback_collide = false plays the stored key");
+    assert_ne!(eye(&mut replay, EditorMode::Instant), stored, "the instant view stays constrained");
 }

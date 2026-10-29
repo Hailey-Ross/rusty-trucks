@@ -373,12 +373,15 @@ does not keep keyed cameras out of the world either; the instant view does.
 
 Change: `Replay::guarded_editor_camera` runs `camera_collision::constrain` on the evaluated keyed camera every frame
 while our editor session is in `EditorMode::Instant` (sweep from last frame's constrained eye, snap on a cut;
-Follow / Tripod re-aim at their look point, Free keeps its rotation). The stored key is not changed. Playback and the
-timeline play the stored key as before. Mod data: `CameraCollision::playback` (retail false) and
-`sdk.replay.set_camera{playback_collide = true}` also constrain editor playback; `collide = false` turns both off.
+Follow / Tripod re-aim at their look point, Free keeps its rotation). The stored key is not changed.
 
-Open: whether retail shows the ramp clip in Timeline playback (the user's RPCS3 check); which camera kinds the
-AVATAR_LOOK element (0x5C) gates (ours constrains Follow, Tripod and Free, as the edit does).
+2026-10-29 (USER-ASKS 402), the user: "NO the camera DOES NOT CLIP THROUGH RAMPS OR THE GROUND IN RETAIL." So the same
+constraint now runs in every mode where the clip plays (Playback, Timeline, Trim, instant view); the key edit modes
+keep their own edit constraint. `CameraCollision::playback` defaults to true; `sdk.replay.set_camera{playback_collide =
+false}` restores the code-gate reading (constrain only the instant view); `collide = false` turns all of it off. The
+retail mechanism that keeps a playing camera out (its code gate reads 0 in mode 1 / 6, m353; research b658 leads:
+the generic camera pass `828F2B58`, the sink `[S+0x7C]`) is unknown and not needed for the port. Not play-checked.
+Open: which camera kinds the AVATAR_LOOK element (0x5C) gates (ours constrains Follow, Tripod and Free).
 
 Tests: `replay::tests::keyed_cameras_are_constrained_in_the_instant_view_not_in_playback`,
 `replay::tests::a_mod_camera_override_goes_on_restore_and_disable`, skate-mods `replay_set_camera` validation.
