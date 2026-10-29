@@ -60,13 +60,20 @@ fn refresh_joints(
     peds: Query<(Entity, &crate::living_world::peds::PedPuppet, Option<&ReplayJoints>)>,
     cars: Query<(Entity, &crate::living_world::vehicles::CarLook, Option<&ReplayJoints>)>,
 ) {
-    let lists = npcs.iter().map(|(e, p, j)| (e, p.joints(), j))
-        .chain(peds.iter().map(|(e, p, j)| (e, p.bindings.as_ref().map(|b| b.joints()).unwrap_or_default(), j)))
-        .chain(cars.iter().map(|(e, c, j)| (e, c.wheel_joints(), j)));
-    for (entity, joints, current) in lists {
-        if current.is_none_or(|c| c.0 != joints) {
-            commands.entity(entity).insert(ReplayJoints(joints));
+    // Compared without collecting; a list is built only when it changed (b620).
+    let mut sync = |entity: Entity, joints: &mut dyn Iterator<Item = Entity>, current: Option<&ReplayJoints>, again: &dyn Fn() -> Vec<Entity>| {
+        if current.is_none_or(|c| !c.0.iter().copied().eq(joints)) {
+            commands.entity(entity).insert(ReplayJoints(again()));
         }
+    };
+    for (e, p, j) in &npcs {
+        sync(e, &mut p.joints_iter(), j, &|| p.joints());
+    }
+    for (e, p, j) in &peds {
+        sync(e, &mut p.bindings.iter().flat_map(|b| b.joints_iter()), j, &|| p.bindings.as_ref().map(|b| b.joints()).unwrap_or_default());
+    }
+    for (e, c, j) in &cars {
+        sync(e, &mut c.wheel_joints_iter(), j, &|| c.wheel_joints());
     }
 }
 

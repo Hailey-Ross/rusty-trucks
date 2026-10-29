@@ -418,6 +418,12 @@ impl NavMesh {
         best.map(|(_, at)| at)
     }
 
+    /// The reach check's snap (`82C46348`, b653): the 3D-nearest walkable point with no distance cap and no height
+    /// test, rejected when it lies more than `window` from `p` along X or along Z.
+    pub fn reach_snap(&self, p: Vec3, window: f32) -> Option<NavPoint> {
+        self.locate_start_nearest(p, f32::MAX).filter(|n| (n.position[0] - p[0]).abs() <= window && (n.position[2] - p[2]).abs() <= window)
+    }
+
     /// Nearest walkable point to `p` in any component (path start search 82933848, b324): docs/hails-additions/26f-living-world-peds.md#navmesh-start-search
     pub fn locate_start_nearest(&self, p: Vec3, max_dist: f32) -> Option<NavPoint> {
         let (ci, cj) = ((p[0] / self.cell).floor() as i32, (p[2] / self.cell).floor() as i32);

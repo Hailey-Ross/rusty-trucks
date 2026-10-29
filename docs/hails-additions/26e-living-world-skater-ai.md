@@ -1561,3 +1561,20 @@ avoiding, category 9); the record bits from the flags: the `ai_record` tests.
 Open (b602): the speed loss is partly inferred (the skid between the full-stick steer and the pulls); the avoid point
 written back into the steer's far aim (`sub_82464E30`, `pc+352`) and the low prop rule are smaller parity items; the
 landing loss of skater #7 at node 26. Not play-tested.
+
+## The far aim moves into the gap while avoid-steering (2026-10-28, research b612)
+- Problem: while an NPC skater avoid-steered (mode Steer), the ground steer still aimed at the far line point 45 ticks
+  ahead, so the stick pointed down the line instead of into the chosen gap and the skater dodged less than retail.
+- Retail [code]: `8246D560` builds the far aim `pc+352` (A + 45); in avoid modes 3 / 4 / 5 it calls
+  `82464E30(avoider, &far, A + 15)`, then `8246AA00` steers at the moved point. Before the steer target's path point
+  the far point shifts by `lateral` x the lane width on that side (`82454798`); past it the anchor is the target's path
+  point, or A + 15 once that is past the target too (`8245A100`). Widths on the result are 0. `82454798` with a zero
+  width shifts `lateral` metres on the unit side.
+- Change: `avoid::avoid_aim` + `before` (skate-core `living_world/avoid.rs`), the zero-width edge in
+  `avoid::steer_point`, `path_follow::path_point`, `npc_sim.rs` `avoid_far` feeds the ground steer's `far`.
+  `GroundSteerTuning::avoid_anchor_ticks` (retail 15.0, `0x820BD16C`).
+- Moddability: `living_world.npc_simulated.avoid_anchor_ticks` (0..=600), reset on mod disable.
+- Tests: `avoid_aim_follows_both_retail_branches` (skate-core), `npc_avoid_anchor_is_mod_reachable_and_reset_on_disable`
+  (skate-game).
+- Open: retail uses the path point's up vector, ours y-up (only differs on steep lines); whether retail runs the ground
+  steer during skitch (mode 4) is unchecked, ours skips it. Not play-checked.

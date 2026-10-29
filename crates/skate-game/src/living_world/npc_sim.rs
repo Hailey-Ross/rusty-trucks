@@ -248,6 +248,16 @@ fn clear_line_state(sim: &mut NpcSim) {
     sim.board_yaw = Default::default();
 }
 
+/// The ground steer's far aim; while avoid-steering it moves into the gap (`8246D560` -> `82464E30`, b612).
+fn avoid_far(line: &skate_core::living_world::replay::ReplayLine, a: (u32, f32), far: (u32, f32), av: &skate_core::living_world::avoid::AvoidOutput, t: &skate_core::living_world::ground_steer::GroundSteerTuning) -> [f32; 3] {
+    use skate_core::living_world::{avoid, path_follow};
+    let target = (av.mode == avoid::AvoidMode::Steer).then_some(av.steer_target).flatten().and_then(|id| av.entries.iter().find(|e| e.id == id)).and_then(|e| e.path);
+    match target {
+        Some(e) => avoid::avoid_aim(&path_follow::path_point(line, far), &path_follow::path_point(line, path_follow::advance(line, a, t.avoid_anchor_ticks)), &e, av.lateral).point,
+        None => path_follow::point(line, far),
+    }
+}
+
 fn projected_point(sim: &NpcSim, state: PhysicalStateId) -> ([f32; 3], [f32; 3]) {
     let wiped = sim.body.runtime.player_input.processed.flags_2468 & WIPEOUT_BIT != 0;
     if state == PhysicalStateId::BipedGround || wiped {
@@ -1367,7 +1377,7 @@ pub(crate) fn simulate(
                                     on_path,
                                     position: projected_point(sim, state).0,
                                     near: path_follow::point(line, near),
-                                    far: path_follow::point(line, far),
+                                    far: avoid_far(line, f.a, far, &avoid.last, t),
                                     dist: f.dist,
                                     inside_lane: f.inside_lane,
                                     lateral: f.lateral,

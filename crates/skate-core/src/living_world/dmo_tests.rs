@@ -118,3 +118,18 @@ fn a_kept_live_object_is_never_evicted_while_others_can_go() {
     assert!(!evicted.contains(&kept_id), "the kept prop stays: {evicted:?}");
     assert!(d.live.contains(&kept_id));
 }
+
+/// b651 / ask 394: a live object pushed away culls by where it is now (retail `826BAD98` vfunc +16), not by its
+/// placement; once culled it respawns at the placement.
+#[test]
+fn a_moved_object_culls_by_its_current_position() {
+    let s = DmoStreamSettings::default();
+    let mut d = DmoStream::new(vec![placement(1, 50.0, Some(100))], &s);
+    assert_eq!(d.step(&[at(0.0)], &s, false, &NONE), vec![DmoDecision::Spawn(1)]);
+    // Pushed next to the player standing 120 m from its placement: it stays.
+    d.live_at.insert(1, [-70.0, 0.0, 0.0]);
+    assert!(d.step(&[at(-70.0)], &s, false, &NONE).is_empty(), "near the player where it is now");
+    // Left there, the player goes back to its placement (now 120 m from the object): it is culled and the same pass
+    // spawns it again at the placement, next to the player.
+    assert_eq!(d.step(&[at(50.0)], &s, false, &NONE), vec![DmoDecision::Cull(1), DmoDecision::Spawn(1)]);
+}

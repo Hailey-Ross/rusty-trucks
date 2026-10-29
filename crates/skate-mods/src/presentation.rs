@@ -204,6 +204,8 @@ pub struct WaterLookPatch {
     pub prop_heavy_density: Option<f32>,
     /// In water too deep to see the bottom: how far under (m) a sinking prop has faded out, 0..20 (0 = no fade).
     pub prop_fade_depth: Option<f32>,
+    /// A sunk prop touching the floor below this speed (m/s, 0..5) gets no water forces and can sleep (ours).
+    pub prop_settle_speed: Option<f32>,
 }
 impl WaterLookPatch {
     pub fn validate(&self) -> bool {
@@ -217,6 +219,7 @@ impl WaterLookPatch {
             && ok(self.prop_bob_period, 0.5, 30.0)
             && ok(self.prop_heavy_density, 10.0, 20000.0)
             && ok(self.prop_fade_depth, 0.0, 20.0)
+            && ok(self.prop_settle_speed, 0.0, 5.0)
             && ok(self.fountain_tile, 0.5, 100.0)
             && ok(self.fountain_waves, 0.0, 1.0)
             && ok(self.cascade_rate, 0.0, 8.0)

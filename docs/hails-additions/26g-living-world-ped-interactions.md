@@ -2923,3 +2923,39 @@ The graph op `SendChaseStateMessage` (`826A77A8`) posts {ped, state} for a playe
   x the NavPower scale 1.3; b516): ours re-plans the approach every tick, which only costs queries. The arrival
   radius term from the bot settings, and keeping the old path for a target off the mesh, stay open (b516).
 - **Tests:** `an_approach_goal_with_no_path_leaves_the_ped_standing` (skate-core nav tests). Not play-tested.
+
+## Chase reach check snaps like retail (2026-10-28, USER-ASKS 392, research b650, b653)
+- Problem (user, 2026-10-27): "the ped is also NOT giving up on chasing me even though he CANNOT reach me".
+- Retail [code, b650]: there is no stall or path-failure give-up for a chaser. Near the chasee (5 m) the only exit is
+  CannotReachChaseTarget, set by the mover's reach check (`82C465A8`) every 10 updates. That check snaps the ped and
+  the destination with `82C46348` [code + data, b653]: the 3D-nearest walkable polygon point with no distance cap and
+  NO height test, failing (code 3) when it lies more than 0.65 m away along X or along Z (radius 0.5 at `0x8209975C`
+  x the NavPower params scale 1.3 at `0x82099484`; main checked the compare at skate3_recomp.78.cpp:17500).
+- Ours used `NavMesh::locate` (0.5 m round edge radius, 4.0 m height window) for the check.
+- Change: `NavMesh::reach_snap` and `chase::reach_failed_at` (skate-core `peds/nav.rs`, `peds/chase.rs`); the intercept
+  and the reach check in `living_world/peds.rs` use them. Mod key `living_world.ped_brain.reach_snap_window`
+  (retail 0.65). Test: `reach_reports_fail_off_the_mesh_and_across_islands_and_only_they_rewrite_the_bit`.
+- What it means in play: a chasee standing inside a prop footprint cut from the navmesh, or more than 0.65 m off the
+  walkable area, reads unreachable within 5 m (wait 5 s, give up). A chasee on a ledge or rail over walkable ground
+  is reachable in retail too. Why ped #189 stood still on a route the check called reachable is a follower issue,
+  still open (needs a route log in a session). Open: the polygon class test `82C47D60` (poly +0x2C nibbles >= 2),
+  the in-polygon projection along the normal on slopes.
+
+## Scatter alarm (2026-10-28, USER-ASKS 381, research b654)
+- Retail [code + data, b654; main checked the writer and the reset in the recomp]: `sub_826C1348`, once per world
+  step, reads the local player's PhysOut_Trick copy of the MotionGraph gesture block. The alarm byte (MG +5989) is
+  written by `sub_8258FB30` (stw +3300 / stb +3305 / stb 1 +3304 on MG+0xA7C) from CharacterGesture (`82BAA320`) as
+  "the running gesture is on D-pad Down" (k == 3); the reset `sub_825960C0` sets the id back to 37 (no gesture) and
+  clears both bytes. While the byte is set the timer is SET to 180.0 (`0x821DE7BC`), then 1/60 comes off per step;
+  scatter while above 0. Zombie mode: off, timer untouched. Every live ped's ShouldScatter (brain +3281 bit 0x80) is
+  that result (`sub_826BDB50`); the graph's Scatter state speaks value 20.
+- Ours: nothing wrote `b.scatter`, so Scatter never ran.
+- Change: skate-core `peds/scatter.rs` `step`; `think_peds` steps it once per world tick from the player's
+  `gesture_publication.down` (our CharacterGesture port, `graph_host/motion_character_gesture.rs`) and copies it into
+  every ped's brain. Log `PED_SCATTER on|off`. Mod key `living_world.ped_brain.scatter_seconds` (retail 180, 0 = off).
+  Test `the_alarm_holds_while_raised_runs_180_s_and_is_off_in_zombie_mode`.
+- Inference: the byte clears when the gesture ends (our publication is None then), read from the reset setting id 37;
+  the reset's caller is a table entry, not traced. Open: a Lua raise / clear call; one recomp check (SCATTEST hook,
+  a D-pad Down gesture near peds) would confirm the byte. User (2026-10-28), asked whether the D-pad Down gesture near
+  peds makes them run off in retail: "Yes that sounds correct." Multiplayer: the host owns the timer; with several players
+  retail reads only the local player (online is open). Not play-checked.

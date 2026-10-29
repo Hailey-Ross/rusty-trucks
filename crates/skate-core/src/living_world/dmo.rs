@@ -3,7 +3,7 @@
 
 use super::census::CensusRange;
 use super::{Observer, Vec3};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The five `livingworld.dynamicobjects` score weights [data, b97 §1.4].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -120,6 +120,9 @@ pub struct DmoStream {
     pub live: BTreeSet<u32>,
     /// Group index per placement (touching clusters).
     group: Vec<usize>,
+    /// Where live objects moved off their placement are now (the host sets it each pass): the cull and the live
+    /// score read the object's current position, a spawn the placement's (`826BAD98` vfunc +16, b651).
+    pub live_at: BTreeMap<u32, Vec3>,
 }
 
 impl DmoStream {
@@ -144,7 +147,7 @@ impl DmoStream {
             }
         }
         let group = (0..n).map(|i| root(&mut group, i)).collect();
-        Self { placements, live: BTreeSet::new(), group }
+        Self { placements, live: BTreeSet::new(), group, live_at: BTreeMap::new() }
     }
 
     fn index(&self, id: u32) -> Option<usize> {
@@ -164,8 +167,9 @@ impl DmoStream {
         if circles.is_empty() {
             return out;
         }
+        let now = |p: &DmoPlacement| self.live_at.get(&p.id).map_or_else(|| p.clone(), |at| DmoPlacement { position: *at, ..p.clone() });
         // Cull: beyond every observer's circle, with the whole group.
-        let beyond = |p: &DmoPlacement| circles.iter().all(|((c, centre), _)| flat_dist(p.position, *centre) > c.cull);
+        let beyond = |p: &DmoPlacement| circles.iter().all(|((c, centre), _)| flat_dist(now(p).position, *centre) > c.cull);
         let mut cull_groups = BTreeSet::new();
         for (i, p) in self.placements.iter().enumerate() {
             if self.live.contains(&p.id) && p.streamable && !exempt(p.id) && beyond(p) {
@@ -186,10 +190,11 @@ impl DmoStream {
         let best = |p: &DmoPlacement| circles.iter().map(|(_, v)| score_value(score(p, v, &settings.weights))).fold(f32::MIN, f32::max);
         // The live score: a kept object scores like a keep placement (flag 0x10: s1 = 2^31, the keep weight).
         let live_score = |p: &DmoPlacement| {
+            let p = now(p);
             if kept(p.id) && !p.keep {
-                best(&DmoPlacement { keep: true, ..p.clone() })
+                best(&DmoPlacement { keep: true, ..p })
             } else {
-                best(p)
+                best(&p)
             }
         };
         let front = |s: &Self| s.placements.iter().filter(|p| s.live.contains(&p.id) && !exempt(p.id)).map(|p| (live_score(p), p.id)).min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));

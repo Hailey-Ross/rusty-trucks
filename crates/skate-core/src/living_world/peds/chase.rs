@@ -271,6 +271,13 @@ pub fn reach_failed(mesh: &super::nav::NavMesh, ped: Option<u32>, destination: O
     !matches!((ped, destination), (Some(a), Some(b)) if mesh.reachable(a, b))
 }
 
+/// The mover's check from world points (`82C465A8`): ped and destination snap with [`super::nav::NavMesh::reach_snap`]
+/// (window = radius 0.5 x the NavPower scale 1.3, b653), then the same connectivity test.
+pub fn reach_failed_at(mesh: &super::nav::NavMesh, ped: Vec3, destination: Vec3, window: f32) -> bool {
+    let snap = |p: Vec3| mesh.reach_snap(p, window).map(|n| n.poly);
+    reach_failed(mesh, snap(ped), snap(destination))
+}
+
 /// What the intercept goal's event handler (`82E31D58`) does with a report: an unreachable report rewrites
 /// CannotReachChaseTarget (`brain+3280` bit 0x08) to "within the unreachable radius of the chasee"; a reachable
 /// destination posts nothing and the bit keeps its value (b302).
@@ -319,6 +326,13 @@ mod tests {
         assert!(reach_failed(&m, ped, water), "a chasee in the water");
         assert!(reach_failed(&m, ped, island), "a chasee on an unconnected island");
         assert!(reach_failed(&m, None, bank), "the ped itself off the mesh");
+        // b653: no height test, a square 0.65 m X / Z window.
+        let at = |chasee: Vec3| reach_failed_at(&m, [1.0, 0.0, 1.0], chasee, 0.65);
+        assert!(!at([3.0, 1.5, 3.0]), "a chasee 1.5 m above the bank (a ledge or rail over it) is reachable");
+        assert!(!at([3.0, 12.0, 3.0]), "any height");
+        assert!(!at([4.6, 0.0, 2.0]), "0.6 m off the edge snaps back");
+        assert!(at([4.7, 0.0, 2.0]), "0.7 m off the edge does not");
+        assert!(at([7.0, 0.0, 2.0]), "the water between");
         // 82E31D58: an unreachable report sets the bit within the radius and clears it beyond; a reachable
         // destination posts nothing, so the bit stays (a chasee back on the bank does not end the wait).
         let mut bit = false;

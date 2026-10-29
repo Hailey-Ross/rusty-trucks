@@ -1265,6 +1265,9 @@ Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes 
 
 ## Props in water
 
+A sunk prop resting on the floor gets no water forces below `prop_settle_speed` (0.2 m/s) and sleeps (2026-10-28,
+ask 390): docs/hails-additions/27-dynamic-props.md#sunk-props-come-to-rest-moved-props-cull-where-they-are-2026-10-28-user-asks-390-394-research-b651
+
 - **Retail (Better Water off):** water is not solid to props; they fall through to the floor under it, with no lift,
   drag or splash. Evidence: the user's RPCS3 clip (2026-10-26, `F:\Libraries\Videos\2026-10-26 11-00-29.mp4`, 0:38): a
   dumpster pushed into the Aletown canal tips over the edge and goes under the surface within about half a second,

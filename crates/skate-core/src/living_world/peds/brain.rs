@@ -36,6 +36,12 @@ pub struct BrainSettings {
     /// How often the mover checks that its destination is reachable, seconds: every 10 mover updates
     /// (`82E2CB08`, counter mover `+0xB0`), at the console's 30 fps cadence 10 / 30 s [code; cadence: ours].
     pub reach_check_seconds: f32,
+    /// The reach check's snap window along X and along Z, m (`82C46348`: radius 0.5 at `0x8209975C` x the NavPower
+    /// params scale 1.3 at `0x82099484`; b653) [code + data].
+    pub reach_snap_window: f32,
+    /// How long the scatter alarm runs after the player's D-pad Down gesture, s (`0x821DE7BC` 180.0, b654) [data];
+    /// 0 turns the alarm off.
+    pub scatter_seconds: f32,
     /// DrawTazer's draw time (`826A8258`, timer 37, `0x82099478` 0.133 s) and TazeWantTarget's
     /// delay before the hit (`826A8398`, timer 39, `0x820D06C0` 0.3 s); speeches 66 / 67.
     pub tazer_draw_seconds: f32,
@@ -97,7 +103,7 @@ impl Default for ZombieFollowSettings {
 
 impl Default for BrainSettings {
     fn default() -> Self {
-        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, mood_want_memory_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, tazer_clip_blend: 0.2, tazer_clip_end: 0.2, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, reach_check_seconds: 10.0 / 30.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default(), trip_kind: super::skater_contact::ReactionKind::Knockdown, trip_direction: super::skater_contact::ReactionDirection::FromBack, avoid: super::avoid::AvoidRules::RETAIL }
+        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, mood_want_memory_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, tazer_clip_blend: 0.2, tazer_clip_end: 0.2, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, reach_check_seconds: 10.0 / 30.0, reach_snap_window: 0.65, scatter_seconds: 180.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default(), trip_kind: super::skater_contact::ReactionKind::Knockdown, trip_direction: super::skater_contact::ReactionDirection::FromBack, avoid: super::avoid::AvoidRules::RETAIL }
     }
 }
 

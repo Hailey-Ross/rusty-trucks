@@ -11,8 +11,9 @@ pub(crate) enum CameraKey {
     Follow { eye: Vec3, look_height: f32 },
     /// A world eye looking at the skater's root plus the look height.
     Tripod { eye: Vec3, look_height: f32 },
-    /// A world pose: eye, yaw / pitch (degrees).
-    Free { eye: Vec3, yaw: f32, pitch: f32 },
+    /// A world pose: eye, yaw / pitch (degrees) and the look distance (m; retail C+0x24, set at the pick and kept by
+    /// every edit, b652).
+    Free { eye: Vec3, yaw: f32, pitch: f32, distance: f32 },
 }
 
 /// The menu rows of the basic cameras (screen order Follow, Tripod, Game, Free; item table `8302CCE0`, b401).
@@ -70,7 +71,7 @@ impl CameraKey {
             (CameraKey::Game, CameraKey::Game) => CameraKey::Game,
             (CameraKey::Follow { eye, look_height }, CameraKey::Follow { eye: e2, look_height: h2 }) => CameraKey::Follow { eye: eye.lerp(e2, u), look_height: l(look_height, h2) },
             (CameraKey::Tripod { eye, look_height }, CameraKey::Tripod { eye: e2, look_height: h2 }) => CameraKey::Tripod { eye: eye.lerp(e2, u), look_height: l(look_height, h2) },
-            (CameraKey::Free { eye, yaw, pitch }, CameraKey::Free { eye: e2, yaw: y2, pitch: p2 }) => CameraKey::Free { eye: eye.lerp(e2, u), yaw: l(yaw, y2), pitch: l(pitch, p2) },
+            (CameraKey::Free { eye, yaw, pitch, distance }, CameraKey::Free { eye: e2, yaw: y2, pitch: p2, distance: d2 }) => CameraKey::Free { eye: eye.lerp(e2, u), yaw: l(yaw, y2), pitch: l(pitch, p2), distance: l(distance, d2) },
             _ => return None,
         })
     }
@@ -205,21 +206,32 @@ impl Anchors {
     }
 }
 
-/// A new key of `row`'s camera from the current view (`view`).
+/// A new key of `row`'s camera from the current view (`view`). A Free key's look distance reaches the skater root
+/// (OURS: retail takes the Game camera's look object 3, actor slot 2, not identified yet; b652).
 pub(crate) fn key_from_view(row: usize, view: &Transform, anchors: &Anchors) -> Option<CameraKey> {
+    free_from(row, view, anchors, anchors.root.translation)
+}
+
+fn free_from(row: usize, view: &Transform, anchors: &Anchors, look: Vec3) -> Option<CameraKey> {
     let (yaw, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
     Some(match row {
         0 => CameraKey::Follow { eye: anchors.to_eye_frame(view.translation), look_height: 0.0 },
         1 => CameraKey::Tripod { eye: view.translation, look_height: 0.0 },
         2 => CameraKey::Game,
-        3 => CameraKey::Free { eye: view.translation, yaw: yaw.to_degrees(), pitch: pitch.to_degrees() },
+        3 => CameraKey::Free { eye: view.translation, yaw: yaw.to_degrees(), pitch: pitch.to_degrees(), distance: view.translation.distance(look) },
         _ => return None,
     })
 }
 
+/// A Free key's world look point: the eye plus the view forward times the look distance (`82C82E40`, b652).
+pub(crate) fn free_look(eye: Vec3, yaw: f32, pitch: f32, distance: f32) -> Vec3 {
+    eye + Quat::from_euler(EulerRot::YXZ, yaw.to_radians(), pitch.to_radians(), 0.0) * Vec3::NEG_Z * distance
+}
+
 /// A section's start key re-expressed as `row`'s camera when a pick replaces the section (b610: the stored eye / look
 /// go old space -> world -> new space with the frames at the playhead; the look height stays between Follow and
-/// Tripod, a Free source gets look height 0). None for a Game source (no stored pose: the caller keys the view).
+/// Tripod; a Free source's look point P sets the look height, its lateral part is dropped (b613 / b652); a Free key
+/// takes the old look point's distance). None for a Game source (no stored pose: the caller keys the view).
 pub(crate) fn convert_key(old: &CameraKey, row: usize, anchors: &Anchors) -> Option<CameraKey> {
     if old.row() == row {
         return Some(*old);
@@ -228,11 +240,20 @@ pub(crate) fn convert_key(old: &CameraKey, row: usize, anchors: &Anchors) -> Opt
     Some(match (row, *old) {
         (_, CameraKey::Game) => return None,
         (2, _) => CameraKey::Game,
-        (3, _) => return key_from_view(3, &pose(old, anchors)?, anchors),
+        (3, CameraKey::Follow { look_height, .. } | CameraKey::Tripod { look_height, .. }) => {
+            return free_from(3, &pose(old, anchors)?, anchors, anchors.look(look_height));
+        }
         (0, CameraKey::Tripod { eye, look_height }) => CameraKey::Follow { eye: anchors.to_eye_frame(eye), look_height },
-        (0, CameraKey::Free { eye, .. }) => CameraKey::Follow { eye: anchors.to_eye_frame(eye), look_height: 0.0 },
+        // Retail keeps P in the Follow eye frame and re-applies it at the skater root (b613).
+        (0, CameraKey::Free { eye, yaw, pitch, distance }) => CameraKey::Follow {
+            eye: anchors.to_eye_frame(eye),
+            look_height: anchors.to_eye_frame(free_look(eye, yaw, pitch, distance)).y - CameraRules::default().look_target_height,
+        },
         (1, CameraKey::Follow { eye, look_height }) => CameraKey::Tripod { eye: world(eye), look_height },
-        (1, CameraKey::Free { eye, .. }) => CameraKey::Tripod { eye, look_height: 0.0 },
+        (1, CameraKey::Free { eye, yaw, pitch, distance }) => CameraKey::Tripod {
+            eye,
+            look_height: (free_look(eye, yaw, pitch, distance) - anchors.root.translation).y - CameraRules::default().look_target_height,
+        },
         _ => return None,
     })
 }
@@ -269,7 +290,7 @@ pub(crate) fn edit(key: &mut CameraKey, lens: &mut f32, height: &mut FreeHeight,
             }
             *look_height = (*look_height + input.height * rules.look_step * frames).clamp(rules.look_range.0, rules.look_range.1);
         }
-        CameraKey::Free { eye, yaw, pitch } => {
+        CameraKey::Free { eye, yaw, pitch, .. } => {
             *yaw -= cap(input.turn.x * rules.free_deg_per_unit, rules.free_deg_cap) * frames;
             *pitch = (*pitch + cap(input.turn.y * rules.free_deg_per_unit, rules.free_deg_cap) * frames)
                 .clamp(-rules.pitch_limit, rules.pitch_limit);
@@ -295,7 +316,7 @@ pub(crate) fn pose(key: &CameraKey, anchors: &Anchors) -> Option<Transform> {
         CameraKey::Game => None,
         CameraKey::Follow { eye, look_height } => Some(look_at(anchors.eye.transform_point(eye), anchors.look(look_height))),
         CameraKey::Tripod { eye, look_height } => Some(look_at(eye, anchors.look(look_height))),
-        CameraKey::Free { eye, yaw, pitch } => Some(Transform::from_translation(eye).with_rotation(Quat::from_euler(
+        CameraKey::Free { eye, yaw, pitch, .. } => Some(Transform::from_translation(eye).with_rotation(Quat::from_euler(
             EulerRot::YXZ,
             yaw.to_radians(),
             pitch.to_radians(),
@@ -389,7 +410,7 @@ mod tests {
     fn free_camera_rates_follow_the_editor_constants() {
         let rules = CameraRules::default();
         let (mut lens, mut height) = (24.0, FreeHeight::default());
-        let mut key = CameraKey::Free { eye: Vec3::ZERO, yaw: 0.0, pitch: 0.0 };
+        let mut key = CameraKey::Free { eye: Vec3::ZERO, yaw: 0.0, pitch: 0.0, distance: 4.0 };
         let input = CameraInput { turn: Vec2::new(0.32, 0.0), move_: Vec2::new(0.2, 0.5), height: 1.0, zoom: 0.0 };
         for _ in 0..60 {
             edit(&mut key, &mut lens, &mut height, input, &rules, None, 1.0 / 30.0);
@@ -434,5 +455,29 @@ mod tests {
         set_eye(&mut key, eye, &anchors);
         let CameraKey::Follow { eye: local, .. } = key else { panic!() };
         assert!(local.distance(Vec3::new(1.0, 0.5, -2.0)) < 1e-4, "{key:?}");
+    }
+
+    /// b652: Free keeps its look distance through edits, takes it from the old look point on a conversion, and its
+    /// look point P sets the Follow / Tripod look height.
+    #[test]
+    fn free_look_distance_follows_retail() {
+        let a = at(Transform::from_xyz(0.0, 0.0, 0.0));
+        let tripod = CameraKey::Tripod { eye: Vec3::new(0.0, 2.0, 6.0), look_height: 0.5 };
+        let Some(CameraKey::Free { eye, yaw, pitch, distance }) = convert_key(&tripod, 3, &a) else { panic!() };
+        assert!((distance - eye.distance(a.look(0.5))).abs() < 1e-4);
+        assert!(free_look(eye, yaw, pitch, distance).distance(a.look(0.5)) < 1e-3, "P is the old look point");
+        let mut key = CameraKey::Free { eye, yaw, pitch, distance };
+        let input = CameraInput { turn: Vec2::new(1.0, 0.5), move_: Vec2::new(0.3, -0.2), height: 1.0, zoom: 0.0 };
+        edit(&mut key, &mut 24.0, &mut FreeHeight::default(), input, &CameraRules::default(), Some(&a), 1.0 / 30.0);
+        let CameraKey::Free { distance: kept, .. } = key else { panic!() };
+        assert_eq!(kept, distance, "edits keep D");
+        let free = CameraKey::Free { eye: Vec3::new(0.0, 3.0, 5.0), yaw: 0.0, pitch: -10.0, distance: 5.0 };
+        let p = free_look(Vec3::new(0.0, 3.0, 5.0), 0.0, -10.0, 5.0);
+        let Some(CameraKey::Tripod { look_height, .. }) = convert_key(&free, 1, &a) else { panic!() };
+        assert!((look_height - (p.y - a.root.translation.y)).abs() < 1e-4);
+        let Some(CameraKey::Follow { look_height, .. }) = convert_key(&free, 0, &a) else { panic!() };
+        assert!((look_height - a.to_eye_frame(p).y).abs() < 1e-4);
+        let Some(CameraKey::Free { distance, .. }) = key_from_view(3, &Transform::from_xyz(3.0, 0.0, 4.0), &a) else { panic!() };
+        assert!((distance - 5.0).abs() < 1e-4, "a view key reaches the skater root (ours)");
     }
 }

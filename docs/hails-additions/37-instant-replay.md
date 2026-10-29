@@ -1193,3 +1193,22 @@ handling, replay.rs help block and panel gate).
 - **Test:** `replay::tests` (the quit warning test) queues a replay answer and a teleporter answer: the replay acts
   on its own, and the teleporter answer is still queued afterwards.
 - **Files:** `crates/skate-game/src/replay.rs`, `crates/skate-game/src/replay/tests.rs`.
+
+## Free camera look distance and the camera type conversions (2026-10-28, research b613, b652)
+- Problem: our Free keys stored only eye, yaw and pitch. Converting Free to Follow or Tripod reset the look height to
+  0, and converting Follow or Tripod to Free threw away the look distance.
+- Retail [code]: the Free look point is P = eye - D * dir(yaw, pitch). D is the camera field C+0x24, set by
+  `82C82A50` to |eye - look| when Free is picked (`82C80540`). The recomp stores `fsqrts` to +36, with yaw at +0x1E
+  and pitch at +0x22 (main checked). `82C82E40` rebuilds P with D unchanged on every edit, and the `82683680` leash
+  write-back keeps D. A converted key keeps P (b613): Follow keeps it in the eye frame, re-applied at the skater root;
+  Tripod keeps it skater-local.
+- Change (`replay/camera_key.rs`):
+  - `CameraKey::Free` gains `distance`, and `free_look` gives P.
+  - Follow / Tripod -> Free takes the old look point's distance.
+  - Free -> Follow / Tripod sets the look height from P's height (Follow: in the eye frame; Tripod: above the root).
+  - Free keys blend the distance between keys.
+- OURS: our look model has no lateral look offset, so P's lateral part is dropped (full parity needs a root-frame
+  look offset in Follow / Tripod keys, b613). A Free key made from a Game view takes its distance to the skater root;
+  retail uses the Game camera's look object 3 (actor slot 2, not identified).
+- Test: `free_look_distance_follows_retail`. Research: `.local/research/b652-free-look-point.md`,
+  `.local/research/b613-replace-open-points.md`. Not play-checked.

@@ -1204,6 +1204,12 @@ impl PropBody {
     /// impulse vector for the other body / wake accounting.
     fn apply_impulse(&mut self, impulse: Vector3, point: Vector3) -> Vector3 {
         self.wake();
+        self.add_impulse(impulse, point)
+    }
+
+    /// [`Self::apply_impulse`] without the wake: a steady force (the water) must not reset the sleep counter, or a
+    /// prop resting under it never sleeps (USER-ASKS 390).
+    fn add_impulse(&mut self, impulse: Vector3, point: Vector3) -> Vector3 {
         self.rates.linear_velocity = add(
             self.rates.linear_velocity,
             scale(impulse, self.inertia.inverse_mass),
@@ -1322,6 +1328,7 @@ impl PropDynamics {
     /// contact since the last call, into `out` (cleared first): docs/hails-additions/27-dynamic-props.md#prop-sounds
     pub(crate) fn take_audio_samples(&mut self, out: &mut Vec<PropAudioSample>) {
         out.clear();
+        let held = self.held;
         for body in &mut self.bodies {
             let contact = body.audio_contact.take();
             let pushed = std::mem::take(&mut body.audio_pushed);
@@ -1336,8 +1343,9 @@ impl PropDynamics {
                 position: [p.x, p.y, p.z],
                 speed: length(body.rates.linear_velocity),
                 spin: length(body.rates.angular_velocity),
-                // Entry +0x20 (its writer is not traced): the local player moves it (Move Object) or pushed it this read.
-                pushed: body.commanded || pushed,
+                // Entry +0x20 (its writer is not traced): the local player moves it (Move Object: the whole carry, not
+                // only reads that land before the step clears `commanded`) or pushed it this read.
+                pushed: held == Some(body.id) || body.commanded || body.commanded_block || pushed,
                 velocity: [body.rates.linear_velocity.x, body.rates.linear_velocity.y, body.rates.linear_velocity.z],
                 contact: contact.map(|(strength, tag)| (strength, skate_audio::player::state::material_of_tag(tag & 0x7F) as i32)),
             });
@@ -1386,6 +1394,11 @@ impl PropDynamics {
             // Heavy props (a dumpster) always sink, even where deep water carries the rest (user 2026-10-26).
             let heavy = material >= water.heavy_density;
             let density = if deep && !heavy { material.min(water.deep_float_density) } else { material };
+            // Sunk and resting on the floor: no water forces, so it settles and sleeps like on land (ask 390).
+            let speed2 = dot(body.rates.linear_velocity, body.rates.linear_velocity);
+            if density > water.density && body.contacts > 0 && speed2 < water.settle_speed * water.settle_speed {
+                continue;
+            }
             // The water this mass displaces when fully under: the solver mass over the material density.
             let volume = mass / density.max(1.0);
             let lift = if deep { super::prop_water::bob(&water, c.x, c.z, self.tick as f32 * dt) } else { 0.0 };
@@ -1413,7 +1426,7 @@ impl PropDynamics {
             for s in samples {
                 let impulse = super::prop_water::sample_impulse(&water, s, volume, mass, body.velocity_at(s.point), gravity, dt);
                 if impulse != Vector3::ZERO {
-                    body.apply_impulse(impulse, s.point);
+                    body.add_impulse(impulse, s.point);
                 }
             }
             body.rates.angular_velocity = super::prop_water::spin_damped(&water, body.rates.angular_velocity, submerged, dt);
@@ -2102,6 +2115,11 @@ impl PropDynamics {
     }
 
     /// World position of one body's box centre.
+    /// The body's origin (the frame its spawn pose is in), for the census.
+    pub(crate) fn origin_of(&self, id: u32) -> Option<Vector3> {
+        Some(self.bodies.get(*self.by_id.get(&id)?)?.origin())
+    }
+
     pub(crate) fn position_of(&self, id: u32) -> Option<Vector3> {
         Some(self.bodies.get(*self.by_id.get(&id)?)?.rates.position)
     }
@@ -3624,7 +3642,7 @@ mod tests {
             dynamics.bodies[0].tuning.water_density = density;
             let water = super::super::prop_water::PropWater {
                 density: 1000., drag: 2.0, spin_drag: 1.5, deep_float_density: 700., bob_height: 0., bob_period: 3.,
-                heavy_density: 2000., fade_depth: 1.5,
+                heavy_density: 2000., fade_depth: 1.5, settle_speed: 0.2,
             };
             dynamics.set_water(density.map(|_| water), &world);
             dynamics.bodies[0].wake();
@@ -3648,6 +3666,30 @@ mod tests {
         let (abyss, fade) = drop(20.0, Some(2500.));
         assert_eq!(fade, 0.0, "sunk out of sight in water too deep to see the bottom");
         assert!(abyss > REST_Y + 10.0 && abyss < water_y(20.0) - 1.5, "it stops where it faded out, at {abyss}");
+    }
+
+    /// Ask 390: a prop that sank to the floor of shallow water settles and sleeps instead of jiggling under the
+    /// water's samples (each of them used to reset the sleep counter).
+    #[test]
+    fn a_prop_sunk_in_shallow_water_comes_to_rest() {
+        let (flat, mut layer, mut dynamics) = fixture([0., REST_Y + 2.8, 0.]);
+        let world = with_water(&flat, 0.8);
+        dynamics.bodies[0].tuning.water_density = Some(1400.);
+        let water = super::super::prop_water::PropWater {
+            density: 1000., drag: 2.0, spin_drag: 1.5, deep_float_density: 700., bob_height: 0., bob_period: 3.,
+            heavy_density: 2000., fade_depth: 1.5, settle_speed: 0.2,
+        };
+        dynamics.set_water(Some(water), &world);
+        dynamics.bodies[0].wake();
+        for _ in 0..900 {
+            dynamics.step(&world, &mut layer, &[]);
+        }
+        assert!(dynamics.bodies[0].asleep, "sunk prop sleeps: {:?}", dynamics.bodies[0].rates);
+        let rest = dynamics.bodies[0].rates.position;
+        for _ in 0..300 {
+            dynamics.step(&world, &mut layer, &[]);
+        }
+        assert_eq!(dynamics.bodies[0].rates.position, rest, "and stays put");
     }
 
     /// A prop dropped from the air falls, settles on the floor and sleeps; its
@@ -3694,6 +3736,28 @@ mod tests {
         assert!(strength > 7.0 && strength < 11.0, "a 4.5 m fall closes at about 9.4 m/s: {strength}");
         assert!((0..=143).contains(&material));
         assert!(samples.is_empty(), "an asleep prop with no new contact has no entry: {samples:?}");
+    }
+
+    /// Ask 389: a carried prop is "moved by the player" (entry +0x20) for every audio read of the carry, so its
+    /// moveable loop does not drop out between reads; it ends with the carry.
+    #[test]
+    fn audio_samples_mark_the_carried_prop_pushed_for_the_whole_carry() {
+        let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 0.]);
+        dynamics.bodies[0].wake();
+        let id = dynamics.bodies[0].id;
+        dynamics.set_held(Some(id));
+        let mut samples = Vec::new();
+        for _ in 0..30 {
+            dynamics.step(&world, &mut layer, &[]);
+            dynamics.take_audio_samples(&mut samples);
+            assert!(samples.iter().find(|s| s.id == u64::from(id)).is_some_and(|s| s.pushed), "held: {samples:?}");
+        }
+        dynamics.set_held(None);
+        for _ in 0..2 {
+            dynamics.step(&world, &mut layer, &[]);
+        }
+        dynamics.take_audio_samples(&mut samples);
+        assert!(samples.iter().all(|s| !s.pushed), "released: {samples:?}");
     }
 
     /// Template-space triangles of a box with half extents `half` (outward winding).
