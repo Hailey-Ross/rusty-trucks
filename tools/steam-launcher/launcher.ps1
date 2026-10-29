@@ -746,6 +746,7 @@ $GameRows = @(
     @('zombie', 'Opt-ins', 'Zombie Mode', 'graphics.json', 'opt_ins.zombie', @($false, $true), @('Off', 'On'), 'The retail cheat: yellow screen, no traffic, every ped comes after you.'),
     @('npc_physics', 'Opt-ins', 'NPC Skater Physics', 'graphics.json', 'opt_ins.npc_physics', @($true, $false), @('On (default)', 'Off'), 'NPC skaters near you run full skater physics and bail (still being tested).'),
     @('visualize_grabs', 'Opt-ins', 'Visualize Grabs', 'graphics.json', 'opt_ins.visualize_grabs', @($false, $true), @('Off', 'On'), 'Shows the props and car spots in grab range and logs grab availability.'),
+    @('vehicle_flee', 'Opt-ins', 'Ped Vehicle Flee', 'graphics.json', 'opt_ins.vehicle_flee', @($false, $true), @('Off', 'On'), 'Peds run from a car within 10 m that drives toward or away from them (still being tested).'),
     @('resolution', 'Settings', 'Resolution', 'graphics.json', 'resolution', @('1280x800', '1280x720', '1600x900', '1920x1080', '1920x1200', '2560x1440', '2560x1600', '3840x2160'), $null, 'The window size.'),
     @('scale', 'Settings', 'Render Scale', 'graphics.json', 'scale', @(100, 25, 50, 67, 75, 85), @('100%', '25%', '50%', '67%', '75%', '85%'), 'The 3D render size against the window; lower is faster.'),
     @('fps', 'Settings', 'Framerate Cap', 'graphics.json', 'fps', @(0, 30, 60, 90, 120, 144, 165, 240), @('Unlimited', '30', '60', '90', '120', '144', '165', '240'), 'The highest frame rate the game runs at.'),
