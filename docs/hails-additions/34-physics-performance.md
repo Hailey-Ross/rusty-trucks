@@ -124,4 +124,5 @@ Why the output is the same as a fresh build (reading of `skate-core/src/animatio
 
 Verification: the new data-gated test `npc_fakie_tree_cache_matches_a_fresh_build` compares the cached commands with a
 fresh build over 400 steps (times past the tree's length, torso 0 / 0.25 / 0.5 / 1, a construction value change, a
-name that does not build), and `npc_present_pose_posed_matches_golden` must keep its digest. [Pending: test run.]
+name that does not build); it passes, both NPC golden digests did not move, and the full skate-game suite is green
+(978 passed, 2026-10-29).

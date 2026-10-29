@@ -1229,3 +1229,23 @@ handling, replay.rs help block and panel gate).
 - Test: `look_lift_is_limited_since_the_pick_not_absolutely`. Not play-checked.
 - Open: whether retail's Tripod measures the converted height in the skater's full transform and tilts the aim with
   the skater (b655 item 3); the first edit tick's record vs the converted key (a recomp hook on `82C84868`).
+
+## Tripod look height along the skater's tilt (2026-10-29, research b659)
+Problem: picking Tripod from Free measured the look height as the world Y of the look point P above the skater root,
+so a skater tilted at the pick (ramp, air) got a different height than retail.
+
+Root cause (retail, Ghidra; research `.local/research/b655-replay-look-offset.md` section "b659"): the pick
+(`82C80298` -> `82C856C8` target (0, live 0x58) -> `82C84CF8`) reads the skater through `82682638`, the full rotation
+rows of the skater's actor entry (pitch and roll kept), so the stored height is along the skater's tilted up. Each
+frame the aim (`82C8B9F8` -> `82C8C470`, look object 4) reads the skater through `826813C0`, which rebuilds the frame
+with a look-at (`8296F0A8`), heading only: the height is applied along world up. Main checked both accessors in
+Ghidra (the look-at tail in `826813C0`, none in `82682638`); that the look-at's up is world up rests on b611's trace
+of the same tail for the camera slot [inferred, medium-high].
+
+Change: `replay/camera_key.rs` `convert_key` (Free -> Tripod) takes the height as the y of
+`root.rotation.inverse() * (P - root)`; `Anchors::look` (world up) is unchanged; the key stays `{ eye, look_height }`.
+Follow picks were already heading-only (b611).
+
+Verification: test `tripod_pick_measures_height_along_the_tilted_skater`. Not play-checked. Open: a recomp exit
+trace of `826813C0` on a ramp would prove the world-up frame; whether our recorded root carries the full tilt
+(`replay.rs` root blend) is unverified.

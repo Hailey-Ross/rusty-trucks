@@ -264,7 +264,8 @@ pub(crate) fn convert_key(old: &CameraKey, row: usize, anchors: &Anchors) -> Opt
         (1, CameraKey::Follow { eye, look_height }) => CameraKey::Tripod { eye: world(eye), look_height },
         (1, CameraKey::Free { eye, yaw, pitch, distance }) => CameraKey::Tripod {
             eye,
-            look_height: (free_look(eye, yaw, pitch, distance) - anchors.root.translation).y - CameraRules::default().look_target_height,
+            // Measured along the skater's tilted up, applied along world up each frame (b659; doc 37).
+            look_height: (anchors.root.rotation.inverse() * (free_look(eye, yaw, pitch, distance) - anchors.root.translation)).y - CameraRules::default().look_target_height,
         },
         _ => return None,
     })
@@ -491,6 +492,21 @@ mod tests {
         assert!((look_height - a.to_eye_frame(p).y).abs() < 1e-4);
         let Some(CameraKey::Free { distance, .. }) = key_from_view(3, &Transform::from_xyz(3.0, 0.0, 4.0), &a) else { panic!() };
         assert!((distance - 5.0).abs() < 1e-4, "a view key reaches the skater root (ours)");
+    }
+
+    /// b659: a Tripod pick measures the look height along the tilted skater's up; the aim stays on world up.
+    #[test]
+    fn tripod_pick_measures_height_along_the_tilted_skater() {
+        let root = Transform::from_xyz(1.0, 2.0, 3.0).with_rotation(Quat::from_rotation_x(0.6));
+        let a = at(root);
+        let free = CameraKey::Free { eye: Vec3::new(1.0, 5.0, 9.0), yaw: 0.0, pitch: -20.0, distance: 6.0 };
+        let p = free_look(Vec3::new(1.0, 5.0, 9.0), 0.0, -20.0, 6.0);
+        let Some(CameraKey::Tripod { look_height, .. }) = convert_key(&free, 1, &a) else { panic!() };
+        let along = (root.rotation.inverse() * (p - root.translation)).y - CameraRules::default().look_target_height;
+        assert!((look_height - along).abs() < 1e-4);
+        assert!((look_height - (p.y - root.translation.y - CameraRules::default().look_target_height)).abs() > 1e-2, "not world Y");
+        let aim = a.look(look_height) - root.translation;
+        assert!(aim.x.abs() < 1e-6 && aim.z.abs() < 1e-6, "aim along world up");
     }
 
     /// b655: the D-pad lift is limited since the pick (retail `82C80EA0`), not the key's absolute look height.
