@@ -1393,7 +1393,7 @@ announcer speech). Without the decode, ped speech is chosen and logged but silen
 - Found while taking it: with `--test-world` the overlay capture (`SKATE_VERIFY_MENU=optin` and the older `npc`)
   panics in wgpu ("fe backdrop" pipeline Rgba16Float vs the Rgba8UnormSrgb pass); on a real map it renders. Not
   caused by this change; open.
-- Open: the refresh with the decode is not run end to end (it needs a release package's setup helper).
+- The refresh with the decode was run end to end by the user (2026-10-29).
 
 ## Pause menu froze the game on the third open (2026-10-12)
 
