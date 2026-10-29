@@ -1,6 +1,6 @@
-# Fork-only release build for Hailey-Ross/rusty-trucks: builds only hails-additions (push), its releases and
+# Rusty Trucks Windows build for Hailey-Ross/rusty-trucks: builds only hails-additions (push), its releases and
 # manual runs. The shared release.yml is disabled on the fork so other branches never build there.
-name: Fork release (hails-additions)
+name: Rusty Trucks Windows build
 on:
   push:
     branches: [hails-additions]
