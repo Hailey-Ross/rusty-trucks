@@ -1584,7 +1584,7 @@ Specs (our reading of the TU3 code in research passes): `audio-specs/aems-board-
 - *Graph 3* (the high-speed copy): send 0 below 46 km/h → 3.0 at 70 km/h, DCl0 ±0.09, the wobble gain, HS20 5 kHz ×
   0.65. *Wobbles* (`sub_824CB078` / `sub_824CB180`) and the graph-1 level ramp, with the quirk that truck 1 never
   receives a wobble. *Graph 2*: the env send level(13)/32767 (pre-pan mono) into the reverb network, the
-  FlangeSub send level(21)/(22) carried but not rendered (no bed → return route yet).
+  FlangeSub send level(21)/(22) into return A (rendered since 2026-10-29).
 - Retail (`dsp_20261002_185826`, local script `chain_check.py`): the graph-3 send matches exactly (189
   posts), graph-1 / graph-3 gain = the level ramp within 1e-4, wobble depth 0.290 / 0.240 against the caps 0.30 /
   0.25, only truck 0's graph-3 gains change.
@@ -3561,6 +3561,33 @@ session. The new line tells these apart from one session.
   not claim a state; the MixMap level / pitch / low-pass on posts (sub_824DCF08); one bank load per frame and play
   only once loaded; `<` vs `>=` on the timer.
 
+### Rolling leftovers: the grain chain's FlangeSub send (2026-10-29, `grain::bed`)
+
+**Problem.** The rolling open line listed four leftovers: the `Class_rolling` surfaces on stand-in grains, tag 90,
+what selects the soft-wheel grains, and the grain chain's FlangeSub send. Checked against the code, three were
+already ported: `Class_rolling` posts the per-surface patch with no grain and tag 90 binds asphalt_rough_hard
+("The board's other layers"); the local player's soft members follow
+the wheel hardness, Processed+2764 < 0.5 (`skate-game/src/game_audio/skate_events.rs`, from the board setup's
+`wheel_hardness`), and an NPC board's follow `sub_824B23C8` ("NPC skaters' board sounds"). The FlangeSub send
+was carried but not rendered.
+
+**Retail.** Graph 2 of every grain chain is `Sub0 · Sen0 (→ [[mgr+116]], FlangeSub return A) · Sen0 (→ env) ·
+Pn21 · Sen0 (→ bus)`; both Sends tap the mono before the panner. The first is posted 0 at build, then for the
+local player level(21) / 32767 (player A) and level(22) / 32767 (player B) (`aems-grain-chain-spec.md` §1, §4).
+
+**Change.**
+- `grain/bed.rs`: each chain gets graph 2's FlangeSub `Level` next to its env one; `process_full` adds the pre-pan
+  mono × `flange_send` × the user gain into the bed's new `flange` buffer; `GrainBed::flange_send` hands it out,
+  None when no chain sends.
+- `mixer.rs`: `render_with_env` takes the bed's FlangeSub input and adds it into return A after the voices (pass
+  order 5 after 0), only while the returns are enabled; return A then renders that block.
+- `runtime.rs`: the local bed's FlangeSub input goes in; an NPC bed posts no level (local only), as in retail.
+
+**Verification.** skate-audio 284 passed, incl. `the_flange_send_is_mono_before_the_pan_and_apart_from_the_env_send`
+(the tap = 0.25 × the centre-panned dry signal, sample for sample; the env tap stays 0) and
+`the_bed_flange_input_feeds_return_a_only_when_enabled` (no change with the returns off; a delayed copy in the centre
+with them on). Not heard in game yet.
+
 ## Credits
 
 The retail measurements in this document were taken with **[skate3recomp](https://github.com/mchughalex/skate3recomp)**
@@ -3644,7 +3671,7 @@ holder fields, the owner bus builder and the Class_Seams function map. No code f
   event PA / crowds / music zones ("World sound sources").
 - Main bail body-impact sound (Bodyslide is only a layer); landing weight layer level; metal grind pick
   (54–56) by ear; powerslide, wheel spin, push sound, fountain bank, caveman jump-on — not yet confirmed.
-- Surface → grain now follows retail (2026-10-02); still open: the `Class_rolling` surfaces (interim stand-ins), tag 90, and what selects the soft-wheel grains.
+- Surface → grain follows retail; `Class_rolling`, tag 90, the soft-wheel grains and the FlangeSub send are ported ("Rolling leftovers: the grain chain's FlangeSub send").
 - Retail plays rolling granularly; the default path plays banded loops, `SKATE_AEMS=1` plays the native
   granular bed (player B silent until turn/slope inputs exist; FSS, graph 3, wobble not modelled).
 - MixMap inputs: VU (output meter) and the menu/NIS/HOM/Challenge flags stay 0; the bed's gain A matches
@@ -3679,8 +3706,7 @@ holder fields, the owner bus builder and the Class_Seams function map. No code f
 - rodio 0.20's spatial panning is mirrored (the default path still uses it; native mode swaps the ears).
 - 19:38 air tricks #1 / #3: the audible in-air voice is retail's wheel spin-down; a retail ollie at ~30 km/h would
   settle whether ours sounds like it.
-- Port stage 2026-10-02 (rolling layers, chain, tricks, footsteps, returns), still open: the FlangeSub send of the grain chain
-  (no bed → return route); the bool-class word `0x11A631878B239355`; the seam pattern retail sees on University's sidewalk
+- Port stage 2026-10-02 (rolling layers, chain, tricks, footsteps, returns), still open: the bool-class word `0x11A631878B239355`; the seam pattern retail sees on University's sidewalk
   cells (pattern 11, "Listening test 8"). The seam sample variety is fixed: it was the missing `Start_up_Play_ctl` boot
   utility ("Listening test 8"). Closed 2026-10-02 (stage "FootStep SubMix, the skeleton inputs, …"): the FootStep SubMix, the
   step code, limb / body speeds, ragdoll slide records, the loose-board vectors, Reverb.in0..6 + the env scale, the reverb

@@ -22,7 +22,7 @@ entry is {config ptr, plug-in, channel byte}.
 - Owner slots per chain (stride 24 from `+1192`): +0 graph-1 modules, +4 graph 1, +8 graph-2 modules, +12 graph 2,
   +16 graph-3 modules, +20 graph 3. Player B of a truck = +24, truck 1 = +48.
 - `mgr` = `[0x830CFDEC]` (bus manager). `+52` = EnvSendSub input (env/reverb network, `aems-env-bus-spec.md`);
-  `+116` = **FlangeSub return A** input (`aems-env-bus-spec.md` §7) — not ported (no FlangeSub bus in the crate).
+  `+116` = **FlangeSub return A** input (`aems-env-bus-spec.md` §7), ported 2026-10-29 (`bus::flange`).
 - Graph 2's last Sen0 target = `sub_82491108(mgr, enum of field A5D3ADA63608617F, [owner+28]+72)` = eEQChain 8 =
   the default bus (`aems-eqchain-buses-spec.md` §1).
 - Posted at build: graph-2 Sen0 #1 level **0.0**; graph-1 Sen0 #4 (→ graph 3) level = `+1556` (current send);
@@ -164,7 +164,7 @@ Init (`sub_824C59C8`): e 0, gains 1, envelope reset (done → the first frame dr
   +5.7 dB from graph 3's clipped copy in the probe (60–85 km/h, concrete_rough_hard).
 
 ## 7. UNCERTAIN / not modelled
-- FlangeSub return A (`[[mgr+116]]`, graph-2 Sen0 #1): not rendered; the level is carried in `flange_send`.
+- FlangeSub return A (`[[mgr+116]]`, graph-2 Sen0 #1): rendered since 2026-10-29 (doc 11 "Rolling leftovers").
 - Env send level vs retail: graph 2's mono Sen0s never appear in the SEND hook (`sub_82B31838`) in the dsp session,
   so level(13) at the chain is untraced; our MixMap gives 0.079 at 30 km/h.
 - Two SEND lines at 1.0 (t 27720 / 28690) where the model says 2.0 / 0: probably a rebuilt chain's first block at
