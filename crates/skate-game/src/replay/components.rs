@@ -101,6 +101,33 @@ fn play<T: Component<Mutability = bevy::ecs::component::Mutable> + Clone + Parti
     }
 }
 
+/// [`track`], and a ghost (an actor that left inside the window) carries `T` while playback shows it, so its sound
+/// plays again (retail rebuilds every recorded actor from the frame, live or gone, b670); never in live play.
+pub(super) fn track_on_ghosts<T: Component<Mutability = bevy::ecs::component::Mutable> + Clone + PartialEq>(app: &mut App) {
+    track::<T>(app);
+    app.add_systems(PreUpdate, ghost_values::<T>.after(play::<T>));
+}
+
+fn ghost_values<T: Component<Mutability = bevy::ecs::component::Mutable> + Clone + PartialEq>(
+    replay: Res<Replay>,
+    store: Res<ComponentTracks<T>>,
+    ghosts: Query<(Entity, &ReplayActor, Has<T>), With<ReplayGhost>>,
+    mut commands: Commands,
+) {
+    for (entity, actor, has) in &ghosts {
+        let shown = replay.active && replay.world.shown(actor.id, replay.cursor);
+        match (shown.then(|| store.at(actor.id, replay.cursor)).flatten(), has) {
+            (Some(value), false) => {
+                commands.entity(entity).insert(value.clone());
+            }
+            (None, true) => {
+                commands.entity(entity).remove::<T>();
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 pub(super) fn value_at<T: Component + Clone + Send + Sync + 'static>(world: &World, id: u64, time: f64) -> Option<T> {
     world.resource::<ComponentTracks<T>>().at(id, time).cloned()

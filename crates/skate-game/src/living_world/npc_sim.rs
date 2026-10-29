@@ -48,6 +48,8 @@ pub(crate) struct SimulatedTierSettings {
     /// bump knocks a skater down; retail, research m7 / b125). Mod: `npc_simulated.bump`.
     pub bump: bool,
     pub board_yaw: skate_core::living_world::ai_signals::BoardYawTuning,
+    /// The powerslide writer arm's values (`sub_824696B8` case 9, b676).
+    pub powerslide: skate_core::living_world::ai_signals::PowerslideValues,
     /// After a reset placement (stage-6 stuck respawn) the line controller holds: no steer and no trick for this long,
     /// then the spawn push on its last tick (retail's hold counter `pc+888` = 30 from the reset `82468C10`, counted down
     /// in `824701F8`; b178). A switch from the replay tier holds one tick (engine handover, no visible stop).
@@ -67,7 +69,7 @@ impl Default for SimulatedTierSettings {
     fn default() -> Self {
         // `SKATE_NPC_SIM_RADIUS` (m): a test knob so an unattended run sees many switches to physics.
         let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(f32::MAX);
-        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() != Some("0"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, respawn_hold_seconds: 8.0 / 60.0, reactions: Default::default(), push: Default::default(), brake: Default::default() }
+        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() != Some("0"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), powerslide: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, respawn_hold_seconds: 8.0 / 60.0, reactions: Default::default(), push: Default::default(), brake: Default::default() }
     }
 }
 
@@ -264,8 +266,9 @@ fn projected_point(sim: &NpcSim, state: PhysicalStateId) -> ([f32; 3], [f32; 3])
         let root = effective_root(&sim.body.runtime);
         ([root[3][0], root[3][1], root[3][2]], [root[2][0], root[2][1], root[2][2]])
     } else {
-        let deck = GamePhysics::context_deck(&sim.context);
-        ([deck.translation.x, deck.translation.y, deck.translation.z], effective_deck_forward(sim))
+        // On the board retail projects `Reckoning+144`, the deck rigid body's position (its centre of mass), not the
+        // deck part's origin (b674).
+        (GamePhysics::context_deck_position(&sim.context), effective_deck_forward(sim))
     }
 }
 
@@ -1082,6 +1085,15 @@ pub(crate) fn simulate(
                 // The skater state byte `+438` (b119): airborne = an air state with no wheel touching. DB50 counts an
                 // airborne skater as off the path for the steering record.
                 let airborne_now = (200..300).contains(&(state_now as u32)) && sim.body.runtime.player_input.processed.wheel_count_2556 == 0;
+                // This tick's ground-steer heading error (`pc+824`) for the powerslide writer; 0 when not computed.
+                let mut slide_error = 0.0f32;
+                // The node-change handler's gate and body point for this tick's cursor steps (sub_8246BEE0, b674). NOT
+                // RETAIL YET: the upcoming-trick test (pc+796 / +797) has no stand-in.
+                replay.body_gate = Some(skate_core::living_world::replay::BodyGate {
+                    point: projected_point(sim, state_now).0,
+                    may_branch: !airborne_now && sim.walker.is_none()
+                        && !skate_core::living_world::replay::NO_BRANCH_CATEGORIES.contains(&sim.slot.category),
+                });
                 // Cursor B after this tick's projection: the steering record's target (`sub_8246DE38`, b174 3).
                 let mut left_path = false;
                 let (on_path, past_start, b_target) = match lines.get(&replay.cursor.line) {
@@ -1114,10 +1126,14 @@ pub(crate) fn simulate(
                                 Some((id, f)) if id == replay.cursor.line && replay.cursor.node + rules.path.window >= f.search_start => f,
                                 // A line switch (chain or branch): retail's reset `sub_82468AC8` leaves the skater off
                                 // the path with the start gate kept (b118).
-                                Some((_, f)) => {
+                                Some((old, f)) => {
                                     clear_line_state(sim);
                                     skate_core::living_world::ai_controller::path_reset(&mut replay.avoid.controller);
-                                    f.switch_to(replay.cursor.node)
+                                    let chained = replay.branches.last().is_some_and(|r| {
+                                        r.from_line == old && r.to_line == replay.cursor.line
+                                            && lines.get(&old).is_some_and(|l| r.from_node as usize + 1 >= l.nodes.len())
+                                    });
+                                    if chained { f.chained_to(replay.cursor.node) } else { f.switch_to(replay.cursor.node) }
                                 }
                                 None => skate_core::living_world::path_follow::PathFollow::start(replay.cursor.node, &rules.path),
                             };
@@ -1147,6 +1163,9 @@ pub(crate) fn simulate(
                                 // `sub_82468070`: on the board and not airborne (the off-board walk is controller B's).
                                 let can_track = !airborne_now && sim.walker.is_none();
                                 let a_pos = skate_core::living_world::path_follow::point(line, f.a);
+                                // Retail measures from the animation root always (Skeleton+0x1A0, `sub_82468240`, b674).
+                                let root = effective_root(&sim.body.runtime);
+                                let pos = [root[3][0], root[3][1], root[3][2]];
                                 ai_controller::track_stuck(c, &rules.controller, pos, f.a, a_pos, f.progress, can_track);
                                 if c.sub_mode != before {
                                     let anchor = if before == ai_controller::sub_mode::NORMAL { c.stuck.anchor } else { anchor };
@@ -1382,10 +1401,10 @@ pub(crate) fn simulate(
                                     inside_lane: f.inside_lane,
                                     lateral: f.lateral,
                                     avoiding: steer.byte_933,
-                                    // Not mapped yet: the pending node trick's category 9 (b121 open).
-                                    category_9: false,
+                                    category_9: sim.slot.category == 9,
                                 };
                                 let g = ground_steer::heading_error(&input, t);
+                                slide_error = g.error;
                                 let s = ground_steer::stick(g.error, t.full_deg);
                                 intents.extend(ground_steer::intents(s).into_iter().map(|(k, v)| (k.to_string(), v)));
                                 if sim.trace_ticks > 0 {
@@ -1495,7 +1514,8 @@ pub(crate) fn simulate(
                         if opened && !intents.iter().any(|x| x.0 == "Trick") {
                             info!("NPC_SKATER_SIM_SLOT #{} {} category {} {} node {} schedule {}", npc.id.serial, npc.character, sim.slot.category, super::npc_skaters::trick_name(sim.slot.trick), replay.cursor.node, schedule.len());
                         }
-                        intents.extend(skate_core::living_world::ai_signals::slot_signals(&mut sim.slot, &schedule, 1.0));
+                        let slide = skate_core::living_world::ai_signals::Slide { on_path: on_path || left_path, heading_error: slide_error, values: rules.powerslide };
+                        intents.extend(skate_core::living_world::ai_signals::slot_signals(&mut sim.slot, &schedule, 1.0, slide));
                     }
                     // Leaving the path clears the pending trick category once, after this tick's dispatch
                     // (`sub_8246DB50`: `pc+920 = 0` and `pc+832 = 0` in the same block; b279).
@@ -1625,7 +1645,7 @@ pub(crate) fn reactions(
         .observers
         .iter()
         .enumerate()
-        .map(|(i, o)| ReactionSkater { key: i as u64, position: o.position, wiping: observers.wiping.get(i).copied().unwrap_or(false), model: 0, listens: false })
+        .map(|(i, o)| ReactionSkater { key: i as u64, position: o.position, wiping: observers.wiping.get(i).copied().unwrap_or(false), model: 0, listens: false, score: observers.scores.get(i).copied().unwrap_or(0) })
         .collect();
     let mut entities = std::collections::BTreeMap::new();
     let mut list: Vec<_> = npcs.iter().collect();
@@ -1634,7 +1654,7 @@ pub(crate) fn reactions(
         // NPC keys after every player slot.
         let key = (1u64 << 32) + u64::from(npc.id.serial);
         let wiping = sim.is_some_and(|s| s.body.runtime.player_input.processed.flags_2468 & WIPEOUT_BIT != 0);
-        skaters.push(ReactionSkater { key, position: transform.translation.to_array(), wiping, model: npc.voice.unwrap_or(NO_MODEL), listens: true });
+        skaters.push(ReactionSkater { key, position: transform.translation.to_array(), wiping, model: npc.voice.unwrap_or(NO_MODEL), listens: true, score: 0 });
         entities.insert(key, e);
     }
     use crate::world_audio::{NpcSkaterReactionEvent, SkaterReaction};
@@ -1645,6 +1665,9 @@ pub(crate) fn reactions(
         }
         if let Some(by) = r.slam_b {
             out.write(NpcSkaterReactionEvent { skater, reaction: SkaterReaction::SlamB, by });
+        }
+        if let Some(by) = r.trick {
+            out.write(NpcSkaterReactionEvent { skater, reaction: SkaterReaction::Trick, by });
         }
         if r.crash {
             out.write(NpcSkaterReactionEvent { skater, reaction: SkaterReaction::Crash, by: 0 });

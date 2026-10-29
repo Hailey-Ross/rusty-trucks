@@ -993,6 +993,12 @@ impl GamePhysics {
         context.board.part_transforms()[skate_core::physics::board::BodyId::Deck.index()]
     }
 
+    /// The deck rigid body's position (its centre of mass, retail `Reckoning+144`) in a context.
+    pub(crate) fn context_deck_position(context: &SkaterPhysicsContext) -> [f32; 3] {
+        let p = context.board.bodies()[skate_core::physics::board::BodyId::Deck.index()].rates.position;
+        [p.x, p.y, p.z]
+    }
+
     /// The deck's linear velocity in a context (diagnostics).
     pub(crate) fn context_deck_velocity(context: &SkaterPhysicsContext) -> [f32; 3] {
         let v = context.board.bodies()[skate_core::physics::board::BodyId::Deck.index()].rates.linear_velocity;

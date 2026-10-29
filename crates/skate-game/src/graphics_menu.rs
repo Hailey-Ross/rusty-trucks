@@ -780,7 +780,8 @@ fn setup(
     let custom_defaults = Tuning::defaults(&data).expect("validated Easy difficulty");
     let custom = Tuning::load(&config.asset_root, &data).expect("validated Custom difficulty");
     let maps = crate::map_library::discover(&config.asset_root);
-    let destinations = crate::teleport_menu::load(&config.asset_root).unwrap_or_else(|e| { warn!("Map destinations: {e}"); Vec::new() });
+    let mut destinations = crate::teleport_menu::load(&config.asset_root).unwrap_or_else(|e| { warn!("Map destinations: {e}"); Vec::new() });
+    destinations.retain(|d| !d.fallback());
     view::spawn(&mut commands, output, &mut fonts, &mut images);
     commands.insert_resource(SceneTarget(target));
     let selected_map = maps.iter().position(|m| m.path.as_ref() == config.map_path.as_ref()).unwrap_or(0);
@@ -1769,7 +1770,7 @@ mod tests {
         assert_eq!(m.page(), m.rows(), "no headers in the multiplayer pages");
         m.select_section(0);
         m.maps[0].path = Some(PathBuf::from("University.skate"));
-        m.destinations = vec![crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), world: None, label_key: None, matrix: Some([[0.;4];4]) }];
+        m.destinations = vec![crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), world: None, label_key: None, matrix: Some([[0.;4];4]), source: None }];
         m.map_detail = true;
         assert_eq!(m.page(), vec![50, 51, 910, 1_000_000]);
     }
@@ -1855,8 +1856,8 @@ mod tests {
         assert_eq!(menu.rows(), (1000..1040).collect::<Vec<_>>());
         menu.maps[0].path = Some(PathBuf::from("University.skate"));
         menu.destinations = vec![
-            crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), world: None, label_key: None, matrix: Some([[0.;4];4]) },
-            crate::teleport_menu::Destination { id: "dt".into(), name: "Downtown".into(), map: "DownTown".into(), world: None, label_key: None, matrix: Some([[0.;4];4]) },
+            crate::teleport_menu::Destination { id: "uni".into(), name: "Campus".into(), map: "University".into(), world: None, label_key: None, matrix: Some([[0.;4];4]), source: None },
+            crate::teleport_menu::Destination { id: "dt".into(), name: "Downtown".into(), map: "DownTown".into(), world: None, label_key: None, matrix: Some([[0.;4];4]), source: None },
         ];
         menu.map_detail = true;
         assert_eq!(menu.rows(), vec![50,51,1_000_000]);

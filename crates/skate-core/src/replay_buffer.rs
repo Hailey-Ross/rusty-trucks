@@ -173,6 +173,13 @@ impl ReplayBuffer {
         self.tracks.keys().copied()
     }
 
+    /// Whether `id` is drawn at `time` ([`ReplayBuffer::sample`] gives a pose that is not hidden), without decoding it.
+    pub fn shown(&self, id: u64, time: f64) -> bool {
+        let Some(track) = self.tracks.get(&id).filter(|t| t.end.is_none_or(|end| time < end)) else { return false };
+        let upper = track.keys.partition_point(|k| k.time <= time);
+        upper.checked_sub(1).and_then(|i| track.keys.get(i)).is_some_and(|k| k.data.first().is_some_and(|f| f & FLAG_HIDDEN == 0))
+    }
+
     /// The pose of `id` at `time`: None before its first key or from its despawn on. Between two keys every joint is
     /// blended (translation / scale lerp, rotation nlerp, as retail's decoder); a joint count change does not blend.
     pub fn sample(&self, id: u64, time: f64) -> Option<ActorPose> {

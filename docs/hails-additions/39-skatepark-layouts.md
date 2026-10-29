@@ -91,7 +91,12 @@ Movable pieces (block 2; research b435):
   district props today, so nothing is dropped; a stream with both would need them merged), and saved prop poses are
   kept per layout (ours). All 71 disc + DLC movable pieces resolve (Stadium 1, Starter 3, Back Lot 47, Zen Plaza 17);
   the Stadium start loads the barrier with its type data, collision, grab spline and rail.
-- Open: their initial sleep state (descriptor bytes +0x50..+0x54), census culling of layout pieces.
+- Checked 2026-10-29 (research b681): the initial sleep state matches (layout pieces go through the same DMO factory
+  `826B8830` as district DMOs; the descriptor bytes +0x50..+0x54 go into the creation message, read by neither DMO
+  constructor; ours starts them asleep, `initially_awake 0`). Census: retail's park load (`825111F8` mode 1) spawns
+  pieces with no placement record, so they are never culled; ours marked every map body streamable, now layout pieces
+  are not (`PropDynamics::set_layout_pieces` from `load_map_prop_layer`). Also retail refuses a DMO spawn past 49 live
+  (no shipped layout reaches it; Back Lot has 47). Open: who reads the creation bytes; the 49 cap as data.
 
 Park shading (research b433, b439 to b443):
 - The pieces' materials use Skate 3's own programs, families 50 / 51 / 52 for `environmentpark.diffuse` / `.decal` /
@@ -168,7 +173,7 @@ NOT RETAIL YET: the lightmap's sun direction L (see "Park shading", b444).
 ## Open questions
 
 - The tint path on the CPU and the `environmentpark` families (b433 change list).
-- Movable pieces (b435), the Monster Park challenge locator, `cap.AllowCollision` (the DLC recipe precedence is moot, see
+- Movable pieces (b435), the Monster Park challenge locator (2026-10-29, b681: the row belongs to the challenge "Monster Park Jam"; retail's Challenge Map never lists it and our travel menus now leave out destinations placed by the missing-locator fallback, `Destination::fallback`; the real entry comes with challenges), `cap.AllowCollision` (the DLC recipe precedence is moot, see
   "Recipe precedence across packs" above).
 - Do-not-fuse pieces (see "IgnoreFuser pieces leave the fused set"): a second source of flag 2 (a template map at
   mgr+0x3B2C, b482) is open; retail's second read of fused pieces for props: settled, none (run 4, see "Props and

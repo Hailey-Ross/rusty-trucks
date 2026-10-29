@@ -164,6 +164,15 @@ def spawn_point(manifest,root):
         selector.consider(decode_rx2_clustered_meshes((root/entry['rx2']).read_bytes()))
     return selector.result(manifest['map_name'])
 
+def portable(value):
+    """The manifest as stored in WMET: absolute paths (the setup's temp folders, the install folder) become their file
+    names, so two exports of the same data write the same bytes (nothing reads those paths back)."""
+    if isinstance(value,dict):return {k:portable(v) for k,v in value.items()}
+    if isinstance(value,list):return [portable(v) for v in value]
+    if isinstance(value,str) and len(value)>2 and value[1]==':' and value[2] in '/\\':return Path(value).name
+    return value
+
+
 def write(manifest_path,output,collision,report=lambda _:None, *, render_only=False, prepared_spawn=None, prepared_heading=0., extensions=None):
     root=manifest_path.parent;m=json.loads(manifest_path.read_text());textures=m['textures']
     ids={name:i+1 for i,name in enumerate(sorted(textures))}
@@ -240,7 +249,7 @@ def write(manifest_path,output,collision,report=lambda _:None, *, render_only=Fa
     # callable invoked with the per-model index ranges once geometry is
     # final (MOBJ records reference those ranges).
     extra=[e if len(e)==3 else (e[0],1,e[1]) for e in (extensions(ranges) if callable(extensions) else extensions or [])]
-    records=[(b'WMET',1,json.dumps(m,separators=(',',':')).encode())]+extra
+    records=[(b'WMET',1,json.dumps(portable(m),separators=(',',':')).encode())]+extra
     if not render_only:records.insert(0,(b'RWCM',1,collision.read_bytes()))
     from tools.asset_pipeline.setup_budget import job_threads
     threads=job_threads()

@@ -218,7 +218,7 @@ pub(super) fn publish(
     library: Option<Res<super::Library>>,
     physics: Option<Res<crate::physics::GamePhysics>>,
     (time, replay): (Res<Time>, Option<Res<crate::replay::Replay>>),
-    listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
+    (listener, ghosts): (Query<&GlobalTransform, With<super::GameAudioListener>>, Query<(Entity, &crate::replay::GhostOf)>),
     mut vehicles: Query<(Entity, &GlobalTransform, &TrafficAudio, Option<&AudioVelocity>, Has<crate::world_audio::OwnAudioInstance>, &mut crate::world_audio::VehicleHornState)>,
     mut peds: Query<(Entity, &GlobalTransform, &mut PedAudio, Option<&AudioVelocity>, Has<crate::world_audio::OwnAudioInstance>)>,
     mut npcs: Query<(Entity, &GlobalTransform, &mut NpcSkaterAudio, Option<&AudioVelocity>)>,
@@ -269,13 +269,15 @@ pub(super) fn publish(
     for a in alarms.read().filter(|_| !replaying) {
         bridge.horns.insert(a.vehicle, (HornState::Alarm, alarm_hold));
     }
+    // A replayed one-shot names the live ped; once that ped left, its ghost plays it (b670).
+    let ped_of = |e: Entity| if replaying && !peds.contains(e) { ghosts.iter().find(|(_, g)| g.0 == e).map_or(e, |(ghost, _)| ghost) } else { e };
     let tazer_seconds = *bridge.tazer_seconds.get_or_insert_with(|| library.as_deref().map_or_else(|| skate_audio::world::peds::PedObjectTuning::default().tazer_seconds, |l| l.world_tuning().ped_objects().tazer_seconds));
     for z in zaps.read() {
-        bridge.tazers.insert(z.ped, z.seconds.unwrap_or(tazer_seconds).max(0.0));
+        bridge.tazers.insert(ped_of(z.ped), z.seconds.unwrap_or(tazer_seconds).max(0.0));
     }
     for f in falls.read() {
         if f.kind != 0.0 && f.kind.is_finite() {
-            bridge.falls.entry(f.ped).or_default().0.push_back(f.kind);
+            bridge.falls.entry(ped_of(f.ped)).or_default().0.push_back(f.kind);
         }
     }
     // Each key is on for one console frame, then 0 for one frame (so a repeated key is a change).

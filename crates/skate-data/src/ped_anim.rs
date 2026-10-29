@@ -280,6 +280,16 @@ impl PedTables {
                 // Ours (retail's `c+4 > 5` is a code constant): a mod may set it per set.
                 block_after: f.get("block_after").and_then(Value::as_u64).map_or(d.block_after, |v| v.min(255) as u8),
             };
+            // The locomotion speed rows setup named (`living_world_anim.py`, b682), ascending.
+            set.speed_rows = f.get("speed_rows").and_then(Value::as_array).into_iter().flatten().filter_map(|r| {
+                Some(skate_core::living_world::peds::anim::SpeedRow {
+                    threshold: r.get("threshold")?.as_f64()? as f32,
+                    state: r.get("state")?.as_str()?.to_string(),
+                    tier: skate_core::living_world::peds::anim::Tier::from_intent(r.get("tier").and_then(Value::as_str)),
+                    turn_from: r.get("turn_from").and_then(Value::as_array).into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect(),
+                })
+            }).collect();
+            set.speed_rows.sort_by(|a, b| a.threshold.total_cmp(&b.threshold));
             t.anim_sets.insert(k.clone(), set);
         }
         if t.catalog.categories.is_empty() || t.catalog.models.is_empty() {

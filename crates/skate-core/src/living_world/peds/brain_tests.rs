@@ -46,24 +46,31 @@ fn warn_holds_the_want_for_retails_three_and_a_half_seconds() {
     let mut brain = PedBrain::default();
     brain.set_want("warn", 1);
     let settings = BrainSettings::default();
-    let none = |_: u64| None;
+    let found = |_: u64| Some([1.0f32, 0.0, 1.0]);
     let f = frame();
     {
-        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &found, chase: Default::default() };
         h.begin(0, [0; 6], &f);
         h.update(0, [0; 6], &f);
     }
     assert!(brain.wants.contains_key("warn"));
     brain.tick_timers(3.4);
     {
-        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &found, chase: Default::default() };
         h.update(0, [0; 6], &f);
     }
     assert!(brain.wants.contains_key("warn"));
     brain.tick_timers(0.2);
-    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &found, chase: Default::default() };
     h.update(0, [0; 6], &f);
     assert!(!brain.wants.contains_key("warn"));
+    // No target at Begin: retail says nothing and drops the want (`8269F7B0` with deactivateWant, b677).
+    let mut lost = PedBrain::default();
+    lost.set_want("warn", 1);
+    let none = |_: u64| None;
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut lost, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    h.begin(0, [0; 6], &f);
+    assert!(!lost.wants.contains_key("warn") && lost.speech.is_none());
 }
 
 #[test]
@@ -85,8 +92,9 @@ fn speech_ops_store_the_value_on_the_ped() {
     h.update(0, [0; 6], &f);
     h.end(0, [0; 6], &f);
     assert_eq!(h.brain.speech, Some(20));
+    // ChannelWarnWantTarget speaks only when its target resolves (`8269F7B0`, b677): none here.
     h.begin(1, [0; 6], &f);
-    assert_eq!(h.brain.speech, Some(53));
+    assert_eq!(h.brain.speech, Some(20));
 }
 
 #[test]
@@ -244,7 +252,7 @@ fn chase_group_ops_ask_the_host_and_read_the_group() {
     assert_eq!(h.brain.chasee, None);
     assert_eq!(
         h.brain.chase_requests[1..],
-        [ChaseRequest::GiveUpPrimary { chasee: 100 }, ChaseRequest::GroupEnd { chasee: 100, reason: 1 }, ChaseRequest::Leave { chasee: 100 }]
+        [ChaseRequest::GiveUpPrimary { chasee: 100 }, ChaseRequest::GroupEnd { chasee: 100, reason: 1, notify: true }, ChaseRequest::Leave { chasee: 100 }]
     );
 }
 
@@ -512,10 +520,11 @@ fn a_greet_posts_greeted_once_and_speaks_until_the_timer_runs_out() {
     let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &at, chase: Default::default() };
     h.begin(0, [0; 6], &f);
     h.update(0, [0; 6], &f);
-    assert_eq!((h.brain.speech, h.brain.chase_requests.clone()), (Some(56), vec![ChaseRequest::Greeted { target: 12 }]));
+    assert_eq!((h.brain.speech, h.brain.chase_requests.clone()), (Some(56), vec![ChaseRequest::GestureClip { clip: GREET_CHANNEL }, ChaseRequest::Greeted { target: 12 }]));
     h.begin(1, [0; 6], &f);
     h.update(1, [0; 6], &f);
-    assert_eq!((h.brain.speech, h.brain.chase_requests.len()), (Some(63), 1), "a return greet posts nothing");
+    assert_eq!((h.brain.speech, h.brain.chase_requests.len()), (Some(63), 3), "a return greet gestures but posts no greeted");
+    assert_eq!(h.brain.chase_requests[2], ChaseRequest::GestureClip { clip: GREET_CHANNEL });
     h.brain.tick_timers(3.5);
     h.update(0, [0; 6], &f);
     assert!(!h.brain.wants.contains_key("greet"));
@@ -996,7 +1005,7 @@ fn a_taze_needs_a_resolved_target_and_ends_the_targets_chase_with_a_capture() {
     h.brain.tick_timers(0.3);
     h.update(0, [0; 6], &f);
     let capture = super::super::chase::reason::AGGRESSIVE_CAPTURE;
-    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::Taze { target: 3 }, ChaseRequest::GroupEnd { chasee: 3, reason: capture }]);
+    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::Taze { target: 3 }, ChaseRequest::GroupEnd { chasee: 3, reason: capture, notify: false }]);
 }
 
 /// EndChase is SetChasee(none) (`82E3CFF8`, research b154 M4): the end reason resets and the angrychase want (slot 1) is

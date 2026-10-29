@@ -599,6 +599,16 @@ fn advance(
         hud.failed = true;
     }
 }
+/// One central message's life on screen, for the HUD_CENTRAL lines.
+#[derive(Clone, Copy, Default)]
+struct CentralWatch {
+    showing: bool,
+    frames: u32,
+    drawn: u32,
+    hidden: u32,
+    peak: usize,
+}
+
 fn render(
     commands: Commands,
     hud: Option<ResMut<Hud>>,
@@ -607,7 +617,7 @@ fn render(
     fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
     overlay: Option<Res<crate::graphics_menu::Menu>>,
     menus: Option<Res<crate::retail_menus::RetailMenus>>,
-    mut was_showing: Local<bool>,
+    mut was_showing: Local<CentralWatch>,
     heading: Res<hud_minimap::MinimapHeading>,
     icons: Res<hud_minimap::MinimapIcons>,
 ) {
@@ -623,7 +633,7 @@ fn render_hud(
     fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
     overlay: Option<Res<crate::graphics_menu::Menu>>,
     menus: Option<Res<crate::retail_menus::RetailMenus>>,
-    was_showing: &mut bool,
+    was_showing: &mut CentralWatch,
     heading: &hud_minimap::MinimapHeading,
     icons: &hud_minimap::MinimapIcons,
 ) {
@@ -661,16 +671,27 @@ fn render_hud(
         }
         _ => Vec::new(),
     };
-    // Laptop session 2026-10-20: a message posted after a replay never showed; say why on its first frame.
+    // Laptop session 2026-10-20: a message posted after a replay never showed; say why on its first frame, and on
+    // its hide how many frames drew it (the first frame draws nothing yet, so it alone cannot tell).
     let showing = hud.central.as_ref().is_some_and(|c| c.runtime.showing());
-    if showing && !*was_showing {
+    if showing && !was_showing.showing {
         info!(
             "HUD_CENTRAL draw draws={} hud_draws={} fe_hud={} overlay={} hud_off={} failed={}",
             central_draws.len(), draws.len(), fe_hud.as_ref().is_none_or(|f| f.hud), overlay.as_ref().is_some_and(|m| m.overlay_visible()),
             hud_off, hud.central.as_ref().is_some_and(|c| c.failed)
         );
+        *was_showing = CentralWatch { showing: true, ..CentralWatch::default() };
     }
-    *was_showing = showing;
+    if showing {
+        was_showing.frames += 1;
+        was_showing.drawn += u32::from(!central_draws.is_empty());
+        was_showing.hidden += u32::from(hidden);
+        was_showing.peak = was_showing.peak.max(central_draws.len());
+    } else if was_showing.showing {
+        let w = *was_showing;
+        info!("HUD_CENTRAL shown frames={} drawn={} hidden={} peak_draws={}", w.frames, w.drawn, w.hidden, w.peak);
+        *was_showing = CentralWatch::default();
+    }
     // The minimap (82665278): off with the HUD, else the Game Settings Minimap row (+158, retail default on); our
     // pause menu is Free Play (game mode 3), where the row decides.
     let setting = menus

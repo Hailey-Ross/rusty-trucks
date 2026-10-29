@@ -10,6 +10,9 @@ pub mod category {
     pub const PRESENCE: &str = "presence";
     /// Posted by a greeting ped into the greeted ped's store (ChannelGreetWantTarget, `8269FAC0`).
     pub const GREETED: &str = "greeted";
+    /// Posted by a ped into its own store when it jumps out of a skater's way (`sub_82E2E890`, category 3, research
+    /// b685): instigator the skater, second the ped; raises `skateravoidwarn` / `skateravoidchase` in the stock sets.
+    pub const SKATER_AVOID: &str = "skateravoid";
     pub const COLLISION: &str = "collision";
     pub const NEARBY_COLLISION: &str = "nearbycollision";
     /// Posted for every skater while the zombie cheat is on (`sub_82E24B60`, category 19); raises

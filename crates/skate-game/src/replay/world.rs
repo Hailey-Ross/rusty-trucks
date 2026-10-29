@@ -82,6 +82,10 @@ fn refresh_joints(
 #[derive(Component)]
 pub(crate) struct ReplayGhost;
 
+/// The live entity a ghost continues: a replayed one-shot naming it lands on the ghost (b670).
+#[derive(Component, Clone, Copy)]
+pub(crate) struct GhostOf(pub Entity);
+
 /// At most this many ghosts are kept (the oldest-despawned are dropped first by their tracks leaving the window).
 /// Traffic churns: 90 s of cars, peds and NPC skaters leaving can pass 64.
 pub(crate) const MAX_GHOSTS: usize = 256;
@@ -102,7 +106,7 @@ pub(crate) fn retire(commands: &mut Commands, entity: Entity) {
             let fade = world.get::<NpcFade>(entity).copied();
             let materials = world.entity_mut(entity).take::<NpcFadeMaterials>();
             let ped_materials = world.entity_mut(entity).take::<NpcFadeMaterials<crate::living_world::ped_material::PedMaterial>>();
-            let mut ghost = world.spawn((Name::new("replay ghost"), ReplayGhost, actor, joints, transform, Visibility::Hidden));
+            let mut ghost = world.spawn((Name::new("replay ghost"), ReplayGhost, GhostOf(entity), actor, joints, transform, Visibility::Hidden));
             if let Some(fade) = fade {
                 ghost.insert(fade);
             }

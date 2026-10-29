@@ -565,6 +565,90 @@ replay suites (fade).
 ported; the CSM / world-shadow combine of the program (`g_CSMSelfBias.w`) is partly decoded; the ped ground shadow
 layer (cause 3 of the todo) is separate.
 
+## Ped speed rows: brisk walks and slow / fast chase runs (2026-10-29)
+
+Problem: every moving ped walked the one walk cycle or ran the one chase run cycle. Retail has a brisk walk, a slow
+and a fast chase run, and some ped types (female, bum, zombie) run differently.
+
+Root cause (research `.local/research/b682-ped-motion-intents.md`, checked at the source): one poster, `sub_82E29D98`,
+picks the locomotion state and its cycle tier from a speed. Each `livingworld_entity_animation` set has a speed row
+table (field `Hash_9C9A4F2CB1CC45DE`, 8 words a row: float threshold, then string-pool offsets of the state, the tier
+intent and 5 turn-compatible previous states, offset 8 = empty) [data, resolved from `skatercollections.bin`]. A speed
+above `[0x8231A844]` (1.0) gets `[0x820C6D98]` (0.25) added (`fcmpu` / `ble` / `fadds` in the recomp asm), then the
+highest row at or below it wins [code]. Default set: 0 Idle, 1 Shuffle, 2 Walk, 4 Walk + Brisk, 6 ChaseRun + Slow,
+8 ChaseRun, 10 ChaseRun + Fast; female: up to 4 the same, then 8 ChaseRun + Slow only; bum / zombie: 8 ChaseRun with no
+Slow / Fast; marquee sets: Idle only [data]. The motion graph enters `WalkCyc.Brisk` (`FwdBriskWalkCyc`) and
+`ChaseRunCyc.Slow` / `.Fast` (`FwdChaseRunSlowCyc` / `FwdChaseRunFastCyc`) at the current cycle's branch window with a
+0.1 s blend, back to the default cycles the same way (`motiongraph_walk.xml`, `motiongraph_chaserun.xml`) [data].
+
+Change:
+- Setup (`tools/asset_pipeline/living_world_anim.py`): `speed_rows` next to the raw field, each row
+  `{threshold, state, tier, turn_from}`. Old installs need Refresh Game Files (without rows the ped walks, or runs when
+  fleeing, as before).
+- `skate-data/src/ped_anim.rs`: `PedAnimSet::speed_rows`, sorted.
+- `skate-core/src/living_world/peds/anim.rs`: `SpeedRow`, `Tier`, `SpeedBump` (the 1.0 / 0.25), `speed_row`,
+  `moving_intent`; the player's `tier` picks the walk / run cycle, a change swaps the cycle at the branch window.
+- `skate-game/src/living_world/peds.rs`: a moving ped's intent and tier come from the brain's speed
+  (`speed_suggestion`) through the rows. `PedBrainSettings::speed_bump` holds the bump. A mod reaches the rows
+  through the set's table data.
+- OURS, not retail yet: a fleeing / chasing ped without a brain speed runs the set's untiered run row, or its first
+  run row (so the female set runs Slow), because the flee speed is not decoded. Idle / Shuffle rows keep the nav's walk
+  (no Shuffle state yet).
+
+Verification: tests `the_speed_rows_pick_state_and_tier_after_the_bump`,
+`a_tier_change_swaps_the_walk_cycle_at_the_branch_window` (skate-core), `test_speed_rows_gain_named_states_tiers_and_turn_lists`
+(setup), the data-gated `every_census_entity_resolves_a_look_and_animation` (7 default rows, female ends in a Slow run,
+the three tier clips resolve in the stock set).
+
+The run's own clips (research `.local/research/b684-ped-run-tired-graph.md`, same day): Idle or Walk into a run plays
+`Stand2ChaseRun` (0.25, out at 0.1 into the tier cycle; `Locomotion::RunStart`), a turn while running plays
+`ChaseRunTurnR45..R180` (0.15, left mirrored, at the run cycle's branch window, out at 0.1;
+`RunTurnLeft` / `RunTurnRight`; the wander now posts run turns instead of stopping to pivot), a stop plays
+`ChaseRun2Stand` (0.15) and a run back to a walk plays `Stand2Walk` (0.25) [data, `motiongraph_chaserun.xml`,
+`motiongraph_idle.xml`, `motiongraph_walk.xml`]. A set without a clip falls back to the old path. Test
+`a_run_starts_turns_and_stops_through_its_own_clips`; the clips resolve in the stock default set (data test).
+
+Tired (b684, same day): RestFromChase Begin (`8269F4D8`) posts one packet with two stages, [Tired] then
+[Tired + StopTired]; its End (`8269F608`) advances the stage (`+0x1C4 += 1`, read in the recomp asm) and removes the
+packet, so StopTired arrives when the AI is rested [code]. Graph (`motiongraph_tired.xml`) [data]: from the run cycle
+`ChaseTiredInto` at a branch window, from anything else straight to `ChaseTiredCyc` (blend 0.1); the cycle leaves on
+StopTired at a loop end into `ChaseTiredOut` (out at 0.01); then Idle and Walk start their cycles directly (their
+into lists have no Tired) and a run plays the plain `Stand2ChaseRun`. Ours: `PedAnimPlayer::resting` follows the
+brain's `chase_resting` (Begin sets, End clears), states `TiredInto` / `TiredCycle` / `TiredOut`; OURS: the graph's
+`TiredBranchInfo` is not decoded, the run cycle's own branch windows stand in. Test
+`a_rest_after_a_run_plays_the_tired_clips_then_walks_on`; the three clips are the shared `NPC_TIRED_*` of all sets.
+
+Shuffle (research `.local/research/b686-ped-shuffle-strafe.md`, same day): a speed in the Shuffle row (from 1.0; in the
+stock data only TargetWaypoint's 1.0 near a plugin point, `moveontowaypoint.xml`, `brain.rs` TargetWaypoint) shuffles:
+`Stand2Shuffle` (0.25, out at 0.1) from Idle / Walk / ChaseRun, `FwdShuffleCyc` (0.1), `ShuffleTurnR45..R180` (0.15,
+left mirrored, out at 0.1), out through `Shuffle2Stand` (0.15) to Idle, `Stand2Walk` to a walk, `Stand2ChaseRun` to a
+run [data]. Ours: `Intent::Shuffle` from `moving_intent`, states `ShuffleStart` / `Shuffle` / `ShuffleTurnLeft` /
+`ShuffleTurnRight`, the wander posts turns from Shuffle, a shuffling ped can dodge. Test
+`a_shuffle_speed_shuffles_turns_and_stops_through_its_clips`.
+
+Strafe (b686, same day): BlockChasee sets the mover's strafe flag and target (the chasee) every update
+(`sub_826A40E8` -> `sub_82E2C000`) and clears it at its End (`sub_826A4338` -> `sub_82E21B18`) [code]. While it is
+set the poster posts Strafe: first a turn toward the target through the turn bucket with mask 0xCC (from 25 degrees
+off a 45, from 70 a 90, nothing larger), else with a speed above 0 a step by the angle of the move direction on the
+25 / 70 / 115 / 160 edges (Forwards, Right / Left 45 / 90 / 135, Backwards; `sub_82E2AFC0`, edges dumped) [code].
+Graph: `Stand2Strafe` (0.25, out at 0.03) from Idle / Walk / Shuffle, `Chase2Strafe` from a run, `StrafeIdle` (0.1),
+the step cycles `StrafeForwards` / `StrafeBackwards` / `StrafeR45/R90/R135` (0.15, left mirrored, at the branch
+window), `StrafeTurnR45/R90`; out with no stand clip (IdleInto / WalkInto / ShuffleInto do not list Strafe), to a run
+through `Strafe2ChaseRun` [data]. Ours: `PedBrain::strafe_target`, `anim::strafe_input` (edges in
+`PedBrainSettings::strafe`), `PedAnimPlayer::strafe` and the Strafe states; the caller steps toward the block point
+and turns by the clips (no face pivot); a set without `Stand2Strafe` keeps the old walk and pivot. Tests
+`the_strafe_turns_to_the_target_then_steps_by_angle`, `a_strafing_ped_steps_turns_and_leaves_without_a_stand_clip`.
+Read 2026-10-29 (research `.local/research/b695-strafe-leftovers.md`): `sub_82E2AB18` is the target minus the ped in 3D
+(not flattened), so a chasee above or below changes the turn size; ours now takes the size from the 3D dot and the
+side from the flat cross. `sub_82E2A6B0` steps toward the first path node more than 0.1 m away (3D), not the goal;
+ours now uses the first nav corner past `node_reach` (`StrafeRules`, 0.1), else the block point. BlockChasee Begin
+(`sub_826A4038`) sets neither the flag nor the target, as ours. Open: the stored chasee height, goal+0x30 (the
+fallback step vector).
+
+Open (b682 / b684 / b686): `Chase2StrafeR*` and start-with-turn into a run (`Stand2ChaseRunR*`, needs a turn and a
+run intent in one stage), the transition freeze (`+0x84` / `+0x86`), the turn gate from the previous row's state, the
+request masks; whether the mover's speed sample is the desired or the measured speed.
+
 ## Code reference: living_world/peds.rs
 
 Detail moved out of the code comments of `crates/skate-game/src/living_world/peds.rs`; each comment there links its section here.
@@ -675,6 +759,39 @@ The DMO's plugin check (`82C56DB0`, b136 / b137): moved more than its type's max
   mover; whether the values differ per ped type (one run, ped types not named); the recomp's 1/3 s cadence and its
   phase (ours: the ped's serial); whether a ped that jumped off sits down again. Needs a play test.
 
+### Standing peds dodge an approaching skater
+
+2026-10-29 (research `.local/research/b683-ped-dodge-gaps.md`, checked at the source): retail runs the same
+SkaterAvoidance decision (`82E2E538` -> `82E2E738` -> `82E2E890`) for every ped, not only seated ones. The motion
+graph's `Avoid` state is entered from Walk, Idle, Converse, Shuffle and Strafe, never from ChaseRun
+(`motiongraph_*.xml`), so a running ped does not dodge [data]. Jump: `AvoidJumpForward` / `AvoidJumpLeft` / mirrored
+for Right / `AvoidJumpBack`, PedestrianAvoidJump 4 on entering; Step: `AvoidStep*` the same way, no speech, waits for
+the locomotion clip's branch window (`WaitForBranch`). Template `avoid.xml`: blend 0.1, out at `WillExpire 0.01`.
+Entering Avoid stops the channel (`StopChannel`); AvoidComplete sends PedestrianWandering 1; a hit during the dodge
+goes to Collision [data].
+
+Ours: `skate_core::living_world::peds::avoid::{standing, may_dodge, replaces, STANDING_CLIPS}`; `think_peds` decides on
+the ped's own phase like the seated test (same 0.1 m escape probe `82C46460`), `advance_peds` plays the clip as a
+reaction (Jump at once, Step at the branch window), a skater hit replaces it. A pending Step gives way to a Jump, a
+pending Jump blocks new decisions (b683 2.4). Event `PedEvent::Avoid` / mod event `ped_avoid` (seated ones too); mod
+switch `ped_brain.skater_avoid_standing`. Logs `PED_AVOID ... standing state=..`, `PED_AVOID_DONE moved=..`. The six
+clips resolve in all 12 stock sets (data-gated `living_world_ped_data_loads_from_the_export`); core test
+`a_standing_ped_jumps_or_steps_from_walk_and_idle_only`. No game-side harness runs ped minds, so the trigger itself
+is checked in game.
+
+The Jump's mood post (research `.local/research/b685-skateravoid-post-and-movers.md`, asm checked): after a Jump only,
+`sub_82E2E890` posts category 3 (`skateravoid`) into the dodging ped's own store (interface `0x8269A960`, through
+`sub_82E3DA40`): position the ped, instigator the mover, second the ped; the two 1.0 floats are vision-test scales,
+not the magnitude [code]. Ours: `PedMind::avoid_post`, posted by the mood step on the next think through the same
+prerequisites as `greeted` (seated and standing). Only the stock `jock` reaction set lists `skateravoidwarn` /
+`skateravoidchase` (count 2 / 3) [data]; data test: three jumps make a jock warn
+(`living_world_ped_mood_tables_warn_then_chase_on_collisions`).
+
+Open (b683 / b685): NPC skaters as movers (retail takes any actor the nav sensor's filter bit 0x01 reports; which
+actors carry it is not found),
+the mover kind / `+0x3937` no-Jump gate, the global byte gate, when retail clears the two latches; whether the seated
+avoid also sends AvoidComplete's speech.
+
 ### Plugin behaviour end
 
 Leaving the Plugin state, or moving to another plugin graph, first ends the old graph's active behaviours: the Plugin behaviour's End (`8269F310` -> `82E0CFA0`, controller vtable +0x10 = EndAllBehaviours `82C13498`). So the sit body's End removes its packet (Sit2Stand plays) and OwnPluginObject / IgnoreStandingCollisions / LockToCurrentPosition clear as in retail (b300).
@@ -720,6 +837,16 @@ A walking ped that stays within `stuck_distance` (0.13 m) for `stuck_seconds` (0
 ### Ped yield patience
 
 NOT RETAIL (ours): seconds a yielding ped waits before it re-paths to the same target. Keeping the target is retail's outcome; the 2.0 s is borrowed from the bot's mode-0 (no path) controller `82EA4408`, which walking path peds never run (b335). Retail's walking path step `82EA0808` has no neighbour handling at all (b336): our yield, sidestep and push are ours; what keeps retail walking peds apart is not read yet.
+
+2026-10-29 (research `.local/research/b689-ped-pathing-gaps.md`, gates checked in the recomp asm): the candidate is
+the Pedestrian nav modifier's sensor `sub_82E2D3F8` (ped+2704, vtable `0x8232BA8C`, b337). Its classifier
+`sub_82E2D4E0` acts only within 3.0 m of height (`0x82063B08`); a mover faster than 5 m/s (speed squared against
+25.0, `0x8209994C`) goes through `sub_82E2D660` to the same Jump / Step pair as SkaterAvoidance (`sub_82E2DDB8`); a
+slower one through `sub_82E2D7B8` to hold (`+0x74` bits 0xA0, `+0x20` zeroed) or a steer-around point (`sub_82E2DFB8`,
+bits 0xC0, a -10 degree turn scaled 3.0 at `+0x10`) [code]. So walking peds would never jump for each other. Not
+ported yet: what reads `+0x74` / `+0x10` / `+0x20` (how long a hold lasts, how far the steer bends) and whether peds
+report each other to this sensor at all need one recomp trace (hooks listed in b689). The gate itself is ported:
+with the modifier off the nav step gets no neighbours (`peds.rs`, `avoid_peds`).
 
 ## Code reference: skate-core peds/obstacles.rs
 

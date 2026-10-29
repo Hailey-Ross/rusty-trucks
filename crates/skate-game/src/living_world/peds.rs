@@ -358,6 +358,8 @@ pub(crate) struct PluginMotionRun {
     /// A tazer clip the brain asked for (`ChaseRequest::TazerClip`), and the last one the channel took with whether
     /// the ped's set had it (read by `ped_hand_props::sync_hand_props` for `PedBrain::update_tazer_clip`).
     pub tazer_clip: Option<&'static str>,
+    /// A greet / warn gesture the brain asked for this tick (b677), played on the channel.
+    pub gesture_clip: Option<&'static str>,
     pub tazer_played: Option<(&'static str, bool)>,
 }
 
@@ -465,6 +467,8 @@ pub(crate) enum PedEvent {
     /// The look could not be resolved (no entities / model): the population slot is released.
     Rejected { id: LivingWorldId, category: String },
     Despawned { id: LivingWorldId, reason: DespawnReason },
+    /// A chase group ended by aggressivecapture of the local player through the ChaserGroupEndChase op (b680).
+    ChaseCaught { target: u64 },
     State { id: LivingWorldId, state: Locomotion },
     /// The mood system picked a reaction (`skate_core::living_world::peds::mood`); `wants` were
     /// raised when `passed`.
@@ -503,6 +507,9 @@ pub(crate) enum PedEvent {
     /// A chase group changed (`kind`: join, join_refused, leave, primary, group_end); `chasee` is
     /// the chased id (players: `PLAYER_TARGET_BASE + n`).
     Chase { id: LivingWorldId, chasee: u64, kind: &'static str, reason: Option<i32> },
+    /// A ped decided to dodge a skater coming at it (SkaterAvoidance: `kind` jump / step, `dir` forward / left / right /
+    /// back); `mover` as the chase ids (players: `PLAYER_TARGET_BASE + n`).
+    Avoid { id: LivingWorldId, mover: u64, kind: &'static str, dir: &'static str, seated: bool },
     /// A ped's tazer hit `target` (the takedown's knock-down).
     Taze { id: LivingWorldId, target: u64 },
     /// A ped's takedown attempt ended (`success`: the target is knocked down).
@@ -1011,6 +1018,12 @@ pub(crate) fn advance_peds(
                 body.plugin_motion.tazer_played = Some((clip, ok));
                 info!("PED_TAZER_CLIP ped=#{} {clip}{} tick={tick}", ped.id.serial, if ok { "" } else { " (not in the anim set)" });
             }
+            // The greet / warn gesture (ChannelGreet / ChannelWarnWantTarget Begin, ped vfn+0xF8, blends 0.2; b677).
+            if let Some(clip) = body.plugin_motion.gesture_clip.take() {
+                let blend = settings.ped_brain.values.gesture_blend;
+                let ok = body.player.channel_request(set, clip, blend, blend);
+                info!("PED_GESTURE ped=#{} {clip}{} tick={tick}", ped.id.serial, if ok { "" } else { " (not in the anim set)" });
+            }
             // A plugin state's clips (sit, ATM, vending machine, water fountain, newspaper box).
             let run = &mut body.plugin_motion;
             // The Avoid graph's SitJump out of the sitting cycle (`think_peds` raises `sit_avoid`).
@@ -1024,6 +1037,19 @@ pub(crate) fn advance_peds(
                 let hold = if avoid.leaves_seat { 0.0 } else { f32::INFINITY };
                 if body.player.interrupt(set, steps, hold) && avoid.leaves_seat {
                     run.state = TauntClip::Done;
+                }
+            }
+            // The Avoid graph's Jump (at once) / Step (at the locomotion clip's branch window), blend 0.1, back to
+            // locomotion when it ends (`think_peds` raises `stand_avoid`).
+            if let Some(avoid) = mind.and_then(|m| m.stand_avoid) {
+                if !body.player.reacting() && (!avoid.waits_for_branch() || body.player.in_branch_window()) {
+                    let step = skate_core::living_world::peds::skater_contact::ReactionStep { anim: avoid.clip, mirror: avoid.mirror, blend: 0.1, cycle: false };
+                    if body.player.react(set, vec![step], 0.0) {
+                        // Avoid's StopChannel.
+                        body.player.channel_stop_own();
+                    } else {
+                        warn!("PED_AVOID ped=#{} {} not in the anim set", ped.id.serial, avoid.clip);
+                    }
                 }
             }
             match (run.state, run.packet.as_deref().and_then(skate_core::living_world::peds::plugin_motion::motion_for)) {
@@ -1053,6 +1079,8 @@ pub(crate) fn advance_peds(
             if let Some(r) = body.reaction_due.take() {
                 let steps = skate_core::living_world::peds::skater_contact::reaction_steps(r.kind, r.direction);
                 if body.player.react(set, steps, set.collision.ground_seconds) {
+                    // Entering Collision stops the upper-body channel (`StopChannel`, motiongraph_collision.xml).
+                    body.player.channel_stop_own();
                     if r.kind == skate_core::living_world::peds::skater_contact::ReactionKind::Knockdown {
                         body.player.begin_knockdown(r.direction);
                     }
@@ -1063,7 +1091,9 @@ pub(crate) fn advance_peds(
             // A skater running into the ped (retail `sub_82E38FB8` kind 5). Retail skips the contact only while the ped is
             // already in a collision reaction (controller byte +9), not during any clip: a ped sitting on a bench or
             // using a prop (its plugin clip plays as a reaction) can be knocked over.
-            let clip_reaction = body.taunt == TauntClip::Playing || body.plugin_motion.state == TauntClip::Playing;
+            // A dodge clip too: the Avoid state goes to Collision on a hit (`motiongraph_avoid.xml`, b683 2.3).
+            let clip_reaction = body.taunt == TauntClip::Playing || body.plugin_motion.state == TauntClip::Playing
+                || body.player.reaction_anim().is_some_and(|a| skate_core::living_world::peds::avoid::STANDING_CLIPS.contains(&a));
             let in_collision = mind.is_some_and(|m| m.brain.colliding) || (body.player.state == Locomotion::Reaction && !clip_reaction);
             // A knocked-down ped still takes contacts (retail drops them only during a stumble, `sub_8269DEE0` state 0, or
             // once blocked): they re-arm its ground timer or re-hit it while it gets up (b372).
@@ -1159,6 +1189,7 @@ pub(crate) fn advance_peds(
                         body.player.react(set, steps, set.collision.ground_seconds)
                     };
                     if started {
+                        body.player.channel_stop_own();
                         if kind == skate_core::living_world::peds::skater_contact::ReactionKind::Knockdown {
                             body.player.begin_knockdown(direction);
                         }
@@ -1177,6 +1208,9 @@ pub(crate) fn advance_peds(
             let sliding = mind.is_some_and(|m| {
                 m.brain.approach.zip(m.brain.approach_slide).is_some_and(|((p, _), (slide, _))| (p[0] - body.position.x).hypot(p[2] - body.position.z) <= slide)
             });
+            body.player.tier = skate_core::living_world::peds::anim::Tier::Default;
+            // RestFromChase's Tired packet; its End posts StopTired (`8269F608`, b684).
+            body.player.resting = mind.is_some_and(|m| m.brain.chase_resting);
             match data.nav.as_deref() {
                 _ if body.player.state == Locomotion::Reaction => body.player.intent = skate_core::living_world::peds::anim::Intent::Idle,
                 _ if (locked || sliding) && face.is_none() => {
@@ -1219,7 +1253,9 @@ pub(crate) fn advance_peds(
                     let out = body.nav.step_avoiding(mesh, &nav_settings.wander, nav_settings.crosswalk, signals, me, body.position.to_array(), body.heading, body.player.state, neighbours_now, Some(obstacles), dt);
                     // Fleeing: run (the chase run cycle) where the nav walks.
                     let fleeing = mind.is_some_and(|m| m.flee_goal.is_some() || m.chase_goal.is_some());
-                    body.player.intent = if fleeing && out.intent == skate_core::living_world::peds::anim::Intent::Walk { skate_core::living_world::peds::anim::Intent::Run } else { out.intent };
+                    let (intent, tier) = skate_core::living_world::peds::anim::moving_intent(out.intent, fleeing, mind.and_then(|m| m.brain.speed_suggestion), &set.speed_rows, settings.ped_brain.speed_bump);
+                    body.player.intent = intent;
+                    body.player.tier = tier;
                     turn = out.turn;
                     if out.turn_degrees != 0 {
                         use skate_core::living_world::peds::anim::{names, Intent};
@@ -1235,6 +1271,23 @@ pub(crate) fn advance_peds(
                     }
                 }
                 None => body.player.intent = body.path.intent(dt, body.player.state),
+            }
+            // BlockChasee's strafe flag (b686): facing the chasee, a strafe turn (45 / 90) or a step toward the block
+            // point; the clips' root motion turns and moves the ped (no steering, no face pivot).
+            body.player.strafe = mind.and_then(|m| m.brain.strafe_target.map(|t| (m, t))).filter(|_| body.player.state != Locomotion::Reaction && set.entries.contains_key(skate_core::living_world::peds::anim::names::STRAFE_INTO)).map(|(m, t)| {
+                let p = body.position;
+                let rules = &settings.ped_brain.strafe;
+                // `sub_82E2A6B0`: toward the first path node farther than `node_reach`, else the block point (b695).
+                let reach2 = rules.node_reach * rules.node_reach;
+                let step = m.brain.block_point.filter(|_| m.brain.speed_suggestion != Some(0.0)).map(|b| {
+                    let node = body.nav.corners.iter().skip(body.nav.next).find(|c| (c[0] - p.x).powi(2) + (c[1] - p.y).powi(2) + (c[2] - p.z).powi(2) > reach2).copied().unwrap_or(b);
+                    [node[0] - p.x, node[2] - p.z]
+                });
+                skate_core::living_world::peds::anim::strafe_input(body.heading, [t[0] - p.x, t[1] - p.y, t[2] - p.z], step, m.brain.speed_suggestion.unwrap_or(0.0), rules)
+            });
+            if body.player.strafe.is_some() {
+                body.player.intent = skate_core::living_world::peds::anim::Intent::Idle;
+                turn = 0.0;
             }
             // The carry pose (`82E3F048`): while the hand prop is held and the channel is free, its record's carry
             // animation is requested again (blend 0.2); the unlink (`82E3FAE0`) stops any channel clip once with its
@@ -1922,6 +1975,13 @@ pub(crate) struct PedMind {
     sit_avoid: Option<skate_core::living_world::peds::avoid::SeatedAvoid>,
     /// Where the jump off started (`PED_SIT_AVOID_DONE` reports how far the ped got).
     sit_avoid_from: Option<[f32; 3]>,
+    /// A standing / walking dodge to play (the Avoid graph's Jump / Step), held until the clip starts or the ped can
+    /// no longer dodge; where it started (`PED_AVOID_DONE`).
+    stand_avoid: Option<skate_core::living_world::peds::avoid::StandingAvoid>,
+    stand_avoid_from: Option<[f32; 3]>,
+    /// A Jump's `skateravoid` post into the ped's own store (`sub_82E2E890`, b685): the skater and where; the mood
+    /// step posts it on the next think.
+    avoid_post: Option<(u64, [f32; 3])>,
     /// The speech value last sent to the audio side (`PedestrianSpeech` requests a line only when
     /// the value changes; a fresh ped holds the constructor's 68).
     spoken: Option<i32>,
@@ -2079,15 +2139,16 @@ pub(crate) fn post_chase_messages(
     for event in events.read() {
         let (target, tazed) = match *event {
             PedEvent::Taze { target, .. } => (target, true),
-            PedEvent::Takedown { target, success: true, .. } => (target, false),
+            PedEvent::Takedown { target, success: true, .. } | PedEvent::ChaseCaught { target } => (target, false),
             _ => continue,
         };
         // Local play: player 0.
         if target != PLAYER_TARGET_BASE {
             continue;
         }
+        // Seeded once per run (presentation only): a fixed seed showed the same caught line on every first takedown.
         if *random == 0 {
-            *random = 0x2545_f491;
+            *random = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0x2545_f491, |d| d.subsec_nanos() | 1);
         }
         *random ^= *random << 13;
         *random ^= *random >> 17;
@@ -2187,7 +2248,8 @@ pub(crate) fn think_peds(
     // The scatter alarm (`sub_826C1348` once per world step, copied to every ped by `sub_826BDB50`; b654): raised while
     // the local player's gesture runs on D-pad Down (MotionGraph +5989, `sub_8258FB30`).
     {
-        let raised = skater.as_ref().and_then(|s| s.animation.motion.gesture_publication.as_ref()).is_some_and(|g| g.down);
+        let raised = skater.as_ref().and_then(|s| s.animation.motion.gesture_publication.as_ref()).is_some_and(|g| g.down)
+            || settings.ped_brain.scatter_hold;
         let steps = scatter.1.map_or(1, |last| tick.saturating_sub(last));
         if steps > 0 {
             let length = settings.ped_brain.values.scatter_seconds;
@@ -2580,6 +2642,13 @@ pub(crate) fn think_peds(
                     mind.mood.post_ranked(e, 1.0, &priority);
                 }
             }
+            // SkaterAvoidance's Jump post (`sub_82E2E890` -> `sub_82E3DA40`): category skateravoid, the skater as instigator.
+            if let Some((instigator, position)) = mind.avoid_post.take() {
+                let e = MoodEvent { category: mood::category::SKATER_AVOID.into(), instigator: Some(instigator), second: Some(me), position };
+                if !mind.brain.perceptions.suppressed(instigator) && tables.accepts(&set, &e, &post_ctx) && seen(&e) {
+                    mind.mood.post_ranked(e, 1.0, &priority);
+                }
+            }
             // A contact stored during a takedown attempt arms Colliding without playing anything yet; an Attempt Begin
             // in this update still drops it (`826A49D8`), as retail.
             for &(_, r) in stored.iter().filter(|s| s.0 == me) {
@@ -2783,11 +2852,12 @@ pub(crate) fn think_peds(
             // skater whose closest approach qualifies decides (docs/hails-additions/26f-living-world-peds.md#seated-peds-avoid-an-approaching-skater).
             let rules = settings.ped_brain.values.avoid;
             let every = ((rules.period / dt).round() as u64).max(1);
-            let skater_avoid = if seated && mind.sit_avoid.is_none() && (tick + u64::from(ped.id.serial)) % every == 0
-                && mind.brain.nav_modifier(skate_core::living_world::peds::brain::nav_modifier::SKATER_AVOIDANCE)
-            {
+            let on_phase = (tick + u64::from(ped.id.serial)) % every == 0
+                && mind.brain.nav_modifier(skate_core::living_world::peds::brain::nav_modifier::SKATER_AVOIDANCE);
+            // The first skater whose decision passes `accept` and the escape point's 0.1 m ground probe (82C46460).
+            let decide = |accept: &dyn Fn(&avoid::AvoidDecision) -> bool| {
                 observers.observers.iter().enumerate().find_map(|(i, o)| {
-                    let d = avoid::decide(at, forward, o.position, o.velocity, &rules)?;
+                    let d = avoid::decide(at, forward, o.position, o.velocity, &rules).filter(|d| accept(d))?;
                     let ground = data.nav.as_ref().is_none_or(|nav| {
                         nav.locate_any(d.escape_point).is_some_and(|q| (q.position[0] - d.escape_point[0]).abs() <= SEAT_PROBE_TOLERANCE && (q.position[2] - d.escape_point[2]).abs() <= SEAT_PROBE_TOLERANCE)
                     });
@@ -2796,9 +2866,43 @@ pub(crate) fn think_peds(
                     }
                     ground.then_some((i, d))
                 })
-            } else {
-                None
             };
+            let skater_avoid = if seated && mind.sit_avoid.is_none() && on_phase { decide(&|_| true) } else { None };
+            // Standing / walking peds: the same decision into the Avoid graph's Jump / Step (b683):
+            // docs/hails-additions/26f-living-world-peds.md#standing-peds-dodge-an-approaching-skater
+            let can_dodge = !seated && rules.standing && avoid::may_dodge(body.player.state) && !body.player.reacting();
+            let pending = mind.stand_avoid;
+            if pending.is_some_and(|p| anim == Some(p.clip)) {
+                // `advance_peds` started the clip.
+                mind.stand_avoid = None;
+            } else if can_dodge && on_phase {
+                if let Some((skater, d)) = decide(&|d| avoid::replaces(pending, d.kind)) {
+                    let play = avoid::standing(d.kind, d.dir);
+                    if play.speech.is_some() {
+                        mind.brain.speech = play.speech;
+                    }
+                    mind.stand_avoid = Some(play);
+                    mind.stand_avoid_from = Some(at);
+                    events.write(PedEvent::Avoid { id: ped.id, mover: PLAYER_TARGET_BASE + skater as u64, kind: d.kind.name(), dir: d.dir.name(), seated: false });
+                    if d.kind == avoid::AvoidKind::Jump {
+                        mind.avoid_post = Some((PLAYER_TARGET_BASE + skater as u64, at));
+                    }
+                    info!(
+                        "PED_AVOID ped=#{} skater={skater} {} {} standing state={} clip={}{} t={:.2} miss={:.2} speed={:.2} angle={:.2} tick={tick}",
+                        ped.id.serial, d.kind.name(), d.dir.name(), body.player.state.name(), play.clip, if play.mirror { " mirrored" } else { "" }, d.t, d.miss, d.speed, d.angle
+                    );
+                }
+            } else if !can_dodge && mind.stand_avoid.take().is_some() {
+                debug!("PED_AVOID ped=#{} dropped (state {}) tick={tick}", ped.id.serial, body.player.state.name());
+            }
+            if mind.stand_avoid.is_none() && !anim.is_some_and(|a| avoid::STANDING_CLIPS.contains(&a)) {
+                if let Some(from) = mind.stand_avoid_from.take() {
+                    let moved = ((at[0] - from[0]).powi(2) + (at[2] - from[2]).powi(2)).sqrt();
+                    info!("PED_AVOID_DONE ped=#{} moved={moved:.2} tick={tick}", ped.id.serial);
+                    // AvoidComplete: PedestrianWandering 1.
+                    mind.brain.speech = Some(avoid::AVOID_COMPLETE_SPEECH);
+                }
+            }
             if seat_pushed.contains(&me) && seated && mind.sit_avoid.is_none() {
                 let jump = avoid::seated(avoid::AvoidKind::Jump, avoid::AvoidDir::Forward);
                 mind.brain.speech = jump.speech;
@@ -2812,6 +2916,10 @@ pub(crate) fn think_peds(
                 }
                 mind.sit_avoid = Some(play);
                 mind.sit_avoid_from = Some(at);
+                events.write(PedEvent::Avoid { id: ped.id, mover: PLAYER_TARGET_BASE + skater as u64, kind: d.kind.name(), dir: d.dir.name(), seated: true });
+                if d.kind == avoid::AvoidKind::Jump {
+                    mind.avoid_post = Some((PLAYER_TARGET_BASE + skater as u64, at));
+                }
                 info!(
                     "PED_AVOID ped=#{} skater={skater} {} {} seated clip={}{} leaves_seat={} t={:.2} miss={:.2} speed={:.2} angle={:.2} tick={tick}",
                     ped.id.serial, d.kind.name(), d.dir.name(), play.clip, if play.mirror { " mirrored" } else { "" }, play.leaves_seat, d.t, d.miss, d.speed, d.angle
@@ -3263,6 +3371,10 @@ pub(crate) fn think_peds(
                         body.plugin_motion.tazer_clip = Some(clip);
                         continue;
                     }
+                    ChaseRequest::GestureClip { clip } => {
+                        body.plugin_motion.gesture_clip = Some(clip);
+                        continue;
+                    }
                     ChaseRequest::HandPropReleased { velocity } => {
                         mind.hand_prop_release = Some(velocity);
                         continue;
@@ -3271,9 +3383,13 @@ pub(crate) fn think_peds(
                         mind.mood.forget(target);
                         continue;
                     }
-                    ChaseRequest::GroupEnd { chasee, reason } => {
-                        if let Some(g) = chase_groups.0.get_mut(&chasee) {
-                            g.end_reason = Some(reason);
+                    ChaseRequest::GroupEnd { chasee, reason, notify } => {
+                        let in_group = chase_groups.0.get_mut(&chasee).map(|g| g.end_reason = Some(reason)).is_some();
+                        // `826A5318`: a chaser in a group ending it by aggressivecapture of the local player shows a
+                        // CAUGHT line (chase manager +64 with (1, 0), b680).
+                        if notify && in_group && reason == skate_core::living_world::peds::chase::reason::AGGRESSIVE_CAPTURE
+                            && chasee == PLAYER_TARGET_BASE {
+                            events.write(PedEvent::ChaseCaught { target: chasee });
                         }
                         (chasee, "group_end", Some(reason))
                     }

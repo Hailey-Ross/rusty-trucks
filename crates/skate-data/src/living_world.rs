@@ -172,10 +172,14 @@ pub fn skater_characters(json: &[u8], bound: &[&str]) -> Result<Vec<SkaterCharac
         if c["needs"].as_str() == Some("recruited_save_slot") && !bound.contains(&key) {
             continue;
         }
+        // The runtime AI profile's line capability bytes +0x31 / +0x30 / +0x32 (`sub_8245FFD8`, b675), against line
+        // flag bits 0 / 1 / 2; a missing field reads false.
+        let fields = &doc["ai_skater_profiles"][c["aiprofile"].as_str().unwrap_or(key)]["fields"];
+        let capability = |h: &str| fields[h].as_bool().unwrap_or(false);
         out.push(SkaterCharacter {
             key: key.to_string(),
             pro_index: c["pro_index"].as_u64().map(|p| p as u32),
-            capabilities: [false; 3],
+            capabilities: [capability("Hash_E01079D1A094B0C0"), capability("Hash_AACEBDA7CA734319"), capability("Hash_C36E34B4C619E868")],
             community: c["community"].as_bool().unwrap_or(false),
         });
     }

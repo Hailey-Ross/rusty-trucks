@@ -50,7 +50,7 @@ fn data() -> LoadedData {
             (id(i as u32), ReplayLine { id: id(i as u32), flags: 4, skill: 0, nodes, jumps: vec![], groups: vec![] })
         })
         .collect();
-    let characters = (0..6).map(|i| SkaterCharacter { key: format!("pro_{i}"), pro_index: Some(i), capabilities: [false; 3], community: false }).collect();
+    let characters = (0..6).map(|i| SkaterCharacter { key: format!("pro_{i}"), pro_index: Some(i), capabilities: [true; 3], community: false }).collect();
     let voices = (0..6).map(|i| (format!("pro_{i}"), 10 + i)).collect();
     LoadedData {
         config,
@@ -823,6 +823,10 @@ fn living_world_npc_trick_clips_exist_and_flip_the_board() {
         let start = Quat::from_mat4(&evaluator_pose(&evaluator, clip, 0.0).unwrap()[board]);
         (1..=30).map(|i| start.angle_between(Quat::from_mat4(&evaluator_pose(&evaluator, clip, len * i as f32 / 30.0).unwrap()[board]))).fold(0.0f32, f32::max)
     };
+    // TRICKHEIGHT blends pick the child with the highest value (retail's AI height 1.0, b690); the ollie's second
+    // child is a subtree with no value of its own, so it keeps the first child (open).
+    assert_eq!(stock_tree_leaf(&meta, "B_KICKFLIP_IN_A").as_deref(), Some("KICKFLIP_IN_HIGH_A"));
+    assert_eq!(stock_tree_leaf(&meta, "B_OLLIE_A").as_deref(), Some("OLLIE_LOW_A"));
     let kickflip = trick_air_sequence("B_KICKFLIP_IN", 96).split('+').map(|n| stock_tree_leaf(&meta, n).unwrap()).collect::<Vec<_>>().join("+");
     let kickflip_len: f32 = kickflip.split('+').map(|c| evaluator.clip_length(c).unwrap()).sum();
     eprintln!("kickflip air: {kickflip} {kickflip_len:.3} s");
@@ -898,7 +902,7 @@ fn living_world_npc_trick_jump_has_no_pose_pop() {
         }
         // The trick clips play: the takeoff shows `_G`, the air `_A` (until it lands).
         if trick == 96 {
-            const KICKFLIP: &str = "KICKFLIP_IN_LOW_G+KICKFLIP_IN_LOW_A+T_LOW_KICK_CYC1+T_KICKFLIP_LOW_4FLIPS_0_OUT1";
+            const KICKFLIP: &str = "KICKFLIP_IN_HIGH_G+KICKFLIP_IN_HIGH_A+T_HI_KICK_CYC1+T_KICKFLIP_HI_4FLIPS_0_OUT1";
             assert_eq!(layers_at(45).last().unwrap().clip, KICKFLIP);
             assert_eq!(layers_at(55).last().unwrap().clip, KICKFLIP, "takeoff and air are one sequence");
             let air = layers_at(65);
@@ -1334,7 +1338,7 @@ fn npc_frame_digest(posed_runtime: Option<crate::physics::SkaterRuntime>) -> (u6
         }
         a.update();
         let mut q = a.world_mut().query::<(&NpcSkater, &NpcReplay, Option<&NpcPuppetClip>, &Transform, Option<&NpcPuppet>)>();
-        let mut rows: Vec<_> = q.iter(a.world()).map(|(n, r, c, t, p)| (n.id, format!("{r:?}{c:?}"), bits(t), p.map(|p| p.joints()).unwrap_or_default())).collect();
+        let mut rows: Vec<_> = q.iter(a.world()).map(|(n, r, c, t, p)| (n.id, format!("{r:?}{c:?}").replace(", body_gate: None", ""), bits(t), p.map(|p| p.joints()).unwrap_or_default())).collect();
         rows.sort_by_key(|r| r.0);
         for (id, text, root, joints) in rows {
             mix(&mut h, format!("{id:?}").as_bytes());

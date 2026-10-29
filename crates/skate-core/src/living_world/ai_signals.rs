@@ -147,9 +147,8 @@ fn dispatch(recorded: i16, trick: i16, slot: &mut TrickSlot, slot_tricks: bool, 
         ok
     };
     let ok = match slot.category {
-        // The perform step (`sub_8246A080` -> `sub_82469448`, which also stores the trick). Powerslides (9) keep it
-        // too until their writer arm is ported (it reads `pc+920`, not decoded).
-        1 | 2 | 9 => {
+        // The perform step (`sub_8246A080` -> `sub_82469448`, which also stores the trick).
+        1 | 2 => {
             if let Some((name, ..)) = usize::try_from(trick).ok().and_then(|i| catalog::IDENTIFIERS.get(i)) {
                 out.push(("Trick".into(), 1.0));
                 out.push(((*name).to_string(), 1.0));
@@ -157,11 +156,13 @@ fn dispatch(recorded: i16, trick: i16, slot: &mut TrickSlot, slot_tricks: bool, 
                 out.push(("TrickHeight".into(), 1.0));
                 out.push(("DontMirrorTrick".into(), 1.0));
             }
-            if slot.category != 9 && valid(trick) {
+            if valid(trick) {
                 slot.trick = trick;
             }
             valid(trick)
         }
+        // A powerslide posts nothing at dispatch: the writer arm does it every tick (b676).
+        9 => valid(trick),
         3 | 4 | 12 => !slot_tricks || take(slot),
         5 | 7 | 10 | 13 => take(slot),
         6 => valid(trick),
@@ -192,9 +193,37 @@ fn dispatch(recorded: i16, trick: i16, slot: &mut TrickSlot, slot_tricks: bool, 
     }
 }
 
+/// The powerslide arm's values (`sub_824696B8` case 9, 0x8246999C; b676): retail's, a mod may change them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PowerslideValues {
+    /// The start key's value (`0x8231A844`).
+    pub start: f32,
+    /// `LeftSlide` / `RightSlide`, posted every tick (`0x822F8FE4` / `0x8209184C`).
+    pub left: f32,
+    pub right: f32,
+    /// Steer error below this starts right, else left (`0x82165A10`).
+    pub split: f32,
+}
+
+impl Default for PowerslideValues {
+    fn default() -> Self {
+        Self { start: 1.0, left: -0.42, right: 0.42, split: 0.0 }
+    }
+}
+
+/// What the powerslide arm reads this tick: on the path (`pc+920`, before this tick's drop) and the ground steer's
+/// heading error (`pc+824`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Slide {
+    pub on_path: bool,
+    pub heading_error: f32,
+    pub values: PowerslideValues,
+}
+
 /// The per-tick writer's slot arm (`sub_824696B8` from 0x824698D0), then `pc+904 += 1`. `schedule` = the slot
-/// trick's intent list; `handplant_grab` = the category-6 GrabWorld value (1.0, `0x8231A844`).
-pub fn slot_signals(slot: &mut TrickSlot, schedule: &[IntentTuple], handplant_grab: f32) -> Vec<Signal> {
+/// trick's intent list; `handplant_grab` = the category-6 GrabWorld value (1.0, `0x8231A844`); `slide` = the
+/// powerslide arm's inputs.
+pub fn slot_signals(slot: &mut TrickSlot, schedule: &[IntentTuple], handplant_grab: f32, slide: Slide) -> Vec<Signal> {
     let mut out = Vec::new();
     match slot.category {
         1..=5 | 7 | 10 | 12 | 13 if valid(slot.trick) => {
@@ -210,6 +239,14 @@ pub fn slot_signals(slot: &mut TrickSlot, schedule: &[IntentTuple], handplant_gr
         6 => out.push(("GrabWorld".into(), handplant_grab)),
         // `loc_82469954`: a manual holds `Manual` = `pc+836` every tick until its end node.
         8 => out.push(("Manual".into(), slot.manual)),
+        // 0x8246999C: on the path, a start key by the steer error's side, then both slide values every tick.
+        9 if slide.on_path => {
+            let v = slide.values;
+            let start = if slide.heading_error < v.split { "RightSlideStart" } else { "LeftSlideStart" };
+            out.push((start.into(), v.start));
+            out.push(("LeftSlide".into(), v.left));
+            out.push(("RightSlide".into(), v.right));
+        }
         _ => {}
     }
     slot.ticks = slot.ticks.saturating_add(1);
@@ -403,12 +440,12 @@ mod tests {
         // The 5-0's schedule: PhysGrindUpDown -1 from the slot tick on, open-ended.
         let schedule = [IntentTuple { intent: 71, value: -1.0, start: 0, end: -1 }];
         for _ in 0..3 {
-            assert_eq!(slot_signals(&mut slot, &schedule, 1.0), vec![("PhysGrindUpDown".to_string(), -1.0)]);
+            assert_eq!(slot_signals(&mut slot, &schedule, 1.0, Slide::default()), vec![("PhysGrindUpDown".to_string(), -1.0)]);
         }
         assert_eq!(slot.ticks, 3);
         signals(&l, &s, &at(14, Some(13)), &|_| BS_5_O, &mut slot, true);
         assert_eq!(slot.category, 0);
-        assert!(slot_signals(&mut slot, &schedule, 1.0).is_empty());
+        assert!(slot_signals(&mut slot, &schedule, 1.0, Slide::default()).is_empty());
     }
 
     #[test]
@@ -419,7 +456,7 @@ mod tests {
             IntentTuple { intent: 0, value: 1.0, start: 0, end: -1 },
         ];
         let mut slot = TrickSlot { category: 10, trick: 20, ticks: 0, manual: 0.0 };
-        let seen: Vec<Vec<Signal>> = (0..4).map(|_| slot_signals(&mut slot, &schedule, 1.0)).collect();
+        let seen: Vec<Vec<Signal>> = (0..4).map(|_| slot_signals(&mut slot, &schedule, 1.0, Slide::default())).collect();
         assert_eq!(seen[0], vec![("LeftPush".to_string(), 1.0)]);
         assert_eq!(seen[1], vec![("LeftPush".to_string(), 1.0)]);
         assert_eq!(seen[2], vec![("TweakY".to_string(), -1.0)]);
@@ -427,11 +464,11 @@ mod tests {
         // Handplant: GrabWorld every tick, no schedule. Manual: its side every tick (`pc+836`). Powerslide and revert:
         // nothing from the slot.
         let mut hp = TrickSlot { category: 6, trick: FS_HANDPLANT, ticks: 0, manual: 0.0 };
-        assert_eq!(slot_signals(&mut hp, &schedule, 1.0), vec![("GrabWorld".to_string(), 1.0)]);
+        assert_eq!(slot_signals(&mut hp, &schedule, 1.0, Slide::default()), vec![("GrabWorld".to_string(), 1.0)]);
         let mut tail = TrickSlot { category: 8, trick: 3, ticks: 0, manual: -0.5 };
-        assert_eq!(slot_signals(&mut tail, &schedule, 1.0), vec![("Manual".to_string(), -0.5)]);
+        assert_eq!(slot_signals(&mut tail, &schedule, 1.0, Slide::default()), vec![("Manual".to_string(), -0.5)]);
         for c in [9, 11] {
-            assert!(slot_signals(&mut TrickSlot { category: c, trick: 20, ticks: 0, manual: 0.0 }, &schedule, 1.0).is_empty());
+            assert!(slot_signals(&mut TrickSlot { category: c, trick: 20, ticks: 0, manual: 0.0 }, &schedule, 1.0, Slide::default()).is_empty());
         }
     }
 
@@ -553,11 +590,11 @@ mod tests {
         assert!(names(&start).iter().all(|n| *n != "Trick"), "a manual posts no Trick: {start:?}");
         assert_eq!((slot.category, slot.manual), (8, -0.5));
         for _ in 0..3 {
-            assert_eq!(slot_signals(&mut slot, &[], 1.0), vec![("Manual".to_string(), -0.5)]);
+            assert_eq!(slot_signals(&mut slot, &[], 1.0, Slide::default()), vec![("Manual".to_string(), -0.5)]);
         }
         signals(&l, &s, &SignalInput { in_trick: true, ..at(14, Some(13)) }, &|_| 3, &mut slot, true);
         assert_eq!(slot.category, 0);
-        assert!(slot_signals(&mut slot, &[], 1.0).is_empty(), "nothing after the end node");
+        assert!(slot_signals(&mut slot, &[], 1.0, Slide::default()).is_empty(), "nothing after the end node");
         assert_eq!(manual_value(2, s.manual_value), 0.5, "a nosemanual's side is +");
     }
 
@@ -569,5 +606,21 @@ mod tests {
         assert!(names(&sig(&l, &s, &at(10, Some(7)), &|_| 85)).contains(&"Trick"));
         assert!(names(&sig(&l, &s, &at(3, Some(2)), &|_| 85)).contains(&"Crouch"));
         assert!(!names(&sig(&l, &s, &SignalInput { in_trick: true, ..at(3, Some(2)) }, &|_| 85)).contains(&"Crouch"));
+    }
+}
+
+#[cfg(test)]
+mod powerslide_tests {
+    use super::*;
+
+    /// b676: category 9 posts nothing at dispatch; on the path the writer posts the start key by the steer error's
+    /// side (0 goes left) and both slide values every tick; off the path nothing.
+    #[test]
+    fn a_powerslide_writes_its_start_side_and_both_slides_on_the_path() {
+        let mut slot = TrickSlot { category: 9, trick: 20, ticks: 0, manual: 0.0 };
+        let on = |e| Slide { on_path: true, heading_error: e, ..Default::default() };
+        assert_eq!(slot_signals(&mut slot, &[], 1.0, on(-0.1)), vec![("RightSlideStart".to_string(), 1.0), ("LeftSlide".to_string(), -0.42), ("RightSlide".to_string(), 0.42)]);
+        assert_eq!(slot_signals(&mut slot, &[], 1.0, on(0.0))[0], ("LeftSlideStart".to_string(), 1.0));
+        assert!(slot_signals(&mut slot, &[], 1.0, Slide::default()).is_empty(), "off the path");
     }
 }

@@ -624,7 +624,31 @@ pub struct BranchContext<'a> {
     pub chain: ChainConfig,
     /// The trick choice at start-trick nodes ([`super::npc_tricks`]).
     pub tricks: super::npc_tricks::TrickContext<'a>,
+    /// A physics-simulated skater (retail's full skater): its gate and body point ([`BodyGate`]); `None` = the replay
+    /// tier, which stands on the node it reached.
+    pub body: Option<BodyGate>,
+    /// The lines valid for this skater's character (`sub_82456970`, sorted), or `None` = every line (no profile).
+    pub valid_lines: Option<&'a [[u8; 16]]>,
 }
+
+impl BranchContext<'_> {
+    fn valid(&self, line: &[u8; 16]) -> bool {
+        self.valid_lines.is_none_or(|v| v.binary_search(line).is_ok())
+    }
+}
+
+/// The node-change handler's own inputs for a simulated skater (`sub_8246BEE0`, research b674).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodyGate {
+    /// The projected body point (`sub_82467FC8`): the branch score and the rejoin node are taken from it.
+    pub point: Vec3,
+    /// The handler's gate: on-board steering, not airborne (Air+0x1B6), trick category not 1 / 2 / 5 (perform, grind /
+    /// slide). False = no branch this node.
+    pub may_branch: bool,
+}
+
+/// The trick categories in which `sub_8246BEE0` takes no branch (b674; data a mod may change).
+pub const NO_BRANCH_CATEGORIES: [u8; 3] = [1, 2, 5];
 
 /// Signed angle from `a` to `b` about +Y (radians), like `sub_824536C8` with the up axis.
 fn yaw_angle(a: Vec3, b: Vec3) -> f32 {
@@ -706,7 +730,7 @@ pub fn choose_branch(lines: &dyn LineSource, current: &ReplayLine, node: u32, gr
     let mut best: Option<(usize, i64)> = None;
     let mut candidates: Vec<(&ReplayLine, u32)> = vec![(current, node)];
     for b in &group.branches {
-        if b.target == current.id || ctx.in_use.contains(&b.target) {
+        if b.target == current.id || ctx.in_use.contains(&b.target) || !ctx.valid(&b.target) {
             continue;
         }
         if let Some(l) = lines.line(&b.target) {
@@ -743,7 +767,7 @@ pub fn choose_next_line(lines: &dyn LineSource, current: &ReplayLine, ctx: &Bran
     // The fallback's nearest start at any distance (first in order on a tie).
     let mut nearest: Option<(&ReplayLine, f32)> = None;
     lines.for_each_line(&mut |l| {
-        if candidates.len() >= ctx.chain.max_candidates || l.id == current.id || ctx.in_use.contains(&l.id) {
+        if candidates.len() >= ctx.chain.max_candidates || l.id == current.id || ctx.in_use.contains(&l.id) || !ctx.valid(&l.id) {
             return;
         }
         let Some(start) = l.nodes.first() else { return };
@@ -948,17 +972,25 @@ impl LineCursor {
             out.push(CursorEvent::Node { line: self.line, node: self.node, event: n.event, flags: n.flags });
             if let Some(group) = line.group_at(self.node) {
                 let choice = match decider {
-                    Decider::Decide(ctx) => {
-                        // The replay skater stands on the node, moving along the segment it
-                        // just rode.
-                        let mut here = *ctx;
-                        here.position = line.nodes[self.node as usize].position;
-                        let v = sub(here.position, line.nodes[self.node as usize - 1].position);
-                        if v[0].hypot(v[2]) > 1e-4 {
-                            here.forward = v;
+                    Decider::Decide(ctx) => match ctx.body {
+                        // A simulated skater: gated, and scored / rejoined from its body point (b674).
+                        Some(body) if !body.may_branch => None,
+                        Some(body) => {
+                            let mut here = *ctx;
+                            here.position = body.point;
+                            choose_branch(lines, line, self.node, group, &here)
                         }
-                        choose_branch(lines, line, self.node, group, &here)
-                    }
+                        // The replay skater stands on the node, moving along the segment it just rode.
+                        None => {
+                            let mut here = *ctx;
+                            here.position = line.nodes[self.node as usize].position;
+                            let v = sub(here.position, line.nodes[self.node as usize - 1].position);
+                            if v[0].hypot(v[2]) > 1e-4 {
+                                here.forward = v;
+                            }
+                            choose_branch(lines, line, self.node, group, &here)
+                        }
+                    },
                     Decider::Mirror(records, _) => records.iter().find(|r| r.frame == self.frames && r.from_line == self.line && r.from_node == self.node).map(|r| (r.to_line, r.to_node)),
                     Decider::Stay => None,
                 };

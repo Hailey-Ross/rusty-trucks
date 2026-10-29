@@ -36,6 +36,7 @@ fn data() -> PedData {
         clip("TURN", 43, 0.0, false, vec![]),
         clip("HIT", 31, 0.0, false, vec![]),
         clip("GROUND", 21, 0.0, true, vec![]),
+        clip("DODGE", 20, 0.0, false, vec![]),
     ]
     .into_iter()
     .map(|c| (c.name.clone(), c))
@@ -47,6 +48,9 @@ fn data() -> PedData {
     }
     for n in skate_core::living_world::peds::skater_contact::REACTION_ANIMS {
         set.entries.insert((*n).into(), r(if n.contains("GroundCyc") { "GROUND" } else { "HIT" }));
+    }
+    for n in skate_core::living_world::peds::avoid::STANDING_CLIPS {
+        set.entries.insert(n.into(), r("DODGE"));
     }
     let mut catalog = PedCatalog::default();
     catalog.categories.insert("aletown".into(), vec!["jock02".into(), "bum02".into()]);
@@ -325,6 +329,12 @@ fn living_world_ped_data_loads_from_the_export() {
     for clip in skate_core::living_world::peds::avoid::SEATED_CLIPS {
         let n = d.anim_sets.values().filter(|s| s.entries.contains_key(clip)).count();
         assert!(n >= avoid_sets, "{clip} in {n} of {avoid_sets} sets");
+    }
+    // The standing Jump / Step clips (motiongraph_avoid.xml, b683) resolve in the regular sets.
+    for clip in skate_core::living_world::peds::avoid::STANDING_CLIPS {
+        let n = d.anim_sets.values().filter(|s| s.entries.contains_key(clip)).count();
+        eprintln!("{clip} in {n} sets");
+        assert!(n >= 10, "{clip} in {n} sets");
     }
     let look = d.catalog.choose("aletown", 1, &PedOverrides::default()).unwrap();
     let set = &d.anim_sets[&look.anim_set];
@@ -890,6 +900,20 @@ fn living_world_ped_mood_tables_warn_then_chase_on_collisions() {
     }
     let r = tables.produce(&mut bystander, &ctx, false, &|_| 0, &|_| false, &mut rng);
     assert!(r.as_ref().is_none_or(|r| r.result != "skatercollisionwarn" && r.result != "skatercollisionchase"), "{r:?}");
+    // A jock that had to jump out of a skater's way (`skateravoid`, b685) reacts through the stock avoid results (only
+    // the jock reaction set lists them).
+    let jock = MoodContext { ped_type: "jock", ..ctx };
+    let jumped = || MoodEvent { category: skate_core::living_world::peds::mood::category::SKATER_AVOID.into(), instigator: Some(PLAYER), second: Some(PED), position: [0.0; 3] };
+    let mut dodger = MoodStore::default();
+    let mut results = Vec::new();
+    for _ in 0..3 {
+        dodger.post(jumped(), 1.0);
+        if let Some(r) = tables.produce(&mut dodger, &jock, false, &|_| 0, &|_| false, &mut rng) {
+            results.push(r.result.clone());
+        }
+    }
+    eprintln!("skateravoid results: {results:?}");
+    assert!(results.iter().any(|r| r == "skateravoidwarn" || r == "skateravoidchase"), "{results:?}");
 }
 
 /// The stock plugin graphs (conversation, sit, lookat, spectate) load on the same runtime as the
@@ -1094,4 +1118,17 @@ fn a_never_joined_conversation_area_is_kept_and_an_emptied_one_removed() {
     assert_eq!(out, vec![(2, 7, 0)]);
     assert!(map.contains_key(&1), "the never-joined area stays");
     assert!(!map.contains_key(&2), "the area its last member left is removed");
+}
+
+/// b680: the ChaserGroupEndChase op's aggressivecapture of the local player shows a CAUGHT line, like a takedown.
+#[test]
+fn a_chase_caught_event_posts_a_caught_line() {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut app = App::new();
+    app.add_message::<PedEvent>().add_message::<crate::hud_central::CentralMessage>();
+    app.world_mut().write_message(PedEvent::ChaseCaught { target: PLAYER_TARGET_BASE });
+    app.world_mut().run_system_once(post_chase_messages).unwrap();
+    let posted: Vec<String> = app.world_mut().resource_mut::<Messages<crate::hud_central::CentralMessage>>().drain().map(|m| m.text).collect();
+    assert_eq!(posted.len(), 1);
+    assert!(posted[0].starts_with("ID_CHASE_CAUGHT_"), "{posted:?}");
 }

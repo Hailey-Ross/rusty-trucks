@@ -563,9 +563,14 @@ assets (5-0 -1, nosegrind +1, noseblunt and 50-50 empty). Exactly 90 deg sits on
 rounding of the recorded frames decides the side (as in retail). Not yet measured: recorded vs landed grinds in a
 session (needs NPC Skater Physics on near a grinding line; compare `NPC_SKATER_SIM_SLOT` with the landed GRIND lines).
 
-**Open.** Powerslide (9) keeps the perform signals until its writer arm is ported (`RightSlideStart` /
-`LeftSlideStart` by the ground-steer error `pc+824`, `LeftSlide` -0.42 / `RightSlide` +0.42, gated by `pc+920`,
-set in `sub_8246DB50`, not decoded). The flip retry `sub_824695A0` (HoldPattern) and the takeoff branch of
+**Powerslide (9), 2026-10-29 (research b676).** The writer arm is case 9 of the per-tick writer `sub_824696B8`
+(0x8246999C), not `sub_8246DB50`: while on the path (`pc+920`, before this tick's drop) it posts `RightSlideStart`
+1.0 when the ground-steer error `pc+824` < 0, else `LeftSlideStart`, and `LeftSlide` -0.42 / `RightSlide` +0.42 every
+tick; dispatch posts nothing for 9. Ported: `ai_signals::slot_signals` takes a `Slide` (on path, heading error,
+`PowerslideValues` as data, `npc_simulated.powerslide`); the sim passes this tick's ground-steer error and `on_path ||
+left_path`; the ground steer gets `category_9` from the slot. Test
+`a_powerslide_writes_its_start_side_and_both_slides_on_the_path`. Open: our heading error's sign against retail's
+`pc+824` (a flip would swap the start sides); not seen in game. The flip retry `sub_824695A0` (HoldPattern) and the takeoff branch of
 `sub_8246A700` that posts `WipeOutRequest` (key 0x830BECC4) and clears `pc+844` when `sub_82460460` agrees are not
 ported.
 
@@ -709,8 +714,9 @@ keyed by the NPC skater's stable id.
 - **Change:** `npc_tricks::TrickContext::slot_tricks` (from `LivingWorldTricks::slot_tricks_for`, the same data the
   simulated tier reads); `choose` starts no trick for those categories without it.
 - **Verification:** `a_profile_without_slot_tricks_skips_grabs`; skate-core living_world 325 pass. Not play-tested yet.
-- **Open (b159):** the early trick fire (record +144), the per-character line check at branches (`sub_82456970`),
-  the powerslide input arm (pc+920; our powerslide request stays a stand-in until it is decoded).
+- **Open (b159):** the early trick fire (record +144), the per-character line check at branches (`sub_82456970`,
+  ported 2026-10-29, doc 26c),
+  the powerslide input arm (ported 2026-10-29, above).
 
 ## NPC skaters react to wipeouts near them: slam, slam_b and crash lines (2026-10-16)
 - **Problem:** the NPC skater speech process (`skate-audio` `skater_speech`, its reaction bytes) was only ever fed by the
@@ -1458,7 +1464,7 @@ NPC skater reactions to other skaters' wipeouts (the reaction manager, research 
 - each simulation tick (`sub_8245A7E8`, tick mask bit 0) every skater's reaction bits are cleared first (R+0x24 `clrlwi 7`, main-checked), then set from this tick's events, so a pulse lasts one tick;
 - a skater's wipeout start (`sub_82772748`: H+0xD1 = !prev && cur of the wipeout byte, Processed `+2468` bit 18) is passed to every other skater within a strict 15.0 (`0x822F8F68` = 225.0 compared with the squared distance, `sub_8245E950`, main-checked) as the slam bit with "by" = the sender's model (`sub_8245E6C8`, `sub_8245E740`; 0x61 = 97 when the sender has none); its wipeout end (H+0xD2) is passed the same way as slam_b (`sub_8245E848`);
 - the skaters are visited in index order, so the last sender in range names "by";
-- a skater's own crash bit is its wipeout byte itself, a level (`sub_827A1B78`, entry +148 bit 5). Trick seen (score > 50, `Hash_4BEEDCA4AD799796`) waits for the score's writer (b168 open).
+- a skater's own crash bit is its wipeout byte itself, a level (`sub_827A1B78`, entry +148 bit 5). Trick seen (2026-10-29): a skater whose score `[P+0x3C]+0x88` is above 50 (`Hash_4BEEDCA4AD799796`, strict signed) raises trick for every listener in range, a level each tick while it stays above. The score's only writer is the scoring publish `82DA6630` [code, recomp asm store search + Ghidra]: the larger of the last trick sequence's reward (field 9, written at each sequence end by `82DA6538`) and the sequence in progress (field 8), truncated, minus field 13 (`+0x34`, reset to 0 by `82DA5C78`; its other writers unread, taken as 0). Ours: `ScoringRuntime::reaction_score` (`ScoreHolder` `last_reward` / `accumulated`) per observer into `npc_reactions` (`trick_threshold` is data); NPC skaters score 0. Test `a_score_above_50_is_trick_seen_within_15_m_every_tick`; not heard in game yet.
 
 Ours: the skater order is the host's stable key order (players first, then NPC skaters by id), and players listen to nothing (only NPC skaters speak these lines). Multiplayer: a pure function of the skater list and the previous tick's wipeout states; the host runs it and sends the raised reactions.
 

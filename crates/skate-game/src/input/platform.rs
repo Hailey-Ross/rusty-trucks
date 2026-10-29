@@ -156,6 +156,7 @@ mod windows {
     }
     const _: () = assert!(size_of::<CapabilitiesEx>() == 32);
     type GetCapabilitiesEx = unsafe extern "system" fn(u32, u32, u32, *mut CapabilitiesEx) -> u32;
+    type GetStateEx = unsafe extern "system" fn(u32, *mut State) -> u32;
 
     #[link(name = "xinput")]
     unsafe extern "system" {
@@ -205,22 +206,40 @@ mod windows {
         fn GetProcAddress(module: *mut std::ffi::c_void, name: *const u8) -> *mut std::ffi::c_void;
     }
 
+    /// An export of xinput1_4 by ordinal (null when the module or export is absent; the module is never freed).
+    fn xinput_ordinal(ordinal: usize) -> *mut std::ffi::c_void {
+        let name: Vec<u16> = "xinput1_4.dll\0".encode_utf16().collect();
+        // SAFETY: NUL-terminated wide string; an already loaded module is returned with its count raised.
+        let module = unsafe { LoadLibraryW(name.as_ptr()) };
+        if module.is_null() {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: ordinal lookup (MAKEINTRESOURCE(ordinal)) in a loaded module.
+        unsafe { GetProcAddress(module, ordinal as *const u8) }
+    }
+
     /// Undocumented XInputGetCapabilitiesEx (Windows 8+ xinput1_4, ordinal
     /// 108), which SDL also uses for vendor/product. None when absent.
     fn capabilities_ex() -> Option<GetCapabilitiesEx> {
         static FUNCTION: OnceLock<Option<GetCapabilitiesEx>> = OnceLock::new();
         *FUNCTION.get_or_init(|| {
-            let name: Vec<u16> = "xinput1_4.dll\0".encode_utf16().collect();
-            // SAFETY: NUL-terminated wide string; the module is never freed.
-            let module = unsafe { LoadLibraryW(name.as_ptr()) };
-            if module.is_null() {
-                return None;
-            }
-            // SAFETY: ordinal lookup (MAKEINTRESOURCE(108)) in a loaded module.
-            let function = unsafe { GetProcAddress(module, 108usize as *const u8) };
+            let function = xinput_ordinal(108);
             // SAFETY: the export at ordinal 108 has SDL's declared signature.
             (!function.is_null()).then(|| unsafe {
                 std::mem::transmute::<*mut std::ffi::c_void, GetCapabilitiesEx>(function)
+            })
+        })
+    }
+
+    /// Undocumented XInputGetStateEx (xinput1_4, ordinal 100): XInputGetState's layout plus the Guide button as bit
+    /// 0x0400, which opens the PC overlay (SDL reads Guide the same way). None when absent.
+    fn state_ex() -> Option<GetStateEx> {
+        static FUNCTION: OnceLock<Option<GetStateEx>> = OnceLock::new();
+        *FUNCTION.get_or_init(|| {
+            let function = xinput_ordinal(100);
+            // SAFETY: the export at ordinal 100 takes (index, XINPUT_STATE*) like XInputGetState.
+            (!function.is_null()).then(|| unsafe {
+                std::mem::transmute::<*mut std::ffi::c_void, GetStateEx>(function)
             })
         })
     }
@@ -254,8 +273,11 @@ mod windows {
         cache: &mut CapabilityCache,
     ) -> Result<DevicePacket, DeviceError> {
         let mut state = MaybeUninit::<State>::uninit();
-        // SAFETY: properly aligned writable storage with the SDK's exact C ABI.
-        let result = unsafe { XInputGetState(index, state.as_mut_ptr()) };
+        // SAFETY: properly aligned writable storage with the SDK's exact C ABI (both calls share it).
+        let result = match state_ex() {
+            Some(get) => unsafe { get(index, state.as_mut_ptr()) },
+            None => unsafe { XInputGetState(index, state.as_mut_ptr()) },
+        };
         if result != 0 {
             cache.invalidate();
         }

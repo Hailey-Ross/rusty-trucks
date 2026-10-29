@@ -62,6 +62,7 @@ pub(crate) fn payloads(
                 out.push(json!({"name": "living_world", "event": "ped_hit", "id": id.to_u64(), "kind": kind.name(), "direction": direction.name(), "closing": closing, "toucher": toucher, "deferred": true}))
             }
             PedEvent::Chase { id, chasee, kind, reason } => out.push(json!({"name": "living_world", "event": "ped_chase", "id": id.to_u64(), "chasee": chasee, "kind": kind, "reason": reason})),
+            PedEvent::Avoid { id, mover, kind, dir, seated } => out.push(json!({"name": "living_world", "event": "ped_avoid", "id": id.to_u64(), "mover": mover, "kind": kind, "dir": dir, "seated": seated})),
             PedEvent::Taze { id, target } => out.push(json!({"name": "living_world", "event": "ped_taze", "id": id.to_u64(), "target": target})),
             PedEvent::Takedown { id, target, success } => out.push(json!({"name": "living_world", "event": "ped_takedown", "id": id.to_u64(), "target": target, "success": success})),
             PedEvent::Speech { id, value, topic, state } => out.push(json!({"name": "living_world", "event": "ped_speech", "id": id.to_u64(), "value": value, "variant": topic.map(|t| t.0), "list_value": topic.map(|t| t.1), "state": state})),

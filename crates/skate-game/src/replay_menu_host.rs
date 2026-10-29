@@ -24,7 +24,7 @@ pub mod movie_state {
     pub const MOVE_START: i32 = 1000;
     pub const MOVE_END: i32 = 1001;
     pub const LB_MOVE: i32 = 1005;
-    /// The Create pack's screen (replay_editor3, b411; names by elimination from its constant pool): the edit channel
+    /// The Create pack's screen (replay_editor3, b411; the movie sets these values itself): the edit channel
     /// changed (Y, kUpdateMode) and the tint component cursor moved (kRefreshTint).
     pub const UPDATE_MODE: i32 = 23;
     pub const REFRESH_TINT: i32 = 24;

@@ -179,9 +179,10 @@ fn replay_look_replaces_the_world_grade_terms_it_sets() {
     let look = edit.look_at(clip, 10, &base).unwrap();
     assert_eq!(look.record, base);
     assert_eq!(look.tint, [0.0; 4]);
-    // Saturation 0 (greyscale) replaces both bands; brightness +40 is the add term; contrast 20 = x2.
+    // Saturation 100 (x2, retail's SATURATE + 1.0) replaces both bands; brightness +40 is the add term; contrast 20 = x2.
+    assert_eq!(edit.limits.lanes[Lane::Saturation.index()].default, 0);
     for _ in 0..10 {
-        edit.adjust(clip, Lane::Saturation, -1).unwrap();
+        edit.adjust(clip, Lane::Saturation, 1).unwrap();
     }
     edit.adjust(clip, Lane::Brightness, 1).unwrap();
     edit.adjust(clip, Lane::Brightness, 1).unwrap();
@@ -189,12 +190,21 @@ fn replay_look_replaces_the_world_grade_terms_it_sets() {
         edit.adjust(clip, Lane::Contrast, 1).unwrap();
     }
     let look = edit.look_at(clip, 10, &base).unwrap();
-    assert_eq!(look.record.near.saturation, 0.0);
-    assert_eq!(look.record.far.saturation, 0.0);
+    assert!((look.record.near.saturation - 2.0).abs() < 1e-6);
+    assert!((look.record.far.saturation - 2.0).abs() < 1e-6);
     assert!((look.record.near.add[0] - 0.4).abs() < 1e-6 && (look.record.far.add[2] - 0.4).abs() < 1e-6);
     assert!((look.record.near.contrast - 2.0).abs() < 1e-6);
-    let grey = apply(&build(&look.record.near), [1.0, 0.0, 0.0]);
-    assert!((grey[0] - grey[1]).abs() < 1e-5 && (grey[1] - grey[2]).abs() < 1e-5, "{grey:?}");
+    // Mid-grey red at x2 saturation (contrast and brightness neutral): twice the distance from luma.
+    let mut neutral = look.record.near;
+    neutral.contrast = 1.0;
+    neutral.add = [0.0; 3];
+    let red = apply(&build(&neutral), [1.0, 0.0, 0.0]);
+    assert!((red[0] - 1.7).abs() < 1e-5 && (red[1] + 0.3).abs() < 1e-5, "{red:?}");
+    // At 0 the lane is the identity: retail's untouched default.
+    let mut zero = ReplayEdit::default();
+    let c0 = zero.add_clip(0, 1000).unwrap();
+    zero.commit(c0, Lane::Saturation, 0, 0, true).unwrap();
+    assert_eq!(zero.look_at(c0, 10, &ColourMatrixRecord::default()).unwrap().record.near.saturation, 1.0);
     // A tint key shows from its frame on.
     edit.commit(clip, Lane::TintA, 500, 250, true).unwrap();
     assert_eq!(edit.look_at(clip, 499, &base).unwrap().tint[3], 0.0);

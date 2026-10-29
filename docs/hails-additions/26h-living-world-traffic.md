@@ -488,7 +488,8 @@ each car's nearest obstacle once per frame before the ticks.
 
 **Engine choices.** The ped radius is our fallback ped radius (0.35; retail's per-ped extents are collision data),
 props carry no corner points, a bailing skater's four extra points are not added, the turn widening is off (the
-turn side `+3748` is open), the standoff is the car's `min_gap`, and the lists use last frame's poses.
+turn side `+3748` is open), and the lists use last frame's poses. The standoff is `+3668` (length x
+`Hash_30313EA6F282C874`, b688; the engine `min_gap` before 2026-10-29).
 
 **Verification.** skate-core `the_look_ahead_reaches_speed_plus_standoff_beyond_the_bumper`,
 `the_nearest_obstacle_brakes_the_car`; skate-game living_world tests (69). Not play-tested.
@@ -1234,8 +1235,9 @@ hand's target is on its own shoulder's side of the bumper and that sub-mode 1 ke
 0.78) and the lean yaw follows (0.2 rad), so the stick reaches the skitch. skate-core `each_sub_mode_writes_its_hands_and_edge_point`. New log line `SKITCH_SUBMODE` (every `82D49580` switch with
 stick, turn, spin).
 
-**Open.** The latch needing repeated tries (research b140). Whether the truck tilt (`82D92440`) reads the stick in
-state 104. The grab point is still the chord, not the polyline walk with the reverse bit.
+**Open.** The latch needing repeated tries (research b140). Closed 2026-10-29 (research b687): in state 104
+`sub_82D4AC38` calls the Ground tilt `sub_82D92440` with no history unless 1345 bit 0x20, so the truck tilt reads the
+stick, as ours does (`skitch_state.rs`, `calculate_tilt(.., input.steering, None, None)`). The grab point is still the chord, not the polyline walk with the reverse bit.
 
 ## Skitching: the latch's own limits and the hand grab sound (2026-10-16)
 
@@ -1450,10 +1452,21 @@ gated candidate before the time gate. `query` now takes the deck and writes it (
   `plan_decel`, `hard_brake`, `stop_margin`, `committed`, `follow_accel`, `reach_accel`.
 - **NOT RETAIL YET / open:** s = our model length (full length per b163 section 1, medium; one hook on `82E0BE68`
   would settle it, and the pull-over approach uses half the length, so one of the two is off by 2x); the query's own
-  Approach test (`remaining >= look_ahead`) is assumed to read the same `+3660`; the lead search reaches the window
-  only (retail's `82E14F50` range and its `+3752` free-distance update for any lead are not read); the obstacle
-  look-ahead and the query's exit-room check still use the engine `min_gap` 2.0; an engine safeguard keeps a car out
-  of its lead's bumper when a fixed step overshoots.
+  Approach test reads `+3660` (`entry_speed < speed && vt+100 <= remaining`, confirmed 2026-10-29, research
+  `.local/research/b696-traffic-exit-room.md`); an engine safeguard keeps a car out of its lead's bumper when a fixed
+  step overshoots.
+- **Ported 2026-10-29 (b696, asm read):** the query's connector room check compares the full `+3664` (length x
+  `Hash_73A1989B`, strict `>`, `82E11E90`), not the engine `min_gap` 2.0; the lane-change gate reads `+3752` = the
+  gap to the lead alone (`IsRequiredToChangeLane` `82C39F78`), so an obstacle inside h no longer refuses a lane
+  change (it did in ours). Open: what `car+4396 == 1` means, the zone lookup `82E147C8`.
+- **Checked 2026-10-29 (research `.local/research/b688-car-following-gaps.md`, asm read):** the lead standoff is
+  always half of `+3664` (`82C38390` -> `82C41120`), as ours; the lane occupancy adds `s + +3664` per car
+  (`82C34430`), which supports `s` = the full length. `82E14F50` has no range: the lead is the previous node of the
+  lane's list sorted by distance to the lane end, and only the `82C41120` window limits it, the same result as ours
+  on one place (our search of the next connector / exit lane is an engine extension; retail sees those cars as
+  look-ahead obstacles). The obstacle standoff is `+3668` = s x `Hash_30313EA6F282C874` (0.5, `82C3CDD0`,
+  `stfs 3668`), read by `82C412D8` and the look-ahead quad: ported (`FollowParams::obstacle_standoff_factor` from
+  the spec, `Car::obstacle_standoff`), replacing `min_gap` in both.
 - **Verification:** core traffic 56 pass, incl. `a_car_brakes_by_the_standoff_rule_and_a_mod_factor_moves_the_gap`
   (window, brake value, dead stop, family factor 0.6 queues at 1.35 m) and `stops_at_red_and_goes_on_green` (holds at
   the standoff); data-gated DownTown 2 min: 113 junction entries, 0 on red, 0 dead ends; skate-game vehicles 14 pass

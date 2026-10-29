@@ -24,6 +24,8 @@ pub struct PathTuning {
     pub start_node: u32,
     /// Lost: farther than this from the search node and its lane edges (`0x8208F74C`, 6.0 m) ...
     pub lost_radius: f32,
+    /// ... or this, on the tick a line end chained to the next line (`0x821DDA68`, 4.5 m, b674).
+    pub line_end_lost_radius: f32,
     /// ... while slower than this along its heading (`pc+808` < `0x8208EB10`, 14.0 m/s).
     pub lost_max_speed: f32,
     /// The progress flag's share of A -> B the raw projection must advance per tick (0.025, b110).
@@ -34,7 +36,7 @@ pub struct PathTuning {
 
 impl Default for PathTuning {
     fn default() -> Self {
-        Self { window: 4, hysteresis: 0.5, clamp_fraction: 0.25, clamp_horizontal: 1.0, clamp_vertical: 5.0, commit: 0.5, drop: 1.0, start_node: 3, lost_radius: 6.0, lost_max_speed: 14.0, progress_fraction: 0.025, lane_lookahead: 4 }
+        Self { window: 4, hysteresis: 0.5, clamp_fraction: 0.25, clamp_horizontal: 1.0, clamp_vertical: 5.0, commit: 0.5, drop: 1.0, start_node: 3, lost_radius: 6.0, line_end_lost_radius: 4.5, lost_max_speed: 14.0, progress_fraction: 0.025, lane_lookahead: 4 }
     }
 }
 
@@ -63,12 +65,14 @@ pub struct PathFollow {
     /// This tick's progress flag for the stuck tracker (`sub_8246C930`, b110): false when cursor B is ahead of the
     /// candidate, A is past the start and the raw projection advanced less than `progress_fraction` of A -> B.
     pub progress: bool,
+    /// Set by [`Self::chained_to`]: the next tick runs the line end's lost test.
+    pub chained: bool,
 }
 
 impl PathFollow {
     /// A skater placed on `node` (spawn or respawn): on the path, A = B = the node.
     pub fn start(node: u32, tuning: &PathTuning) -> Self {
-        Self { search_start: node, a: (node, 0.0), b: (node, 0.0), last: (node, 0.0), on_path: true, past_start: node > tuning.start_node, dist: 0.0, inside_lane: true, lateral: 0.0, handled: node, lost: false, progress: true }
+        Self { search_start: node, a: (node, 0.0), b: (node, 0.0), last: (node, 0.0), on_path: true, past_start: node > tuning.start_node, dist: 0.0, inside_lane: true, lateral: 0.0, handled: node, lost: false, progress: true, chained: false }
     }
 
     /// One tick at `pos` (`ratio` shaped / recorded speed, `speed` pc+808, `airborne` +438; b119).
@@ -81,7 +85,11 @@ impl PathFollow {
         let n = nearest_forward(line, pos, self.search_start, tuning.window);
         // A node advance runs the node-change handler instead of the lost test (`sub_8246D3C0`); the test reads the
         // previous tick's on-path flag.
-        if n == self.search_start {
+        if std::mem::take(&mut self.chained) {
+            // The line end chains first, then tests lost from the chained-to node whatever the search finds next
+            // (`sub_8246D3C0`, b674).
+            self.lost = !self.on_path && speed < tuning.lost_max_speed && lost(line, self.search_start, pos, tuning.line_end_lost_radius);
+        } else if n == self.search_start {
             self.lost = !self.on_path && speed < tuning.lost_max_speed && lost(line, n, pos, tuning.lost_radius);
         }
         self.search_start = n;
@@ -158,7 +166,12 @@ impl PathFollow {
     /// skater off the path with the search at `node`, A / B / the handled node cleared, and keeps the start gate
     /// (`pc+937` is only cleared by the full reset).
     pub fn switch_to(&self, node: u32) -> Self {
-        Self { search_start: node, a: (0, 0.0), b: (0, 0.0), last: (0, 0.0), on_path: false, past_start: self.past_start, dist: 0.0, inside_lane: false, lateral: 999.0, handled: 0, lost: false, progress: true }
+        Self { search_start: node, a: (0, 0.0), b: (0, 0.0), last: (0, 0.0), on_path: false, past_start: self.past_start, dist: 0.0, inside_lane: false, lateral: 999.0, handled: 0, lost: false, progress: true, chained: false }
+    }
+
+    /// [`Self::switch_to`] for a chain at the line end (`sub_8246C7F8`).
+    pub fn chained_to(&self, node: u32) -> Self {
+        Self { chained: true, ..self.switch_to(node) }
     }
 
     /// Recorded frames from cursor (`node`, `frame_in_segment`) forward to B (0 when B is not ahead).
@@ -468,6 +481,25 @@ mod tests {
         let mut adv = f;
         adv.tick(&l, [9.0, 0.0, 6.0], 1.0, 0.0, false, &t);
         assert!(adv.search_start > 4 && !adv.lost);
+    }
+
+    /// `sub_8246D3C0`: a line-end chain tests lost at 4.5 m from the chained-to node on its tick, node advance or not;
+    /// a junction switch keeps the 6 m test.
+    #[test]
+    fn a_line_end_chain_tests_lost_at_four_and_a_half_metres() {
+        let mut l = line(10);
+        l.nodes[4].width = [0, 0];
+        let t = PathTuning::default();
+        let start = PathFollow::start(4, &t);
+        let mut chain = start.chained_to(4);
+        chain.tick(&l, [5.0, 0.0, 4.0], 1.0, 0.0, false, &t);
+        assert!(chain.lost && !chain.chained);
+        let mut junction = start.switch_to(4);
+        junction.tick(&l, [5.0, 0.0, 4.0], 1.0, 0.0, false, &t);
+        assert!(!junction.lost);
+        let mut fast = start.chained_to(4);
+        fast.tick(&l, [5.0, 0.0, 4.0], 1.0, 14.1, false, &t);
+        assert!(!fast.lost);
     }
 
     #[test]

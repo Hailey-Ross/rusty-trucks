@@ -59,10 +59,10 @@ fn data() -> LoadedData {
         .map(|i| {
             let mut id = [0u8; 16];
             id[0] = i as u8;
-            SkaterLine { id, start: [-1000.0 + i as f32 * 25.0, 0.0, 70.0], heading: 0.0, valid: true, allowed_skaters: u64::MAX, flags: 0 }
+            SkaterLine { id, start: [-1000.0 + i as f32 * 25.0, 0.0, 70.0], heading: 0.0, valid: true, allowed_skaters: u64::MAX, flags: 1 }
         })
         .collect();
-    let characters = (0..6).map(|i| SkaterCharacter { key: format!("pro_{i}"), pro_index: Some(i), capabilities: [false; 3], community: false }).collect();
+    let characters = (0..6).map(|i| SkaterCharacter { key: format!("pro_{i}"), pro_index: Some(i), capabilities: [true; 3], community: false }).collect();
     let (roads, vehicles) = roads_and_vehicles();
     LoadedData { config, census: Some(census()), skaters: Some(SkaterData { lines, characters }), roads: Some(roads), vehicles: Some(vehicles), npc: Default::default(), status: "test".into() }
 }

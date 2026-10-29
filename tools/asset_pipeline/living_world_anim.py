@@ -13,6 +13,9 @@ from pathlib import Path
 
 ANIM_CLASSES = ('livingworld_entity_animation', 'livingworld_entity_takedown')
 NAME_FIELDS = (('anim', 'anim_name'), ('anim_b', 'anim_b_name'))
+# The locomotion speed rows (poster `82E29D98`, research b682): 8 words each, float threshold, then the row's state,
+# its tier intent and 5 turn-compatible previous states as string-pool offsets (8 = the empty string).
+SPEED_ROWS_FIELD = 'Hash_9C9A4F2CB1CC45DE'
 
 
 def string_at(blob: bytes, offset) -> str | None:
@@ -49,6 +52,23 @@ def _walk(value, blob: bytes) -> int:
     return count
 
 
+def speed_rows(rows, blob: bytes) -> list | None:
+    """The named form of one record's speed rows (None when a row does not decode)."""
+    import struct
+    out = []
+    for row in rows:
+        try:
+            words = [row[f'u32_{i}'] for i in range(0, 32, 4)]
+        except (KeyError, TypeError):
+            return None
+        names = [None if w == 8 else string_at(blob, w) for w in words[1:]]
+        if names[0] is None or any(w != 8 and n is None for w, n in zip(words[1:], names)):
+            return None
+        out.append({'threshold': struct.unpack('<f', struct.pack('<I', words[0]))[0], 'state': names[0],
+                    'tier': names[1], 'turn_from': [n for n in names[2:] if n is not None]})
+    return out
+
+
 def resolve_anim_names(doc: dict, blob: bytes | None) -> int:
     """Add ``anim_name`` / ``anim_b_name`` to the animation structs of ``doc`` (tables.json content).
     Returns how many names were added (0 when the collections bin is unavailable)."""
@@ -57,7 +77,13 @@ def resolve_anim_names(doc: dict, blob: bytes | None) -> int:
     count = 0
     for cls in ANIM_CLASSES:
         for record in doc.get('classes', {}).get(cls, {}).values():
-            count += _walk(record.get('fields', {}), blob)
+            fields = record.get('fields', {})
+            count += _walk(fields, blob)
+            if SPEED_ROWS_FIELD in fields and 'speed_rows' not in fields:
+                rows = speed_rows(fields[SPEED_ROWS_FIELD], blob)
+                if rows is not None:
+                    fields['speed_rows'] = rows
+                    count += 1
     return count
 
 

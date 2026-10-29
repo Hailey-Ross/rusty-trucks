@@ -272,6 +272,8 @@ pub struct PedBrainPatch {
     pub reach_snap_window: Option<f32>,
     /// The ped scatter alarm's length after the player's D-pad Down gesture, s (0..3600; 0 = off; retail 180).
     pub scatter_seconds: Option<f32>,
+    /// Hold the scatter alarm raised (ours; released, the retail timer runs out).
+    pub scatter_hold: Option<bool>,
     pub reach_check_seconds: Option<f32>,
     pub run_from_honker_distance: Option<f32>,
     pub run_from_honker_speed: Option<f32>,
@@ -317,6 +319,8 @@ pub struct PedBrainPatch {
     pub skater_avoid_jump_speed: Option<f32>,
     pub skater_avoid_sector: Option<f32>,
     pub skater_avoid_period: Option<f32>,
+    /// Standing and walking peds dodge too (retail true); false keeps the dodge to seated peds.
+    pub skater_avoid_standing: Option<bool>,
     /// A prop moving at a ped makes it flee (retail on): within `object_flee_radius` m of the prop (8.0), the prop
     /// at least `object_flee_min_speed` m/s (0.75), the ped inside its swept lane plus `object_flee_lane_margin` m
     /// (0.75); 0..=100.
@@ -1046,7 +1050,7 @@ impl Merge for NpcSimulatedPatch {
 
 impl Merge for PedBrainPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, unreachable_radius, reach_check_seconds, reach_snap_window, scatter_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech, water_disables_seats, water_max_depth, water_above, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed, zombie_arrive_distance, trip_kind, trip_direction, skater_avoid_sense, skater_avoid_min_speed, skater_avoid_look_ahead, skater_avoid_radius, skater_avoid_jump_radius, skater_avoid_jump_speed, skater_avoid_sector, skater_avoid_period, object_flee, object_flee_radius, object_flee_min_speed, object_flee_lane_margin, vehicle_flee, vehicle_flee_radius, vehicle_flee_min_dot, vehicle_flee_away, vehicle_flee_toward, flee_leg, flee_arrival_radius, flee_threat_speed_gate, flee_side_blend);
+        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, unreachable_radius, reach_check_seconds, reach_snap_window, scatter_seconds, scatter_hold, run_from_honker_distance, run_from_honker_speed, warn_speech, water_disables_seats, water_max_depth, water_above, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed, zombie_arrive_distance, trip_kind, trip_direction, skater_avoid_sense, skater_avoid_min_speed, skater_avoid_look_ahead, skater_avoid_radius, skater_avoid_jump_radius, skater_avoid_jump_speed, skater_avoid_sector, skater_avoid_period, skater_avoid_standing, object_flee, object_flee_radius, object_flee_min_speed, object_flee_lane_margin, vehicle_flee, vehicle_flee_radius, vehicle_flee_min_dot, vehicle_flee_away, vehicle_flee_toward, flee_leg, flee_arrival_radius, flee_threat_speed_gate, flee_side_blend);
     }
 }
 
