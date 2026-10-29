@@ -58,19 +58,18 @@ fn the_score_follows_the_retail_weights() {
     assert!(s(&near) >= 2f32.powi(30), "the keep flag scores like keepalways");
 }
 
-/// The pool cap: with 49 live objects one is evicted per pass, and a new placement only spawns when it outscores
-/// the lowest live one; held props are never culled or evicted.
+/// The pool cap: with 49 live objects one is evicted per pass; a live prop scores with s1 = 2^31 whatever its
+/// placement priority (retail `82C55160`, b657), so the farthest goes first; held props are never culled or evicted.
 #[test]
 fn the_pool_cap_evicts_the_lowest_score_once_per_pass() {
     let s = DmoStreamSettings { cap: 3, ..Default::default() };
-    let mut d = DmoStream::new(vec![placement(1, 10.0, Some(1)), placement(2, 20.0, Some(200)), placement(3, 30.0, Some(200)), placement(4, 40.0, Some(450))], &s);
+    let mut d = DmoStream::new(vec![placement(1, 10.0, Some(1)), placement(2, 20.0, Some(450)), placement(3, 30.0, Some(450)), placement(4, 40.0, Some(1))], &s);
     let held = |id: u32| id == 1;
     let out = d.step(&[at(0.0)], &s, false, &held);
-    // 4 (priority 450) outscores the farther of the two priority-200 props, which makes room.
-    assert_eq!(out, vec![DmoDecision::Spawn(1), DmoDecision::Spawn(2), DmoDecision::Spawn(3), DmoDecision::Evict(3), DmoDecision::Spawn(4)]);
-    // Next pass, still at the cap: one eviction, the lowest live one that is not held (2, priority 200).
+    assert_eq!(out, vec![DmoDecision::Spawn(1), DmoDecision::Spawn(2), DmoDecision::Spawn(3)], "a non-keep candidate never outscores a live prop");
+    // Next pass, at the cap: one eviction, the farthest live one that is not held (3, despite its priority 450).
     let out = d.step(&[at(0.0)], &s, false, &held);
-    assert_eq!(out[0], DmoDecision::Evict(2));
+    assert_eq!(out[0], DmoDecision::Evict(3));
     assert!(d.live.contains(&1), "held: never evicted");
 }
 

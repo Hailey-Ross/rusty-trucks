@@ -17,11 +17,24 @@ struct BoneBinding {
 }
 impl AnimationStatus {
     pub(crate) fn pose_transforms(&self, pose:&[Mat4])->Vec<(Entity,Transform)> {
-        self.bindings.iter().filter_map(|b|{
+        let mut out = Vec::new();
+        self.pose_transforms_into(pose, &mut out);
+        out
+    }
+
+    /// [`Self::pose_transforms`] into `out` (cleared first).
+    pub(crate) fn pose_transforms_into(&self, pose:&[Mat4], out:&mut Vec<(Entity,Transform)>) {
+        out.clear();
+        out.extend(self.bindings.iter().filter_map(|b|{
             let global=*pose.get(b.bone)?*render_basis();
             let local=if let Some(parent)=b.parent_bone {(*pose.get(parent)?*render_basis()).inverse()*global} else {global};
             Some((b.entity,Transform::from_matrix(local)))
-        }).collect()
+        }));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(bindings: Vec<(Entity, usize, Option<usize>)>) -> Self {
+        Self { ready: true, bindings: bindings.into_iter().map(|(entity, bone, parent_bone)| BoneBinding { entity, bone, parent_bone }).collect() }
     }
 
     /// The bound joint entities in binding order (the replay records their local transforms).
