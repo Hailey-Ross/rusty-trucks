@@ -14,13 +14,14 @@ pub(crate) struct CameraCollision {
     pub move_epsilon: f32,
     /// How far the camera may go from the player, m (0x821EB794).
     pub leash: f32,
-    /// Keyed cameras are also constrained during editor playback; retail false (mode 1 clears the gate, m353).
+    /// Keyed cameras are also constrained while the clip plays (Playback, Timeline, Trim): on, as retail looks (user
+    /// 2026-10-29: retail's camera never clips); its code gate reads 0 there (m353, b658), mechanism open.
     pub playback: bool,
 }
 
 impl Default for CameraCollision {
     fn default() -> Self {
-        Self { enabled: true, radius: 0.1, radius_scale: 1.3, move_epsilon: f32::EPSILON, leash: 40.0, playback: false }
+        Self { enabled: true, radius: 0.1, radius_scale: 1.3, move_epsilon: f32::EPSILON, leash: 40.0, playback: true }
     }
 }
 
