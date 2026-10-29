@@ -2965,7 +2965,7 @@ The graph op `SendChaseStateMessage` (`826A77A8`) posts {ped, state} for a playe
   (IVehicle `0x82C34050`) within 10 m (100.0 squared at 0x820ED57C, 3D) makes the ped flee when the flat dot of
   (car - ped) and the car's velocity is above 3.0 (0x82063B08): read literally, the car moving AWAY along the line.
   Then every want's active bit is cleared and the flee want takes the car (same write as the prop rule).
-- The user (2026-10-29): "I would think both, for now lets do that and add the feature in as an optin for testing."
+- Direction (USER-ASKS 401, 2026-10-29): flee both ways, as an opt-in for testing.
 - Change: skate-core `object_flee::VehicleFleeParams` / `flees_vehicle` (either direction past the dot); opt-in "Ped
   Vehicle Flee" (overlay Opt-Ins, `SKATE_PED_VEHICLE_FLEE=1`, off by default) sets `ped_brain.vehicle_flee.enabled`;
   `think_peds` raises the flee want after the prop rule (log `PED_FLEE_VEHICLE`); cars are want targets (entity type

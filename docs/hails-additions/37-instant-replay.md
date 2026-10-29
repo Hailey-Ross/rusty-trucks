@@ -375,7 +375,7 @@ Change: `Replay::guarded_editor_camera` runs `camera_collision::constrain` on th
 while our editor session is in `EditorMode::Instant` (sweep from last frame's constrained eye, snap on a cut;
 Follow / Tripod re-aim at their look point, Free keeps its rotation). The stored key is not changed.
 
-2026-10-29 (USER-ASKS 402), the user: "NO the camera DOES NOT CLIP THROUGH RAMPS OR THE GROUND IN RETAIL." So the same
+2026-10-29 (USER-ASKS 402): retail's replay camera never clips through the ground or ramps, so the same
 constraint now runs in every mode where the clip plays (Playback, Timeline, Trim, instant view); the key edit modes
 keep their own edit constraint. `CameraCollision::playback` defaults to true; `sdk.replay.set_camera{playback_collide =
 false}` restores the code-gate reading (constrain only the instant view); `collide = false` turns all of it off. The
