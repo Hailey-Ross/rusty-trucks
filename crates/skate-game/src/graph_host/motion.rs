@@ -198,6 +198,48 @@ pub(crate) fn tree_commands_into(
     Ok(())
 }
 
+/// A built stock tree kept for [`cached_tree_commands_into`] with the inputs it was built and set with.
+pub(crate) struct TreeCache {
+    name: String,
+    construction: Vec<(skate_core::animation::output::attributes::AttributeName, skate_core::animation::output::attributes::AttributeName)>,
+    attributes: Vec<SettableAttribute>,
+    tree: skate_core::animation::playback_tree::PlaybackTree,
+}
+
+/// [`tree_commands_into`] on a reused tree: same output while the name, construction values and
+/// attributes match (docs/hails-additions/34-physics-performance.md "Fakie channel tree cache").
+/// Drop the cache when `animation` is replaced.
+pub(crate) fn cached_tree_commands_into(
+    animation: &super::motion_animation::MotionAnimation,
+    cache: &mut Option<TreeCache>,
+    name: &str,
+    attributes: &[SettableAttribute],
+    time: f32,
+    out: &mut Vec<skate_core::animation::playback_tree::PoseCommand>,
+) -> Result<(), String> {
+    out.clear();
+    let hit = cache.as_ref().is_some_and(|c| c.name == name && c.construction == animation.construction_values && c.attributes == attributes);
+    if !hit {
+        *cache = None;
+        let mut tree = animation.build_tree(name)?;
+        tree.set_attributes(attributes)?;
+        *cache = Some(TreeCache { name: name.to_owned(), construction: animation.construction_values.clone(), attributes: attributes.to_vec(), tree });
+    }
+    let c = cache.as_mut().expect("cache filled");
+    let result = (|| {
+        if hit {
+            c.tree.set_attributes(attributes)?;
+        }
+        let length = c.tree.length();
+        c.tree.set_time(if length > 0.0 { time.max(0.0).rem_euclid(length) } else { 0.0 });
+        c.tree.evaluate(skate_core::animation::playback_tree::Evaluation { cull_threshold: 0.0, update_history: false }, true, out).map(|_| ())
+    })();
+    if result.is_err() {
+        *cache = None;
+    }
+    result
+}
+
 impl MotionHost {
     pub(super) fn end_gesture_channels(&mut self) {
         // EndGesture nodes share the graph-wide gesture channel owner. The

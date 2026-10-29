@@ -99,5 +99,29 @@ stream over 1440 frames at 144 Hz. Both digests were taken before the changes an
   field by field and written in place only on a difference (same value and change ticks as building a new one).
 - `advance`: a `Local<AdvanceScratch>` holds `players`, `order`, `others`, `in_use`, the cursor events and the finished
   list.
-The old functions stay as wrappers over the `_into` ones. Not done: the fakie tree cache (1f, needs research that
-`evaluate` keeps no state). Allocation counts and timings not measured.
+The old functions stay as wrappers over the `_into` ones. The fakie tree cache (1f) followed, see the next section.
+Allocation counts and timings not measured.
+
+## Fakie channel tree cache (2026-10-29, b620 item 1f)
+Problem: while an NPC's fakie channel weight is above 0, `present_pose` built the whole `B_FAKIE_CHANNEL` tree
+(`MotionAnimation::build_tree`, a `PlaybackTree` from metadata) every frame for every such NPC.
+
+Change: `graph_host::motion::cached_tree_commands_into` keeps one built tree in `NpcPoseScratch::fakie_tree` (shared by
+all NPCs) and re-runs `set_attributes`, `set_time` and `evaluate` on it. It rebuilds when the tree name (mod key
+`skater_clips["fakie_channel"]`), the skater's `construction_values` or the attributes differ from the ones it was built
+with, drops the tree on any error, and `present_pose` drops it when the `SkaterRuntime` resource is (re)inserted or gone.
+
+Why the output is the same as a fresh build (reading of `skate-core/src/animation`):
+- Clip leaves: `ClipClock::set_time` resets `time`, `previous_time` and `loops_since_evaluation`; this path never calls
+  `set_speed` or `advance`, and `evaluate` with `update_history: false` never calls `commit_evaluation`.
+- `PhaseBlend::set_attributes` skips its update when the parameter moved less than 1e-4, `SelectionSpace::select` keeps
+  its first pick, and `BlendSpace` keeps its simplex. Each holds history, but with the same attributes every frame the
+  kept state is what a fresh tree computes on that frame. Hence the attributes are part of the cache key: per-frame
+  torso values (retail 82BAC778: manual 1.0, powerslide 0.0) rebuild the tree rather than reuse a stale pick.
+- `set_time` sets every child that `evaluate` then reads (`PhaseBlend` left / right, the current simplex, the selected
+  candidate), so another NPC's time left in the shared tree is overwritten.
+- `PlaybackTransition` state (`elapsed`, `sequence_complete`) changes only in `advance`, never called here.
+
+Verification: the new data-gated test `npc_fakie_tree_cache_matches_a_fresh_build` compares the cached commands with a
+fresh build over 400 steps (times past the tree's length, torso 0 / 0.25 / 0.5 / 1, a construction value change, a
+name that does not build), and `npc_present_pose_posed_matches_golden` must keep its digest. [Pending: test run.]
