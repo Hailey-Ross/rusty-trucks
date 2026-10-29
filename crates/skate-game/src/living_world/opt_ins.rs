@@ -9,10 +9,12 @@ pub(crate) enum OptIn {
     NpcPhysics,
     /// Grab cues in the world and grab availability log lines (`grab_view`); a viewer aid, nothing changes in play.
     VisualizeGrabs,
+    /// Peds flee a car moving along the line to them, either way (retail's `82E2C0C8` test, W8; still in test).
+    VehicleFlee,
 }
 
 impl OptIn {
-    pub(crate) const ALL: [OptIn; 3] = [OptIn::Zombie, OptIn::NpcPhysics, OptIn::VisualizeGrabs];
+    pub(crate) const ALL: [OptIn; 4] = [OptIn::Zombie, OptIn::NpcPhysics, OptIn::VisualizeGrabs, OptIn::VehicleFlee];
 
     /// The variable that turns it on for a run.
     pub(crate) fn env(self) -> &'static str {
@@ -20,6 +22,7 @@ impl OptIn {
             OptIn::Zombie => "SKATE_ZOMBIE",
             OptIn::NpcPhysics => "SKATE_NPC_SIM",
             OptIn::VisualizeGrabs => "SKATE_VISUALIZE_GRABS",
+            OptIn::VehicleFlee => "SKATE_PED_VEHICLE_FLEE",
         }
     }
     pub(crate) fn label(self) -> &'static str {
@@ -27,6 +30,7 @@ impl OptIn {
             OptIn::Zombie => "Zombie Mode",
             OptIn::NpcPhysics => "NPC Skater Physics",
             OptIn::VisualizeGrabs => "Visualize Grabs",
+            OptIn::VehicleFlee => "Ped Vehicle Flee",
         }
     }
     /// The overlay's status line for the row (what it does and that it is still being tested).
@@ -35,6 +39,7 @@ impl OptIn {
             OptIn::Zombie => "Zombie mode (the retail cheat, until the cheat screen exists): yellow screen, no traffic, every ped comes after you.",
             OptIn::NpcPhysics => "NPC skaters near you run full skater physics and bail (still being tested).",
             OptIn::VisualizeGrabs => "Shows the props and car spots in grab range (green = grab now) and logs grab availability.",
+            OptIn::VehicleFlee => "Peds run from a car within 10 m that drives toward or away from them (still being tested).",
         }
     }
     fn env_on(self) -> bool {
@@ -46,6 +51,7 @@ impl OptIn {
             OptIn::Zombie => "zombie",
             OptIn::NpcPhysics => "npc_physics",
             OptIn::VisualizeGrabs => "visualize_grabs",
+            OptIn::VehicleFlee => "ped_vehicle_flee",
         }
     }
 }
@@ -58,18 +64,19 @@ pub(crate) struct OptIns {
     pub zombie: bool,
     pub npc_physics: bool,
     pub visualize_grabs: bool,
+    pub vehicle_flee: bool,
 }
 
 impl Default for OptIns {
     fn default() -> Self {
-        Self { zombie: false, npc_physics: true, visualize_grabs: false }
+        Self { zombie: false, npc_physics: true, visualize_grabs: false, vehicle_flee: false }
     }
 }
 
 impl OptIns {
     /// The `SKATE_*=1` variables of this run.
     pub(crate) fn from_env() -> Self {
-        let mut s = Self { zombie: false, npc_physics: false, visualize_grabs: false };
+        let mut s = Self { zombie: false, npc_physics: false, visualize_grabs: false, vehicle_flee: false };
         for o in OptIn::ALL {
             s.set(o, o.env_on());
         }
@@ -80,6 +87,7 @@ impl OptIns {
             OptIn::Zombie => self.zombie,
             OptIn::NpcPhysics => self.npc_physics,
             OptIn::VisualizeGrabs => self.visualize_grabs,
+            OptIn::VehicleFlee => self.vehicle_flee,
         }
     }
     pub(crate) fn set(&mut self, o: OptIn, on: bool) {
@@ -87,6 +95,7 @@ impl OptIns {
             OptIn::Zombie => self.zombie = on,
             OptIn::NpcPhysics => self.npc_physics = on,
             OptIn::VisualizeGrabs => self.visualize_grabs = on,
+            OptIn::VehicleFlee => self.vehicle_flee = on,
         }
     }
     /// Either one on (saved choice or this run's variable).
@@ -106,6 +115,7 @@ pub(crate) fn in_effect(settings: &super::LivingWorldSettings) -> OptIns {
         npc_physics: settings.npc_simulated.enabled,
         // The player's own choice only: a viewer aid, not a mod tuning.
         visualize_grabs: settings.user_opt_ins.visualize_grabs,
+        vehicle_flee: settings.ped_brain.vehicle_flee.enabled,
     }
 }
 
@@ -152,7 +162,7 @@ mod tests {
     #[test]
     fn choices_round_trip_and_default_npc_physics_on() {
         assert_eq!(serde_json::from_str::<OptIns>("{}").unwrap(), OptIns::default());
-        assert_eq!(OptIns::default(), OptIns { zombie: false, npc_physics: true, visualize_grabs: false }, "USER-ASKS 338");
+        assert_eq!(OptIns::default(), OptIns { zombie: false, npc_physics: true, visualize_grabs: false, vehicle_flee: false }, "USER-ASKS 338");
         let mut s = OptIns { npc_physics: false, ..OptIns::default() };
         for o in OptIn::ALL {
             assert!(!s.get(o));
