@@ -7,7 +7,7 @@ The current known issues of the `hails-additions` branch, kept in step with the 
 ## Known issues
 
 - **NPC skaters:** some spin round at a few line switches; grind variety, landings, spins and grabs are not finished.
-- **Pedestrians:** they walk through a prop you are holding; one model walks stiffly and one has a flat head.
+- **Pedestrians:** they walk through a prop you are holding.
 - **Cars** pop in and out instead of fading with distance.
 - **Carrying props:** stepping up curbs while dragging is not Skate 3's yet.
 - **NPC draw distance** (Esc > GRAPHICS) is a quality-of-life option, not retail; higher settings cost frame time.

@@ -52,7 +52,7 @@ Already in upstream `main` (from this fork): the retail audio engine and audio m
 ## Known issues
 
 - **NPC skaters:** some spin round at a few line switches; grind variety, landings, spins and grabs are not finished.
-- **Pedestrians:** one model walks stiffly and one has a flat head; a chaser can sometimes stand still on its way to you.
+- **Pedestrians:** a chaser can sometimes stand still on its way to you.
 - **Cars** pop in and out instead of fading with distance.
 - **Carrying props:** stepping up curbs while dragging is not Skate 3's yet.
 - **Not ported yet:** the Challenge Map's challenge rows (and the minimap's challenge icons), the pros at their spots, the Object Dropper editor, peds watching you, multiplayer.
