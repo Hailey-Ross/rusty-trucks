@@ -150,11 +150,23 @@ pub(crate) struct CameraInput {
     pub zoom: f32,
 }
 
-/// The free camera's eased height (retail S+0x7C) and the offset it has added since the edit began.
+/// The free camera's eased height (retail S+0x7C) and the offset it has added since the edit began; the Follow / Tripod
+/// look lift since the pick (retail C+0x38, `82C80EA0`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct FreeHeight {
     pub velocity: f32,
     pub offset: f32,
+    pub lift: f32,
+}
+
+/// Retail `82C80EA0`: the lift since the pick is clamped to `look_range`; the key's look height moves only while the
+/// lift stays inside it: docs/hails-additions/37-instant-replay.md#look-lift-since-the-pick-2026-10-29-research-b655
+fn lift_look(look_height: &mut f32, lift: &mut f32, step: f32, range: (f32, f32)) {
+    let next = *lift + step;
+    *lift = next.clamp(range.0, range.1);
+    if next < range.1 && next > range.0 && step != 0.0 {
+        *look_height += step;
+    }
 }
 
 /// Which frame a Follow key's eye rides (data, `sdk.replay.set_camera{follow_eye}`). Retail: its eye object 2 is the
@@ -282,13 +294,13 @@ pub(crate) fn edit(key: &mut CameraKey, lens: &mut f32, height: &mut FreeHeight,
             if let Some(a) = anchors {
                 *eye = a.to_eye_frame(orbit(a.eye.transform_point(*eye), a.look(*look_height)));
             }
-            *look_height = (*look_height + input.height * rules.look_step * frames).clamp(rules.look_range.0, rules.look_range.1);
+            lift_look(look_height, &mut height.lift, input.height * rules.look_step * frames, rules.look_range);
         }
         CameraKey::Tripod { eye, look_height } => {
             if let Some(a) = anchors {
                 *eye = orbit(*eye, a.look(*look_height));
             }
-            *look_height = (*look_height + input.height * rules.look_step * frames).clamp(rules.look_range.0, rules.look_range.1);
+            lift_look(look_height, &mut height.lift, input.height * rules.look_step * frames, rules.look_range);
         }
         CameraKey::Free { eye, yaw, pitch, .. } => {
             *yaw -= cap(input.turn.x * rules.free_deg_per_unit, rules.free_deg_cap) * frames;
@@ -479,5 +491,27 @@ mod tests {
         assert!((look_height - a.to_eye_frame(p).y).abs() < 1e-4);
         let Some(CameraKey::Free { distance, .. }) = key_from_view(3, &Transform::from_xyz(3.0, 0.0, 4.0), &a) else { panic!() };
         assert!((distance - 5.0).abs() < 1e-4, "a view key reaches the skater root (ours)");
+    }
+
+    /// b655: the D-pad lift is limited since the pick (retail `82C80EA0`), not the key's absolute look height.
+    #[test]
+    fn look_lift_is_limited_since_the_pick_not_absolutely() {
+        let a = at(Transform::from_xyz(0.0, 0.0, 0.0));
+        let rules = CameraRules::default();
+        let mut key = CameraKey::Tripod { eye: Vec3::new(0.0, 2.0, 6.0), look_height: 1.8 };
+        let mut height = FreeHeight::default();
+        let up = CameraInput { height: 1.0, ..default() };
+        edit(&mut key, &mut 24.0, &mut height, up, &rules, Some(&a), 1.0 / 30.0);
+        let CameraKey::Tripod { look_height, .. } = key else { panic!() };
+        assert!((look_height - 1.81).abs() < 1e-5, "a converted height above 1 m survives an edit: {look_height}");
+        for _ in 0..300 {
+            edit(&mut key, &mut 24.0, &mut height, up, &rules, Some(&a), 1.0 / 30.0);
+        }
+        let CameraKey::Tripod { look_height, .. } = key else { panic!() };
+        assert!(look_height < 1.8 + 1.0 && look_height > 1.8 + 0.98, "the lift stops at 1 m since the pick: {look_height}");
+        assert_eq!(height.lift, 1.0);
+        edit(&mut key, &mut 24.0, &mut height, CameraInput { height: -1.0, ..default() }, &rules, Some(&a), 1.0 / 30.0);
+        let CameraKey::Tripod { look_height: down, .. } = key else { panic!() };
+        assert!((down - (look_height - 0.01)).abs() < 1e-5, "back down from the bound");
     }
 }

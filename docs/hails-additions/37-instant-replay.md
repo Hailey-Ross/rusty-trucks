@@ -508,8 +508,9 @@ Free. Not play-tested.
 Open (b610, b613 `.local/research/b613-replace-open-points.md`, code only, no trace yet):
 - Free start -> Follow: retail stores the world look point in the Follow eye frame but labels it object 4, so each
   frame it is re-applied at the skater root (the look lands about one camera distance past the skater); -> Tripod: the
-  look is the pick-time point carried with the skater. Ours keeps only a look height (0 for a Free source); parity
-  needs a root-frame look offset in Follow / Tripod keys and Free's look distance.
+  look is the pick-time point carried with the skater. ANSWERED 2026-10-29 (b655): retail's edit update zeroes the
+  lateral look every frame, and a pick always opens the edit, so a look height is all that survives, as ours keeps it;
+  see "Look lift since the pick".
 - Game section records: a fresh clip copies the take's live elements (likely zeros, unproven); a Game key from a pick
   holds the old camera's local pose then zeros. Ours keys a Game start from the view, which matches retail's eye for
   zeros; retail's look is the root origin, ours root + target height.
@@ -1207,8 +1208,21 @@ handling, replay.rs help block and panel gate).
   - Follow / Tripod -> Free takes the old look point's distance.
   - Free -> Follow / Tripod sets the look height from P's height (Follow: in the eye frame; Tripod: above the root).
   - Free keys blend the distance between keys.
-- OURS: our look model has no lateral look offset, so P's lateral part is dropped (full parity needs a root-frame
-  look offset in Follow / Tripod keys, b613). A Free key made from a Game view takes its distance to the skater root;
+- OURS: our look model has no lateral look offset, so P's lateral part is dropped; retail drops it too on the first
+  edit tick (b655, "Look lift since the pick"). A Free key made from a Game view takes its distance to the skater root;
   retail uses the Game camera's look object 3 (actor slot 2, not identified).
 - Test: `free_look_distance_follows_retail`. Research: `.local/research/b652-free-look-point.md`,
   `.local/research/b613-replace-open-points.md`. Not play-checked.
+
+## Look lift since the pick (2026-10-29, research b655)
+- Retail [code, Ghidra `.local/research/b655/a.txt`]: the Follow / Tripod edit update `82C80A78` writes 0.0 to the look
+  elements 3 and 4 every frame and keeps element 5 (the look height). The D-pad lift `82C80EA0` adds the step to an
+  accumulator at C+0x38 (reset at every pick), clamps it to +-1.0 (`0x8231A844` / `0x8216DEE0`), and moves the key's
+  look height only while the accumulator stays inside the range (no partial step at a bound).
+- Ours before: the key's ABSOLUTE look height was clamped to +-1, so a converted height above 1 m (Free -> Tripod
+  from a high look point) was cut on the first edit.
+- Change: `camera_key.rs` `lift_look` with `FreeHeight::lift` (the per-edit state, reset when another key or a pick
+  starts editing). `CameraRules::look_range` / `look_step` stay mod data (`sdk.replay.set_camera`).
+- Test: `look_lift_is_limited_since_the_pick_not_absolutely`. Not play-checked.
+- Open: whether retail's Tripod measures the converted height in the skater's full transform and tilts the aim with
+  the skater (b655 item 3); the first edit tick's record vs the converted key (a recomp hook on `82C84868`).

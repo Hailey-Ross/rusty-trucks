@@ -176,13 +176,26 @@ pub(crate) fn tree_commands(
     attributes: &[SettableAttribute],
     time: f32,
 ) -> Result<Vec<skate_core::animation::playback_tree::PoseCommand>, String> {
+    let mut out = Vec::new();
+    tree_commands_into(animation, name, attributes, time, &mut out)?;
+    Ok(out)
+}
+
+/// [`tree_commands`] into `out` (cleared first).
+pub(crate) fn tree_commands_into(
+    animation: &super::motion_animation::MotionAnimation,
+    name: &str,
+    attributes: &[SettableAttribute],
+    time: f32,
+    out: &mut Vec<skate_core::animation::playback_tree::PoseCommand>,
+) -> Result<(), String> {
+    out.clear();
     let mut tree = animation.build_tree(name)?;
     tree.set_attributes(attributes)?;
     let length = tree.length();
     tree.set_time(if length > 0.0 { time.max(0.0).rem_euclid(length) } else { 0.0 });
-    let mut out = Vec::new();
-    tree.evaluate(skate_core::animation::playback_tree::Evaluation { cull_threshold: 0.0, update_history: false }, true, &mut out)?;
-    Ok(out)
+    tree.evaluate(skate_core::animation::playback_tree::Evaluation { cull_threshold: 0.0, update_history: false }, true, out)?;
+    Ok(())
 }
 
 impl MotionHost {

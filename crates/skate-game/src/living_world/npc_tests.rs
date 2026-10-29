@@ -1275,3 +1275,81 @@ fn npc_skaters_react_to_the_players_wipeout_near_them() {
     app.update();
     assert_eq!(read(&mut app), vec![(near, SkaterReaction::SlamB, 0)]);
 }
+
+/// Golden digest of the NPC presentation and advance (b620): docs/hails-additions/34-physics-performance.md#npc-and-replay-per-frame-allocations-first-pass-2026-10-28-research-b620
+fn npc_frame_digest(posed_runtime: Option<crate::physics::SkaterRuntime>) -> (u64, usize) {
+    fn mix(h: &mut u64, bytes: &[u8]) {
+        for b in bytes {
+            *h = (*h ^ *b as u64).wrapping_mul(0x100000001b3);
+        }
+    }
+    fn bits(t: &Transform) -> [u32; 10] {
+        let (a, b, c) = (t.translation.to_array(), t.rotation.to_array(), t.scale.to_array());
+        [a[0], a[1], a[2], b[0], b[1], b[2], b[3], c[0], c[1], c[2]].map(f32::to_bits)
+    }
+    let mut a = app(11);
+    a.add_systems(Update, present_pose.after(collect));
+    let bones = posed_runtime.as_ref().map(|s| s.animation.evaluator.frames.bone_names.len());
+    if let Some(s) = posed_runtime {
+        a.insert_resource(s);
+    }
+    let (mut h, mut posed) = (0xcbf29ce484222325u64, 0);
+    a.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f32(1.0 / 144.0)));
+    for _ in 0..1440 {
+        if let Some(bones) = bones {
+            let mut q = a.world_mut().query_filtered::<(Entity, &NpcSkater), Without<NpcPuppet>>();
+            let fresh: Vec<_> = q.iter(a.world()).map(|(e, n)| (e, crate::custom_models::native_animation_style(&n.character))).collect();
+            for (e, style) in fresh {
+                let joints: Vec<_> = (0..bones).map(|i| (a.world_mut().spawn(Transform::IDENTITY).id(), i, i.checked_sub(1))).collect();
+                a.world_mut().entity_mut(e).insert(NpcPuppet::for_test(crate::animation::AnimationStatus::for_test(joints), style));
+            }
+        }
+        a.update();
+        let mut q = a.world_mut().query::<(&NpcSkater, &NpcReplay, Option<&NpcPuppetClip>, &Transform, Option<&NpcPuppet>)>();
+        let mut rows: Vec<_> = q.iter(a.world()).map(|(n, r, c, t, p)| (n.id, format!("{r:?}{c:?}"), bits(t), p.map(|p| p.joints()).unwrap_or_default())).collect();
+        rows.sort_by_key(|r| r.0);
+        for (id, text, root, joints) in rows {
+            mix(&mut h, format!("{id:?}").as_bytes());
+            mix(&mut h, text.as_bytes());
+            root.iter().for_each(|b| mix(&mut h, &b.to_le_bytes()));
+            for j in joints {
+                if let Some(t) = a.world().get::<Transform>(j) {
+                    bits(t).iter().for_each(|b| mix(&mut h, &b.to_le_bytes()));
+                }
+            }
+        }
+        let mut q = a.world_mut().query::<&NpcPuppetClip>();
+        posed += q.iter(a.world()).filter(|c| c.posed).count();
+        let seen = std::mem::take(&mut a.world_mut().resource_mut::<Seen>().0);
+        mix(&mut h, format!("{seen:?}").as_bytes());
+    }
+    (h, posed)
+}
+
+#[test]
+fn npc_present_pose_and_advance_match_golden() {
+    let (digest, posed) = npc_frame_digest(None);
+    eprintln!("NPC_GOLDEN unposed {digest:#018x}");
+    assert_eq!(posed, 0);
+    assert_eq!(digest, NPC_GOLDEN_UNPOSED, "the NPC presentation / advance output moved");
+}
+
+/// Data-gated: the posed path (stock evaluator, fakie channel tree, joint transforms).
+#[test]
+fn npc_present_pose_posed_matches_golden() {
+    let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from).filter(|r| r.join("private/stock/data/anim/OnBoard.abin").exists()) else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+        return;
+    };
+    let assets = skate_data::GameAssets::load(&root).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(&root, &assets).unwrap();
+    let physics = crate::physics::GamePhysics::load_with_difficulty(&root, None, crate::difficulty::Difficulty::Easy).unwrap();
+    let skater = crate::physics::SkaterRuntime::load(&root, &graphs, &physics, "easy").unwrap();
+    let (digest, posed) = npc_frame_digest(Some(skater));
+    eprintln!("NPC_GOLDEN posed {digest:#018x} posed frames {posed}");
+    assert!(posed > 1000, "the posed path ran");
+    assert_eq!(digest, NPC_GOLDEN_POSED, "the posed NPC output moved");
+}
+
+const NPC_GOLDEN_UNPOSED: u64 = 0x4e6ad2fe9bebac23;
+const NPC_GOLDEN_POSED: u64 = 0xd2e279baed9b8d16;

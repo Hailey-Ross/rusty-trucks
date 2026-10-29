@@ -90,12 +90,22 @@ fn flat_dist(a: Vec3, b: Vec3) -> f32 {
 
 /// The score vector `s[1..=4]` of a placement or live object [code `sub_82C4A130`]; compare with [`score_value`].
 pub fn score(p: &DmoPlacement, view: &DmoView, w: &DmoWeights) -> [f32; 4] {
+    score_as(p, view, w, false)
+}
+
+/// The score of a LIVE object [code `82C55160`, b657]: its `s1` is always 2^31 (the placement priority only ranks spawn
+/// candidates).
+pub fn live_score(p: &DmoPlacement, view: &DmoView, w: &DmoWeights) -> [f32; 4] {
+    score_as(p, view, w, true)
+}
+
+fn score_as(p: &DmoPlacement, view: &DmoView, w: &DmoWeights, live: bool) -> [f32; 4] {
     let to = [p.position[0] - view.camera[0], p.position[1] - view.camera[1], p.position[2] - view.camera[2]];
     let in_front = to[0] * view.forward[0] + to[1] * view.forward[1] + to[2] * view.forward[2] > 0.0;
     let k_view = if in_front { w.in_front } else { 1.0 };
     let k_flag = if p.keep { w.keep_flag } else { 1.0 };
     let s1 = match (p.keep, p.priority) {
-        (false, Some(prio)) => w.priority * prio as f32 * k_flag,
+        (false, Some(prio)) if !live => w.priority * prio as f32 * k_flag,
         _ => 2f32.powi(31),
     };
     let n = 1.0;
@@ -188,13 +198,14 @@ impl DmoStream {
         }
         // The best score over the observers' views.
         let best = |p: &DmoPlacement| circles.iter().map(|(_, v)| score_value(score(p, v, &settings.weights))).fold(f32::MIN, f32::max);
+        let best_live = |p: &DmoPlacement| circles.iter().map(|(_, v)| score_value(live_score(p, v, &settings.weights))).fold(f32::MIN, f32::max);
         // The live score: a kept object scores like a keep placement (flag 0x10: s1 = 2^31, the keep weight).
         let live_score = |p: &DmoPlacement| {
             let p = now(p);
             if kept(p.id) && !p.keep {
-                best(&DmoPlacement { keep: true, ..p })
+                best_live(&DmoPlacement { keep: true, ..p })
             } else {
-                best(&p)
+                best_live(&p)
             }
         };
         let front = |s: &Self| s.placements.iter().filter(|p| s.live.contains(&p.id) && !exempt(p.id)).map(|p| (live_score(p), p.id)).min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));

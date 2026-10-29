@@ -848,7 +848,8 @@ export, the priority records):
 - Spawn `sub_826B9D58` [code]: placements within the outer radius (max 256), touching neighbours within 20 m join so
   clusters come together, 49 spawns per pass (100 in fill mode); with the pool full a placement must outscore the
   eviction front, which then goes.
-- Score `sub_82C4A130` / `sub_82C55160` [code]: `s1 = 250 x priority x k_flag` (keepalways or flag 0x10: 2^31),
+- Score `sub_82C4A130` / `sub_82C55160` [code]: `s1 = 250 x priority x k_flag` (keepalways or flag 0x10: 2^31; a LIVE
+  object always 2^31, see "Live props evict farthest first"),
   `s2 = 300 x -n x k_flag`, `s3 = 450 x -distance / (k_flag x k_view^2)`, compared as `(s1 + s2 + s3) x k_view`;
   `k_view` 2.5 in front of the camera, `k_flag` 2.0 with flag 0x10 [data `livingworld.dynamicobjects`]. Type
   priorities (`livingworld_dynamicobject_priority`, referenced by each characteristics record's `Priority`): of 230
@@ -1600,3 +1601,18 @@ World tuning domain `prop_sounds` ([doc 26a](26a-living-world-overview.md#world-
 - Open: retail groups the cull by the live object's linked group (`sub_82C4A5C0`), ours by authored touching
   clusters; whether a push breaks retail's link is not read. A `dmo_stream` world tuning domain (cull 100, spawn 90,
   pool 49) for mods is not added yet. Not play-checked.
+
+## Live props evict farthest first (2026-10-29, ask 401, research b657)
+- Problem (follow-up of the 2026-10-14 churn report, `.claude/todo/living-world-follow-ups.md`): which prop a full pool
+  (49) evicts. Ours scored live non-keep props with `s1 = 250 x placement priority`, so the eviction front was ranked by
+  priority and could be a near, in-view prop.
+- Retail [code, b657 `.local/research/b657-dmo-eviction.md`]: the live score `82C55160` gives every queued (live) object
+  `s1 = 2^31`; the placement priority only ranks spawn candidates (`82C4A130`). So the front is the lowest
+  `((2^31 + s2) + s3) x k_view`: props behind the camera before props in front, and among them the farthest from the
+  reference. One front kill per cull call while live >= 49 - reserved.
+- Change: `skate-core` `dmo::live_score` (s1 = 2^31) for the eviction front and the spawn-victim test; a non-keep
+  candidate no longer outscores a live prop, so a full pool turns over only through the per-pass eviction. Weights,
+  cap, ring and cull stay mod data (`dmo_stream`). Test: `the_pool_cap_evicts_the_lowest_score_once_per_pass`
+  (updated: the farthest unheld prop goes first despite a higher priority). Not play-checked.
+- Open: retail's per-prop part count `n` (`DMO+0x1124`, -1 until the setter `82C55858` runs, which puts an unset object
+  at the very front); ours keeps `n = 1` until the setter's caller is found. Camera vs player as the distance reference.

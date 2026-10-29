@@ -274,6 +274,11 @@ struct FrameLogSink(log::FrameLog);
 
 #[derive(Component)]
 struct FrameOverlay;
+/// The two top corners the counter can sit in (graphics menu "FPS Counter Position"); the warning stays left.
+#[derive(Component)]
+struct FrameCorner {
+    right: bool,
+}
 #[derive(Component)]
 struct FrameText;
 #[derive(Component)]
@@ -313,7 +318,7 @@ impl Plugin for FrameTimingPlugin {
             .add_systems(RunFixedMainLoop, begin_fixed.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .add_systems(RunFixedMainLoop, end_fixed.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
             .add_systems(bevy::app::FixedFirst, count_fixed_step)
-            .add_systems(Last, (record, show).chain());
+            .add_systems(Last, (record, show, place_overlay).chain());
         hitch::register(app);
         render_split::register(app);
     }
@@ -466,6 +471,23 @@ fn show(
     }
 }
 
+/// Moves the counter to the corner the menu picks (only when it changes).
+fn place_overlay(
+    mut commands: Commands,
+    menu: Option<Res<crate::graphics_menu::Menu>>,
+    overlay: Query<(Entity, &ChildOf), With<FrameOverlay>>,
+    corners: Query<(Entity, &FrameCorner)>,
+) {
+    let right = menu.as_ref().is_some_and(|m| m.frame_stats_right());
+    let Some((corner, _)) = corners.iter().find(|(_, c)| c.right == right) else { return };
+    for (e, parent) in &overlay {
+        if parent.parent() != corner {
+            // First in the left column, above the warning.
+            commands.entity(corner).insert_children(0, &[e]);
+        }
+    }
+}
+
 fn spawn_overlay(mut commands: Commands) {
     // Uses the existing UI camera; no separate render loop. Hidden until the
     // graphics menu's "Frame-time counter" row turns it on.
@@ -484,8 +506,15 @@ fn spawn_overlay(mut commands: Commands) {
                 ..default()
             },
             GlobalZIndex(100),
+            FrameCorner { right: false },
         ))
         .id();
+    commands.spawn((
+        Name::new("Frame-time corner (right)"),
+        Node { position_type: PositionType::Absolute, top: px(12), right: px(12), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, ..default() },
+        GlobalZIndex(100),
+        FrameCorner { right: true },
+    ));
     commands
         .spawn((
             Name::new("Frame-time overlay"),

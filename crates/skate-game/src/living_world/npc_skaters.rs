@@ -341,33 +341,42 @@ pub(crate) struct PuppetLayer {
 
 /// The puppet's layers, oldest first, from the phase history (same clip = one layer). Pure.
 pub(crate) fn puppet_layers(history: &[(PhaseEntry, f32)], resolve: impl Fn(PhaseEntry, Option<PhaseEntry>) -> (String, f32)) -> Vec<PuppetLayer> {
-    let resolved: Vec<(String, f32, f32, u64)> = history
-        .iter()
-        .enumerate()
-        .map(|(i, (e, t))| {
-            let (clip, seconds) = resolve(*e, history.get(i + 1).map(|h| h.0));
-            (clip, seconds, *t, e.since)
-        })
-        .collect();
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < resolved.len() {
+    puppet_layers_into(history, resolve, &mut out);
+    out
+}
+
+/// [`puppet_layers`] into `out` (cleared first); each history entry is resolved once, in order.
+pub(crate) fn puppet_layers_into(history: &[(PhaseEntry, f32)], resolve: impl Fn(PhaseEntry, Option<PhaseEntry>) -> (String, f32), out: &mut Vec<PuppetLayer>) {
+    out.clear();
+    let item = |i: usize| {
+        let (e, t) = history[i];
+        let (clip, seconds) = resolve(e, history.get(i + 1).map(|h| h.0));
+        (clip, seconds, t, e.since)
+    };
+    let mut next = (!history.is_empty()).then(|| item(0));
+    let mut j = 0;
+    while let Some(mut current) = next.take() {
         // An older phase whose clip is this one, or a sequence ending in it (`<ground>+<air>`
         // before `<air>`), is the same playing clip: continue it from the older start.
-        let mut j = i;
-        while j + 1 < resolved.len() && (resolved[j + 1].0 == resolved[j].0 || sequence_ends_in(&resolved[j + 1].0, &resolved[j].0)) {
+        while j + 1 < history.len() {
+            let older = item(j + 1);
             j += 1;
+            if older.0 == current.0 || sequence_ends_in(&older.0, &current.0) {
+                current = older;
+            } else {
+                next = Some(older);
+                break;
+            }
         }
-        let (ref clip, seconds, time, since) = resolved[j];
+        let (clip, seconds, time, since) = current;
         let weight = skate_core::animation::playback_transition::transition_weight(time, seconds);
-        out.push(PuppetLayer { clip: clip.clone(), time, weight, since });
+        out.push(PuppetLayer { clip, time, weight, since });
         if weight >= 1.0 {
             break;
         }
-        i = j + 1;
     }
     out.reverse();
-    out
 }
 
 /// An NPC's crossfade out of the previous phase's clip (the outgoing tree of a graph transition).
@@ -449,6 +458,13 @@ pub(crate) fn fakie_channel_attributes() -> [skate_core::animation::playback_par
 
 /// The puppet's layers for a cursor (mod clips and blend times, shipped pick as fallback).
 pub(crate) fn npc_puppet_layers(settings: &LivingWorldSettings, style: &str, skater: Option<&crate::physics::SkaterRuntime>, cursor: &LineCursor, sub_frame: f32) -> Vec<PuppetLayer> {
+    let mut out = Vec::new();
+    npc_puppet_layers_into(settings, style, skater, cursor, sub_frame, &mut out);
+    out
+}
+
+/// [`npc_puppet_layers`] into `out` (cleared first).
+pub(crate) fn npc_puppet_layers_into(settings: &LivingWorldSettings, style: &str, skater: Option<&crate::physics::SkaterRuntime>, cursor: &LineCursor, sub_frame: f32, out: &mut Vec<PuppetLayer>) {
     let evaluates = |clip: &str| skater.is_none_or(|k| k.animation.evaluator.clip_length(clip).is_ok());
     let meta = skater.map(|k| k.animation.motion.animation.metadata());
     let stock = |name: &str| match meta {
@@ -456,8 +472,17 @@ pub(crate) fn npc_puppet_layers(settings: &LivingWorldSettings, style: &str, ska
         None => Some(name.to_owned()),
     };
     let resolve = |e: PhaseEntry, older: Option<PhaseEntry>| puppet_layer_clip(&settings.skater_clips, &settings.skater_blend_seconds, style, &evaluates, &stock, e, older);
-    let history: Vec<(PhaseEntry, f32)> = cursor.phase_history().map(|(e, frames)| (e, (frames as f32 + sub_frame) / 60.0)).collect();
-    puppet_layers(&history, resolve)
+    let mut entries = cursor.phase_history().map(|(e, frames)| (e, (frames as f32 + sub_frame) / 60.0));
+    let Some(first) = entries.next() else {
+        return puppet_layers_into(&[], resolve, out);
+    };
+    let mut history = [first; skate_core::living_world::replay::PHASE_HISTORY];
+    let mut n = 1;
+    for entry in entries {
+        history[n] = entry;
+        n += 1;
+    }
+    puppet_layers_into(&history[..n], resolve, out)
 }
 
 /// Layer starts an NPC remembers (its puppet shows at most a few layers at once).
@@ -649,6 +674,25 @@ pub(crate) fn apply_records(
     }
 }
 
+/// Buffers [`advance`] reuses across NPCs and ticks.
+#[derive(Default)]
+pub(crate) struct AdvanceScratch {
+    players: Vec<[f32; 3]>,
+    order: Vec<(LivingWorldId, [u8; 16], u32)>,
+    others: Vec<([u8; 16], u32)>,
+    in_use: Vec<[u8; 16]>,
+    out: Vec<CursorEvent>,
+    finished: Vec<(LivingWorldId, Entity)>,
+}
+
+/// Every other NPC's (line, node) and the lines in use, by serial order.
+fn fill_others(order: &[(LivingWorldId, [u8; 16], u32)], id: LivingWorldId, others: &mut Vec<([u8; 16], u32)>, in_use: &mut Vec<[u8; 16]>) {
+    others.clear();
+    others.extend(order.iter().filter(|o| o.0 != id).map(|o| (o.1, o.2)));
+    in_use.clear();
+    in_use.extend(others.iter().map(|o| o.0));
+}
+
 /// Advance every cursor to its tick, take branches, end finished lines, publish position and audio.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn advance(
@@ -661,16 +705,20 @@ pub(crate) fn advance(
     physics: Option<Res<crate::physics::GamePhysics>>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
     mut events: MessageWriter<NpcSkaterEvent>,
+    mut scratch: Local<AdvanceScratch>,
 ) {
     let _span = super::timing::span(super::timing::NPC_ADVANCE);
+    let AdvanceScratch { players, order, others, in_use, out, finished } = &mut *scratch;
     let lines = npc_lines(&state);
     let tick = state.world.tick();
-    let players: Vec<[f32; 3]> = observers.observers.iter().map(|o| o.position).collect();
+    players.clear();
+    players.extend(observers.observers.iter().map(|o| o.position));
     let mirror = settings.net_role == NetRole::Client;
     // Others' (line, node) and lines in use, by serial order (deterministic).
-    let mut order: Vec<(LivingWorldId, [u8; 16], u32)> = npcs.iter().map(|(_, n, r, ..)| (n.id, r.cursor.line, r.cursor.node)).collect();
+    order.clear();
+    order.extend(npcs.iter().map(|(_, n, r, ..)| (n.id, r.cursor.line, r.cursor.node)));
     order.sort_by_key(|x| x.0);
-    let mut finished = Vec::new();
+    finished.clear();
     let mut sorted: Vec<_> = npcs.iter_mut().collect();
     sorted.sort_by_key(|(_, n, ..)| n.id);
     let fade_cfg = state.world.config.skaters.leave_fade;
@@ -679,7 +727,7 @@ pub(crate) fn advance(
         let elapsed = tick.saturating_sub(npc.spawn_tick) * FRAMES_PER_TICK;
         // The obstacle avoider holds the cursor back (`npc_avoid`); the fade keeps the spawn clock.
         let target = replay.follow_target.unwrap_or_else(|| elapsed.saturating_sub(replay.avoid.held_frames()));
-        let mut out = Vec::new();
+        out.clear();
         // The switch blend time (branch / chain root blend) is a tuning value, the same on a client.
         replay.cursor.switch_blend_seconds = chain.blend_seconds;
         // Keep the facing across switches (fix 16 rule, mod option, retail off); a tuning value.
@@ -694,20 +742,18 @@ pub(crate) fn advance(
         // the next line every tick, as retail does (b118); the replay tier still ends there and fades.
         if replay.follow_target.is_some() && !mirror && lines.get(&replay.cursor.line).is_some_and(|l| replay.cursor.node as usize + 1 >= l.nodes.len()) {
             if let Some(s) = replay.cursor.sample(&*lines, 0.0) {
-                let others: Vec<([u8; 16], u32)> = order.iter().filter(|o| o.0 != npc.id).map(|o| (o.1, o.2)).collect();
-                let in_use: Vec<[u8; 16]> = others.iter().map(|o| o.0).collect();
+                fill_others(order, npc.id, others, in_use);
                 let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_deref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
                 // Retail's mode 1 fallback (b122): the physics skater takes the nearest free start at any distance.
                 let chain = skate_core::living_world::replay::ChainConfig { fallback: true, ..chain };
-                let ctx = BranchContext { position: s.position, forward: s.velocity, speed: length(s.velocity), players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online, chain, tricks };
-                if replay.cursor.retry_chain(&*lines, &mut Decider::Decide(ctx), &mut out) {
+                let ctx = BranchContext { position: s.position, forward: s.velocity, speed: length(s.velocity), players, others, in_use, preferred_skill: -1, online: observers.online, chain, tricks };
+                if replay.cursor.retry_chain(&*lines, &mut Decider::Decide(ctx), out) {
                     info!("NPC_SKATER_CHAIN #{} {} line end: next line at node {}", npc.id.serial, npc.character, replay.cursor.node);
                 }
             }
         }
         // The loop only moves this NPC's own `order` entry, which `others` leaves out (b620).
-        let others: Vec<([u8; 16], u32)> = order.iter().filter(|o| o.0 != npc.id).map(|o| (o.1, o.2)).collect();
-        let in_use: Vec<[u8; 16]> = others.iter().map(|o| o.0).collect();
+        fill_others(order, npc.id, others, in_use);
         while replay.cursor.frames < target && !replay.cursor.finished {
             if replay.cursor.frames + FRAMES_PER_TICK >= target {
                 replay.previous = Some(replay.cursor.clone());
@@ -715,16 +761,16 @@ pub(crate) fn advance(
             let s = replay.cursor.sample(&*lines, 0.0);
             let (position, forward, speed) = s.as_ref().map_or(([0.0; 3], [0.0, 0.0, 1.0], 0.0), |s| (s.position, s.velocity, length(s.velocity)));
             let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_deref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
-            let ctx = BranchContext { position, forward, speed, players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online, chain, tricks };
+            let ctx = BranchContext { position, forward, speed, players, others, in_use, preferred_skill: -1, online: observers.online, chain, tricks };
             let r = &mut *replay;
             let mut decider = if mirror { Decider::Mirror(&r.branches, &r.tricks) } else { Decider::Decide(ctx) };
-            r.cursor.step(&*lines, &mut decider, &mut out);
+            r.cursor.step(&*lines, &mut decider, out);
             if let Some(o) = order.iter_mut().find(|o| o.0 == npc.id) {
                 o.1 = replay.cursor.line;
                 o.2 = replay.cursor.node;
             }
         }
-        for ev in out {
+        for ev in out.drain(..) {
             match ev {
                 CursorEvent::Node { line, node, event, flags } => {
                     if event != 0 {
@@ -793,7 +839,7 @@ pub(crate) fn advance(
     // Faded out (opacity below the threshold): the NPC leaves. Hosts decide this; a client waits
     // for the host's despawn record.
     if !mirror {
-        for (id, e) in finished {
+        for (id, e) in finished.drain(..) {
             if let Some(skate_core::living_world::Decision::Despawn(r)) = state.world.despawn(id, DespawnReason::External) {
                 state.despawned += 1;
                 despawns.write(LivingWorldDespawn(r));
@@ -1010,6 +1056,11 @@ pub(crate) struct NpcPuppet {
 }
 
 impl NpcPuppet {
+    #[cfg(test)]
+    pub(crate) fn for_test(bindings: crate::animation::AnimationStatus, style: &'static str) -> Self {
+        Self { scene: None, bindings: Some(bindings), style }
+    }
+
     /// The bound joints, for the replay recorder.
     pub(crate) fn joints(&self) -> Vec<Entity> {
         self.joints_iter().collect()
@@ -1076,7 +1127,9 @@ pub(crate) fn present_pose(
     fixed: Res<Time<Fixed>>,
     mut npcs: Query<(Entity, &NpcSkater, &NpcReplay, Option<&NpcPuppet>, Option<&mut NpcPuppetClip>, &mut Transform, Option<&NpcStanceTrack>, Option<&super::npc_sim::NpcSim>)>,
     mut joints: Query<&mut Transform, Without<NpcReplay>>,
+    mut scratch: Local<NpcPoseScratch>,
 ) {
+    let NpcPoseScratch { layers, layer_flags, channel, pose, transforms, before, pose_now, pose_before } = &mut *scratch;
     let lines = npc_lines(&state);
     // Render interpolation: the fraction of the next world tick, drawn from one tick back (fix 14).
     let hz = state.world.clock().hz;
@@ -1097,15 +1150,16 @@ pub(crate) fn present_pose(
             let alpha = fixed.overstep_fraction();
             *root = if blending { crate::presentation::blend(root_of(sim.previous_root, &sim.previous_pose), current, alpha) } else { current };
             if let Some(bindings) = puppet.and_then(|p| p.bindings.as_ref()) {
-                let pose: Vec<Mat4> = sim.render_pose().iter().copied().map(crate::animation::native_matrix).collect();
-                let now = bindings.pose_transforms(&pose);
-                let before = if blending {
-                    let pose: Vec<Mat4> = sim.previous_pose.iter().copied().map(crate::animation::native_matrix).collect();
-                    bindings.pose_transforms(&pose)
-                } else {
-                    Vec::new()
-                };
-                for (i, (joint, local)) in now.into_iter().enumerate() {
+                pose_now.clear();
+                pose_now.extend(sim.render_pose().iter().copied().map(crate::animation::native_matrix));
+                bindings.pose_transforms_into(pose_now, transforms);
+                before.clear();
+                if blending {
+                    pose_before.clear();
+                    pose_before.extend(sim.previous_pose.iter().copied().map(crate::animation::native_matrix));
+                    bindings.pose_transforms_into(pose_before, before);
+                }
+                for (i, &(joint, local)) in transforms.iter().enumerate() {
                     let shown = match before.get(i) {
                         Some((j, previous)) if *j == joint => crate::presentation::blend(*previous, local, alpha),
                         _ => local,
@@ -1137,49 +1191,76 @@ pub(crate) fn present_pose(
             }
         };
         // Clip and blend time include the render sub-frame (no 60 Hz stair steps under a smooth root).
-        let mut layers = npc_puppet_layers(&settings, style, skater.as_deref(), &cursor, s.sub_frame);
+        npc_puppet_layers_into(&settings, style, skater.as_deref(), &cursor, s.sub_frame, layers);
         if layers.is_empty() {
             layers.push(PuppetLayer { clip: usable(s.phase).to_owned(), time: (s.phase_frames as f32 + s.sub_frame) / 60.0, weight: 1.0, since: cursor.frames.saturating_sub(s.phase_frames) });
         }
         // The stance bits each layer was built with (natural stance, toggled by trick clips).
         let natural = StanceFlags::natural(npc.stance);
-        let layer_flags: Vec<StanceFlags> = layers.iter().map(|l| stance.map_or(natural, |t| t.flags_for(l.since))).collect();
+        layer_flags.clear();
+        layer_flags.extend(layers.iter().map(|l| stance.map_or(natural, |t| t.flags_for(l.since))));
         let top_flags = *layer_flags.last().expect("one layer");
         root.rotation = root_rotation(&s) * flags_root_turn(top_flags);
-        let top = layers.last().cloned().expect("one layer");
-        let clip = top.clip.as_str();
-        let time = top.time;
+        let top = layers.last().expect("one layer");
+        let (clip, time) = (top.clip.as_str(), top.time);
         let blend = (layers.len() >= 2).then(|| {
             let from = &layers[layers.len() - 2];
-            PuppetBlend { from: from.clip.clone(), from_time: from.time, weight: top.weight }
+            (from.clip.as_str(), from.time, top.weight)
         });
         let fakie = fakie_channel_layer(&cursor, frac, resolve_fakie_channel(&settings.skater_clips));
         let bound = skater.as_deref().zip(puppet.and_then(|p| p.bindings.as_ref()));
         let posed = bound.and_then(|(skater, bindings)| {
             // A channel tree that does not build (a mod's bad name) is left out.
-            let channel = fakie.as_ref().and_then(|f| {
-                crate::graph_host::motion::tree_commands(&skater.animation.motion.animation, &f.clip, &fakie_channel_attributes(), f.time).ok().map(|c| (c, f.weight))
+            let weight = fakie.as_ref().and_then(|f| {
+                crate::graph_host::motion::tree_commands_into(&skater.animation.motion.animation, &f.clip, &fakie_channel_attributes(), f.time, channel).ok().map(|_| f.weight)
             });
-            let globals = puppet_pose_in_flags(&skater.animation.evaluator, &layers, &layer_flags, channel.as_ref().map(|(c, w)| (c.as_slice(), *w)))?;
-            for (joint, local) in bindings.pose_transforms(&globals) {
+            if !puppet_pose_in_flags_into(&skater.animation.evaluator, layers, layer_flags, weight.map(|w| (channel.as_slice(), w)), pose) {
+                return None;
+            }
+            bindings.pose_transforms_into(&pose.globals, transforms);
+            for &(joint, local) in transforms.iter() {
                 if let Ok(mut t) = joints.get_mut(joint) {
                     *t = local;
                 }
             }
             Some(())
         });
-        let next = NpcPuppetClip { phase: s.phase, clip: clip.to_owned(), time, blend, layers, posed: posed.is_some(), fakie };
+        let posed = posed.is_some();
         match current {
+            // Written in place only on a difference (same value and change ticks as building the next clip).
             Some(mut c) => {
-                if *c != next {
-                    *c = next;
+                let same = c.phase == s.phase && c.clip == clip && c.time == time && c.blend.as_ref().map(|b| (b.from.as_str(), b.from_time, b.weight)) == blend && c.layers == *layers && c.posed == posed && c.fakie == fakie;
+                if !same {
+                    let c = &mut *c;
+                    c.phase = s.phase;
+                    c.clip.clear();
+                    c.clip.push_str(clip);
+                    c.time = time;
+                    c.blend = blend.map(|(from, from_time, weight)| PuppetBlend { from: from.to_owned(), from_time, weight });
+                    c.layers.clone_from(layers);
+                    c.posed = posed;
+                    c.fakie = fakie;
                 }
             }
             None => {
-                commands.entity(e).insert(next);
+                let blend = blend.map(|(from, from_time, weight)| PuppetBlend { from: from.to_owned(), from_time, weight });
+                commands.entity(e).insert(NpcPuppetClip { phase: s.phase, clip: clip.to_owned(), time, blend, layers: layers.clone(), posed, fakie });
             }
         }
     }
+}
+
+/// Buffers [`present_pose`] reuses across NPCs and frames.
+#[derive(Default)]
+pub(crate) struct NpcPoseScratch {
+    layers: Vec<PuppetLayer>,
+    layer_flags: Vec<StanceFlags>,
+    channel: Vec<skate_core::animation::playback_tree::PoseCommand>,
+    pose: PoseScratch,
+    transforms: Vec<(Entity, Transform)>,
+    before: Vec<(Entity, Transform)>,
+    pose_now: Vec<Mat4>,
+    pose_before: Vec<Mat4>,
 }
 
 /// A material an NPC fade can blend: its own base alpha and how a blended copy takes a new one.
@@ -1341,8 +1422,15 @@ pub(crate) fn bind_pose_tail(mirrored: bool) -> Vec<skate_core::animation::playb
 
 /// Bind pose commands retail appends to every tree (bit 31 BOARD_BACKWARDS, bit 30 mirror mode 2).
 pub(crate) fn stance_tail(flags: StanceFlags) -> Vec<skate_core::animation::playback_tree::PoseCommand> {
+    let mut out = Vec::new();
+    stance_tail_into(flags, &mut out);
+    out
+}
+
+/// [`stance_tail`] appended to `out`.
+fn stance_tail_into(flags: StanceFlags, out: &mut Vec<skate_core::animation::playback_tree::PoseCommand>) {
     use skate_core::animation::playback_tree::PoseCommand;
-    let mut out = vec![PoseCommand::Pose { name: "RIG_TPOSE".into() }, PoseCommand::Add { motion_is_a: true }];
+    out.extend([PoseCommand::Pose { name: "RIG_TPOSE".into() }, PoseCommand::Add { motion_is_a: true }]);
     if flags.board_backward {
         out.extend([
             PoseCommand::Pose { name: "BOARD_BACKWARDS".into() },
@@ -1354,7 +1442,6 @@ pub(crate) fn stance_tail(flags: StanceFlags) -> Vec<skate_core::animation::play
     if flags.mirrored {
         out.push(PoseCommand::Mirror { trajectory_mode: 2 });
     }
-    out
 }
 
 /// [`puppet_pose_with_channel`] in a natural stance (`mirrored` = regular): every layer with the
@@ -1366,6 +1453,20 @@ pub(crate) fn puppet_pose_in_stance(evaluator: &crate::animation_pose::PoseEvalu
 
 /// Puppet pose with each layer in its own stance bits: docs/hails-additions/26c-living-world-npc-skaters.md#puppet-pose-in-flags
 pub(crate) fn puppet_pose_in_flags(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer], flags: &[StanceFlags], channel: Option<(&[skate_core::animation::playback_tree::PoseCommand], f32)>) -> Option<Vec<Mat4>> {
+    let mut scratch = PoseScratch::default();
+    puppet_pose_in_flags_into(evaluator, layers, flags, channel, &mut scratch).then_some(scratch.globals)
+}
+
+/// Reused buffers of [`puppet_pose_in_flags_into`].
+#[derive(Default)]
+pub(crate) struct PoseScratch {
+    commands: Vec<skate_core::animation::playback_tree::PoseCommand>,
+    locals: Vec<Mat4>,
+    pub globals: Vec<Mat4>,
+}
+
+/// [`puppet_pose_in_flags`] into `scratch.globals`; false where it gives `None`.
+pub(crate) fn puppet_pose_in_flags_into(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer], flags: &[StanceFlags], channel: Option<(&[skate_core::animation::playback_tree::PoseCommand], f32)>, scratch: &mut PoseScratch) -> bool {
     use skate_core::animation::playback_tree::PoseCommand;
     let sample = |clip: &str, time: f32| -> Option<PoseCommand> {
         let (clip, time) = sequence_part(evaluator, clip, time)?;
@@ -1373,30 +1474,32 @@ pub(crate) fn puppet_pose_in_flags(evaluator: &crate::animation_pose::PoseEvalua
         Some(PoseCommand::Clip { name: clip.to_owned(), previous_time: time, time, loops: 0 })
     };
     let flag = |i: usize| flags.get(i).copied().unwrap_or_default();
-    let (top, older) = layers.split_last()?;
+    let Some((top, older)) = layers.split_last() else { return false };
     let top_flags = flag(layers.len() - 1);
     let mixed = (0..layers.len()).any(|i| flag(i) != top_flags);
-    let mut commands = Vec::with_capacity(layers.len() * 8 + 8);
+    let commands = &mut scratch.commands;
+    commands.clear();
+    commands.reserve(layers.len() * 8 + 8);
     // Per-layer tails once the bits differ (each layer closed before it blends in).
     let closed = |commands: &mut Vec<PoseCommand>, i: usize| {
         if mixed {
-            commands.extend(stance_tail(flag(i)));
+            stance_tail_into(flag(i), commands);
         }
     };
     for (i, l) in older.iter().enumerate() {
         if let Some(c) = sample(&l.clip, l.time) {
             let base = commands.is_empty();
             commands.push(c);
-            closed(&mut commands, i);
+            closed(commands, i);
             if !base {
                 commands.push(PoseCommand::Blend { weight: l.weight });
             }
         }
     }
-    let to = sample(&top.clip, top.time)?;
+    let Some(to) = sample(&top.clip, top.time) else { return false };
     let base = commands.is_empty();
     commands.push(to);
-    closed(&mut commands, layers.len() - 1);
+    closed(commands, layers.len() - 1);
     if !base {
         commands.push(PoseCommand::Blend { weight: top.weight });
     }
@@ -1404,22 +1507,26 @@ pub(crate) fn puppet_pose_in_flags(evaluator: &crate::animation_pose::PoseEvalua
     // closes before the channel tree, which gets its own (as the player's channel tree).
     let shaped = top_flags.board_backward || top_flags.mirrored;
     if !mixed && shaped {
-        commands.extend(stance_tail(top_flags));
+        stance_tail_into(top_flags, commands);
     }
     if let Some((tree, weight)) = channel.filter(|c| !c.0.is_empty() && c.1 > 0.0) {
         commands.extend_from_slice(tree);
         if mixed || shaped {
-            commands.extend(stance_tail(top_flags));
+            stance_tail_into(top_flags, commands);
         }
         commands.push(PoseCommand::ChannelBlend { weight, use_channels_from_weights: false });
     }
     if !mixed && !shaped {
-        commands.extend(stance_tail(top_flags));
+        stance_tail_into(top_flags, commands);
     }
-    let pose = evaluator.evaluate(&commands).ok()?;
-    let locals: Vec<Mat4> = pose.iter().copied().map(skate_core::animation::output::sqt_to_matrix).map(crate::animation::native_matrix).collect();
+    let Ok(pose) = evaluator.evaluate(commands) else { return false };
+    let locals = &mut scratch.locals;
+    locals.clear();
+    locals.extend(pose.iter().copied().map(skate_core::animation::output::sqt_to_matrix).map(crate::animation::native_matrix));
     let parents = &evaluator.frames.parents;
-    let mut globals: Vec<Mat4> = Vec::with_capacity(locals.len());
+    let globals = &mut scratch.globals;
+    globals.clear();
+    globals.reserve(locals.len());
     for (i, local) in locals.iter().enumerate() {
         let g = match parents.get(i).copied() {
             Some(p) if p >= 0 && (p as usize) < i => globals[p as usize] * *local,
@@ -1427,7 +1534,7 @@ pub(crate) fn puppet_pose_in_flags(evaluator: &crate::animation_pose::PoseEvalua
         };
         globals.push(g);
     }
-    Some(globals)
+    true
 }
 
 /// The part of a `+`-joined clip sequence playing `time` s in and the time inside it: parts play

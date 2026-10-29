@@ -85,5 +85,19 @@ Behaviour-identical by construction, each change with a reference test or no ari
 - `ReplayBuffer::record`: `encode_into` writes into a reused scratch, no `moved` / `mask` Vecs; a key is cloned only
   when it is new (test `encode_into_matches_reference`, 10 000 generated poses, byte equality with the old encoder).
 - `replay/world.rs` `refresh_joints`: compares joint lists via iterators, collects only on a change.
-Not done (b620 items 1b..1f, 2, 3d): the present_pose scratch buffers and the fakie tree cache (needs the golden
-digest test first). No timings measured.
+Superseded in part by the second pass below.
+## NPC per-frame allocations, second pass (2026-10-29, research b620 items 1b..1e, 2, 3d)
+Proof first: `npc_present_pose_and_advance_match_golden` (headless, always runs) and the data-gated
+`npc_present_pose_posed_matches_golden` (stock skater runtime, test joint bindings, the posed path including the fakie
+channel tree) hash every NPC's `NpcReplay`, `NpcPuppetClip`, root and joint `Transform` bits and the `NpcSkaterEvent`
+stream over 1440 frames at 144 Hz. Both digests were taken before the changes and did not move after them.
+- `puppet_layers_into`: each history entry resolved once, in order, with no `resolved` Vec; `npc_puppet_layers_into`
+  takes the phase history (at most `PHASE_HISTORY` = 6) into a stack array.
+- `present_pose`: a `Local<NpcPoseScratch>` holds the layers, layer stance bits, fakie channel commands
+  (`tree_commands_into`), pose commands / locals / globals (`puppet_pose_in_flags_into`, `stance_tail_into`) and the joint
+  transforms (`pose_transforms_into`) for both tiers; the top layer is borrowed, not cloned; `NpcPuppetClip` is compared
+  field by field and written in place only on a difference (same value and change ticks as building a new one).
+- `advance`: a `Local<AdvanceScratch>` holds `players`, `order`, `others`, `in_use`, the cursor events and the finished
+  list.
+The old functions stay as wrappers over the `_into` ones. Not done: the fakie tree cache (1f, needs research that
+`evaluate` keeps no state). Allocation counts and timings not measured.

@@ -625,3 +625,10 @@ Fix 14 (NPC skater jitter): exported lines ridden with the retail branch and cha
 ### Test exported facing rules
 
 Facing rules on the exported lines (fix 16, fix 23, fix 23 corrected). Every eighth line of the three districts is ridden for 40 s (branches and chains decided by the retail chooser) under three rules: the retail rule (`riding_entry`, mod option: recorded skater frame, turned while the flip latched on entering riding is set, held across switches), the fix 23 rule (`per_node`, the default, NOT RETAIL YET) and the fix 16 option (`keep_facing` on top of `per_node`, not retail). Counted per rule: settled frames drawn more than 135 deg against travel where the line's path frame does not oppose travel (`facing_check`, the `NPC_SKATER_BACKWARDS` diagnostic). The counts are reported, not tuned: the retail rule draws a recorder's switch stance as recorded, and the puppet has no stance mirror (NOT RETAIL YET), so its count measures that gap. Asserted: determinism, the fix 23 rule's own property (it folds every node onto the path frame), and that the fix 16 option rides more forward-recorded frames backwards than the fix 23 rule.
+
+## FPS Counter Position (2026-10-29, ask 404)
+- User ask: a toggle for which top corner the FPS counter sits in: top left (default since 2026-10-23, when the HUD
+  minimap took the top right) or top right (the earlier spot).
+- Change: Graphics > "FPS Counter Position" (Top Left / Top Right, saved as `frame_stats_right` in
+  `settings/graphics.json`, older files default to Top Left); `frame_timing` keeps a right corner node and moves the
+  counter between the corners (`place_overlay`); the refresh warning stays top left. Tests: the graphics menu row tests.
