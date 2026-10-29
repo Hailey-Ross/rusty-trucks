@@ -65,8 +65,8 @@ pub fn in_path(ped: Vec3, object: &MovingObject, p: &ObjectFleeParams) -> bool {
     (ped[0] - corner[0]) * v[0] + (ped[2] - corner[1]) * v[2] > 0.0
 }
 
-/// A ped fleeing a car near it (`82E2C0C8`, IVehicle path, W8): an opt-in still in test (user 2026-10-29: "I would
-/// think both"): docs/hails-additions/26g-living-world-ped-interactions.md#vehicle-flee-opt-in-2026-10-29-w8-research-b656
+/// A ped fleeing a car near it (`82E2C0C8`, IVehicle path, W8), either direction; an opt-in still in test:
+/// docs/hails-additions/26g-living-world-ped-interactions.md#vehicle-flee-opt-in-2026-10-29-w8-research-b656
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VehicleFleeParams {
     pub enabled: bool,
