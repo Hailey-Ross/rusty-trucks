@@ -6,8 +6,8 @@ below are the state of the 2026-10-08 passes.
 Branch `fix/grind-random-bails` (from `main` b3c9679). Status: **the handrail bend bail is fixed by porting
 retail's per-volume world-query box (third pass, below).** The first two passes found the cause chain and
 ruled out candidates 2 and 3; the third pass found the rule that differs from retail: the box every world
-triangle is tested against before the pair query. The 90 degree corners (`0x656`, `0x694`) still bail; they are
-real wheel hits and stay open.
+triangle is tested against before the pair query. The 90 degree corners (`0x656`, `0x694`) bail by design: two rails
+meet there, and the skater has to trick over the corner (user decision, not a bug).
 
 ## Problem
 
@@ -435,8 +435,6 @@ pad, which reached the strip. Not measured in the recomp.
 - Which rule retail applies at the spline end (second pass: candidates 2 and 3 are not supported by the static
   code; candidate 1 remains). Needs the instruction-level read of `82D8A828` / `82D875A8` at a spline end or
   the recomp trace planned above (the recomp is reference, not a console measurement).
-- Does retail boardslide through the PCU Library flat rail's 90 degree corner, or does the board also stop
-  there? (To ask the user before more research on the corner.)
 - Handrail bottom: fixed by the box port; a recomp BRDREP trace would still confirm retail has no deck/post
   contact there.
 - Stair-edge spline 23 (`0x677`) no longer bails after the box port (82 grind ticks, no wipeout); its old bail
