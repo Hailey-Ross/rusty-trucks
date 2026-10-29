@@ -186,7 +186,7 @@ fn clip(scene: &mut Scene, name: &str) -> Option<Arc<SceneClip>> {
 }
 
 /// Local samples at `time`, composed into scene-space bone matrices (the clip places the skater in the set).
-fn pose(clip: &SceneClip, time: f32) -> Option<Vec<output::NativeMatrix>> {
+pub(crate) fn pose(clip: &SceneClip, time: f32) -> Option<Vec<output::NativeMatrix>> {
     let selection = select_frames(time, clip.fps, clip.frames.len(), true, 0.0).ok()?;
     let sqt = |w: skate_data::animation_frames::SampleWords| {
         let [sx, sy, sz, x, y, z, w, tx, ty, tz] = w.map(f32::from_bits);
@@ -204,7 +204,7 @@ fn pose(clip: &SceneClip, time: f32) -> Option<Vec<output::NativeMatrix>> {
     Some(globals)
 }
 
-fn bind(world: &mut World, player: Entity, clip: &SceneClip) -> Option<AnimationStatus> {
+pub(crate) fn bind(world: &mut World, player: Entity, clip: &SceneClip) -> Option<AnimationStatus> {
     let mut state: SystemState<(Query<(Entity, &SkinnedMesh)>, Query<(&Name, &Transform)>, Query<&ChildOf>)> =
         SystemState::new(world);
     let (skins, nodes, parents) = state.get(world);
@@ -235,21 +235,42 @@ fn start(world: &mut World, scene: &mut Scene, player: Entity) -> bool {
     }
     // The set: retail world materials through the map path, tagged as ours and parented to the player root.
     let asset_root = world.resource::<crate::config::Config>().asset_root.clone();
+    // The set's own sky dome (mesh 0, sky.default) and the trick_guide render location's sun and fog
+    // (fog_trickguide), which the set's materials take too.
+    let map_sky = world.get_resource::<crate::map_transition::CurrentMap>()
+        .and_then(|map| crate::retail_sky::SkyPackage::load(&asset_root, &map.name).ok());
+    let sky = crate::retail_sky::SkyPackage::load_scene(&root, map_sky.as_ref())
+        .inspect_err(|e| warn!("TRICK_GUIDE_DEMO sky {}: {e}", root.display())).ok();
+    let environment = sky.as_ref().map(|s| s.environment()).unwrap_or_default();
+    let spawned = spawn_set(world, &set, &environment, sky);
+    for root in spawned {
+        let mut family = vec![root];
+        while let Some(entity) = family.pop() {
+            if let Some(children) = world.get::<Children>(entity) {
+                family.extend(children.iter());
+            }
+            world.entity_mut(entity).insert(RenderLayers::layer(LAYER));
+        }
+        world.entity_mut(root).insert((SetEntity, ChildOf(player)));
+    }
+    start_layers(world, scene, player);
+    info!("TRICK_GUIDE_DEMO open: set {} triangles", set.geometry.indices.len() / 3);
+    true
+}
+
+/// A render-only set through the map path (retail world materials) plus an optional sky; returns its root entities,
+/// untagged as map entities so a map change does not retire them (the caller owns them).
+pub(crate) fn spawn_set(world: &mut World, set: &SkateMap, environment: &crate::retail_sky::SkyEnvironment,
+    sky: Option<crate::retail_sky::SkyPackage>) -> Vec<Entity> {
+    let asset_root = world.resource::<crate::config::Config>().asset_root.clone();
     let tuning = crate::retail_render::MaterialTuning::load(&asset_root);
     let mut meshes = StagedAssets::<Mesh>::staged(world);
     let mut materials = StagedAssets::<crate::retail_render::WorldMaterial>::staged(world);
     let mut images = StagedAssets::<Image>::staged(world);
     let mut buffers = StagedAssets::<bevy::render::storage::ShaderStorageBuffer>::staged(world);
     let mut commands = SceneCommands::default();
-    // The set's own sky dome (mesh 0, sky.default) and the trick_guide render location's sun and fog
-    // (fog_trickguide), which the set's materials take too.
-    let map_sky = world.get_resource::<crate::map_transition::CurrentMap>()
-        .and_then(|map| crate::retail_sky::SkyPackage::load(&asset_root, &map.name).ok());
     let mut skies = StagedAssets::<crate::retail_sky::SkyMaterial>::staged(world);
-    let sky = crate::retail_sky::SkyPackage::load_scene(&root, map_sky.as_ref())
-        .inspect_err(|e| warn!("TRICK_GUIDE_DEMO sky {}: {e}", root.display())).ok();
-    let environment = sky.as_ref().map(|s| s.environment()).unwrap_or_default();
-    crate::skate_world::spawn(&set, &tuning, &environment, &mut commands, &mut meshes, &mut materials,
+    crate::skate_world::spawn(set, &tuning, environment, &mut commands, &mut meshes, &mut materials,
         &mut images, &mut buffers);
     if let Some(sky) = sky {
         sky.spawn(&mut commands, &mut meshes, &mut images, &mut skies);
@@ -266,16 +287,13 @@ fn start(world: &mut World, scene: &mut Scene, player: Entity) -> bool {
     commands.apply_now(world);
     let spawned: Vec<Entity> = world.query_filtered::<Entity, With<MapEntity>>().iter(world)
         .filter(|e| !before.contains(e)).collect();
-    for root in spawned {
-        let mut family = vec![root];
-        while let Some(entity) = family.pop() {
-            if let Some(children) = world.get::<Children>(entity) {
-                family.extend(children.iter());
-            }
-            world.entity_mut(entity).insert(RenderLayers::layer(LAYER));
-        }
-        world.entity_mut(root).remove::<MapEntity>().insert((SetEntity, ChildOf(player)));
+    for &root in &spawned {
+        world.entity_mut(root).remove::<MapEntity>();
     }
+    spawned
+}
+
+fn start_layers(world: &mut World, scene: &mut Scene, player: Entity) {
     // The player's meshes the gameplay camera draws join the demo layer (visible ones on a layer the camera sees:
     // hidden rigs, e.g. the default skater under a custom model, stay out); the camera then sees only the demo
     // layer (and the character light's 28).
@@ -306,8 +324,6 @@ fn start(world: &mut World, scene: &mut Scene, player: Entity) -> bool {
         scene.camera = Some((*entity, layers.clone()));
     }
     scene.active = true;
-    info!("TRICK_GUIDE_DEMO open: set {} triangles", set.geometry.indices.len() / 3);
-    true
 }
 
 /// Screen close (vt+24 0x82618CA8 unloads the set): despawn it, give the meshes and camera their layers back.

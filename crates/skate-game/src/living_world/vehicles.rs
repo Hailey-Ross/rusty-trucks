@@ -237,6 +237,7 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                 // The junction and lead standoffs (`+3660` / `+3664` = length x these, `82C3CDD0`; b163).
                 ("Hash_2ACE3FEE16D6F7A2", &mut params.stop_standoff_factor),
                 ("Hash_73A1989BB90C93BA", &mut params.lead_standoff_factor),
+                ("Hash_30313EA6F282C874", &mut params.obstacle_standoff_factor),
             ] {
                 if let Some(v) = num(hash) {
                     *field = v;
@@ -873,7 +874,7 @@ fn look_ahead(
     }));
     for (serial, frame, size) in &cars {
         let Some(car) = traffic.cars.iter_mut().find(|c| c.key == *serial) else { continue };
-        let quad = look_ahead_quad(frame, car.speed, car.params.min_gap, 0.0, None, &params);
+        let quad = look_ahead_quad(frame, car.speed, car.obstacle_standoff(), 0.0, None, &params);
         // 82C344D0: a car the player holds skips the slow-speed soft records (b57).
         car.obstacle = nearest(frame, &quad, &list, car.speed, !car.player_held, &params).map(|(i, d)| ObstacleHit { distance: d, soft: list[i].soft, id: list[i].id });
         // 82C414A8 after the look-ahead: quad B with the same widths as quad A (speed ratio 0, see above).

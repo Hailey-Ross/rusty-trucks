@@ -217,7 +217,7 @@ fn replay_cursor_rides_every_exported_line() {
             while !c.finished && frames < 60 * 60 * 2 {
                 let s = c.sample(&lines, 0.0).unwrap();
                 let speed = (s.velocity[0].powi(2) + s.velocity[1].powi(2) + s.velocity[2].powi(2)).sqrt();
-                let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default() };
+                let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default(), body: None, valid_lines: None };
                 c.step(&lines, &mut Decider::Decide(ctx), &mut ev);
                 frames += 1;
                 let p = c.sample(&lines, 0.0).unwrap().position;
@@ -280,7 +280,7 @@ fn npc_skater_render_is_smooth_on_the_exported_lines() {
                 prev = c.clone();
                 let s = c.sample(lines, 0.0).unwrap();
                 let speed = (s.velocity[0].powi(2) + s.velocity[1].powi(2) + s.velocity[2].powi(2)).sqrt();
-                let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default() };
+                let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default(), body: None, valid_lines: None };
                 let mut ev = Vec::new();
                 c.step(lines, &mut Decider::Decide(ctx), &mut ev);
                 if ev.iter().any(|e| matches!(e, CursorEvent::Branch(_))) {
@@ -380,7 +380,7 @@ fn npc_skater_facing_rules_on_the_exported_lines() {
             }
             let s = c.sample(lines, 0.0).unwrap();
             let speed = (s.velocity[0].powi(2) + s.velocity[1].powi(2) + s.velocity[2].powi(2)).sqrt();
-            let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain, tricks: Default::default() };
+            let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain, tricks: Default::default(), body: None, valid_lines: None };
             let was = c.flip;
             let mut ev = Vec::new();
             c.step(lines, &mut Decider::Decide(ctx), &mut ev);

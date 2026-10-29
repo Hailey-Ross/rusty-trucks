@@ -779,6 +779,25 @@ ground still meets the box. Not play-tested yet.
 
 **Verification.** skate-game prop / grind tests 123 pass (10 ignored).
 
+## Off-board searches see the map rails (2026-10-29)
+
+**Problem.** On real maps the board world was built with no query edges (`static_edges: vec![]` in
+`skate_world.rs`), so the off-board searches that read them saw no map rails at all: the ledge edges (retail
+`82D32808`, ours `physics/offboard/ground_query/edges.rs`), the off-board contact check (`82D81610`,
+`contact_toolkit/world.rs`) and the respawn's rail rejection (`82BFB6F8`, `physics/respawn.rs`). Retail feeds them the
+shared rail query `82C1EAD8`, which starts with the map's static rails (above).
+
+**Change.** `collision_world_with` (every map world) sets the static edges from the map rails' segments as the
+grind sees them (`grind_world::map_rail_chords`: the retail cubic records' contact chord D -> (A+B)+(C+D), or an
+authored polyline's segments), through `BoardWorld::set_static_edges` (validated like authored edges). Log
+`SKATE_RAIL_EDGES map rails N -> M query edges` (DownTown: 8630 rails -> 28855 edges).
+
+**Verification.** skate-game 982 passed; DownTown runs with the edges (automated run, no error). Not play-tested on foot
+near ledges yet.
+Open: the three searches scan the whole list with a bounds test (about 29k edges on DownTown, an estimated 50 us per
+query; retail walks an octree): an index if it shows in frame time; skate.Park pieces' rails; retail's 40 cap order
+(octree order) for the static rails.
+
 ## Prop diagnostics for play sessions (2026-10-16)
 
 The user's prop session of 2026-10-15 (bench seat not grindable, dumpster sent flying, skater pulled into a fallen

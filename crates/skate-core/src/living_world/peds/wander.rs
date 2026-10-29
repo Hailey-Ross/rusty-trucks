@@ -583,13 +583,15 @@ impl PedNav {
             // Turning: the clip's root yaw turns the ped until the turn completes; then a walk turn walks on.
             (Locomotion::TurnLeft | Locomotion::TurnRight, _) => out(Intent::Idle, 0.0),
             (Locomotion::WalkTurnLeft | Locomotion::WalkTurnRight, _) => out(Intent::Walk, 0.0),
+            // A run turn runs on (the caller turns the walk into the run while fleeing / chasing).
+            (Locomotion::RunTurnLeft | Locomotion::RunTurnRight | Locomotion::ShuffleTurnLeft | Locomotion::ShuffleTurnRight, _) => out(Intent::Walk, 0.0),
             // Standing, stopping or walking past the first edge: the bucket's turn (stand or walk clip).
-            (Locomotion::Idle | Locomotion::Stop | Locomotion::Walk, Some(degrees)) if !avoiding => post(degrees),
+            (Locomotion::Idle | Locomotion::Stop | Locomotion::Walk | Locomotion::Run | Locomotion::Shuffle, Some(degrees)) if !avoiding => post(degrees),
             // Avoiding while standing (ours): pivot, walk once roughly facing the way.
             (Locomotion::Idle | Locomotion::Stop, _) if avoiding => out(if error.abs() <= params.walk_heading { Intent::Walk } else { Intent::Idle }, turn),
             // Below the first edge: walk and steer.
-            (Locomotion::Idle | Locomotion::Stop | Locomotion::Walk | Locomotion::Start, _) if !avoiding => out(Intent::Walk, turn),
-            // Running (no run turns yet) or avoiding while walking (ours): a way far off to the side stops the ped to pivot.
+            (Locomotion::Idle | Locomotion::Stop | Locomotion::Walk | Locomotion::Start | Locomotion::Shuffle | Locomotion::ShuffleStart, _) if !avoiding => out(Intent::Walk, turn),
+            // The run start, or avoiding while walking (ours): a way far off to the side stops the ped to pivot.
             _ => out(if error.abs() > params.stop_heading { Intent::Idle } else { Intent::Walk }, turn),
         }
     }

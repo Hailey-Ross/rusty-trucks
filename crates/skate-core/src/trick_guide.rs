@@ -196,7 +196,9 @@ pub mod movie_state {
 pub struct Stance {
     /// CAS byte +120 of the player's skater record; HUDComponents.PlayerStance_IsRegular returns it (826635A0).
     pub regular: bool,
-    /// `[[sub_824AD2F0()]+224]+20`. NOT RETAIL YET: meaning not decoded (a controls option); false here.
+    /// `[[sub_824AD2F0()]+224]+20`: the local player is riding switch (synced each tick from `[0x83067070]+40`,
+    /// written by `82775328` from the skater's relative stance, b672). The remap applies when the effective stance
+    /// (natural XOR switch) is regular.
     pub alternate: bool,
     /// `[[sub_824AD2F0()]+260]+37`: zero makes a remapped X read B, else A. NOT RETAIL YET: meaning not decoded;
     /// set here (the remap then undoes the movie's own A / X swap).

@@ -1133,8 +1133,10 @@ Extras keeps its own rows.
 - `graphics_menu.rs`: Guide, F1 or Escape toggle the overlay from anywhere, also over the retail menus; pad Start
   opens it only while the retail menus are off. `retail_menu_stage.rs`: no retail key handling while the overlay
   is open.
-- Open: the XInput fallback backend has no Guide (only the SDL path); Windows Game Bar may take the Xbox Guide
-  press first (its own setting).
+- The XInput fallback backend reads Guide too (2026-10-29): `input/platform.rs` polls through XInputGetStateEx
+  (xinput1_4 ordinal 100, the same state layout with Guide at 0x0400, as SDL does) when it exists, else
+  XInputGetState; input tests 50 pass, not checked with a pad on that backend. Open: Windows Game Bar may take the
+  Xbox Guide press first (its own setting).
 
 ### The recomp's look and navigation (2026-10-11)
 User: "faithfully recreate the recomps guide menu and replace our guide menu". The overlay's view is now a port of
@@ -1598,6 +1600,21 @@ Opening and closing the Trick Guide switched screens at once; retail fades to bl
 - In game (tables extracted for the run, then restored): select Trick Guide: `fade black`, the pause menu closes, the
   guide opens, `fade clear` after the count; B at level 0: `fade black`, the guide closes, the pause menu opens again,
   `fade clear`.
+
+## Trick Guide stance swap (2026-10-29, research b672)
+
+**Problem.** The Trick Guide's regular / goofy button remap (`sub_82619FC0`) applies when exactly one of the natural
+stance (regular) and TrickDisplayManager+20 is set; the second was never fed (always false).
+
+**Retail [code, b672].** TrickDisplayManager+20 is synced each tick by `825E4D68` (only caller `825E4F40`, from the FE
+manager update `825D8B50` in game state 5) from `[0x83067070]+40`, which only the per-tick player stats tick
+`82775328` writes: byte +0x9D of the skater's physics output block, copied from animation packet +10371 = SkaterAnim
+vt+0x18 `82B97128` (`+0xEC == 1`): the skater is riding switch. So the remap follows the effective stance (natural
+XOR switch), not a setting.
+
+**Change.** `retail_menu_stage.rs` sets `Stance.alternate` from `SkaterAnimation::riding_switch` next to `regular`;
+the `Stance` doc comment says what it is. **Verification:** skate-game trick guide tests pass. Not seen in game.
+**Open:** a mod override of the layout.
 
 ## Trick Guide demo (2026-10-12)
 
@@ -2307,9 +2324,15 @@ window shown at 10 s with the splash gone; `STARTUP_LOADING done in 5170 ms`, no
 - `python -m unittest tools.asset_pipeline.test_menu_tables`: the setup step through the real spawn path.
 
 ## Open questions
-- Career IsItemEnabled (`8261F850`) greys SkateWith / SkateReel when `82511168` fails and EnterSkatePark / PartyPlay by
-  other checks; those conditions are not decoded yet, so Career uses the default rule (enabled once handled).
-- The Free Play park twin of IsItemEnabled (`826205C8`) is assumed to match the Career park one; to read.
+- Decoded 2026-10-29 (research b673): Career IsItemEnabled `8261F850` greys SkateReel / SkateWith when `82511168`
+  says the current world row has `IsSkatePark`; EnterSkatePark while ProgressionManager +0x3A is set and neither DLC
+  CCF0003 nor the `film_skpk_univ_01` challenge is known; PartyPlay without the San Van pack (CCF000C, `82518AD0`).
+  The Free Play twin is `82620320` (only SkateReel / SkateWith, same world check); `826205C8` is the Free Play PARK
+  twin of `8261FB18` (SavePark = flag `[0x83084690]+0x23` only; RatePark / FlagSkatePark = world state 11, flag set and
+  `82516C18` returning 0). Ported as retail rules on new facts (`world_is_skate_park`, `skate_park_locked`,
+  `party_pack_owned`; skate-core menus 11 pass). Open: the game publishes no menu facts yet (context always
+  "FreePlay"), so the world fact needs the current map's world row; PartyPlay stays greyed until the pack fact is
+  published from the DLC unlocks.
 - Mode keys are ours (retail has no names); the online / lobby menus are extracted but not decoded further (online
   is a custom implementation later).
 - Retail stops the settings row count at a hidden row; the registry skips hidden rows instead (identical for the only
@@ -2440,7 +2463,9 @@ working.
   screen point), picture (name or none = the default map)" when the origin changes.
 - **Open:** the picture. Its placement rule matches the movie (`mMapImage` 512 x 512 at (572, 120.5),
   `mDefaultMapImage` 1024 x 1024 at (291, -41), stretched, no aspect lock); b282's likeliest cause is the default map
-  showing whenever the highlighted row has no picture (`IsUsingDefaultMap`). Decide from the new log line.
+  showing whenever the highlighted row has no picture (`IsUsingDefaultMap`). Decided 2026-10-29 from that line over
+  the sessions since: rows without a picture show the default map (picture None, ~560 lines) and the Danny Way row
+  shows `map_danny`, as the movie's rule says; nothing to change.
 - **Tests:** skate-game 807 pass. Not play-tested.
 
 ## Standalone skate-data examples build again (2026-10-19)
@@ -2603,6 +2628,40 @@ looked at in the running game (keyboard look, popup over the keyboard).
 - **Root cause:** the living world preload (`living_world/preload.rs`) loads every NPC skater look as `<pro>/character.glb#Scene0` and holds only that handle, so the bare GLB (`Gltf`) asset is dropped once it has loaded. `custom_models::publish` loaded the bare GLB again (for its load state) next to the scene. With the bare entry gone Bevy 0.18 loads the whole file again and re-inserts `Scene0` into its live slot, which sends `AssetEvent::Modified`; the scene spawner then despawns and respawns every instance of that scene. The swap had already bound the first instance's joints (its scene was loaded through the preload, so the instance was ready at once), so the visible respawned instance was unbound. Debug logging: bindings alive 0/35 after the swap, the visible meshes' joints new entities. Dem Bones is not in the NPC skater pool, so nothing preloads it and it loads in one go. The respawn would also hit an NPC skater wearing the same pro (inferred, not observed).
 - **Change:** `publish` loads only the scene (`GltfAssetLabel::Scene(0)`), whose live handle never reloads the file, and reads a failed bare GLB through `AssetServer::get_path_id` without loading it (`custom_models.rs`, `Pending { path, scene }`).
 - **Tests:** `custom_models::tests::swap_loads_the_scene_so_a_preloaded_instance_keeps_its_joints` (a scene-only preload keeps its joints when the scene is loaded again; loading the bare GLB respawns them, the hazard). Test hook `SKATE_CUSTOM_MODEL_SWAP=<id or roster key>@<seconds>` (or `stock@<seconds>`).
+
+### FE 62 preview
+
+**Problem.** FE 62 showed no preview of the highlighted skater (port step left open since 2026-10-23).
+
+**Retail** (research b575..b580, placement traced b585): FlowMessage 0x8D starts the MarqueeViewer in Free Play and
+Demo (not Call Skater): the player's character is unloaded, the highlighted one streams in and stands on a stage 200 m
+above the map at (-1.0, 200.0, -7.05), heading -100 degrees, playing `MARQUEE_STAND` from
+`sk83_marquee_viewer.abin` (loops by its own flag); the camera sits at (-4.0, 200.48, -7.4), aimed about 0.86 m above
+the feet, 60 degree FOV. Leaving FE 62 shuts the viewer down and restores the player's character and the camera.
+The stage is the Create-a-Skater set `DIST_CreateSakter` (miscload.big), modelled in place at x -7.4..0.4, y 200..215,
+z -14.9..0.3 [data]: the concrete wall and ledge of the recomp's shots (b585 `run1_shots`).
+
+**Change.** `marquee_preview.rs`: the menu stage sets `MarqueeView.open` (FE 62 on top, not Call Skater); each 0x8D
+preview swaps the player's character through `CustomModels::request_preview` (a swap that does not become the saved
+selection), the player rig plays the stand clip at the stage through the Trick Guide's clip pose (`SceneClip::
+parse_named` reads a named clip from a bank), and the gameplay camera sits at the traced eye looking along the traced
+forward (0.989, 0.127, -0.076) (b585 `MQSET`), which puts the skater right of centre as in retail. The first highlight
+is posted in the frame FE 62 opens, before the stage reports the screen open, so it is kept until the viewer closes;
+the rig is bound again when outfit parts spawn after a swap. Closing puts the player's own
+character back unless FE 62 made a real pick. Setup's hud group exports the stage (`scene_clips.py`, its decal and
+alpha-test meshes included) to `private/hud/scene/MarqueeStage.skate`; the viewer spawns it in world space, lit by the
+map's environment, and despawns it on close. The clip's forward is +X, so the heading turns by a quarter turn on our
+axes (side on otherwise; with it the vault's -100 degrees faces the traced eye within 4 degrees). The stage, camera,
+bank and clip are data (`MarqueeStage`, retail defaults).
+
+**Verification.** In game (automated keys pause > Free Play > one row down): Andrew Reynolds stands on the stage in
+front of the concrete wall, facing the camera with his board; B brings the player's character back (`MARQUEE_VIEWER closed`, the
+custom model reloads); the saved selection file is unchanged (hash). Tests `the_retail_stage_faces_the_character_to_
+the_camera`, `marquee_stand_parses_from_the_stock_bank`.
+
+**Camera input.** Retail's viewer has a camera input handler (b579 / b580), but it runs only while the viewer's record pointer (+0x60) is clear and FE 62 keeps it set (b578); the user confirmed the sticks do not move the FE 62 preview camera (2026-10-29), so the port has none.
+
+**Open.** A fade around the swap; a mod API for `MarqueeStage`.
 
 ## Free Play options (FE 34)
 

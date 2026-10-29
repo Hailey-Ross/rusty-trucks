@@ -135,7 +135,14 @@ a map reload).
 - skate-data (data-gated, exported lines): 1,691 rides, 19,948 branches and chains, 440 dead ends within 2 minutes
   (before: more than 1,600 ended within their first line).
 
-**Open.** Line validity per character (`sub_82456970`) is not applied to branches or chains. Retail's fallback to a
+**Line validity per character (2026-10-29, research b159 / b675).** Retail's `sub_82456970` (the spawn
+`sub_8245C018` / `sub_8245B068`, branches and the line-end search) wants the line's allowed-skater bit for the pro
+index AND a capability bit: the runtime AI profile's bytes +0x31 / +0x30 / +0x32 (`sub_8245FFD8`: `ai_skater_profiles`
+`Hash_E01079D1A094B0C0` / `Hash_AACEBDA7CA734319` / `Hash_C36E34B4C619E868`, all true via `default`) against line flag
+bits 0 / 1 / 2. Our reader hard-coded false, and `fits` used OR; now `skater_characters` reads the three fields and
+`fits` is the AND rule, used by the spawn and (cached per character, `BranchContext::valid_lines`) by branches and
+chains. With stock data every line has a flag bit, so the rule is the pro bit (DownTown: 659..760 of 760 lines per
+character). Open: the controller exclusion (ctrl+0xA0). Retail's fallback to a
 far start (the full skater steers there) is not possible in the replay tier: 440 of 1,691 solo rides still meet a
 dead end within 2 minutes and fade there. What the timed state on byte `+59` is (likely a bail) is unconfirmed.
 Not seen in game yet.
@@ -337,7 +344,8 @@ animate like they are doing the trick."
   (EScorableID -> `B_<NAME>` per Tricks.xml; kickflip / heelflip and nollie forms `B_<NAME>_IN`; numbered, late,
   underflip, dark-catch variants their base flip or the ollie; grabs and other air tricks the ollie takeoff; grinds,
   slides, manuals, powerslides, reverts and handplants none), `trick_air_sequence`, `stock_tree_leaf` (selector
-  default, phase blend first child = low `TRICKHEIGHT`), `sequence_part` (`+` parts back to back).
+  default, a `TRICKHEIGHT` phase blend the child with the highest value, other phase blends the first child),
+  `sequence_part` (`+` parts back to back).
 - Moddable: `skater_clips["trick.<scorable name>"]` = an animation base (or a plain clip), `skater_blend_seconds`
   keys `trick_takeoff` / `trick_air` (`skate-mods` validation, `sdk/skate.lua`); reset on mod disable with the rest
   of `LivingWorldSettings`. Multiplayer: the pose is a function of the cursor (lines, branch records, tick), no new
@@ -354,8 +362,30 @@ and `..._trick_jump_has_no_pose_pop`: on recorded jump timelines the pose at a p
 0.008 m, the one-previous-clip blend by 0.83 m); skate-mods `world_tuning` 3 passed; skate-data `living_world_data`
 8 passed (new `npc_skater_trick_slots_and_phase_changes_on_the_exported_lines`). Not seen in game yet.
 
-**Open.** Trick height: retail blends low/high by `TRICKHEIGHT`; the NPC plays the low clip (the line's jump record
-has a launch velocity that could give the height). Grabs show the ollie (retail adds the grab from the action graph,
+**Trick height (2026-10-29, research `.local/research/b690-npc-skater-presentation.md`):** retail's AI perform step
+(`sub_82469448`, the only direct caller of `sub_82470DD8`) always posts TrickHeight 1.0 normalized (`0x8231A844`) for
+trick categories 1 / 2 [code], and `PhaseBlend` sorts its children by the value each reports, so the AI plays the
+highest child, e.g. `KICKFLIP_IN_HIGH_A` and the `T_HI_*` cycles. The replay-tier puppet's `stock_tree_leaf` now picks
+that child from the clips' own `TRICKHEIGHT` attribute (the sim tier already posts 1.0, `ai_signals.rs`). A blend
+whose child is a subtree keeps the first child: the ollie (`B_OLLIE_A` = `OLLIE_LOW_A` 0.0 + the `B_OLLIE_WALL_A`
+subtree) still plays `OLLIE_LOW_A` (open: the subtree's value). Data-gated tests
+`living_world_npc_trick_clips_exist_and_flip_the_board`, `living_world_npc_trick_jump_has_no_pose_pop`.
+
+**Next (research `.local/research/b691-npc-grabs-grinds.md`, names checked in the installed
+`MotionGraph_OnBoard.stategraph`):** each stock grab / grind / slide / manual state names its score (`ScoringGrabs
+grabName=` / `ScoringTrick trick=`) next to the animations it plays, so an index score name -> INTO / CYC / OUT built
+from the loaded graph gives retail's clips with no hand table (e.g. fsgrab `GR_GRAB_N_FS_0_INTO` / `BLEND_FS_TWEAK2` /
+`GR_GRAB_N_FS_0_OUT`; fs_overcrook plays `B_BS_GRINDCROOKS`, so no name rule). Ground grabs (gnd_bsgrab, 829 slots)
+are the most visible miss. Grind / slide trees are TWIST phase blends over DISTTOCOG and need attribute trees
+(`tree_commands`, like the fakie channel). Not ported yet. Inputs (research `.local/research/b692-npc-grab-inputs.md`): the AI posts each grab's
+`scoring_trick` intent tuples by name (`sub_824696B8` -> `sub_82470ED0`; ours already does on the sim tier,
+`ai_signals.rs` `slot_signals`): FS / BS variants as unit TweakX / TweakY, mute / seatbelt as BoardAdjustAngle /
+Mag; `BLEND_FS_TWEAK2` is a 2-D blend space over TWEAK_X / TWEAK_Y, the BS / mute / stale / dbl tweaks phase blends;
+the graph eases them in (0.116 / 0.133 s, board adjust 0.25 / 0.08). Open before porting: by the action graph data a
+tweak-only AI nosegrab would play a BS grab tweaked down (only BoardAdjust enters the nose / tail / crail states); a
+data-gated graph_host test feeding the nosegrab schedule would settle it.
+
+**Open.** Grabs show the ollie (retail adds the grab from the action graph,
 `T_Grab.xml`); grind / slide / manual spans still show one 50-50 clip (the slot names the grind: next step); spins
 (`spins` byte) and landing clips (`B_LAND_*`, 0.15 s) are not played; the per-skater `PROSKATER` selector takes the
 default branch.
@@ -461,10 +491,17 @@ replay -> physics, 26 / 43 bails; 35 of 39 switches hitched over 150 ms.
 
 ### Open (next steps)
 - Remaining bails are mostly ground wipeouts while rolling (`PhysicsGround -> WipeoutGround`) and many path leaves
-  (48 left / 31 rejoined in 150 s). Not ported: retail's steering-target gate off path and before node 3
-  (`sub_8246DE38` is skipped there; ours still writes the record from B), the "lost" hand-over to the NavMesh
-  (`sub_82468DD8` / `sub_8246FE38`), the node-change handler `sub_8246BEE0`, the progress tracker `sub_82468240`,
-  which body point retail projects (`sub_82467FC8`; ours the deck).
+  (48 left / 31 rejoined in 150 s). Checked 2026-10-29 (research b674): the steering-target gate, the lost hand-over,
+  the stuck tracker and the projected point were ported since (`ai_record.rs`, `path_follow.rs`, `ai_controller.rs`,
+  `npc_sim.rs` `projected_point`). The node-change handler `sub_8246BEE0` was the gap: a simulated skater branched
+  from the replay cursor with no gate, so it could switch line mid-grind, and rejoined at the node nearest the node,
+  not its body. Now `BranchContext::body` (`BodyGate`, set by the sim each tick): no branch while airborne, walking,
+  or in trick category 1 / 2 / 5 (`NO_BRANCH_CATEGORIES`, data); scored and rejoined from the projected body point.
+  Test `a_simulated_skater_branches_only_through_the_gate`; the NPC goldens are unchanged (replay tier). Still open
+  (b674): the upcoming-trick test (pc+796 / +797), retail's line-end
+  test (A >= count-2 with t > 0.8), raising lost in the same tick, the skitch / bit 26 / online gates on the target.
+  Done the same day: the stuck tracker measures from the animation root; on the board the projected point is the
+  deck rigid body's position (`Reckoning+144`, its centre of mass), not the deck part's origin.
 - A bail still hides the skater for 5 s (retail respawn delay); what the user sees as "vanishing".
 
 ## NPC Skater Physics: bails (2026-10-13 night)
@@ -530,8 +567,7 @@ DownTown baseline (radius 150 m, 150 s, player idle): 17 bails, 79 on/off-path s
   skater rode off, got lost, bailed and was respawned at the line end again: two skaters made 70 of 72 bails in a
   300 s run that way (each placement there launched them at 25 to 100 m/s, cause not found; trace
   `NPC_SKATER_PLACED` at debug level). Now `ChainConfig::fallback` (on for the physics tier only; the replay tier
-  cannot ride the gap). Not ported yet: retail's end point (B past 0.8 of the second-to-last segment), the 4.5 m
-  lost test after a re-pick, junction scoring from the physics skater.
+  cannot ride the gap). Not ported yet: retail's end point (B past 0.8 of the second-to-last segment), junction scoring from the physics skater.
 - **Ground steer** (research `.local/research/npc/b121-ai-ground-steer.md`): retail also steers an AI skater with
   stick input every path tick on the ground, on or off the path (`sub_8246ACF0` -> `sub_8246AA00` /
   `sub_82471070`): the heading error to a point 45 ticks ahead on the line, moving toward the point 2 ticks ahead
@@ -602,7 +638,19 @@ world systems: not the NPCs; open.
 - On the board retail projects the board rigid body's position (SkateboardReckoning +144); ours the deck part (b116,
   field not mapped yet). `pc+808`'s scale `[0x8303EE08]` (taken as 1/dt = 60). `+1904` bit `0x04000000` is a scripted
   AI flag (UnpinAI / ClearBehavior), never set for ambient skaters; `G+608` and motion state 104 not read.
-- The 4.5 m lost test after a line-end re-pick; the node-change handler `sub_8246BEE0`.
+- Ported 2026-10-29: the lost test on a line-end chain's tick (`sub_8246D3C0` calls the chain `sub_8246C7F8`, then
+  `sub_82468DD8` at 4.5 m, `0x821DDA68`, from the chained-to node whether or not the search node moves;
+  `PathFollow::chained_to`, `PathTuning::line_end_lost_radius`, test
+  `a_line_end_chain_tests_lost_at_four_and_a_half_metres`). A junction switch keeps the 6 m test after no node
+  change. The node-change handler `sub_8246BEE0` is the body gate above.
+- Next (research `.local/research/b694-npc-line-end-trigger.md`, decoded in Ghidra and the recomp asm): retail's chain
+  `sub_8246C7F8` searches line starts within 4.0 m of the skater's body point and scores them with the skater's own
+  heading and speed (`sub_8246C3C0`); ours searches from the line's last node and its last segment (`replay.rs`
+  `chain`, `choose_next_line`). Retail tests the line end (`sub_8246D3C0`, the previous tick's A / t, 0.8) before
+  the projection in the same tick, keeps the old line and retries when no line is found (ours finishes the cursor),
+  and takes the nearest invalid start when the nearest valid one is 6 m or more away (`ChainConfig::fallback_valid_d2`
+  is set but read nowhere). The reposition runs after the projection (`sub_8246FE38`), so a lost request is handled
+  the same tick. Port plan in b694 sections 2 and 3; not started.
 
 ## NPC Skater Physics: bails right after a placement (2026-10-15)
 
@@ -680,8 +728,9 @@ riding mode. `824660A0` writes `pc+922` every call (not a one-way latch).
   then run off to a new line"). It now lifts when the placement count changes (logged 30-tick limit).
 - Ghost proxy: `push_proxies` built collision solids from every NPC's replay sample, simulated ones included, so a
   simulated skater rode with an invisible solid copy of itself on its line (contact bails, flings) and the player hit that
-  copy. Simulated NPCs get no replay proxy now. Open: a proxy from the simulated body for the player to hit (it must not
-  collide with its own skater).
+  copy. Simulated NPCs get no replay proxy now. Done since 7fb5dd0f (2026-10-16): each simulated NPC's own last-step
+  body joins the proxies as a peer (`push_proxies`, `npc_sim_proxy_mark`), and each NPC's own solve leaves itself out
+  (the player and the other simulated NPCs only); `npc_simulated.bump` / `SKATE_NPC_BUMP=0` turns it off.
 
 **Open.**
 - NOT RETAIL YET: retail places with the actor reply only and pushes from the hold branch; our reply-only variant

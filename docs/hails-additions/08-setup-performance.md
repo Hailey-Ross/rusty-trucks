@@ -248,8 +248,7 @@ their temporary sources). The other 18,828 are byte-identical, including all aud
 - **Identity:** the same 18,868 files; the 41 files that differ from the first baseline are exactly the 41 that differ
   between the two baselines. No DLC on the bench machine, so the pack paths were checked by reading only.
 
-**Open:** the run-to-run differences are pre-existing (not caused here); making them reproducible would let the
-identity check cover them too. The customiser is the critical path (library 53 to 58 s, roster 20 to 24 s with 5
+**Open:** the run-to-run differences are pre-existing (not caused here); made reproducible 2026-10-29 (below). The customiser is the critical path (library 53 to 58 s, roster 20 to 24 s with 5
 worker processes beside the maps); when the in-process customiser fallback runs (low memory) it shares the process with
 the post-map exports' NumPy as before this pass. `customisation_workers.customiser_workers`'s docstring still says
 "a quarter" (the budget is in `setup_budget.py`); it is fixed with the next change that touches the customiser, since
@@ -465,3 +464,24 @@ The slowest hold is the native audio runtime's first start (~40 s on an HDD with
 **Change** (`tools/setup.py`, `tools/asset_pipeline/install.py`; ours, setup is not a retail screen). Title "Updating game files" / "Set up Skate 3 Rust Engine", one lead line (what is converted, or what to pick), one grey note, one status line over a thin progress bar; the file button shows only when a file must be picked, and again after an error; window 700 x 320. The conversion itself is unchanged.
 
 **Verification.** Both layouts (update and first setup) rendered and checked; setup tests unchanged. Not seen by the user in a real refresh yet.
+
+## Reproducible setup output (2026-10-29)
+
+**Problem.** Two setups of the same pipeline differed in 41 files (map `.skate` files, park layouts, native props, the
+Industrial proxy backdrop, HUD / menu manifests, the session marker, the customisation set), so a bench could only
+compare a change against a second run's noise.
+
+**Cause.** Absolute paths written into the output: the `.skate` files' `WMET` manifest kept the setup's random temp
+folders (`skate-proxy-*`, `skate-park-*`) and the install folder (`installations/<id>`) as texture and stream source
+paths; the HUD and menu font definitions kept their `sk8hud-*` temp source path; the session marker hashed a source
+manifest that names the temp folder. Nothing reads those paths back (the engine reads `WMET` only for grind source
+identities).
+
+**Change.** `tools/asset_pipeline/map_writer.py` `portable`: absolute paths in the stored `WMET` manifest become their
+file names; `tools/vendor/skate3_ui/scene_graph.py`: a font definition keeps its source's file name;
+`tools/extract_session_marker.py`: the source manifest is hashed without the temp folder.
+
+**Verification.** Setup bench, two runs of the unchanged pipeline: 41 differing files; two runs of the fixed one: 8,
+all by design (the customisation set's fresh id in its 7 files, and `maps.json` timings); the file lists are equal.
+`test_map_writer` and the HUD / menu tests pass. A Refresh Game Files rewrites the maps once (the map writer's
+fingerprint changed).

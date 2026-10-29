@@ -969,6 +969,9 @@ pub(crate) struct PropDynamics {
     pair: PrimitivePairSettings,
     /// Prop currently carried: exempt from skater pushes and rebake.
     held: Option<u32>,
+    /// The bodies are a skate.Park layout's pieces: retail's park load (`825111F8` mode 1) spawns them with no
+    /// placement record, so the census never culls them (research b681).
+    layout_pieces: bool,
     tuning: PropTuningTable,
     stats: PropStepStats,
     /// Steps taken (diagnostics clock; deterministic, plain data).
@@ -1275,6 +1278,7 @@ impl PropDynamics {
                 convexity_epsilon: 0.01,
             },
             held: None,
+            layout_pieces: false,
             tuning: PropTuningTable::default(),
             stats: PropStepStats::default(),
             tick: 0,
@@ -2096,12 +2100,17 @@ impl PropDynamics {
                     radius: (h.x * h.x + h.y * h.y + h.z * h.z).sqrt(),
                     priority: b.type_data.as_ref().map_or(Some(100), |t| t.priority),
                     keep: false,
-                    streamable: true,
+                    streamable: !self.layout_pieces,
                 }
             })
             .collect();
         out.sort_by_key(|p| p.id);
         out
+    }
+
+    /// Mark the bodies as a skate.Park layout's pieces (not census streamed).
+    pub(crate) fn set_layout_pieces(&mut self, layout: bool) {
+        self.layout_pieces = layout;
     }
 
     /// The streamed-out bodies.

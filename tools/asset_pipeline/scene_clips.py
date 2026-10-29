@@ -11,11 +11,17 @@ PREFIX = 'data/scene/trickguide/'
 ICE = 'data/scene/ice_000.bin'
 SET_MODEL = 'world/models/DIST_TrickGuide'
 SET_TEXTURES = 'world/models/DIST_TrickGuide_Textures'
+# FE 62's preview stage (MarqueeViewer): the Create-a-Skater set, modelled in world space around (-4..0, 200, -15..0)
+# where the viewer places the skater and camera (research b585; the disc spells it CreateSakter).
+STAGE_MODEL = 'world/models/DIST_CreateSakter'
+STAGE_TEXTURES = 'world/models/DIST_CreateSakter_Textures'
 # The render location the renderer uses while the set is loaded (fog_trickguide, its sun); data, so a mod's setup
 # can point the scene elsewhere.
 LOCATION = 'trick_guide'
 # The set's ground, ledges and boxes; its dome (sky.default) goes to the sky package.
 SET_SHADERS = ('environment.default', 'environmentsimple.default')
+# Its wall and floor are decals over the concrete, its trim alpha-tested.
+STAGE_SHADERS = SET_SHADERS + ('environment.decal', 'environmentsimple.alphatest')
 
 
 def extract(game_root, assets, work):
@@ -37,6 +43,8 @@ def extract(game_root, assets, work):
     if not export_set(read(SET_MODEL), read(SET_TEXTURES), assets/'private/hud/scene/TrickGuide.skate'):
         raise RuntimeError('The Trick Guide set has no exportable meshes')
     export_sky(read(SET_MODEL), read(SET_TEXTURES), assets)
+    if not export_set(read(STAGE_MODEL), read(STAGE_TEXTURES), assets/'private/hud/scene/MarqueeStage.skate', STAGE_SHADERS):
+        raise RuntimeError('The FE 62 preview stage has no exportable meshes')
     return len(entries)
 
 
@@ -103,7 +111,7 @@ def scene_environment(collections, location):
             'fog': {'chain': fog_chain, **values}, 'fog_frame': fog_parameters(values)}
 
 
-def export_set(raw, texture_raw, output):
+def export_set(raw, texture_raw, output, shaders=SET_SHADERS):
     """The set's ground, ledges and boxes as a render-only .skate, in the format of backdrop.py's global-model export
     (kept separate from backdrop.py so this branch and the living-world branch merge cleanly; fold the two together
     once both are upstream)."""
@@ -125,7 +133,7 @@ def export_set(raw, texture_raw, output):
     groups, bindings = prep._bind_material_groups_by_guid(
         raw, prep._group_material_parameters(model.materials), len(model.meshes), allow_import_order_fallback=False)
     selected = [(i, prep._material_metadata(groups, i)) for i in range(len(model.meshes))]
-    selected = [(i, m) for i, m in selected if m['shader_name'] in SET_SHADERS]
+    selected = [(i, m) for i, m in selected if m['shader_name'] in shaders]
     if not selected:
         return False
     textures = rx2_parser.parse_rx2(texture_raw)

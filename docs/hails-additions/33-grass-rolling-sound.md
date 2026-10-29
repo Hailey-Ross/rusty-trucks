@@ -106,6 +106,10 @@ is cached, so disabling the mod restores the retail routing on the next frame.
   2026-10-08 against the user's install: passes (the decoded map equals the install's for all 128 tags).
 - `skate-game` lib tests in the touched module pass (`rolling_grains_follow_the_retail_routing`).
 
+## Surface line in the play log (2026-10-29)
+
+A report like this one could only be placed from the trace-all audio state log. The play log now has a `SURFACE` line (`game_audio/skate_events.rs` `observe`) on every change of the ground surface tag while a wheel is down, at most 4 a second: `SURFACE tag= materials=[w0, w1, w2, w3] wheels= at=(x, y, z) state=` (the per-wheel audio material, the board position). A log line only, no behaviour. Builds; not seen in a session yet.
+
 ## Open questions
 
 - On that grass our board accelerated from 8 to 12 m/s; above 35 km/h the SenseOfSpeed rocket (`x_jet_rolling`) starts

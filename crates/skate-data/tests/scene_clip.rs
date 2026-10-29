@@ -115,3 +115,18 @@ fn every_trick_guide_clip_starts_and_ends_upright() {
     }
     eprintln!("{} clip ends not upright", failed.len());
 }
+
+/// FE 62's preview clip (MarqueeViewer, b579): `MARQUEE_STAND` from the stock `sk83_marquee_viewer.abin`, 30 fps, 501
+/// frames, upright. Data-gated (`SKATE3_ASSET_ROOT`).
+#[test]
+fn marquee_stand_parses_from_the_stock_bank() {
+    let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from) else { return };
+    let path = root.join("private/stock/data/anim/sk83_marquee_viewer.abin");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("skipped: no {}", path.display());
+        return;
+    };
+    let c = SceneClip::parse_named(bytes, Some("MARQUEE_STAND")).unwrap();
+    assert_eq!((c.fps, c.frames.len()), (30.0, 501));
+    assert!(c.bone_names.iter().any(|b| b == "HIPS"));
+}

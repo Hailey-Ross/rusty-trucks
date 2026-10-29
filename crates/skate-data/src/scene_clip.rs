@@ -29,6 +29,11 @@ pub struct SceneClip {
 
 impl SceneClip {
     pub fn parse(bytes: Vec<u8>) -> Result<Self, String> {
+        Self::parse_named(bytes, None)
+    }
+
+    /// The clip record named `name` (ASCII case ignored), or the bank's first clip with `None`.
+    pub fn parse_named(bytes: Vec<u8>, name: Option<&str>) -> Result<Self, String> {
         let bank = Bank::parse(bytes).map_err(|e| e.to_string())?;
         let hierarchy = bank.hierarchy().ok_or("Scene clip has no hierarchy")?;
         let bones = hierarchy.bone_count as usize;
@@ -36,12 +41,14 @@ impl SceneClip {
         let mut pose = None;
         for record in bank.records() {
             match &record.data {
-                RecordData::Clip(c) if clip.is_none() => clip = Some((&record.header, c)),
+                RecordData::Clip(c) if clip.is_none() && name.is_none_or(|n| record.header.name.eq_ignore_ascii_case(n)) => {
+                    clip = Some((&record.header, c))
+                }
                 RecordData::Pose(p) if pose.is_none() => pose = Some((&record.header, p)),
                 _ => {}
             }
         }
-        let (header, clip) = clip.ok_or("Scene clip bank has no clip")?;
+        let (header, clip) = clip.ok_or_else(|| format!("Scene clip bank has no clip {}", name.unwrap_or("")))?;
         let (pose_header, pose) = pose.ok_or("Scene clip bank has no pose")?;
         for codec in [header.codec(), pose_header.codec()] {
             if codec != Codec::Raw {

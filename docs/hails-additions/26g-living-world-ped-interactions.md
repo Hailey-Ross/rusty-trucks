@@ -936,8 +936,12 @@ depth (`827F3D20`: full near to 50 m, full far from 100 m) [code / data]. Ours: 
 skate-game `colour_matrix` (stock records, `ColourGrade` picked by the zombie flag, the camera's near plane), the retail
 tone pass reads the view depth (gameplay camera depth now sampleable; a 1x1 fallback when it is not) and applies the
 grade before its clamp. The base record is the identity, so the picture is unchanged outside zombie mode (DownTown
-captures with the mode off and on). Open: the shader's own luma (0.3 / 0.5 / 0.2) desaturate step with the bloom colour,
-the tint lookup texture and the stencil mask term (b101) are not modelled.
+captures with the mode off and on). Checked 2026-10-29 (research b679; uploads by FNV-1 32 name hash in `827EC1C8`):
+in zombie mode the stencil mask term is off (`f_StencilLerpMod` c16.x = 0.0 from the zombie branch of `827F5450`; 1.0
+otherwise), so the grade covers every pixel as ours does; the tint LUT never applies (`f_bTint.x` = 0: `827F4D28`
+clears mask bit 0x10 every frame); the bloom-colour desaturate step's weight is a timed fade value (`827EF1F0`,
+`82795A70`) zombie mode does not touch, at rest presumably 0 (identity). Nothing to port for zombie mode; plain play
+draws no visualFX pass at all (mask 0x05). Open: that fade's resting value and driver, which draws set stencil 0x80.
 
 **NOT RETAIL YET / open.** The cheat screen entry belongs to the UI work. The "goal
 reached" radius (0.5 m) and "ZombieChannel" (`ped.vfn240`, 0.2 / 0.2 / 1.0) are not read; how peds in a plugin become
@@ -2952,7 +2956,7 @@ The graph op `SendChaseStateMessage` (`826A77A8`) posts {ped, state} for a playe
 - Ours: nothing wrote `b.scatter`, so Scatter never ran.
 - Change: skate-core `peds/scatter.rs` `step`; `think_peds` steps it once per world tick from the player's
   `gesture_publication.down` (our CharacterGesture port, `graph_host/motion_character_gesture.rs`) and copies it into
-  every ped's brain. Log `PED_SCATTER on|off`. Mod key `living_world.ped_brain.scatter_seconds` (retail 180, 0 = off).
+  every ped's brain. Log `PED_SCATTER on|off`. Mod key `living_world.ped_brain.scatter_seconds` (retail 180, 0 = off). Since 2026-10-29 also `living_world.ped_brain.scatter_hold` (ours): while true the alarm is raised every world step like the held gesture; set back to false, retail's timer runs out (skate-mods 107, skate-game tuning / ped 127 passed).
   Test `the_alarm_holds_while_raised_runs_180_s_and_is_off_in_zombie_mode`.
 - Inference: the byte clears when the gesture ends (our publication is None then), read from the reset setting id 37;
   the reset's caller is a table entry, not traced. Open: a Lua raise / clear call; one recomp check (SCATTEST hook,
@@ -2975,3 +2979,54 @@ The graph op `SendChaseStateMessage` (`826A77A8`) posts {ped, state} for a playe
 - Open: retail's gates IVehicle vf+0x60 and the ped's vf+200 (not read); the non-flee branch (a ray test of the car's
   4 corners from 1.5 m up along the ped's heading, 4.0 x lookahead, 0.4 / 0.09 thresholds, "Avoid" event) is decoded
   in b656 but its consumer is not found, so the steer-around is not ported.
+
+## Greet and warn gestures, StopChannel on collision (2026-10-29, research b677)
+
+**Problem.** Peds said their greet and warn lines without the matching upper-body gesture, and a gesture or hand-prop
+clip kept playing through a knock-down.
+
+**Retail [code / data, b677].**
+- `ChannelWarnWantTarget` Begin `8269F7B0` and `ChannelGreetWantTarget` Begin `8269FAC0`, only when the want target
+  resolves: the channel request ped vfn+0xF8 `82E3A3F0` with "WarnChannel" / "GreetChannel" (strings `0x82307D04` /
+  `0x82307D1C`, blends 0.2 / 0.2 `0x82099280`), then the 3.5 s timer, then the speech. Without a target the warn says
+  nothing and drops the want when `deactivateWant` is set. The anim set fields: `GreetChannel` `Hash_6F928ECB7DFA7A05`
+  (`NPC_GRTCHN_POS_LO_0_01..05`, marquee `IP_GRTCHN_*`), `WarnChannel` `Hash_C3298FF93E24D541` (`NPC_WARN_CHN_*`).
+- The Collision state machine runs `StopChannel` (`motiongraph_collision.xml`).
+
+**Change.**
+- skate-core `peds/anim.rs`: `GreetChannel`, `WarnChannel` in the loaded names; `channel_stop_own` (stop with the
+  clip's own blend-out; the behaviour's fade is NOT RETAIL YET).
+- `peds/brain.rs`: both Begins push `ChaseRequest::GestureClip` when the target resolves; the warn Begin also gates
+  its timer and speech on the target and drops the want without one; `BrainSettings::gesture_blend` = 0.2 (data).
+- `peds.rs`: the host plays the gesture on the channel (`PED_GESTURE` log) and stops the channel when a collision
+  reaction starts (deferred or direct).
+
+**Verification.** skate-core living_world 402, skate-game ped 95, skate-data ped anim 5 passed; brain tests updated
+(warn without a target, greet / return greet gestures). Not seen in game.
+
+**Open.** PlayerRecognition (`826A1188`) and ProTrackSkater (`826A2C80`) also post GreetChannel while the channel is
+idle (ops still pending); how retail picks within a field's list (ours uniform).
+
+## ATM and water fountain plugins: retail places none (2026-10-29, research b678)
+
+The classes ship (`livingworld_props` `waypoint_atm`: `useatm.xml`, 0.8, radius 15; `waypoint_waterfountain`:
+`usewaterfountain.xml`, 0.6, radius 15) with their plugin graphs and motion graphs, but neither placement source holds
+one [data]: the world waypoint groups (`WAYPOINTDATA` 0x00EB001A, `waypoints.json`: 74 groups, all vending machines or
+trash bins) and the DMO hotpoints (`82C4E128` makes only trash bin, newspaper box or seat [code]); no map DMO is an ATM
+or a drinking fountain. So retail peds never use them, and ours match (our loaders take any class the data names,
+`ped_plugins.rs`). Possible mod work only: a content-layer / Lua way to place plugin props per map.
+
+## Chase lines: the caught line at a group end, no chase-over line (2026-10-29, research b680)
+
+**Retail [code].** Three graph ops post the chase line (chase manager slot +64, `826B4FC0`), all with first argument
+1: TakeDownTargetableSuccess `826A4E50` (1, 0) a CAUGHT line for a player target; ChaserGroupEndChase `826A5318`
+(1, 0) a CAUGHT line when the chaser is in a group, the op's reason is aggressivecapture and the chasee is the local
+player (this runs when a chaser gets close enough, or when the chased player wipes out); the taze op `826A8420`
+(1, 1) a TAZER line once per hit. `ID_CHASE_OVER` (first argument 0) is never posted in TU3: escapes and give-ups show
+no line.
+
+**Change.** `ChaseRequest::GroupEnd` carries `notify` (true from the op, false from the taze path's group end, which
+retail ends through group vfn24 without a line); the host emits `PedEvent::ChaseCaught` under retail's gate and
+`post_chase_messages` shows a CAUGHT line for it. Test `a_chase_caught_event_posts_a_caught_line`; brain tests
+updated. The line roll is now seeded once per run from the clock (a fixed seed made most takedown lines in the logs
+CAUGHT_2; presentation only). Not seen in game. Open: a data table for the chase message ids and bands (mods).

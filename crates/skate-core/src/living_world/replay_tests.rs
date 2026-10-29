@@ -36,7 +36,7 @@ fn lines(v: Vec<ReplayLine>) -> BTreeMap<[u8; 16], ReplayLine> {
 }
 
 fn ctx<'a>(position: Vec3, players: &'a [Vec3]) -> BranchContext<'a> {
-    BranchContext { position, forward: [0.0, 0.0, 1.0], speed: 8.0, players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default() }
+    BranchContext { position, forward: [0.0, 0.0, 1.0], speed: 8.0, players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default(), body: None, valid_lines: None }
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn replay_branch_taken_only_when_it_scores_lower_and_mirrors_on_a_client() {
         let mut ev = Vec::new();
         for _ in 0..30 {
             let s = c.sample(&ls, 0.0).unwrap();
-            let ctx = BranchContext { position: s.position, forward: [0.0, 0.0, 1.0], speed: 9.0, players, others: &[], in_use, preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default() };
+            let ctx = BranchContext { position: s.position, forward: [0.0, 0.0, 1.0], speed: 9.0, players, others: &[], in_use, preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default(), body: None, valid_lines: None };
             c.step(&ls, &mut Decider::Decide(ctx), &mut ev);
         }
         (c, ev)
@@ -1049,4 +1049,26 @@ fn steering_target_at_cursor_b_matches_the_cursor_pose_like_sub_8246de38() {
     let last = line_target_at(line, (7, 0.9)).unwrap();
     assert!((last.position[2] - 3.5).abs() < 1e-5);
     assert!(line_target_at(line, (8, 0.0)).is_none());
+}
+
+/// b674: a simulated skater (`body`) takes no branch while retail's gate is shut (airborne, a perform / grind trick),
+/// and is scored from its body point when it is open.
+#[test]
+fn a_simulated_skater_branches_only_through_the_gate() {
+    let ls = branching();
+    let players = [[4.85, 0.0, 8.4]];
+    let run = |gate: Option<bool>| {
+        let mut c = LineCursor::spawn(&ls, id(1), 0);
+        let mut ev = Vec::new();
+        for _ in 0..30 {
+            let s = c.sample(&ls, 0.0).unwrap();
+            let body = gate.map(|may_branch| BodyGate { point: s.position, may_branch });
+            let ctx = BranchContext { position: s.position, speed: 9.0, body, ..ctx(s.position, &players) };
+            c.step(&ls, &mut Decider::Decide(ctx), &mut ev);
+        }
+        ev.iter().filter(|e| matches!(e, CursorEvent::Branch(_))).count()
+    };
+    assert_eq!(run(None), 1, "the replay tier branches as before");
+    assert_eq!(run(Some(true)), 1, "an open gate branches from the body");
+    assert_eq!(run(Some(false)), 0, "a shut gate keeps the line");
 }

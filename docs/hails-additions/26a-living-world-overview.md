@@ -213,6 +213,7 @@ Living-world events for mods (doc 26, "Modding"): `on_event {name = "living_worl
 - `vehicle_contact`: a car pushed a ped (`VehicleContactEvent`);
 - `ped_hit`: a skater knocked a ped down or made it stumble (`id`, `kind` Knockdown / Standing, `direction` FromFront / FromBack / FromLeft / FromRight, `closing` m/s);
 - `ped_chase`: a ped's chase group changed or it told the player its chase state (`id`, `chasee`, `kind` join / join_refused / leave / primary / group_end / state_warn / state_chase / state_tired / state_giveup / state_other, `reason` for group_end: 0 default, 1 aggressivecapture, 2 returntopatrolzone, 3 lostinterest);
+- `ped_avoid`: a ped decided to dodge a skater coming at it (`id`, `mover` (players `PLAYER_TARGET_BASE + n`), `kind` jump / step, `dir` forward / left / right / back, `seated`); tuning `ped_brain.skater_avoid_*`, `skater_avoid_standing` false keeps the dodge to seated peds;
 - `ped_taze`: a ped's tazer hit `target` (`id`, `target`);
 - `ped_takedown`: a ped's takedown attempt ended (`id`, `target`, `success`);
 - `ped_speech`: a ped's AI graph changed its speech value (`id`, `value`, `state`: the graph state; `variant` / `list_value`: a conversation turn's, else null).

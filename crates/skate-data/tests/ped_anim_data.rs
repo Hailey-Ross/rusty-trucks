@@ -113,6 +113,16 @@ fn every_census_entity_resolves_a_look_and_animation() {
     for name in skate_core::living_world::peds::skater_contact::REACTION_ANIMS {
         assert!(t.anim_sets["default"].entries.contains_key(*name), "default set: {name} missing");
     }
+    // The speed rows (b682): seven in the default set (Brisk walk, Slow / default / Fast run), the female set runs
+    // Slow only; the tier cycles resolve.
+    use skate_core::living_world::peds::anim::Tier;
+    let tiers = |k: &str| t.anim_sets[k].speed_rows.iter().map(|r| (r.threshold, r.state.clone(), r.tier)).collect::<Vec<_>>();
+    assert_eq!(tiers("default").len(), 7, "{:?}", tiers("default"));
+    assert_eq!(tiers("default")[3], (4.0, "Walk".into(), Tier::Brisk));
+    assert_eq!(tiers("female").last(), Some(&(8.0, "ChaseRun".into(), Tier::Slow)));
+    for name in ["FwdBriskWalkCyc", "FwdChaseRunSlowCyc", "FwdChaseRunFastCyc", "Stand2ChaseRun", "ChaseRun2Stand", "ChaseRunTurnR45", "ChaseRunTurnR90", "ChaseRunTurnR135", "ChaseRunTurnR180", "ChaseTiredInto", "ChaseTiredCyc", "ChaseTiredOut", "Stand2Shuffle", "FwdShuffleCyc", "Shuffle2Stand", "ShuffleTurnR45", "ShuffleTurnR180", "Stand2Strafe", "Chase2Strafe", "StrafeIdle", "Strafe2ChaseRun", "StrafeTurnR45", "StrafeTurnR90", "StrafeForwards", "StrafeBackwards", "StrafeR45", "StrafeR90", "StrafeR135"] {
+        assert!(t.anim_sets["default"].entries.contains_key(name), "default set: {name} missing");
+    }
     // The idle hand prop actions (`82E3F1D8` / `82E3F470`) resolve in the default set too.
     for name in ["HandPropEat", "HandPropDrink", "HandPropReadInto", "HandPropReadCyc", "HandPropReadOut", "HandPropPhoneAnswer", "HandPropPhoneTalk", "HandPropPhoneHangup", "HandPropLitter"] {
         assert!(t.anim_sets["default"].entries.contains_key(name), "default set: {name} missing");

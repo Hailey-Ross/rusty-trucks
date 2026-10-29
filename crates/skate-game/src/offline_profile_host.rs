@@ -39,8 +39,15 @@ impl OfflineProfileHost {
             ("Stats", "GetPersonalBestChunk") => rows(vm, &self.data.personal_bests)?,
             ("Progression", "GetOverallCareerData") => overall(vm, &self.data.career)?,
             ("Progression", "GetOverallChallengeData") => overall(vm, &self.data.challenges)?,
-            // NOT RETAIL YET: no career milestones or summary groups exist in the engine; empty lists hide them.
-            ("Progression", "GetMilestoneDotData" | "GetSummaryGroupData") => Value::Object(vm.array(Vec::new())?),
+            // NOT RETAIL YET: no career milestones or summary groups exist in the engine, so the lists are empty. The
+            // movie's layouts (its own constants): summary groups = [milestones (SUMMARY_GROUP_MILESTONES 0),
+            // challenges (_CHALLENGES 1)], each a list of groups; dots = a list of [percent (DOT_DATA_PERCENT 0),
+            // boards (DOT_DATA_BOARDS 1)].
+            ("Progression", "GetMilestoneDotData") => Value::Object(vm.array(Vec::new())?),
+            ("Progression", "GetSummaryGroupData") => {
+                let groups = vec![Value::Object(vm.array(Vec::new())?), Value::Object(vm.array(Vec::new())?)];
+                Value::Object(vm.array(groups)?)
+            }
             _ => return Ok(None),
         }))
     }

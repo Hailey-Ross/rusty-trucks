@@ -326,6 +326,43 @@ fn a_despawned_actor_plays_back_as_a_ghost_until_it_leaves_the_window() {
     assert!(app.world().get_entity(ghost).is_err() && app.world().get_entity(joint).is_err());
 }
 
+/// A ped's held prop (its own actor under the ped's scene) stays in the ghost's hand after the ped despawns.
+#[test]
+fn a_ghost_ped_keeps_its_held_prop() {
+    use super::world::{HAND_PROP_TAG, ReplayActor, ReplayGhost, ReplayJoints};
+    use bevy::ecs::system::RunSystemOnce;
+    let mut app = App::new();
+    app.init_resource::<Replay>();
+    super::world::plugin(&mut app);
+    let ped = app.world_mut().spawn((Transform::from_xyz(3., 0., 0.), Visibility::Inherited)).id();
+    let scene = app.world_mut().spawn((ChildOf(ped), Transform::default(), Visibility::Inherited)).id();
+    let joint = app.world_mut().spawn((ChildOf(scene), Transform::from_xyz(0., 1., 0.))).id();
+    let prop = app.world_mut().spawn((ChildOf(scene), Transform::from_xyz(0.2, 1., 0.), Visibility::Inherited)).id();
+    app.world_mut().entity_mut(ped).insert((ReplayActor { id: 1 << 56 | 6 }, ReplayJoints(vec![joint])));
+    app.world_mut().entity_mut(prop).insert(ReplayActor { id: HAND_PROP_TAG | 1 });
+    let step = |app: &mut App| {
+        app.world_mut().resource_mut::<Replay>().record(pose(0.), 1. / 60., false);
+        app.update();
+    };
+    step(&mut app);
+    step(&mut app);
+    app.world_mut().run_system_once(move |mut commands: Commands| super::world::retire(&mut commands, ped)).unwrap();
+    let ghost = app.world_mut().query_filtered::<Entity, With<ReplayGhost>>().single(app.world()).unwrap();
+    step(&mut app);
+    step(&mut app);
+    {
+        let mut replay = app.world_mut().resource_mut::<Replay>();
+        replay.enter();
+        replay.seek(0.);
+    }
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(ghost), Some(&Visibility::Inherited));
+    assert!(app.world().get_entity(prop).is_ok(), "the prop still exists");
+    assert_eq!(app.world().get::<ChildOf>(prop).map(ChildOf::parent), Some(scene));
+    assert_ne!(app.world().get::<Visibility>(prop), Some(&Visibility::Hidden), "drawn in the ghost's hand");
+    assert_eq!(app.world().get::<Transform>(prop).unwrap().translation, Vec3::new(0.2, 1., 0.));
+}
+
 #[test]
 fn playback_publishes_the_recorded_audio_steps_the_cursor_crosses() {
     use crate::game_audio::skate_events::Riding;
@@ -398,6 +435,51 @@ fn world_actor_audio_state_follows_the_recording_and_returns_on_exit() {
     app.world_mut().resource_mut::<Replay>().exit();
     app.update();
     assert_eq!(app.world().get::<AudioVelocity>(car), Some(&AudioVelocity(Vec3::Y * 5.)), "live value back");
+}
+
+/// b670: a ghost (the actor left inside the window) carries its recorded audio state while playback shows it, and
+/// never in live play.
+#[test]
+fn a_ghost_sounds_in_playback_while_it_is_in_the_frame() {
+    use super::world::{ReplayActor, ReplayGhost};
+    use crate::world_audio::AudioVelocity;
+    let mut app = App::new();
+    app.init_resource::<Replay>();
+    super::world::plugin(&mut app);
+    super::components::track_on_ghosts::<AudioVelocity>(&mut app);
+    let id = 2 << 56 | 9;
+    let car = app.world_mut().spawn((ReplayActor { id }, Transform::default(), AudioVelocity(Vec3::X))).id();
+    let step = |app: &mut App| {
+        app.world_mut().resource_mut::<Replay>().record(pose(0.), 1. / 60., false);
+        app.update();
+    };
+    step(&mut app);
+    step(&mut app);
+    app.world_mut().entity_mut(car).despawn();
+    let ghost = app.world_mut().spawn((ReplayGhost, ReplayActor { id }, Transform::default(), Visibility::Hidden)).id();
+    step(&mut app);
+    step(&mut app);
+    assert!(app.world().get::<AudioVelocity>(ghost).is_none(), "live play: the ghost stays silent");
+    {
+        let mut replay = app.world_mut().resource_mut::<Replay>();
+        replay.enter();
+        replay.seek(1. / 60.);
+    }
+    app.update();
+    app.update();
+    assert_eq!(app.world().get::<AudioVelocity>(ghost), Some(&AudioVelocity(Vec3::X)), "in the frame: recorded value");
+    app.world_mut().resource_mut::<Replay>().seek(3. / 60.);
+    app.update();
+    app.update();
+    assert!(app.world().get::<AudioVelocity>(ghost).is_none(), "after its despawn: gone");
+    app.world_mut().resource_mut::<Replay>().seek(1. / 60.);
+    app.update();
+    app.update();
+    assert!(app.world().get::<AudioVelocity>(ghost).is_some());
+    app.world_mut().resource_mut::<Replay>().exit();
+    app.update();
+    app.update();
+    assert!(app.world().get::<AudioVelocity>(ghost).is_none(), "exit: removed");
 }
 
 #[test]

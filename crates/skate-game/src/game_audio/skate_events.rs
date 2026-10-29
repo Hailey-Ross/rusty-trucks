@@ -105,6 +105,9 @@ pub(crate) struct Seen {
     log_frame: u64,
     /// Sudden ground speed changes while rolling (`SKATE_SPEED_DROP` / `SKATE_SPEED_GAIN`, USER-ASKS 237).
     speed_watch: SpeedWatch,
+    /// The last surface tag the `SURFACE` line reported and when (ms).
+    surface_logged: u32,
+    surface_at: f64,
 }
 
 /// Recent ground speeds while rolling, for the sudden-change log lines (diagnostics only: nothing reads them back).
@@ -377,6 +380,17 @@ pub(crate) fn observe(
     debug_assert_eq!((built.state_id, built.on_rail, built.board), (state, on_rail, board));
     let Built { state: audio_state, wheels, surface, plant_edge, push_edge, state55, unridden, .. } = built;
     let com_speed_212 = seen.skater.com_speed_212;
+    // The ground surface under the wheels on every change while a wheel is down (at most 4 a second), so a sound or
+    // grip report can be placed from the play log alone (todo play-log-surface-line).
+    let down = (0..4).filter(|&i| audio_state.wheel_contact[i]).count();
+    let now_surface_ms = time.elapsed_secs_f64() * 1000.0;
+    if down > 0 && surface != seen.surface_logged && now_surface_ms - seen.surface_at >= 250.0 {
+        let m = audio_state.wheel_material;
+        info!("SURFACE tag={surface} materials=[{}, {}, {}, {}] wheels={down} at=({:.2}, {:.2}, {:.2}) state={state}",
+            m[0], m[1], m[2], m[3], board.x, board.y, board.z);
+        seen.surface_logged = surface;
+        seen.surface_at = now_surface_ms;
+    }
     // Log sudden speed changes while rolling (riding states, rate-limited) so a catch can be placed in the log.
     let rolling = matches!(state, 100 | 101) && !audio_state.bail && !braking && !on_rail;
     let now_ms = time.elapsed_secs_f64() * 1000.0;

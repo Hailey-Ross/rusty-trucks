@@ -54,7 +54,7 @@ impl Lane {
     }
 }
 
-/// One lane's range: integer editor values, `scale` turns them into the effect value.
+/// One lane's range: integer editor values, `value * scale + offset` is the effect value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LaneSpec {
     pub min: i32,
@@ -64,6 +64,8 @@ pub struct LaneSpec {
     /// Past the end wraps to the other end (retail's shake) instead of clamping.
     pub wraps: bool,
     pub scale: f32,
+    /// Added after the scale (retail's band builder takes saturation as SATURATE_NEAR + 1.0, `827F3D20`).
+    pub offset: f32,
     /// Ramps linearly across a segment instead of stepping (retail's interpolated elements, descriptor +0x14 == 0:
     /// TIME_SCALE speed, b463 `82C8FAD8`, and the looks, b408; shake's level steps, b464).
     pub interpolate: bool,
@@ -72,16 +74,16 @@ pub struct LaneSpec {
 }
 
 impl LaneSpec {
-    /// Retail's ranges. Defaults: speed 100 [code]; the look defaults are the neutral values (brightness 0,
-    /// contrast 10 = x1, saturation 100 = x1, tint 0 = overlay off) [ours: retail's look defaults not read yet].
+    /// Retail's ranges. Defaults: speed 100, brightness 0, saturation 0 (`82506CD8`) [code]; contrast 10 = x1 and
+    /// tint 0 = overlay off are the neutral values [ours]. Saturation 0 is x1 and 100 doubles it.
     pub fn retail(lane: Lane) -> LaneSpec {
-        let spec = |min, max, step, default, scale| LaneSpec { min, max, step, default, wraps: false, scale, interpolate: false, round: false };
+        let spec = |min, max, step, default, scale| LaneSpec { min, max, step, default, wraps: false, scale, offset: 0.0, interpolate: false, round: false };
         match lane {
             Lane::Speed => LaneSpec { interpolate: true, round: true, ..spec(10, 100, 10, 100, 0.01) },
             Lane::Shake => LaneSpec { wraps: true, ..spec(0, 3, 1, 0, 1.0) },
             Lane::Brightness => LaneSpec { interpolate: true, ..spec(-100, 100, 20, 0, 0.01) },
             Lane::Contrast => LaneSpec { interpolate: true, ..spec(10, 30, 2, 10, 0.1) },
-            Lane::Saturation => LaneSpec { interpolate: true, ..spec(0, 100, 10, 100, 0.01) },
+            Lane::Saturation => LaneSpec { interpolate: true, offset: 1.0, ..spec(0, 100, 10, 0, 0.01) },
             Lane::TintR | Lane::TintG | Lane::TintB | Lane::TintA => LaneSpec { interpolate: true, ..spec(0, 250, 25, 0, 1.0 / 255.0) },
         }
     }
@@ -556,7 +558,7 @@ impl ReplayEdit {
     pub fn lane_effect(&self, clip: usize, lane: Lane, frame: u32) -> Option<f32> {
         let spec = self.limits.lanes[lane.index()];
         let v = if spec.round { self.value_at(clip, lane, frame)? as f32 } else { self.sample(clip, lane, frame)? };
-        Some(v * spec.scale)
+        Some(v * spec.scale + spec.offset)
     }
 
     /// Whether a look lane applies at `frame` (retail's stepped OVERRIDE flag, b408): a value was committed on the clip,

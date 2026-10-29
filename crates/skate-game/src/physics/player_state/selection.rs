@@ -52,6 +52,21 @@ pub(super) fn advance(
     if current == Sid::Skitching && requested != Sid::Skitching {
         skater.skitch_release_trace = 31;
     }
+    // SKITCH_HOLD_POSE: during the hold, one line each time the pose error climbs another 0.05 m.
+    if current == Sid::Skitching {
+        let error = skater.collision_maximum_error.unwrap_or(0.0);
+        if error >= skater.skitch_hold_peak + 0.05 {
+            skater.skitch_hold_peak = error;
+            let c = &skater.collision_feedback;
+            let e = skater.collision_pose_error;
+            bevy::log::info!(
+                "SKITCH_HOLD_POSE max_pose_error={error:.3} pose_error=[{:.3}, {:.3}, {:.3}] vehicle_contact={} vehicle_force={:.1} tick={}",
+                e[0], e[1], e[2], c.flags.group_8, c.maximum_group_8_force, physics.ticks
+            );
+        }
+    } else {
+        skater.skitch_hold_peak = 0.0;
+    }
     if skater.skitch_release_trace > 0 {
         skater.skitch_release_trace -= 1;
         let g = &skater.wipeout.settings().ground;

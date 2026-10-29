@@ -20,6 +20,8 @@ pub struct SkitchSpringSettings {
     pub speed_curve: PointGraph<8>,
     /// `71A894F6AD65C859` (0.2).
     pub damping: f32,
+    /// The force cap (a code constant in retail, [`MAX_FORCE`]); a setting so a mod can tow harder.
+    pub max_force: f32,
 }
 
 impl Default for SkitchSpringSettings {
@@ -29,6 +31,7 @@ impl Default for SkitchSpringSettings {
             height_offset_mode_2: 0.1,
             speed_curve: PointGraph { x: [-2.0, -1.1075, -1.0489, -1.0, 0.0, 1.0, 1.5, 2.0], y: [-20.0, -20.0, -20.0, -16.0, 0.0, 4.0, 4.0, 4.0] },
             damping: 0.2,
+            max_force: MAX_FORCE,
         }
     }
 }
@@ -76,8 +79,8 @@ pub fn tow_spring(i: &SkitchSpringInput, s: &SkitchSpringSettings) -> [f32; 3] {
     let f = [n[0] * k, n[1] * k, n[2] * k];
     // `82BD3D90`: a length clamp (inferred from its 500.0 argument).
     let l = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt();
-    if l > MAX_FORCE {
-        [f[0] / l * MAX_FORCE, f[1] / l * MAX_FORCE, f[2] / l * MAX_FORCE]
+    if l > s.max_force {
+        [f[0] / l * s.max_force, f[1] / l * s.max_force, f[2] / l * s.max_force]
     } else {
         f
     }

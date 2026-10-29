@@ -115,6 +115,8 @@ pub(crate) struct NpcReplay {
     /// While simulated: the cursor frame cursor B is at (`skate_core::living_world::path_follow`, retail's projection),
     /// used instead of the recording's clock.
     pub follow_target: Option<u64>,
+    /// The simulated body's branch gate and point, set by the sim each tick (`None` in the replay tier).
+    pub body_gate: Option<skate_core::living_world::replay::BodyGate>,
 }
 
 /// The NPC's leave fade and its opacity now (1 = solid). Engine systems and mods read `alpha` to
@@ -310,8 +312,9 @@ pub(crate) fn trick_air_sequence(base: &str, trick: i16) -> String {
 }
 
 /// The clip a stock authored tree plays for an NPC: a clip is itself, a selector its default
-/// child, a phase blend its first child (the low end of its parameter, e.g. `TRICKHEIGHT` 0:
-/// the replay does not carry the player's trick height). Blend and selection spaces: none.
+/// child, a `TRICKHEIGHT` phase blend the child retail's AI height picks (the perform step always posts TrickHeight
+/// 1.0 normalized, `sub_82469448` -> `sub_82470DD8`, research b690: the highest child value), any other phase blend
+/// its first child. Blend and selection spaces: none.
 pub(crate) fn stock_tree_leaf(meta: &skate_data::animation_metadata::AnimationMetadata, name: &str) -> Option<String> {
     use skate_data::animation_metadata::TreeMetadata;
     let mut name = name.to_owned();
@@ -319,11 +322,27 @@ pub(crate) fn stock_tree_leaf(meta: &skate_data::animation_metadata::AnimationMe
         name = match meta.tree(&name).ok()? {
             TreeMetadata::Clip(c) => return Some(c.name.clone()),
             TreeMetadata::Selector(s) => s.default.clone(),
+            TreeMetadata::PhaseBlend(p) if p.parameter.eq_ignore_ascii_case("TRICKHEIGHT") => highest_child(meta, &p.children, &p.parameter).or_else(|| p.children.first().cloned())?,
             TreeMetadata::PhaseBlend(p) => p.children.first()?.clone(),
             _ => return None,
         };
     }
     None
+}
+
+/// The phase blend child with the highest `parameter` value (`PhaseBlend` sorts its children by the value each child
+/// reports, `phase_blend.rs`); `None` when a child is not a clip or carries no value.
+fn highest_child(meta: &skate_data::animation_metadata::AnimationMetadata, children: &[String], parameter: &str) -> Option<String> {
+    use skate_data::animation_metadata::TreeMetadata;
+    let mut best: Option<(f32, &String)> = None;
+    for child in children {
+        let TreeMetadata::Clip(c) = meta.tree(child).ok()? else { return None };
+        let value = f32::from_bits(*c.attributes.iter().find(|a| a.name.eq_ignore_ascii_case(parameter))?.payload_words.first()?);
+        if best.is_none_or(|(v, _)| value > v) {
+            best = Some((value, child));
+        }
+    }
+    best.map(|(_, c)| c.clone())
 }
 
 /// One clip of the puppet's nested crossfade: `weight` is how far it has blended in over
@@ -652,7 +671,7 @@ pub(crate) fn apply_records(
                 Name::new(format!("NPC skater {} ({character})", s.id.serial)),
                 Transform::from_translation(at).with_rotation(Quat::from_rotation_y(s.heading)),
                 Visibility::Inherited,
-                NpcReplay { cursor, branches: Vec::new(), tricks: Vec::new(), last: sample, previous: None, avoid: Default::default(), follow_target: None },
+                NpcReplay { cursor, branches: Vec::new(), tricks: Vec::new(), last: sample, previous: None, avoid: Default::default(), follow_target: None, body_gate: None },
                 NpcFade { alpha: state.world.config.skaters.leave_fade.fade_in_alpha(0), ..NpcFade::default() },
                 NpcSkaterAudio { list_order: u32::from(*slot), voice: npc.voice, ..Default::default() },
                 NpcStanceTrack::new(npc.stance),
@@ -683,6 +702,9 @@ pub(crate) struct AdvanceScratch {
     in_use: Vec<[u8; 16]>,
     out: Vec<CursorEvent>,
     finished: Vec<(LivingWorldId, Entity)>,
+    /// Per character the lines valid for it (`line_valid`, sorted), for the loaded line count.
+    valid: std::collections::HashMap<String, Vec<[u8; 16]>>,
+    valid_count: usize,
 }
 
 /// Every other NPC's (line, node) and the lines in use, by serial order.
@@ -708,7 +730,7 @@ pub(crate) fn advance(
     mut scratch: Local<AdvanceScratch>,
 ) {
     let _span = super::timing::span(super::timing::NPC_ADVANCE);
-    let AdvanceScratch { players, order, others, in_use, out, finished } = &mut *scratch;
+    let AdvanceScratch { players, order, others, in_use, out, finished, valid, valid_count } = &mut *scratch;
     let lines = npc_lines(&state);
     let tick = state.world.tick();
     players.clear();
@@ -723,6 +745,26 @@ pub(crate) fn advance(
     sorted.sort_by_key(|(_, n, ..)| n.id);
     let fade_cfg = state.world.config.skaters.leave_fade;
     let chain = state.world.config.skaters.line_chain;
+    // Branches and the line-end search take only lines valid for the character (`sub_82456970`, `fits`), cached per
+    // character for the loaded line count.
+    if let Some(w) = state.skaters.as_ref() {
+        if *valid_count != w.lines.len() {
+            valid.clear();
+            *valid_count = w.lines.len();
+        }
+        for (_, npc, ..) in &sorted {
+            if valid.contains_key(&npc.character) {
+                continue;
+            }
+            if let Some(c) = w.characters.iter().find(|c| c.key == npc.character) {
+                use skate_core::living_world::SkaterWorld;
+                let mut ids: Vec<[u8; 16]> = w.lines.iter().filter(|l| w.fits(l, c)).map(|l| l.id).collect();
+                ids.sort_unstable();
+                info!("NPC_SKATER_LINES {} valid {} of {}", npc.character, ids.len(), w.lines.len());
+                valid.insert(npc.character.clone(), ids);
+            }
+        }
+    }
     for (e, npc, mut replay, mut transform, mut audio, mut fade, sim) in sorted {
         let elapsed = tick.saturating_sub(npc.spawn_tick) * FRAMES_PER_TICK;
         // The obstacle avoider holds the cursor back (`npc_avoid`); the fade keeps the spawn clock.
@@ -736,6 +778,7 @@ pub(crate) fn advance(
         replay.cursor.facing_rule = chain.facing_rule;
         // Retail riding-fakie thresholds (data, stock graph values by default).
         replay.cursor.fakie_settings = chain.fakie;
+        let valid_lines = valid.get(&npc.character).map(Vec::as_slice);
         // The NPC's trick tables (disc profile, mod overrides), read at its trick slots.
         let trick_profile = npc_trick_profile(&state.npc.tricks, &settings.skater_trick_profiles, &npc.character);
         // A simulated skater (its cursor follows the projection, `follow_target`) at the end of its line looks for
@@ -746,7 +789,7 @@ pub(crate) fn advance(
                 let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_deref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
                 // Retail's mode 1 fallback (b122): the physics skater takes the nearest free start at any distance.
                 let chain = skate_core::living_world::replay::ChainConfig { fallback: true, ..chain };
-                let ctx = BranchContext { position: s.position, forward: s.velocity, speed: length(s.velocity), players, others, in_use, preferred_skill: -1, online: observers.online, chain, tricks };
+                let ctx = BranchContext { position: s.position, forward: s.velocity, speed: length(s.velocity), players, others, in_use, preferred_skill: -1, online: observers.online, chain, tricks, body: replay.body_gate, valid_lines };
                 if replay.cursor.retry_chain(&*lines, &mut Decider::Decide(ctx), out) {
                     info!("NPC_SKATER_CHAIN #{} {} line end: next line at node {}", npc.id.serial, npc.character, replay.cursor.node);
                 }
@@ -761,7 +804,9 @@ pub(crate) fn advance(
             let s = replay.cursor.sample(&*lines, 0.0);
             let (position, forward, speed) = s.as_ref().map_or(([0.0; 3], [0.0, 0.0, 1.0], 0.0), |s| (s.position, s.velocity, length(s.velocity)));
             let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_deref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
-            let ctx = BranchContext { position, forward, speed, players, others, in_use, preferred_skill: -1, online: observers.online, chain, tricks };
+            // A simulated skater branches from its body, through retail's gate (set by the sim each tick, b674).
+            let body = replay.body_gate.filter(|_| replay.follow_target.is_some());
+            let ctx = BranchContext { position, forward, speed, players, others, in_use, preferred_skill: -1, online: observers.online, chain, tricks, body, valid_lines };
             let r = &mut *replay;
             let mut decider = if mirror { Decider::Mirror(&r.branches, &r.tricks) } else { Decider::Decide(ctx) };
             r.cursor.step(&*lines, &mut decider, out);

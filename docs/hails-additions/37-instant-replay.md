@@ -267,7 +267,8 @@ now i just ride over and bail on nothing".
 - **Held hand props** were drawn every frame from the ped's live (frozen) hand while the ped played back from the
   recording, so they floated off and wobbled with the presenter's interpolation. A held prop is now a recorded actor
   of its own (id `5 << 56 | ped serial`, one track per ped whichever prop it holds) and plays back with its ped.
-  Still open: a held prop goes with its ped when the ped despawns, so a ghost ped has empty hands.
+  A ped that despawns keeps its held prop: `retire` moves the ped's scene, the prop included, under the ghost (test
+  `a_ghost_ped_keeps_its_held_prop`, 2026-10-29).
 Tests: the living world freezes while a replay is open (and runs in apps without a replay).
 
 ## Instant replay controls follow retail
@@ -381,7 +382,9 @@ keep their own edit constraint. `CameraCollision::playback` defaults to true; `s
 false}` restores the code-gate reading (constrain only the instant view); `collide = false` turns all of it off. The
 retail mechanism that keeps a playing camera out (its code gate reads 0 in mode 1 / 6, m353; research b658 leads:
 the generic camera pass `828F2B58`, the sink `[S+0x7C]`) is unknown and not needed for the port. Not play-checked.
-Open: which camera kinds the AVATAR_LOOK element (0x5C) gates (ours constrains Follow, Tripod and Free).
+AVATAR_LOOK (element 0x5C, record 0x830C1594) gates the look point and the constraint `82683680` in `82C8B698`: Follow
+`82C7FFB8`, Tripod `82C80298` and Free `82C80540` write 1, Game `82C807F0` writes 0 (research b671 [code]). Ours gives
+the same: Game has no pose, so it is never constrained (`camera_key::pose`).
 
 Tests: `replay::tests::keyed_cameras_are_constrained_in_the_instant_view_not_in_playback`,
 `replay::tests::a_mod_camera_override_goes_on_restore_and_disable`, skate-mods `replay_set_camera` validation.
@@ -420,7 +423,8 @@ Camera`, retail, or `Skater`, ours before), and a mod sets it with `sdk.replay.s
 Tests: `camera_key::tests::follow_eye_rides_the_gameplay_camera_and_orbits_the_look_point` (the skater pitching does
 not move the eye, the camera moving does, the skater option turns it, the orbit caps), `set_eye_round_trips_a_follow_eye`,
 `replay::tests::a_mod_camera_override_goes_on_restore_and_disable`, skate-mods `replay_set_camera` validation.
-Open: whether `82C7FFB8`'s advanced flag changes the object ids (not read); the laptop retest.
+The advanced flag of `82C7FFB8` only picks the key insert path (`82835F08` arg 0 / 1); the written values and ids
+are the same (b671). Open: the laptop retest.
 
 ### The Follow eye frame is upright (2026-10-25, USER-ASKS 350, research b605 / b606, recomp run m350)
 Problem (laptop session game-20261025-152135): "camera still goes under ground." on c217a21f. An Advanced Follow key
@@ -565,17 +569,66 @@ wired to the renderer yet (M3 step 2, with the editor UI). Test: untouched lanes
 brightness and contrast replace both bands; a tint marker shows from its frame.
 
 ### Open
-- Held hand props are not recorded. (The camera frame's opacity / blur / shake are not used by the renderer, so the
-  recorded transform and FOV are all playback needs.)
-- Ghosts' audio and vehicle impact sounds during playback (see above).
-- The replay look lanes (M3, research b379 / b380): lane 3 brightness (colour matrix add term), lane 4 contrast,
-  lane 5 saturation, all near and far, replacing the world colour block while set; lane 6 an RGBA screen-tint
-  overlay. Our `colour_matrix::build` takes the same argument roles as retail's builder `827F13D8`.
+- The camera frame's opacity / blur / shake are not used by the renderer, so the recorded transform and FOV are all
+  playback needs. (Held hand props are recorded: "Held hand props" above.)
 - Retail editor cameras (for M2, research b376 / b377): ICELITE keyed values (eye, look, dutch, lens mm), lens
   10..500 mm, default 24; shake levels 0 / 0.35 / 1.0 / 1.0 for amplitude and frequency (`8250A6E8`); effect lanes
   step at marker times (speed +10 % up to 100 %, shake 0..3, brightness, contrast, saturation, tint).
 - The player is still recorded as full `Mat4` skin rows (about 45 MB at 90 s); moving it into the quantised buffer
   would cut that to about a fifth.
+
+## Ghosts sound in playback (2026-10-29, research b670)
+
+### Problem
+Actors that despawned inside the recorded window (ghosts) were drawn in playback but stayed silent.
+
+### Retail [code, research b670]
+- The world audio reads per-frame recorded data, never the live actor, and the same readers run live and in replay.
+  Provider 2's reader (`827A76F0` -> `827BADD8`) keeps presentation objects per recorded id: created when an id is
+  in the frame (`827BB568`), destroyed when it is missing (`827BB640`). The traffic audio `824B2A28` and the ped audio
+  manager `824F2890` resolve their actors through that frame data, so a car or ped the census already removed sounds
+  again for the frames that hold it. Vehicles have no impact sound at all (b409).
+
+### Change
+- `replay::components::track_on_ghosts::<T>`: `track` plus `ghost_values::<T>`, which inserts the recorded value on a
+  ghost while playback shows it (`ReplayBuffer::shown`: recorded, not hidden, before its despawn; no pose decode) and
+  removes it when it leaves the frame and on exit. Registered for `TrafficAudio`, `PedAudio`, `NpcSkaterAudio`,
+  `AudioVelocity` and `VehicleHornState`; the audio bridge needs no change, and live play never sees a ghost's audio.
+  Any tracked component can opt in the same way.
+
+### Verification
+- `replay::tests::a_ghost_sounds_in_playback_while_it_is_in_the_frame`: silent live, the recorded value in the frame,
+  removed after its despawn time and on exit. skate-game replay 61 passed. Not heard in game yet.
+- The replayed tazer / body-fall one-shots name the live ped; a ghost keeps `GhostOf(live entity)` and the bridge hands
+  such a one-shot to it during playback (`world_bridge.rs` `ped_of`). skate-game 980 passed, skate-core 1248.
+- Open: whether AI skaters are in retail's recorded skater list (b670, medium).
+
+## Look lanes: retail's saturation is an offset (2026-10-29)
+
+### Problem
+The look lanes were ported in M3 steps 1 and 2 (above), but the saturation lane kept our own meaning: 100 = x1
+(default), 0 = greyscale. Retail's look defaults had not been read.
+
+### Retail [code, main read]
+- The editor starts brightness and saturation at 0 and speed at 100 (`82506CD8`: editor +0x1A0, +0x1A4, +0x19C);
+  the lane steps are `8250ADF8` (brightness -100..100 by 20, contrast 10..30 by 2, saturation 0..100 by 10).
+- The saturation consumer `826888B8` copies SATURATE_NEAR (0x40) raw into the override block `+0x7C10` (slot 4) and
+  SATURATE_FAR (0x3F) into `+0x7C50`, which the builder never reads.
+- `827F3D20` calls the band builder `827F13D8` for both bands with saturation = slot 4 + 1.0 (`0x8231A844`); the
+  builder's third argument is the saturation ((1 - s) times the luma weights).
+- So lane value v (x 0.01, b379) gives saturation 1 + v / 100: 0 leaves the colours alone, 100 doubles their distance
+  from luma. Retail's lane cannot desaturate.
+
+### Change
+- `skate_core::replay_edit::LaneSpec` gets `offset` (effect = value x scale + offset, data like the rest of
+  `EditLimits`); saturation is 0..100 by 10, default 0, scale 0.01, offset 1.0. Contrast (10 = x1) and brightness were
+  already retail's.
+
+### Verification
+- `replay_look_replaces_the_world_grade_terms_it_sets`: saturation 100 gives 2.0 in both bands (pure red -> (1.7,
+  -0.3, -0.3)), a committed 0 gives 1.0 (the identity). skate-core `replay_edit` 15 passed, skate-game replay 60
+  passed. Not seen in game yet.
+- Open: contrast starts at 0 in `82506CD8` (below its range; a clip value presumably replaces it before use).
 
 ## Laptop session 2026-10-20 (water clock, HUD message log)
 - Problem: Better Water kept moving while the replay was paused. Cause: the water shaders' clock (`retail_render.rs`
@@ -586,6 +639,10 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   time by the central HUD runtime but never seen (user: "No, nothing showed"). Not the FE HUD flag reset, the PC
   overlay, the replay message track or the cameras (read, not proven in game). New log line on a message's first
   frame: `HUD_CENTRAL draw draws= hud_draws= fe_hud= overlay= hud_off= failed=` (`scoring_hud.rs`).
+- 2026-10-29: that first-frame line reads `draws=0` for every message (the movie draws nothing on its first frame), so
+  it cannot tell a shown message from a lost one: 6 such lines in the sessions since, none after a replay. New line on
+  the hide: `HUD_CENTRAL shown frames= drawn= hidden= peak_draws=` (frames it was up, frames it drew, frames the HUD was
+  hidden, most draw slots). Cause still open; the next lost message shows `drawn=0` and whether `hidden` covered it.
 
 ## Extended Replays (PC overlay, not retail; user 2026-10-20)
 - Ask: "Perhaps we can add an extra option for extended length with a slider from 2 mins to 4 mins? "Extended Replays"".
@@ -907,8 +964,9 @@ brightness and contrast replace both bands; a tint marker shows from its frame.
   component cursor R, G, B, A (wraps) and post 24 (kRefreshTint by elimination), other channels post 5; Left / Right
   post 6 and snap a tint to steps of 25 (`(v +- 25) * 0.04 + 0.5`, truncated, x 25; clamp 0..250). New natives:
   GetModeValue (raw brightness / contrast / saturation, else -1), GetCurrentTintValue (raw component, else -1).
-  Template 71 = `replay2/replay_editor3.swf` (with CCF0007), 72 = `replay2/replay_editor2.swf`. Open: the movie's
-  own constants for kUpdateMode / kRefreshTint / kReplayMode_* (from our export of the movie), whether B reverts edits.
+  Template 71 = `replay2/replay_editor3.swf` (with CCF0007), 72 = `replay2/replay_editor2.swf`. The movie's own constants (read 2026-10-29 from our export `replay2/replay_editor3.json`, the frame-1 setMember
+  pushes): kEffectsMode 4, kRefreshEffectsMenu 5, kUpdateEffectValues 6, kUpdateMode 23, kRefreshTint 24, kReplayMode_Camera
+  0, _Speed 1, _Shake 2, _Tint 6: every reading by elimination above holds. Open: whether B reverts edits.
 - DLC package reader (2026-10-20): `tools/owned_game/stfs.py` reads the user's STFS packages (header, file table,
   consecutive files past the interleaved hash tables); tested on the Create Park Upgrade package: the 95,990,656-byte
   `creator_00000000.big` copies out and parses (1262 entries, `creator0.ver` = `695423:sk8build`). It carries
@@ -983,7 +1041,7 @@ replay 44 tests (new: the film pack lane channels). Not play-tested.
 - Tests: `encoded_length_counts_speed_segments_inside_the_heads` (b472 cases B, C, C2, D, E), the host natives test.
 
 ### Open
-- A recomp trace of the base case (no marker, speed 50, B, play) would settle b465's medium-high reading.
+- Recomp check 2026-10-29 (new rexglue SDK build, hook `RTAKE` in `hooks_replay.cpp` on `82C84CF8`): a fresh instant replay's take reads speed 100 (word 0x64 at take+0x74) with the speed / shake lanes (channels 4, 5) empty, as b465's blank-take reading says. The rest (speed 50, B, play) is not measured: `82C84CF8` runs only at replay enter / exit, and the blind editor script drifted into the exit dialog. Next: a hook on the commit `82507438` and a script checked step by step against shots.
 - What shake level type 3 vs 4 looks like (the shake consumer is not read).
 
 ## Save to PC: its own string id (2026-10-21, b470 item 6)

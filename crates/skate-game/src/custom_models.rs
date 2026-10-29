@@ -90,6 +90,8 @@ pub(crate) struct CustomModels {
     native_directory: PathBuf,
     native_prefix: String,
     request: Option<Option<String>>,
+    /// The requested swap is a preview (FE 62's MarqueeViewer): it does not become the saved selection.
+    transient: bool,
     pending: Option<Pending>,
     active_root: Option<Entity>,
     stock_visibility: Vec<(Entity, Visibility)>,
@@ -140,10 +142,28 @@ impl CustomModels {
     pub(crate) fn request_character(&mut self, id_or_key: &str) -> bool {
         let Some(e) = self.entries.iter().find(|e| e.id == id_or_key || e.native.as_ref().is_some_and(|n| n.key == id_or_key)) else { return false };
         self.request = Some(Some(e.id.clone()));
+        self.transient = false;
         true
     }
     pub fn request_stock(&mut self) {
         self.request = Some(None);
+        self.transient = false;
+    }
+    /// [`CustomModels::request_character`] (`Some`) or the stock skater (`None`) without saving it as the selection.
+    pub(crate) fn request_preview(&mut self, id_or_key: Option<&str>) -> bool {
+        let ok = match id_or_key {
+            Some(id) => self.request_character(id),
+            None => {
+                self.request_stock();
+                true
+            }
+        };
+        self.transient = ok;
+        ok
+    }
+    /// The last swap request was a preview ([`CustomModels::request_preview`]).
+    pub(crate) fn previewing(&self) -> bool {
+        self.transient
     }
     /// A requested swap has not finished (loaded, failed or timed out) yet.
     pub(crate) fn swapping(&self) -> bool {
@@ -258,6 +278,7 @@ impl Plugin for CustomModelsPlugin {
             native_directory,
             native_prefix,
             request: saved.map(Some),
+            transient: false,
             pending: None,
             active_root: None,
             stock_visibility: vec![],
@@ -536,7 +557,7 @@ fn publish(
                 // Visibility was owned by the alternate character while active.
                 // Reapply the current outfit even if its saved JSON is unchanged.
                 restore_stock(&mut state, &mut parts, &mut animation, &mut scenes);
-                state.status = match save_selection(&state.directory, None) {
+                state.status = match if state.transient { Ok(()) } else { save_selection(&state.directory, None) } {
                     Ok(()) => "Stock skater restored.".into(),
                     Err(e) => format!("Restored; selection could not be saved: {e}"),
                 };
@@ -634,7 +655,7 @@ fn publish(
                 state.entries.iter().find(|e| e.id == pending.id).and_then(|e| e.native.as_ref()).map_or("-", |n| n.key.as_str()));
             *animation = bindings;
             state.active = Some(pending.id.clone());
-            state.status = match save_selection(&state.directory, Some(pending.id)) {
+            state.status = match if state.transient { Ok(()) } else { save_selection(&state.directory, Some(pending.id)) } {
                 Ok(()) => "Character equipped. Resume whenever you're ready.".into(),
                 Err(e) => format!("Equipped; could not save selection: {e}"),
             };

@@ -758,7 +758,7 @@ fn update(
         Option<Res<crate::career_stats_host::CareerStatsHost>>,
     ),
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
-    (mut demo, mut text_entry): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>),
+    (mut demo, mut text_entry, mut marquee): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>, ResMut<crate::marquee_preview::MarqueeView>),
     // Popups; the instant replay feed and whether the retail replay screen shows (one parameter: Bevy's 16).
     (mut popup_mods, replay_feed, mut replay_ui, mut look_screen): (
         ResMut<crate::popup_host::PopupMods>,
@@ -866,6 +866,7 @@ fn update(
     fe.extras.open = extras.is_some() && ms.stack.top(Layer::Main) == extras;
     fe.spawn_skater = std::mem::take(&mut ms.spawn_skater);
     fe.spawn_skater.open = spawn.is_some() && ms.stack.top(Layer::Main) == spawn;
+    let preview_open = fe.spawn_skater.open && fe.spawn_skater.screen.mode != skate_core::spawn_skater::Mode::SkateWith;
     fe.free_skate = std::mem::take(&mut ms.free_skate);
     fe.free_skate.open = free.is_some() && ms.stack.top(Layer::Main) == free;
     fe.tips_loader = std::mem::take(&mut ms.tips_loader);
@@ -886,6 +887,7 @@ fn update(
     }
     if let Some(skater) = &skater {
         fe.trick_guide.stance.regular = skater.animation.regular_stance();
+        fe.trick_guide.stance.alternate = skater.animation.riding_switch();
     }
     // Work for the registry once the movie work is done: the crossbar item, settings steps.
     let mut selected: Option<String> = None;
@@ -2019,6 +2021,8 @@ fn update(
         animation: ms.trick_guide.state.animation.clone(),
         camera_track: ms.trick_guide.state.camera_track,
     });
+    // FE 62's preview (marquee_preview.rs): the screen on top in a mode that previews (not Call Skater, b575).
+    marquee.set_if_neq(crate::marquee_preview::MarqueeView { open: preview_open });
     for (owner, event) in mod_events {
         menus.send_event(&owner, event);
     }

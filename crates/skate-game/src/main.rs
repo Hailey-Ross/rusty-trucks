@@ -43,6 +43,7 @@ mod profiling;
 mod graphics_menu;
 mod fe_backdrop;
 mod trick_guide_scene;
+mod marquee_preview;
 mod retail_menus;
 mod prompt_glyphs;
 mod popup_host;

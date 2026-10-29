@@ -21,6 +21,22 @@ class AnimNames(unittest.TestCase):
         self.assertIsNone(string_at(blob, len(blob) + 5))
         self.assertIsNone(string_at(blob, True))
 
+    def test_speed_rows_gain_named_states_tiers_and_turn_lists(self):
+        import struct
+        blob, at = pool('LongPadding', 'Walk', 'Brisk', 'Idle', 'ChaseRun')
+        word = lambda f: struct.unpack('<I', struct.pack('<f', f))[0]
+        row = lambda th, *w: {f'u32_{i * 4}': v for i, v in enumerate([word(th), *w])}
+        rows = [row(2.0, at['Walk'], 8, at['Idle'], at['Walk'], 8, 8, 8),
+                row(4.0, at['Walk'], at['Brisk'], at['Idle'], at['ChaseRun'], 8, 8, 8)]
+        doc = {'classes': {'livingworld_entity_animation': {'default': {'parent': None, 'fields': {
+            'Hash_9C9A4F2CB1CC45DE': rows}}}}}
+        self.assertEqual(resolve_anim_names(doc, blob), 1)
+        f = doc['classes']['livingworld_entity_animation']['default']['fields']
+        self.assertEqual(f['speed_rows'], [
+            {'threshold': 2.0, 'state': 'Walk', 'tier': None, 'turn_from': ['Idle', 'Walk']},
+            {'threshold': 4.0, 'state': 'Walk', 'tier': 'Brisk', 'turn_from': ['Idle', 'ChaseRun']}])
+        self.assertIs(f['Hash_9C9A4F2CB1CC45DE'], rows)
+
     def test_only_animation_structs_gain_names_and_numbers_stay(self):
         blob, at = pool('A_CLIP', 'B_CLIP', 'C_CLIP')
         doc = {'classes': {

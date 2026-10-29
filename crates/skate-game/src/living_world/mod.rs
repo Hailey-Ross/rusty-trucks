@@ -565,6 +565,8 @@ pub(crate) struct LivingWorldObservers {
     /// Per observer: the skater is wiping out (Processed `+2468` bit 18, phys-out byte 59), what the chase group's
     /// vfn +88 (`825948B0`) answers for ChaseeIsWipedOut and CanAttemptTakeDownTargetable (b106).
     pub wiping: Vec<bool>,
+    /// Per observer: the score the NPC reaction manager compares for trick seen (`scoring_runtime::reaction_score`).
+    pub scores: Vec<i32>,
     /// Skater slots held by players (local + remote).
     pub player_slots: u32,
     pub online: bool,
@@ -625,6 +627,7 @@ fn gather_observers(
     }
     out.observers = vec![observer];
     out.wiping = vec![skater.as_ref().is_some_and(|s| s.player_input.processed.flags_2468 & super::living_world::npc_sim::WIPEOUT_BIT != 0)];
+    out.scores = vec![skater.as_ref().map_or(0, |s| s.scoring.reaction_score())];
     let online = multiplayer.as_ref().is_some_and(|m| m.active());
     out.online = online;
     out.player_slots = if online { multiplayer.map_or(1, |m| m.player_ids().len().max(1) as u32) } else { 1 };
@@ -917,10 +920,16 @@ pub(crate) struct PedBrainSettings {
     /// The world-prop plugins' values (offer scan, refusals, the seats-in-water rule); copied into the plugin props
     /// every think, so a mod's change is in effect at once.
     pub plugins: skate_core::living_world::peds::plugins::PluginSettings,
+    /// A mod holds the scatter alarm raised (ours: `ped_brain.scatter_hold`); released, retail's timer runs out.
+    pub scatter_hold: bool,
+    /// The speed bump before the speed row pick (`sub_82E29D98`, b682).
+    pub speed_bump: skate_core::living_world::peds::anim::SpeedBump,
+    /// The strafe poster's edges (`sub_82E2AFC0`, b686).
+    pub strafe: skate_core::living_world::peds::anim::StrafeRules,
 }
 
 impl Default for PedBrainSettings {
     fn default() -> Self {
-        Self { enabled: true, mood: true, flee: Default::default(), run_from_honker: Default::default(), object_flee: Default::default(), vehicle_flee: Default::default(), values: Default::default(), plugins: Default::default() }
+        Self { enabled: true, mood: true, flee: Default::default(), run_from_honker: Default::default(), object_flee: Default::default(), vehicle_flee: Default::default(), values: Default::default(), plugins: Default::default(), scatter_hold: false, speed_bump: Default::default(), strafe: Default::default() }
     }
 }

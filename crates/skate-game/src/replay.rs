@@ -716,16 +716,16 @@ pub(crate) struct ReplayPlugin;
 impl Plugin for ReplayPlugin {
     fn build(&self, app: &mut App) {
         world::plugin(app);
-        // The world actors' audio state follows the recording (b378 channels A1..A3).
-        components::track::<crate::world_audio::TrafficAudio>(app);
-        components::track::<crate::world_audio::PedAudio>(app);
-        components::track::<crate::world_audio::NpcSkaterAudio>(app);
-        components::track::<crate::world_audio::AudioVelocity>(app);
+        // The world actors' audio state follows the recording (b378 channels A1..A3), ghosts included (b670).
+        components::track_on_ghosts::<crate::world_audio::TrafficAudio>(app);
+        components::track_on_ghosts::<crate::world_audio::PedAudio>(app);
+        components::track_on_ghosts::<crate::world_audio::NpcSkaterAudio>(app);
+        components::track_on_ghosts::<crate::world_audio::AudioVelocity>(app);
         // The NPC skaters' and peds' fade (spawn fade-in, leave fade, camera-distance fade).
         components::track::<crate::living_world::npc_skaters::NpcFade>(app);
         // Their one-shot sounds (speech stays out: retail blocks speech in replay).
         // The horn / alarm as a recorded STATE, not one-shots (b409): a seek or rewind into a sounding one plays it.
-        components::track::<crate::world_audio::VehicleHornState>(app);
+        components::track_on_ghosts::<crate::world_audio::VehicleHornState>(app);
         messages::track::<crate::world_audio::PedTazerEvent>(app);
         messages::track::<crate::world_audio::PedBodyFallEvent>(app);
         app.init_resource::<Replay>()
@@ -1611,7 +1611,7 @@ pub(crate) mod export;
 pub(crate) mod export_run;
 mod messages;
 mod world;
-pub(crate) use world::{keep_model, retire};
+pub(crate) use world::{GhostOf, keep_model, retire};
 
 #[cfg(test)]
 mod tests;
