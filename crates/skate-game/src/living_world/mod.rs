@@ -195,7 +195,7 @@ impl Default for LivingWorldSettings {
             ped_brain: Default::default(),
             traffic_horn: Default::default(),
             free_play: None,
-            // The zombie cheat; no cheat screen yet: `SKATE_ZOMBIE=1` or the mod value `zombie`.
+            // The zombie cheat: the Extras cheat code (`apply_cheats`), `SKATE_ZOMBIE=1` or the mod value `zombie`.
             zombie: std::env::var("SKATE_ZOMBIE").ok().as_deref() == Some("1"),
             dmo_stream: Default::default(),
             // The engine default before the player's saved choice arrives (graphics_menu): the run's variables, as

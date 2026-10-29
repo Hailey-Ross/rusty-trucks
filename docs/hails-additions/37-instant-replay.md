@@ -1227,8 +1227,8 @@ handling, replay.rs help block and panel gate).
 - Change: `camera_key.rs` `lift_look` with `FreeHeight::lift` (the per-edit state, reset when another key or a pick
   starts editing). `CameraRules::look_range` / `look_step` stay mod data (`sdk.replay.set_camera`).
 - Test: `look_lift_is_limited_since_the_pick_not_absolutely`. Not play-checked.
-- Open: whether retail's Tripod measures the converted height in the skater's full transform and tilts the aim with
-  the skater (b655 item 3); the first edit tick's record vs the converted key (a recomp hook on `82C84868`).
+- Open: the first edit tick's record vs the converted key (a recomp hook on `82C84868`). The Tripod tilt question
+  (b655 item 3) is answered in the next section.
 
 ## Tripod look height along the skater's tilt (2026-10-29, research b659)
 Problem: picking Tripod from Free measured the look height as the world Y of the look point P above the skater root,
