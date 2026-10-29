@@ -1614,5 +1614,12 @@ World tuning domain `prop_sounds` ([doc 26a](26a-living-world-overview.md#world-
   candidate no longer outscores a live prop, so a full pool turns over only through the per-pass eviction. Weights,
   cap, ring and cull stay mod data (`dmo_stream`). Test: `the_pool_cap_evicts_the_lowest_score_once_per_pass`
   (updated: the farthest unheld prop goes first despite a higher priority). Not play-checked.
-- Open: retail's per-prop part count `n` (`DMO+0x1124`, -1 until the setter `82C55858` runs, which puts an unset object
-  at the very front); ours keeps `n = 1` until the setter's caller is found. Camera vs player as the distance reference.
+- `n` (`DMO+0x1124`) is the prop's safety cost, not a part count (research b658, 2026-10-29; offsets and record values
+  checked by main in Ghidra and the converted collections). Attach `82C52718` calls `82C55858` (secondary interface
+  DMO+0x24, vtable 0x82322DE8 slot 0xD4) before the queue insert, so a queued prop is never unset. That re-scores the
+  safety cost `DMO+0x1120` (`82C55A50`: painter layer 14 at the prop and 4 sample points, class
+  `livingworld_dynamicobject_safety`, unsigned max from 1, any 0 gives 0) and sets `n = 0` if the cost or `cfg` is 0,
+  else `max(cost, cfg)`, `cfg` = 5 (`roadnetwork`) when `DMO+0x74` is set, else 1. Records: default 1, lowcostarea 2,
+  mediumcostarea 3, highcostarea 4, roadnetwork 5, extremecostarea 0xFFFFFFFF (reads as -1: evicted first),
+  forbiddenarea 0. Ours keeps `n = 1` (the default area) until layer 14 is exported. Open: what sets `DMO+0x74`;
+  camera vs player as the distance reference.

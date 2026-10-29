@@ -1129,7 +1129,10 @@ pub(crate) fn present_pose(
     mut joints: Query<&mut Transform, Without<NpcReplay>>,
     mut scratch: Local<NpcPoseScratch>,
 ) {
-    let NpcPoseScratch { layers, layer_flags, channel, pose, transforms, before, pose_now, pose_before } = &mut *scratch;
+    let NpcPoseScratch { layers, layer_flags, channel, fakie_tree, pose, transforms, before, pose_now, pose_before } = &mut *scratch;
+    if skater.as_ref().is_none_or(|s| s.is_added()) {
+        *fakie_tree = None;
+    }
     let lines = npc_lines(&state);
     // Render interpolation: the fraction of the next world tick, drawn from one tick back (fix 14).
     let hz = state.world.clock().hz;
@@ -1212,7 +1215,7 @@ pub(crate) fn present_pose(
         let posed = bound.and_then(|(skater, bindings)| {
             // A channel tree that does not build (a mod's bad name) is left out.
             let weight = fakie.as_ref().and_then(|f| {
-                crate::graph_host::motion::tree_commands_into(&skater.animation.motion.animation, &f.clip, &fakie_channel_attributes(), f.time, channel).ok().map(|_| f.weight)
+                crate::graph_host::motion::cached_tree_commands_into(&skater.animation.motion.animation, fakie_tree, &f.clip, &fakie_channel_attributes(), f.time, channel).ok().map(|_| f.weight)
             });
             if !puppet_pose_in_flags_into(&skater.animation.evaluator, layers, layer_flags, weight.map(|w| (channel.as_slice(), w)), pose) {
                 return None;
@@ -1256,6 +1259,7 @@ pub(crate) struct NpcPoseScratch {
     layers: Vec<PuppetLayer>,
     layer_flags: Vec<StanceFlags>,
     channel: Vec<skate_core::animation::playback_tree::PoseCommand>,
+    fakie_tree: Option<crate::graph_host::motion::TreeCache>,
     pose: PoseScratch,
     transforms: Vec<(Entity, Transform)>,
     before: Vec<(Entity, Transform)>,

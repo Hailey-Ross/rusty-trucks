@@ -764,6 +764,34 @@ fn stock_evaluator() -> Option<(crate::animation_pose::PoseEvaluator, skate_data
     Some((crate::animation_pose::PoseEvaluator::load(&root).unwrap(), meta))
 }
 
+/// Data-gated (b620 1f): the cached fakie channel tree gives the fresh build's commands at every time, across
+/// torso values, a construction value change and a tree name that does not build.
+#[test]
+fn npc_fakie_tree_cache_matches_a_fresh_build() {
+    use skate_core::animation::playback::PlaybackService;
+    let Some((_, meta)) = stock_evaluator() else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+        return;
+    };
+    let mut animation = crate::graph_host::motion::metadata_animation(meta);
+    let mut cache = None;
+    let (mut fresh, mut cached) = (Vec::new(), Vec::new());
+    for step in 0..400 {
+        let time = step as f32 * 0.037;
+        let mut attributes = fakie_channel_attributes();
+        attributes[0].value = [0.5, 0.5, 0.0, 1.0, 0.25][step % 5];
+        let name = if step % 97 == 50 { "B_NOT_A_TREE" } else { FAKIE_CHANNEL };
+        if step == 200 {
+            animation.set_construction_value(skate_core::animation::skeleton_input::name::encode(b"stance"), skate_core::animation::skeleton_input::name::encode(b"fakie"));
+        }
+        let a = crate::graph_host::motion::tree_commands_into(&animation, name, &attributes, time, &mut fresh);
+        let b = crate::graph_host::motion::cached_tree_commands_into(&animation, &mut cache, name, &attributes, time, &mut cached);
+        assert_eq!(a.is_ok(), b.is_ok(), "step {step}");
+        assert_eq!(fresh, cached, "step {step}");
+    }
+    assert!(!fresh.is_empty(), "the fakie channel produced commands");
+}
+
 /// Data-gated (fix 21): every trick animation a recorded slot can pick exists as `_G` and `_A`
 /// in the stock banks, and a kickflip's air clip turns the board (rig `Skateboard_Root`) over.
 #[test]
