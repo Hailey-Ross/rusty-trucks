@@ -363,9 +363,9 @@ OK. Not seen in game yet. Setup: old exports work through the `Rostral_` fallbac
 the exact material types.
 
 **Separate items, not this cause.** `female_business_3` has no `Hair` part (her ponytail is in the body mesh and
-renders with it offline); her flat, washed-out head in the video is not a missing part (likely lighting on our standard material; not checked).
+renders with it offline); her flat, washed-out head in the video is not a missing part; since the retail ped material (2026-10-25) her whole mesh uses it, and the check on 2026-10-29 found nothing wrong (`.local/research/ped-flat-head-stiff-walk.md`).
 `male_teenager_1`'s grey shoulder patch is the sleeve trim, a non-mask region of his atlas (the same in the GLB);
-his stiff arms-out walk is the animation side (open).
+his stiff arms-out walk is gone: a pose-dump render mid walk (2026-10-29) shows arms down and the same stride as `male_teenager_2`; his rig matches the other peds.
 
 ## Peds floating in the air all over the map (2026-10-06)
 
