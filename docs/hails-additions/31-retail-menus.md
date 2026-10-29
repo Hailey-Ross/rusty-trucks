@@ -1322,7 +1322,7 @@ FE screen records (Start then falls back to the PC overlay).
 ### Verification
 - `cargo test -p skate-game changed_converters_are_reported_and_keep_their_old_fingerprint_when_stamped`.
 - Screenshot (`SKATE_VERIFY_MENU=stale`): chip, Game Files section, the row and both description lines.
-- Open: the restart into setup is not run end to end (it needs a release package's setup helper).
+- The restart into setup was run end to end by the user (2026-10-29).
 
 ## Refresh Game Files in development copies, and which files differ (2026-10-12)
 
