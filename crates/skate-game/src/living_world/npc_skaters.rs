@@ -962,7 +962,12 @@ pub(crate) fn advance(
             let ctx = BranchContext { position, forward, speed, players, others, in_use, preferred_skill: -1, online: observers.online, chain, tricks, body, valid_lines };
             let r = &mut *replay;
             let mut decider = if mirror { Decider::Mirror(&r.branches, &r.tricks) } else { Decider::Decide(ctx) };
+            let before = r.cursor.frames;
             r.cursor.step(&*lines, &mut decider, out);
+            // A simulated skater held on its last node does not advance: no busy loop.
+            if r.cursor.frames == before && !r.cursor.finished {
+                break;
+            }
             if let Some(o) = order.iter_mut().find(|o| o.0 == npc.id) {
                 o.1 = replay.cursor.line;
                 o.2 = replay.cursor.node;

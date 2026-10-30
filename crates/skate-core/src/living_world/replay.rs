@@ -761,13 +761,15 @@ pub fn choose_next_line(lines: &dyn LineSource, current: &ReplayLine, ctx: &Bran
     if !(radius > 0.0) || ctx.chain.max_candidates == 0 {
         return None;
     }
-    let end = current.nodes.last()?.position;
+    // A simulated skater searches from its body point (`82467FC8`), the replay tier from the node it reached (b701).
+    let end = ctx.body.map_or(current.nodes.last()?.position, |b| b.point);
     let r2 = radius * radius;
     let mut candidates: Vec<&ReplayLine> = Vec::new();
-    // The fallback's nearest start at any distance (first in order on a tie).
-    let mut nearest: Option<(&ReplayLine, f32)> = None;
+    // The fallback's nearest valid and nearest invalid start at any distance (first in order on a tie).
+    let mut nearest_valid: Option<(&ReplayLine, f32)> = None;
+    let mut nearest_invalid: Option<(&ReplayLine, f32)> = None;
     lines.for_each_line(&mut |l| {
-        if candidates.len() >= ctx.chain.max_candidates || l.id == current.id || ctx.in_use.contains(&l.id) || !ctx.valid(&l.id) {
+        if candidates.len() >= ctx.chain.max_candidates || l.id == current.id || ctx.in_use.contains(&l.id) {
             return;
         }
         let Some(start) = l.nodes.first() else { return };
@@ -776,14 +778,24 @@ pub fn choose_next_line(lines: &dyn LineSource, current: &ReplayLine, ctx: &Bran
         }
         let d = sub(start.position, end);
         let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-        if d2 <= r2 {
+        let valid = ctx.valid(&l.id);
+        if valid && d2 <= r2 {
             candidates.push(l);
-        } else if nearest.is_none_or(|(_, n)| d2 < n) {
-            nearest = Some((l, d2));
+        } else {
+            let nearest = if valid { &mut nearest_valid } else { &mut nearest_invalid };
+            if nearest.is_none_or(|(_, n)| d2 < n) {
+                *nearest = Some((l, d2));
+            }
         }
     });
     match candidates.len() {
-        0 => ctx.chain.fallback.then_some(nearest).flatten().map(|(l, _)| (l.id, 0)),
+        // `82458968` mode 1 with no hit: the nearest invalid start wins when it is no farther than the nearest valid one
+        // and that is at least `fallback_valid_d2` away; no valid start -> the nearest invalid (b701 R10).
+        0 => ctx.chain.fallback.then(|| match (nearest_valid, nearest_invalid) {
+            (Some(v), Some(i)) if i.1 <= v.1 && v.1 >= ctx.chain.fallback_valid_d2 => Some(i),
+            (Some(v), _) => Some(v),
+            (None, i) => i,
+        }).flatten().map(|(l, _)| (l.id, 0)),
         1 => Some((candidates[0].id, 0)),
         _ => {
             let mut best: Option<(usize, i64)> = None;
@@ -914,6 +926,9 @@ impl LineCursor {
             // next line once more, else the line is over.
             match self.chain(lines, line, decider, out) {
                 Some(next) => line = next,
+                // A simulated skater holds on the last node and searches again next tick (retail has no finished
+                // state, b118 / b701); the replay tier ends its line.
+                None if matches!(decider, Decider::Decide(ctx) if ctx.body.is_some()) => return,
                 None => {
                     self.finished = true;
                     out.push(CursorEvent::Finished);
