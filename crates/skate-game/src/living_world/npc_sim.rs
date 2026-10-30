@@ -167,6 +167,8 @@ pub(crate) struct NpcSim {
     /// Ticks left of the per-tick NPC_SKATER_PLACED trace after a placement (debug level; how the launch at line
     /// ends was found).
     trace_ticks: u32,
+    /// Ground ticks left of NPC_SKATER_REJOIN after a line end chain (research b731).
+    chain_trace: u32,
     /// `pc+944` / `pc+945` (centred, rejoining): written on ground ticks before the record (`sub_8246FA30` calls
     /// `sub_8246AA00` then `sub_8246DB50`), kept through the air.
     lane_flags: (bool, bool),
@@ -482,7 +484,7 @@ fn spawn_sim(
         }
         None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, bail_ticks: 0, bail_alpha: 1.0, last_node: None, pushing: false, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, lane_flags: (false, false), handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
+    let mut sim = NpcSim { context, body, respawn_in: None, bail_ticks: 0, bail_alpha: 1.0, last_node: None, pushing: false, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, chain_trace: 0, lane_flags: (false, false), handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
     let v = place(&mut sim, target, hold_ticks)?;
     sim.handover_push = Some((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
     Ok(sim)
@@ -1196,6 +1198,7 @@ pub(crate) fn simulate(
                                     clear_line_state(sim);
                                     skate_core::living_world::ai_controller::path_reset(&mut replay.avoid.controller);
                                     f = f.switch_to(node);
+                                    sim.chain_trace = 240;
                                     if let Some(o) = order.iter_mut().find(|o| o.0 == npc.id) {
                                         o.1 = to;
                                         o.2 = node;
@@ -1490,6 +1493,16 @@ pub(crate) fn simulate(
                                 slide_error = g.error;
                                 let s = ground_steer::stick(g.error, t.full_deg);
                                 intents.extend(ground_steer::intents(s).into_iter().map(|(k, v)| (k.to_string(), v)));
+                                if sim.chain_trace > 0 {
+                                    if sim.chain_trace % 30 == 0 {
+                                        info!(
+                                            "NPC_SKATER_REJOIN #{} left {} error {:.1} deg stick {s:.2} rejoining {} on_path {on_path} dist {:.2} A {}+{:.2} B {}+{:.2} at [{:.2}, {:.2}, {:.2}] stuck {}",
+                                            npc.id.serial, sim.chain_trace, g.error.to_degrees(), g.rejoining, f.dist, f.a.0, f.a.1, f.b.0, f.b.1,
+                                            input.position[0], input.position[1], input.position[2], replay.avoid.controller.sub_mode,
+                                        );
+                                    }
+                                    sim.chain_trace -= 1;
+                                }
                                 if sim.trace_ticks > 0 {
                                     let h = |v: [f32; 3]| v[0].atan2(v[2]).to_degrees();
                                     let pf = path_follow::forward(line, near);

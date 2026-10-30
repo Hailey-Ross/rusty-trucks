@@ -523,6 +523,11 @@ pub struct PedObstaclesPatch {
     /// The contact slide's speed tests: the slow fraction (0.5) of the path speed `contact_max_speed` (2.0 m/s).
     pub contact_slow_fraction: Option<f32>,
     pub contact_max_speed: Option<f32>,
+    /// Braking at the path end: deceleration (80, 0 = off), goal radius (2.0), body radius (1.225), away fraction (0.25).
+    pub brake_decel: Option<f32>,
+    pub brake_goal_radius: Option<f32>,
+    pub brake_body_radius: Option<f32>,
+    pub brake_away_fraction: Option<f32>,
 }
 
 /// NPC skater line end, facing rule and riding-fakie fields (`replay::ChainConfig`): docs/hails-additions/26a-living-world-overview.md#skater-line-chain-fields
@@ -927,7 +932,7 @@ impl Merge for PedNavPatch {
 
 impl Merge for PedObstaclesPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, target_snap, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents, contact_slide, contact_slide_dot, avoid_horizon, avoid_ray_scale, avoid_accel, avoid_scale, avoid_head_on_dot, avoid_crossing_dot, avoider_extent, avoider_extent_tail, path_turn_accel, path_turn_full_deg, path_turn_boost_deg, path_turn_boost_rate, path_turn_boost_max, path_turn_max_deg, path_turn_radius, controller_step, contact_slow_fraction, contact_max_speed);
+        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, target_snap, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents, contact_slide, contact_slide_dot, avoid_horizon, avoid_ray_scale, avoid_accel, avoid_scale, avoid_head_on_dot, avoid_crossing_dot, avoider_extent, avoider_extent_tail, path_turn_accel, path_turn_full_deg, path_turn_boost_deg, path_turn_boost_rate, path_turn_boost_max, path_turn_max_deg, path_turn_radius, controller_step, contact_slow_fraction, contact_max_speed, brake_decel, brake_goal_radius, brake_body_radius, brake_away_fraction);
     }
 }
 impl Merge for PedVehicleContactPatch {
@@ -1265,7 +1270,7 @@ impl LivingWorldPatch {
             && self.ped_fade.as_ref().is_none_or(|f| finite(f.fade_in_seconds) && f.distance.is_none_or(|d| d.iter().all(|v| finite(Some(*v)))))
             && self.ped_obstacles.as_ref().is_none_or(|o| {
                 [o.min_half_extent, o.moving_speed, o.recut_fraction, o.detour_margin, o.target_snap, o.step_height].into_iter().all(finite)
-                    && [o.path_turn_accel, o.path_turn_full_deg, o.path_turn_boost_deg, o.path_turn_boost_rate, o.path_turn_boost_max, o.path_turn_radius, o.controller_step, o.contact_slow_fraction, o.contact_max_speed].into_iter().all(finite)
+                    && [o.path_turn_accel, o.path_turn_full_deg, o.path_turn_boost_deg, o.path_turn_boost_rate, o.path_turn_boost_max, o.path_turn_radius, o.controller_step, o.contact_slow_fraction, o.contact_max_speed, o.brake_decel, o.brake_goal_radius, o.brake_body_radius, o.brake_away_fraction].into_iter().all(finite)
                     && o.path_turn_max_deg.is_none_or(|v| v.is_finite() && (0.0..=180.0).contains(&v))
             })
             && self.ped_nav.as_ref().is_none_or(|n| {

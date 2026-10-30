@@ -434,3 +434,24 @@ fn the_contact_slide_tests_the_avoiders_speed_and_a_slow_peds_steer_target() {
     let held = o.resolve_step_contact(from, to, r, Ignore::default(), slow).unwrap_or(from);
     assert!(held[2].abs() < 1e-4, "steer target across: no slide {held:?}");
 }
+
+/// Research b716 (`82E9FC20` / `82E9F9F0`): within the goal radius a moving body ahead inside the stopping distance
+/// (v^2 / 160 at 80 m/s^2, the ray radius 1.225 + the avoider's 0.455) brakes the ped; farther, beyond the goal radius,
+/// or moving away at a quarter of the ped's speed or more, it does not.
+#[test]
+fn a_ped_brakes_only_for_a_body_inside_its_stopping_distance_near_its_goal() {
+    let skater = |z: f32, vz: f32| ObstacleInput { id: SKATER_OBSTACLE_BASE, center: [0.0, 0.9, z], axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], half_extents: [0.3, 0.9, 0.3], velocity: [0.0, 0.0, vz], inactive: false, held: false };
+    let mut o = NavObstacles::new(ObstacleParams::default());
+    let (p, v, near) = ([0.0, 0.0, 0.0], [0.0, 2.0], [0.0, 1.0]);
+    let brakes = |o: &mut NavObstacles, z: f32, vz: f32, target: [f32; 2]| {
+        o.update(&[skater(z, vz)]);
+        o.update(&[skater(z, vz)]);
+        o.brakes(p, v, target, Ignore::default())
+    };
+    assert!(brakes(&mut o, 1.69, 0.0, near), "inside 1.68 + 0.025");
+    assert!(!brakes(&mut o, 1.75, 0.0, near), "beyond the stopping distance");
+    assert!(!brakes(&mut o, 1.69, 0.0, [0.0, 5.0]), "goal 5 m away, beyond the 2 m goal radius");
+    assert!(!brakes(&mut o, 1.69, 0.6, near), "moving away at 0.6 >= 0.5 m/s");
+    o.set_params(ObstacleParams { brake_decel: 0.0, ..ObstacleParams::default() });
+    assert!(!brakes(&mut o, 1.69, 0.0, near), "mod switch off");
+}
