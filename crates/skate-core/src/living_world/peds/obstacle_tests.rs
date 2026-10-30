@@ -324,7 +324,7 @@ fn a_ped_side_steps_a_skater_up_to_three_seconds_ahead() {
     let a = o.side_step(p, v, r, Ignore::default());
     assert!((a[0] - 3.9).abs() < 1e-4 && a[1].abs() < 1e-6, "dead ahead -> left (+x when facing +z): {a:?}");
     assert_eq!(o.side_step(p, v, r, Ignore { id: None, skaters: true }), [0.0; 2], "SkaterAvoidance off");
-    o.update(&[skater(0.0, 5.0, [0.0; 3])]);
+    o.update(&[skater(0.0, 5.5, [0.0; 3])]);
     assert_eq!(o.side_step(p, v, r, Ignore::default()), [0.0; 2], "contact later than 3 s");
     o.update(&[skater(0.0, 0.6, [0.0; 3])]);
     assert_eq!(o.side_step(p, v, r, Ignore::default()), [0.0; 2], "already touching: the contact slide's job");

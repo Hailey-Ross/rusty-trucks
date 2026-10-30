@@ -60,6 +60,10 @@ pub struct ObstacleParams {
     /// `0x821161AC` = 0.7].
     pub avoid_head_on_dot: f32,
     pub avoid_crossing_dot: f32,
+    /// A moving avoider's extents `{a, t a, t a}`, `a = avoid_scale x avoider_extent`, summed into its radius whatever
+    /// the box (`82C477B0`: [code `0x820C6D98` = 0.25, `0x82099280` = 0.2], sum 0.455 at scale 1.3).
+    pub avoider_extent: f32,
+    pub avoider_extent_tail: f32,
 }
 
 /// Obstacle ids of player skaters (`SKATER_OBSTACLE_BASE + player index`); always moving avoiders.
@@ -81,7 +85,7 @@ impl Ignore {
 
 impl Default for ObstacleParams {
     fn default() -> Self {
-        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, target_snap: 0.5, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3], contact_slide: 0.7, contact_slide_dot: -0.3, avoid_horizon: 3.0, avoid_ray_scale: 0.99, avoid_accel: 3.0, avoid_scale: 1.3, avoid_head_on_dot: -0.7, avoid_crossing_dot: 0.7 }
+        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, target_snap: 0.5, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3], contact_slide: 0.7, contact_slide_dot: -0.3, avoid_horizon: 3.0, avoid_ray_scale: 0.99, avoid_accel: 3.0, avoid_scale: 1.3, avoid_head_on_dot: -0.7, avoid_crossing_dot: 0.7, avoider_extent: 0.25, avoider_extent_tail: 0.2 }
     }
 }
 
@@ -504,6 +508,7 @@ impl NavObstacles {
         }
         let cross = |a: [f32; 2], b: [f32; 2]| a[0] * b[1] - a[1] * b[0];
         let me = [p[0], p[2]];
+        let r_sum = radius + pr.avoid_scale * pr.avoider_extent * (1.0 + 2.0 * pr.avoider_extent_tail);
         let mut best: Option<(f32, [f32; 2], [f32; 2])> = None;
         for (_, s) in self.moving_avoiders(ignore) {
             if !s.now.applies(p[1], pr.step_height) {
@@ -511,7 +516,6 @@ impl NavObstacles {
             }
             let dv = [s.velocity[0] - v[0], s.velocity[1] - v[1]];
             let dvl = dv[0].hypot(dv[1]);
-            let r_sum = radius + s.now.half[0].hypot(s.now.half[1]);
             let rel = [s.now.center[0] - me[0], s.now.center[1] - me[1]];
             let dist2 = rel[0] * rel[0] + rel[1] * rel[1];
             if dvl <= 0.0 || dist2 < r_sum * r_sum {
