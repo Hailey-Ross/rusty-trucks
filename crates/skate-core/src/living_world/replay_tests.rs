@@ -361,6 +361,53 @@ fn the_physics_tier_falls_back_to_the_nearest_free_start_at_any_distance_like_su
     assert_eq!(choose_next_line(&alone, &alone[&id(1)], &fb), None);
 }
 
+/// b701 R9 / R10: a simulated skater searches from its body point; with no hit the nearest invalid start wins over a
+/// valid one at least 6 m away, a valid one nearer than 6 m wins, and with no valid line the nearest invalid.
+#[test]
+fn the_line_end_search_starts_at_the_body_and_falls_back_like_mode_1() {
+    let players: [Vec3; 0] = [];
+    let end = along(1, [0.0; 3], [0.0, 1.0], 21);
+    // Line 2 starts 3.9 m from the body point (0, 0, 24) but 6 m from the last node (0, 0, 20).
+    let ahead = along(2, [0.0, 0.0, 26.0], [0.0, 1.0], 10);
+    let ls = lines(vec![end.clone(), ahead]);
+    let at = ctx([0.0, 0.0, 20.0], &players);
+    assert_eq!(choose_next_line(&ls, &ls[&id(1)], &at), None, "6 m from the last node");
+    let body = BranchContext { body: Some(BodyGate { point: [0.0, 0.0, 22.2], may_branch: true }), ..at };
+    assert_eq!(choose_next_line(&ls, &ls[&id(1)], &body), Some((id(2), 0)), "3.8 m from the body point");
+    // Fallback: line 3 (valid) 10 m away, line 5 (invalid) 8 m away.
+    let valid = [id(3)];
+    let fb = BranchContext { chain: ChainConfig { fallback: true, ..ChainConfig::retail() }, valid_lines: Some(&valid), ..at };
+    let far = lines(vec![end.clone(), along(3, [10.0, 0.0, 20.0], [0.0, 1.0], 10), along(5, [8.0, 0.0, 20.0], [0.0, 1.0], 10)]);
+    assert_eq!(choose_next_line(&far, &far[&id(1)], &fb), Some((id(5), 0)), "invalid nearer, valid >= 6 m");
+    let near = lines(vec![end.clone(), along(3, [5.0, 0.0, 20.0], [0.0, 1.0], 10), along(5, [4.5, 0.0, 20.0], [0.0, 1.0], 10)]);
+    assert_eq!(choose_next_line(&near, &near[&id(1)], &fb), Some((id(3), 0)), "valid under 6 m");
+    let none_valid = lines(vec![end, along(5, [9.0, 0.0, 20.0], [0.0, 1.0], 10)]);
+    assert_eq!(choose_next_line(&none_valid, &none_valid[&id(1)], &fb), Some((id(5), 0)), "no valid line");
+}
+
+/// b701 2d: a simulated cursor (body gate set) holds on the last node with nothing to chain to; the replay tier ends.
+#[test]
+fn a_simulated_cursor_holds_at_a_dead_end_and_the_replay_tier_finishes() {
+    let players: [Vec3; 0] = [];
+    let ls = lines(vec![along(1, [0.0; 3], [0.0, 1.0], 3)]);
+    let at = ctx([0.0, 0.0, 2.0], &players);
+    let body = BranchContext { body: Some(BodyGate { point: [0.0, 0.0, 2.0], may_branch: true }), ..at };
+    let mut held = LineCursor::new(id(1), 0);
+    let mut out = Vec::new();
+    for _ in 0..400 {
+        held.step(&ls, &mut Decider::Decide(body), &mut out);
+    }
+    assert!(!held.finished && !out.iter().any(|e| matches!(e, CursorEvent::Finished)));
+    let frames = held.frames;
+    held.step(&ls, &mut Decider::Decide(body), &mut out);
+    assert_eq!(held.frames, frames, "no progress while held");
+    let mut replay = LineCursor::new(id(1), 0);
+    for _ in 0..400 {
+        replay.step(&ls, &mut Decider::Decide(at), &mut out);
+    }
+    assert!(replay.finished);
+}
+
 #[test]
 fn npc_skater_keeps_riding_a_seeded_line_network_for_minutes() {
     use crate::living_world::rng::Rng;
