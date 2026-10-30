@@ -241,6 +241,14 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.moving_solid = f.moving_solid.unwrap_or(c.moving_solid);
         c.skaters = f.skaters.unwrap_or(c.skaters);
         c.skater_half_extents = f.skater_half_extents.map_or(c.skater_half_extents, |v| v.map(|x| x.max(0.0)));
+        c.contact_slide = f.contact_slide.map_or(c.contact_slide, |v| v.max(0.0));
+        c.contact_slide_dot = f.contact_slide_dot.map_or(c.contact_slide_dot, |v| v.clamp(-1.0, 1.0));
+        c.avoid_horizon = f.avoid_horizon.map_or(c.avoid_horizon, |v| v.max(0.0));
+        c.avoid_ray_scale = f.avoid_ray_scale.map_or(c.avoid_ray_scale, |v| v.max(0.0));
+        c.avoid_accel = f.avoid_accel.map_or(c.avoid_accel, |v| v.max(0.0));
+        c.avoid_scale = f.avoid_scale.map_or(c.avoid_scale, |v| v.max(0.0));
+        c.avoid_head_on_dot = f.avoid_head_on_dot.map_or(c.avoid_head_on_dot, |v| v.clamp(-1.0, 1.0));
+        c.avoid_crossing_dot = f.avoid_crossing_dot.map_or(c.avoid_crossing_dot, |v| v.clamp(-1.0, 1.0));
     }
     if let Some(v) = p.on_foot_vehicle_ground {
         s.on_foot_vehicle_ground = v;
@@ -677,7 +685,11 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                     "moving_speed": s.ped_obstacles.moving_speed, "recut_fraction": s.ped_obstacles.recut_fraction,
                     "detour_margin": s.ped_obstacles.detour_margin, "target_snap": s.ped_obstacles.target_snap, "step_height": s.ped_obstacles.step_height,
                     "held_is_obstacle": s.ped_obstacles.held_is_obstacle, "moving_solid": s.ped_obstacles.moving_solid,
-                    "skaters": s.ped_obstacles.skaters, "skater_half_extents": s.ped_obstacles.skater_half_extents},
+                    "skaters": s.ped_obstacles.skaters, "skater_half_extents": s.ped_obstacles.skater_half_extents,
+                    "contact_slide": s.ped_obstacles.contact_slide, "contact_slide_dot": s.ped_obstacles.contact_slide_dot,
+                    "avoid_horizon": s.ped_obstacles.avoid_horizon, "avoid_ray_scale": s.ped_obstacles.avoid_ray_scale,
+                    "avoid_accel": s.ped_obstacles.avoid_accel, "avoid_scale": s.ped_obstacles.avoid_scale,
+                    "avoid_head_on_dot": s.ped_obstacles.avoid_head_on_dot, "avoid_crossing_dot": s.ped_obstacles.avoid_crossing_dot},
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
                 "ped_body": {"enabled": s.ped_body.enabled, "look_ahead": s.ped_body.look_ahead, "range": s.ped_body.range,
                     "reaction_part": s.ped_body.reaction_part,
