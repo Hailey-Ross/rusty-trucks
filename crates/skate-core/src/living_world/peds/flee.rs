@@ -10,11 +10,13 @@ pub struct FleeParams {
     pub arrival_radius: f32,
     pub threat_speed_gate: f32,
     pub side_blend: f32,
+    /// A new leg when the bot is done short of the goal (`82E2CB08`, b697).
+    pub releg_on_nav_done: bool,
 }
 
 impl Default for FleeParams {
     fn default() -> Self {
-        Self { leg: 15.0, arrival_radius: 2.0, threat_speed_gate: 1.0, side_blend: 0.5 }
+        Self { leg: 15.0, arrival_radius: 2.0, threat_speed_gate: 1.0, side_blend: 0.5, releg_on_nav_done: true }
     }
 }
 

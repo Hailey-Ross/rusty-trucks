@@ -389,6 +389,12 @@ whether it then stands or jogs in place is not checked.
 **Verification.** skate-core `a_flee_goal_stays_behind_a_wall_and_moves_off_an_island`; skate-mods
 `valid_patch` asserts for the new keys. Not play-checked.
 
+### Flee re-leg when the path ends (2026-10-29, ask 430)
+Problem: a ped fleeing a pushed bench was blocked by the player 6.5 m short of its leg goal and stood there 45 s in Fleeing (session 2026-10-29, ped #163); ours asked for a new leg only on arrival within 2 m.
+Retail [code, research b697, main re-read `82E2CB08` in the recomp]: besides the arrival test (`82E2BC70`), the mover's per-tick update `82E2CB08` asks the goal provider for a new goal when the bot is done (`82E96728`: no path, or the path's end reached) and the mover's vfn 0xA0 returns 0; for Flee that is the flee goal vfn `82E31818`. There is no timer and no blocked-by-a-body rule; the 4-corner steer loop in `82E2C0C8` is the vehicle avoidance modifier, not used here.
+Ours: `PedNav::route_done` (skate-core `peds/wander.rs`) is set when a planned route's path ended or failed; `think_peds` gives a new leg on arrival or `route_done`. Mod key `ped_brain.flee_releg_on_nav_done` (retail true, doc 26a).
+Open: a ped pinned by a standing or moving skater with its path unfinished still presses on: how retail's walking path controller (`82EA0808`) steers round NavPower moving avoiders is not decoded (b697 open 1; next research b698).
+
 ## Peds speak from their AI graph (2026-10-09)
 
 **Retail [code] (`.local/research/peds/b9-ped-speech-events.md`; main checked every address below in the TU3

@@ -1018,6 +1018,12 @@ impl GamePhysics {
         }
     }
 
+    /// A context whose tick failed part-way: forget the query batches it started, so the next owner of the pooled body
+    /// starts its own (docs/hails-additions/26c-living-world-npc-skaters.md#failed-tick-leaves-queries).
+    pub(crate) fn abandon_context_queries(context: &mut SkaterPhysicsContext) {
+        context.riding.abandon_queries();
+    }
+
     /// AI spawn push without a read acceleration (outcome-matched, b194): docs/hails-additions/27-dynamic-props.md#spawn-push-acceleration
     pub(crate) fn push_context_velocity(context: &mut SkaterPhysicsContext, velocity: [f32; 3]) {
         Self::set_context_velocity(context, velocity);

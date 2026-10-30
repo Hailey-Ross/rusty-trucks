@@ -343,6 +343,8 @@ pub struct PedBrainPatch {
     pub flee_arrival_radius: Option<f32>,
     pub flee_threat_speed_gate: Option<f32>,
     pub flee_side_blend: Option<f32>,
+    /// A new flee leg when the ped's path ends or fails short of the goal (retail, true).
+    pub flee_releg_on_nav_done: Option<bool>,
 }
 
 /// The names `PedBrainPatch::trip_kind` / `trip_direction` take (skate-core `ReactionKind` / `ReactionDirection`).
@@ -1050,7 +1052,7 @@ impl Merge for NpcSimulatedPatch {
 
 impl Merge for PedBrainPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, unreachable_radius, reach_check_seconds, reach_snap_window, scatter_seconds, scatter_hold, run_from_honker_distance, run_from_honker_speed, warn_speech, water_disables_seats, water_max_depth, water_above, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed, zombie_arrive_distance, trip_kind, trip_direction, skater_avoid_sense, skater_avoid_min_speed, skater_avoid_look_ahead, skater_avoid_radius, skater_avoid_jump_radius, skater_avoid_jump_speed, skater_avoid_sector, skater_avoid_period, skater_avoid_standing, object_flee, object_flee_radius, object_flee_min_speed, object_flee_lane_margin, vehicle_flee, vehicle_flee_radius, vehicle_flee_min_dot, vehicle_flee_away, vehicle_flee_toward, flee_leg, flee_arrival_radius, flee_threat_speed_gate, flee_side_blend);
+        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, unreachable_radius, reach_check_seconds, reach_snap_window, scatter_seconds, scatter_hold, run_from_honker_distance, run_from_honker_speed, warn_speech, water_disables_seats, water_max_depth, water_above, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed, zombie_arrive_distance, trip_kind, trip_direction, skater_avoid_sense, skater_avoid_min_speed, skater_avoid_look_ahead, skater_avoid_radius, skater_avoid_jump_radius, skater_avoid_jump_speed, skater_avoid_sector, skater_avoid_period, skater_avoid_standing, object_flee, object_flee_radius, object_flee_min_speed, object_flee_lane_margin, vehicle_flee, vehicle_flee_radius, vehicle_flee_min_dot, vehicle_flee_away, vehicle_flee_toward, flee_leg, flee_arrival_radius, flee_threat_speed_gate, flee_side_blend, flee_releg_on_nav_done);
     }
 }
 
