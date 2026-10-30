@@ -861,7 +861,7 @@ fn living_world_npc_trick_jump_has_no_pose_pop() {
             .iter()
             .map(|&(phase, since)| PhaseEntry { phase, since, trick: if matches!(phase, ReplayPhase::GroundTrick | ReplayPhase::AirTrick) { trick } else { -1 } })
             .collect();
-        let resolve = |e: PhaseEntry, o: Option<PhaseEntry>| puppet_layer_clip(&none_clips, &none_blends, "Normal", &evaluates, &stock, e, o);
+        let resolve = |e: PhaseEntry, o: Option<PhaseEntry>| puppet_layer_clip(&none_clips, &none_blends, "Normal", &evaluates, &stock, &|_| None, e, o);
         // Phases begun up to frame `f` (`upto` = f) or before it (`upto` = f - 1: what showed
         // before a change at f, still playing at f).
         let history = |f: u64, upto: u64, keep: usize| -> Vec<(PhaseEntry, f32)> {
@@ -919,6 +919,72 @@ fn living_world_npc_trick_jump_has_no_pose_pop() {
     assert!(worst.1 > 0.05, "the old blend popped on this timeline ({} m)", worst.1);
 }
 
+
+/// Data-gated (grabs port, b691): the score name index of the stock motion graph names the trees retail plays per
+/// grab / grind id, and every one is a stock tree.
+#[test]
+fn living_world_npc_score_clips_index_the_stock_graph() {
+    let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from).filter(|r| r.join("private/stock/data/anim/OnBoard.abin").exists()) else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+        return;
+    };
+    let assets = skate_data::GameAssets::load(&root).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(&root, &assets).unwrap();
+    let index = crate::graph_host::motion::stock_score_clips(&graphs.motion.source);
+    let (_, meta) = stock_evaluator().unwrap();
+    // The slot ids b691 lists: air / ground grabs, grinds, slides.
+    let names = ["fsgrab", "fsgrab_up", "bsgrab", "bsgrab_left", "mutegrab", "stalegrab", "dblgrab", "seatbeltgrab", "rocketair", "nosegrab_airwalk", "superman", "gnd_fsgrab", "gnd_bsgrab", "gnd_dblgrab", "coffin", "fs_50_50", "bs_5_o", "fs_overcrook", "bs_noseslide", "fs_crook_tailgrab"];
+    let missing: Vec<_> = skate_core::scoring::catalog::IDENTIFIERS.iter().filter(|e| matches!(e.2, 4 | 5) && !index.contains_key(e.0)).map(|e| e.0).collect();
+    for n in names {
+        eprintln!("{n}: {:?}", index.get(n));
+    }
+    eprintln!("score names {}; category 4 / 5 ids not indexed: {missing:?}", index.len());
+    for c in index.values() {
+        for t in [c.into.as_deref(), Some(c.cyc.as_str()), c.out.as_deref()].into_iter().flatten() {
+            assert!(meta.tree(t).is_ok(), "{t} is a stock tree");
+        }
+    }
+    let get = |n: &str| index.get(n).unwrap_or_else(|| panic!("{n} indexed"));
+    let fs = get("fsgrab");
+    assert_eq!((fs.into.as_deref(), fs.cyc.as_str(), fs.out.as_deref()), (Some("GR_GRAB_N_FS_0_INTO"), "BLEND_FS_TWEAK2", Some("GR_GRAB_N_FS_0_OUT")));
+    assert_eq!(get("fsgrab_up").direction, Some("up"));
+    assert_eq!(get("bsgrab").cyc, "BLEND_BS_TWEAK");
+    let gnd = get("gnd_bsgrab");
+    assert_eq!((gnd.into.as_deref(), gnd.cyc.as_str(), gnd.out.as_deref()), (Some("BLEND_BSGRAB_INTO"), "BLEND_BSGRAB", Some("B_BSGRAB_OUT")));
+    assert_eq!(get("fs_50_50").cyc, "B_GRIND5050");
+    assert_eq!(get("fs_overcrook").cyc, "B_BS_GRINDCROOKS");
+    assert_eq!(get("fs_crook_tailgrab").cyc, "G_CROOKS_FS_GRAB_TAIL_CYC");
+}
+
+/// Data-gated (grabs port): the clips a grab / grind slot shows, from the score index and the leaf picker.
+#[test]
+fn living_world_npc_grab_and_grind_slots_play_their_scored_trees() {
+    use skate_core::living_world::replay::PhaseEntry;
+    let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from).filter(|r| r.join("private/stock/data/anim/OnBoard.abin").exists()) else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+        return;
+    };
+    let assets = skate_data::GameAssets::load(&root).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(&root, &assets).unwrap();
+    let index = crate::graph_host::motion::stock_score_clips(&graphs.motion.source);
+    let (evaluator, meta) = stock_evaluator().unwrap();
+    let leaf = |n: &str, t: &[(&str, f32)]| stock_tree_leaf_at(&meta, n, t).filter(|c| evaluator.clip_length(c).is_ok());
+    let id = |n: &str| skate_core::scoring::catalog::IDENTIFIERS.iter().position(|e| e.0 == n).unwrap() as i16;
+    let clip = |n: &str, phase: ReplayPhase| scored_trick_clip(&index, &leaf, PhaseEntry { phase, since: 0, trick: id(n) }).map(|(c, _)| c);
+    for n in ["fsgrab", "fsgrab_up", "bsgrab", "nosegrab", "tailgrab", "mutegrab", "stalegrab", "dblgrab", "rocketair", "christ_air", "superman", "gnd_bsgrab", "coffin"] {
+        eprintln!("{n}: air {:?} takeoff {:?}", clip(n, ReplayPhase::AirTrick), clip(n, ReplayPhase::GroundTrick));
+    }
+    for n in ["fs_50_50", "bs_5_o", "fs_overcrook", "bs_noseslide", "fs_crook_tailgrab"] {
+        eprintln!("{n}: {:?}", clip(n, ReplayPhase::GroundTrick));
+    }
+    let last = |c: Option<String>| c.and_then(|c| c.rsplit('+').next().map(str::to_owned));
+    assert_eq!(last(clip("fsgrab", ReplayPhase::AirTrick)).as_deref(), Some("GR_GRAB_N_FS_0_CYC"));
+    assert_eq!(last(clip("fsgrab_up", ReplayPhase::AirTrick)).as_deref(), Some("GR_NBONE_N_FS_0_CYC"));
+    assert!(clip("fsgrab", ReplayPhase::GroundTrick).unwrap().starts_with("OLLIE"), "an air grab takes off with the ollie");
+    assert_eq!(last(clip("gnd_bsgrab", ReplayPhase::GroundTrick)).as_deref(), Some("GR_GROUND_N_BS_0_CYC"));
+    assert_eq!(clip("fs_50_50", ReplayPhase::GroundTrick).as_deref(), Some("G_5050_FS_LOW_0_CYC"));
+    assert_eq!(clip("fs_50_50", ReplayPhase::AirTrick), None, "a grind's hop off keeps the trick clip rules");
+}
 
 /// Data-gated (stance port): the puppet's fakie rule is the stock motion graph's
 /// `UpdateRidingFakie` (every node carries the thresholds `ChainConfig::retail().fakie` uses), and

@@ -385,10 +385,31 @@ the graph eases them in (0.116 / 0.133 s, board adjust 0.25 / 0.08). Open before
 tweak-only AI nosegrab would play a BS grab tweaked down (only BoardAdjust enters the nose / tail / crail states); a
 data-gated graph_host test feeding the nosegrab schedule would settle it.
 
-**Open.** Grabs show the ollie (retail adds the grab from the action graph,
-`T_Grab.xml`); grind / slide / manual spans still show one 50-50 clip (the slot names the grind: next step); spins
-(`spins` byte) and landing clips (`B_LAND_*`, 0.15 s) are not played; the per-skater `PROSKATER` selector takes the
-default branch.
+**Grabs and grinds ported (2026-10-29).** A grab slot (catalog category 4) and a grind / slide slot (category 5)
+now play the trees of the stock motion graph state that scores them:
+- Index ([Score clips](#score-clips)): every `ScoringGrabs` / `ScoringTrick` name of the loaded motion graph -> its
+  INTO / CYC / OUT trees (312 names; every category 4 / 5 id the lines use).
+- Which grab the AI reaches ([NPC grab scores](#npc-grab-scores)): the open question above is settled for our graph
+  port. `air_playback.rs` `ai_nosegrab_schedule_through_stock_graphs` posts the nosegrab schedule through
+  `slot_signals` into an airborne player: the graphs go to `GR_GRAB_N_BS_0_INTO` then `BLEND_BS_TWEAK`, score
+  `bsgrab_down`, never a nosegrab clip. `ai_grab_schedules_through_stock_graphs` runs every category 4 schedule the
+  same way; 33 grabs score another grab (nosegrab -> bsgrab_down = the BS japan, tailgrab -> bsgrab_up = melon,
+  stale / crail -> FS tweaks, rocketair -> dblgrab, seatbelt -> bsgrab, the airwalks -> christ_air). The puppet's
+  table is asserted against that run.
+- Clips: air grabs take off with the ollie's `_G`, then INTO + CYC as a sequence (CYC loops); started in the air,
+  INTO + CYC 0.1 s in; ground grabs (gnd_*, coffin) on the ground play their own INTO + CYC (0.1 s,
+  `GroundGrabs/T_Grab.xml`); grinds / slides their CYC tree, 0.3 s in (`T_Grind.xml`). Blend spaces and phase blends
+  take the child nearest the score's unit tweak (`_up` (0, 1) ... base (0, 0)); grinds the neutral TWIST child and
+  the DISTTOCOG low end (fs_50_50 still `G_5050_FS_LOW_0_CYC`; others no longer fall back to it).
+- Mods: `skater_clips["trick.<name>"]` still overrides; a graph mod changes the index (built from the loaded graph,
+  resource `NpcScoreClips`). Data-gated tests `living_world_npc_score_clips_index_the_stock_graph`,
+  `living_world_npc_grab_and_grind_slots_play_their_scored_trees`.
+
+**Open.** Tweaks and grind twist are the settled vertex, not the graph's eased blend (attribute trees through
+`tree_commands`: next step); the release OUT clips are not played; a mirrored NPC's hands are not swapped (the action
+graph's `IsMirrored` branch of `T_Grab.xml`); the ground part of an air grab slot before takeoff shows the ollie
+(retail posts the ground grab inputs there too: unchecked); manuals keep the phase clip; spins (`spins` byte) and
+landing clips (`B_LAND_*`, 0.15 s) are not played; the per-skater `PROSKATER` selector takes the default branch.
 
 ## Silent landings (NPC skater sounds filled the voice cap), 2026-10-07
 
@@ -817,6 +838,23 @@ The stock trick animation base a recorded trick slot plays (`<base>_G` on the gr
 ### Puppet layer clip
 
 The clip a remembered phase shows and its transition time (`older` = the phase before it): a trick span with a trick animation plays `<base>_G` then `<base>_A` from the ground (0.05 s in), or `<base>_A` alone when it starts in the air (0.1 s in); the air after an air trick keeps the clip (one layer); everything else the phase's puppet clip with its blend time. A clip that does not evaluate (`evaluates` false) falls back to the shipped phase pick; trick names go through `stock` (authored tree name -> playable clip, [`stock_tree_leaf`]).
+
+### Score clips
+
+`graph_host::motion::stock_score_clips`: each `ScoringGrabs` (`grabName` and its `up` / `left` / `down` / `right`
+names, with that direction) or `ScoringTrick` (`trick`) behaviour of the loaded motion graph, keyed by the lower-case
+name, gives the trees of the state that owns it: the state's own `PlayAnimation` (grinds, slides); when that state is
+a `Cyc` / `Cycle`, the `Into` / `Out` siblings too (air grabs, board adjust grabs); a state without its own tree uses
+its `<X>Into` / `<X>Cyc` / `<X>Out` children (ground grabs). First in graph order wins, except that a transition state
+(`Into` / `Out`) names a score only when no other state does: a grind's grab `Into` also scores the grind
+(`T_GrindGrabs.xml`), which otherwise gave every grind its grab's INTO clip.
+
+### NPC grab scores
+
+`npc_skaters::RETAIL_GRAB_SCORES` / `retail_grab_score`: the grab score the stock graphs reach for each category 4
+schedule (see the 2026-10-29 paragraph above), ground grabs keeping their own score on the ground;
+`scored_trick_clip` turns it into the clip sequence through the index and `stock_tree_leaf_at` (blend space / phase
+blend -> nearest child by its clip's attribute value; sub-tree children by rank).
 
 ### Trick air sequence
 
