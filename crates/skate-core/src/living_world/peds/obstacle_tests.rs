@@ -383,3 +383,54 @@ fn a_ped_inside_a_fresh_cut_can_walk_out_toward_the_nearest_free_point() {
     assert!(o.step_ok(ped, step, radius), "walking out is allowed");
     assert!(!o.step_ok(ped, [0.25, 0.0, 0.08], radius), "walking further in is not");
 }
+
+/// Research b716 (`82E9DF70`, recomp trace 2026-10-30): the path turn term pulls the side-step's sideways velocity back
+/// every tick, so at walking speed (2 m/s, the centripetal limit above the side-step's 3.9) it settles near
+/// `a x controller_step` instead of growing, and it drains within a few ticks once nothing pushes.
+#[test]
+fn the_path_turn_holds_a_side_step_near_one_controller_step_of_push() {
+    let o = NavObstacles::new(ObstacleParams::default());
+    let (base, speed, dt, a) = ([0.0, 1.0], 2.0, 1.0 / 60.0, 3.9);
+    let mut sv = [0.0f32; 2];
+    for _ in 0..180 {
+        sv = [sv[0] + a * dt, sv[1]];
+        sv = o.path_turn(sv, base, speed, dt);
+    }
+    assert!(sv[0] > 0.05 && sv[0] < 0.2, "settles near 3.9 / 30 = 0.13 m/s: {sv:?}");
+    // Retail's 1 / 30 s controller step removes it in one step; our 60 Hz tick halves it each tick (gone in ~0.1 s).
+    for _ in 0..6 {
+        sv = o.path_turn(sv, base, speed, dt);
+    }
+    assert!(sv[0].abs() < 3e-3, "gone once nothing pushes: {sv:?}");
+    // Standing still: no turn (the centripetal limit is 0), the old fade's job is gone.
+    assert_eq!(o.path_turn([0.1, 0.0], base, 0.0, dt), [0.1, 0.0]);
+    // A mod can switch the pull-back off.
+    let off = NavObstacles::new(ObstacleParams { path_turn_accel: 0.0, ..ObstacleParams::default() });
+    assert_eq!(off.path_turn([0.1, 0.0], base, speed, dt), [0.1, 0.0]);
+}
+
+/// Research b717 / b718 (`82E9D0C0`, the recomp's compare re-read by main): the contact slide's speed tests. A body
+/// moving away along the slide direction at half the path speed (2 m/s) or more gets push-out only; a ped at or below
+/// half its path speed takes its direction from its steer target, a faster one from its velocity.
+#[test]
+fn the_contact_slide_tests_the_avoiders_speed_and_a_slow_peds_steer_target() {
+    use super::obstacles::Contact;
+    let h = ObstacleParams::default().skater_half_extents;
+    let skater = |v: [f32; 3]| ObstacleInput { id: SKATER_OBSTACLE_BASE, center: [0.0, h[1], 0.0], axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], half_extents: h, velocity: v, inactive: false, held: false };
+    let (from, to, r) = ([-0.66, 0.0, 0.0], [-0.6, 0.0, 0.0], 0.35);
+    let fast = Contact { velocity: Some([1.4, 0.0]), target: Some([5.0, 0.0]) };
+    let mut o = NavObstacles::new(ObstacleParams::default());
+    o.update(&[skater([0.0; 3])]);
+    let slid = o.resolve_step_contact(from, to, r, Ignore::default(), fast).unwrap();
+    assert!(slid[2].abs() > 1e-3, "a standing skater: slide round it {slid:?}");
+    o.update(&[skater([1.5, 0.0, 0.0])]);
+    o.update(&[skater([1.5, 0.0, 0.0])]);
+    let pushed = o.resolve_step_contact(from, to, r, Ignore::default(), fast).unwrap_or(from);
+    assert!(pushed[2].abs() < 1e-4, "moving away at 1.5 >= 1.0 m/s: push-out only {pushed:?}");
+    // Slow (0.5 <= 1.0 m/s) with its steer target off to the side: not heading into the skater, no slide.
+    o.update(&[skater([0.0; 3])]);
+    o.update(&[skater([0.0; 3])]);
+    let slow = Contact { velocity: Some([0.5, 0.0]), target: Some([-0.66, 5.0]) };
+    let held = o.resolve_step_contact(from, to, r, Ignore::default(), slow).unwrap_or(from);
+    assert!(held[2].abs() < 1e-4, "steer target across: no slide {held:?}");
+}

@@ -64,6 +64,28 @@ pub struct ObstacleParams {
     /// the box (`82C477B0`: [code `0x820C6D98` = 0.25, `0x82099280` = 0.2], sum 0.455 at scale 1.3).
     pub avoider_extent: f32,
     pub avoider_extent_tail: f32,
+    /// The path turn term that pulls a ped's sideways velocity back every controller step (`82E9DF70`, research
+    /// b716): m/s^2 (`settings+0x2C`, retail 40).
+    pub path_turn_accel: f32,
+    /// Full turn from this heading error, degrees (5); below it the turn scales with the error.
+    pub path_turn_full_deg: f32,
+    /// Above this error the turn is boosted (10 degrees) by `path_turn_boost_rate` per radian (4.5837) up to
+    /// `path_turn_boost_max` times (5); no turn at or above `path_turn_max_deg` (120).
+    pub path_turn_boost_deg: f32,
+    pub path_turn_boost_rate: f32,
+    pub path_turn_boost_max: f32,
+    pub path_turn_max_deg: f32,
+    /// The turn never exceeds the centripetal limit `v^2 / (2 r)` (`settings+0x08`, 0.35 m).
+    pub path_turn_radius: f32,
+    /// The controller's fixed step (`f1`, 1 / 30 s): the turn removes at most the sideways speed over one step.
+    pub controller_step: f32,
+    /// The contact slide's speed tests (`82E9D0C0`, research b717 / b718): a ped at or below this fraction (0.5,
+    /// `0x8209975C`) of its path speed slides toward its steer target, faster along its velocity; and a body moving
+    /// away along that direction at this fraction of the path speed or more gets no slide (push-out only).
+    pub contact_slow_fraction: f32,
+    /// The ped's path speed `S` (`settings+0` x agent `+0x14C` x `+0x144`): 2.0 m/s for walking peds (1.0 on some legs;
+    /// run / flee not traced).
+    pub contact_max_speed: f32,
 }
 
 /// Obstacle ids of player skaters (`SKATER_OBSTACLE_BASE + player index`); always moving avoiders.
@@ -85,7 +107,7 @@ impl Ignore {
 
 impl Default for ObstacleParams {
     fn default() -> Self {
-        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, target_snap: 0.5, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3], contact_slide: 0.7, contact_slide_dot: -0.3, avoid_horizon: 3.0, avoid_ray_scale: 0.99, avoid_accel: 3.0, avoid_scale: 1.3, avoid_head_on_dot: -0.7, avoid_crossing_dot: 0.7, avoider_extent: 0.25, avoider_extent_tail: 0.2 }
+        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, target_snap: 0.5, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3], contact_slide: 0.7, contact_slide_dot: -0.3, avoid_horizon: 3.0, avoid_ray_scale: 0.99, avoid_accel: 3.0, avoid_scale: 1.3, avoid_head_on_dot: -0.7, avoid_crossing_dot: 0.7, avoider_extent: 0.25, avoider_extent_tail: 0.2, path_turn_accel: 40.0, path_turn_full_deg: 5.0, path_turn_boost_deg: 10.0, path_turn_boost_rate: 4.5837, path_turn_boost_max: 5.0, path_turn_max_deg: 120.0, path_turn_radius: 0.35, controller_step: 1.0 / 30.0, contact_slow_fraction: 0.5, contact_max_speed: 2.0 }
     }
 }
 
@@ -232,6 +254,14 @@ pub struct NavObstacles {
 
 fn cell_of(x: f32) -> i32 {
     (x / CELL).floor() as i32
+}
+
+
+/// The ped's own motion for the contact slide's tests: its velocity (x, z) and its steer target (x, z).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Contact {
+    pub velocity: Option<[f32; 2]>,
+    pub target: Option<[f32; 2]>,
 }
 
 impl NavObstacles {
@@ -471,14 +501,22 @@ impl NavObstacles {
     /// `DisableCollisionsWithBehaviourSource` (`826A7378`, `82E3DB68` -> `ped+5916`) lets a ped reach a seat whose
     /// waypoint lies inside its own bench.
     pub fn resolve_step_ignoring(&self, from: Vec3, to: Vec3, radius: f32, ignore: Ignore) -> Option<Vec3> {
+        self.resolve_step_contact(from, to, radius, ignore, Contact::default())
+    }
+
+    /// [`NavObstacles::resolve_step_ignoring`] with the ped's own motion for the contact slide's tests.
+    pub fn resolve_step_contact(&self, from: Vec3, to: Vec3, radius: f32, ignore: Ignore, contact: Contact) -> Option<Vec3> {
         if self.step_ok_ignoring(from, to, radius, ignore) {
             return Some(to);
         }
         let r = radius + 0.01;
-        let mut blocking: Vec<(Footprint, bool)> = self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).into_iter().filter(|(id, _)| !ignore.skips(*id)).map(|(_, f)| (f, false)).collect();
-        blocking.extend(self.loose.iter().filter(|id| !ignore.skips(**id)).filter_map(|id| self.states.get(id).map(|s| (s.now, true))));
+        let mut blocking: Vec<(Footprint, Option<[f32; 2]>)> = self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).into_iter().filter(|(id, _)| !ignore.skips(*id)).map(|(_, f)| (f, None)).collect();
+        blocking.extend(self.loose.iter().filter(|id| !ignore.skips(**id)).filter_map(|id| self.states.get(id).map(|s| (s.now, Some(s.velocity)))));
         let (f, loose) = blocking.into_iter().find(|(f, _)| f.applies(to[1], self.params.step_height) && f.contains(to, radius) && !f.contains(from, radius))?;
-        let to = if loose { self.contact_slide(&f, from, to).unwrap_or(to) } else { to };
+        let to = match loose {
+            Some(v) => self.contact_slide(&f, from, to, v, contact).unwrap_or(to),
+            None => to,
+        };
         if !f.contains(to, radius) {
             return self.step_ok_ignoring(from, to, radius, ignore).then_some(to);
         }
@@ -553,8 +591,38 @@ impl NavObstacles {
         [u[1] * k, -u[0] * k]
     }
 
+    /// Retail's path turn term (`82E9DF70`, research b716) on the sideways velocity `sv` of a ped moving `speed` along
+    /// `base`: the heading error of `base * speed + sv` against `base` turns it back at `path_turn_accel` (scaled below
+    /// `path_turn_full_deg`, boosted above `path_turn_boost_deg`), never more than the sideways speed over one
+    /// controller step nor the centripetal limit. Returns the new `sv`: docs/hails-additions/26f-living-world-peds.md#predictive-side-step
+    pub fn path_turn(&self, sv: [f32; 2], base: [f32; 2], speed: f32, dt: f32) -> [f32; 2] {
+        let p = &self.params;
+        let l = sv[0].hypot(sv[1]);
+        if l <= 0.0 {
+            return sv;
+        }
+        let want = [base[0] * speed + sv[0], base[1] * speed + sv[1]];
+        let wl = want[0].hypot(want[1]);
+        let angle = if wl > 1e-6 { ((want[0] * base[0] + want[1] * base[1]) / wl).clamp(-1.0, 1.0).acos() } else { std::f32::consts::PI };
+        if angle >= p.path_turn_max_deg.to_radians() {
+            return sv;
+        }
+        let boost = ((angle - p.path_turn_boost_deg.to_radians()) * p.path_turn_boost_rate + 1.0).clamp(1.0, p.path_turn_boost_max.max(1.0));
+        let full = p.path_turn_full_deg.to_radians();
+        let scale = if full > 0.0 { (angle / full).min(1.0) } else { 1.0 };
+        let mut turn = p.path_turn_accel * boost * scale;
+        if p.controller_step > 0.0 {
+            turn = turn.min(l / p.controller_step);
+        }
+        if p.path_turn_radius > 0.0 {
+            turn = turn.min(speed * speed / (2.0 * p.path_turn_radius));
+        }
+        let cut = (turn * dt).min(l);
+        [sv[0] - sv[0] / l * cut, sv[1] - sv[1] / l * cut]
+    }
+
     /// Retail's contact slide round a moving body (`82E9D0C0`): docs/hails-additions/26f-living-world-peds.md#contact-slide
-    fn contact_slide(&self, f: &Footprint, from: Vec3, to: Vec3) -> Option<Vec3> {
+    fn contact_slide(&self, f: &Footprint, from: Vec3, to: Vec3, avoider: [f32; 2], contact: Contact) -> Option<Vec3> {
         let (dx, dz) = (to[0] - from[0], to[2] - from[2]);
         let len = dx.hypot(dz);
         let (nx, nz) = (from[0] - f.center[0], from[2] - f.center[1]);
@@ -562,9 +630,26 @@ impl NavObstacles {
         if self.params.contact_slide <= 0.0 || len < 1e-6 || nl < 1e-6 {
             return None;
         }
-        let (d, n) = ([dx / len, dz / len], [nx / nl, nz / nl]);
+        let unit = |v: [f32; 2]| {
+            let l = v[0].hypot(v[1]);
+            (l > 1e-6).then(|| [v[0] / l, v[1] / l])
+        };
+        // The direction (b717 / b718): toward the steer target at or below the slow fraction of the path speed, else
+        // along the velocity; the step itself without the ped's motion.
+        let slow = self.params.contact_slow_fraction * self.params.contact_max_speed;
+        let step = [dx / len, dz / len];
+        let d = match contact.velocity {
+            Some(v) if v[0].hypot(v[1]) <= slow => contact.target.and_then(|t| unit([t[0] - from[0], t[1] - from[2]])).unwrap_or(step),
+            Some(v) => unit(v).unwrap_or(step),
+            None => step,
+        };
+        let n = [nx / nl, nz / nl];
         let into = d[0] * n[0] + d[1] * n[1];
         if into >= self.params.contact_slide_dot {
+            return None;
+        }
+        // A body moving away along it at the slow fraction of the path speed or more: push-out only.
+        if avoider[0] * d[0] + avoider[1] * d[1] >= slow {
             return None;
         }
         // Tangent on the side the step already leans to; dead centre takes retail's fixed side.

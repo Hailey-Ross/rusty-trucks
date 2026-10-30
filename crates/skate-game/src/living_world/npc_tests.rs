@@ -1428,7 +1428,8 @@ fn npc_skaters_react_to_the_players_wipeout_near_them() {
     assert_eq!(read(&mut app), vec![(near, SkaterReaction::SlamB, 0)]);
 }
 
-/// Debug text without the `trick_since` fields (added after the goldens; the digests cover behaviour, not the layout).
+/// Debug text without the fields added after the goldens (`trick_since`, `tree`, `respawn`, `hold_at_end`; the digests
+/// cover behaviour, not the layout).
 fn without_trick_since(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -1470,7 +1471,7 @@ fn npc_frame_digest(posed_runtime: Option<crate::physics::SkaterRuntime>) -> (u6
         }
         a.update();
         let mut q = a.world_mut().query::<(&NpcSkater, &NpcReplay, Option<&NpcPuppetClip>, &Transform, Option<&NpcPuppet>)>();
-        let mut rows: Vec<_> = q.iter(a.world()).map(|(n, r, c, t, p)| (n.id, without_trick_since(&format!("{r:?}{c:?}").replace(", body_gate: None", "").replace(", tree: None", "")), bits(t), p.map(|p| p.joints()).unwrap_or_default())).collect();
+        let mut rows: Vec<_> = q.iter(a.world()).map(|(n, r, c, t, p)| (n.id, without_trick_since(&format!("{r:?}{c:?}").replace(", body_gate: None", "").replace(", tree: None", "").replace(", respawn: false", "").replace(", hold_at_end: false", "")), bits(t), p.map(|p| p.joints()).unwrap_or_default())).collect();
         rows.sort_by_key(|r| r.0);
         for (id, text, root, joints) in rows {
             mix(&mut h, format!("{id:?}").as_bytes());

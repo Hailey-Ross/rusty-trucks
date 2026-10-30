@@ -55,6 +55,10 @@ pub struct SkaterFadePatch {
     pub fade_in_seconds: Option<f32>,
     pub fade_seconds: Option<f32>,
     pub despawn_alpha: Option<f32>,
+    /// A bailed skater fades out before its respawn (retail true).
+    pub bail_fade: Option<bool>,
+    /// Seconds before the respawn that fade starts (retail 1.0).
+    pub bail_fade_lead_seconds: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -110,6 +114,8 @@ pub struct LivingWorldPatch {
     pub npc_walk_back: Option<NpcWalkBackPatch>,
     /// The NPC skaters' line controller (stuck tracker, re-snap, reposition, safe node).
     pub npc_line_controller: Option<NpcLineControllerPatch>,
+    /// The simulated NPC skaters' path follower: line end trigger and lost tests.
+    pub skater_path: Option<SkaterPathPatch>,
     /// The ped behaviour runtime (stock ped AI graph on each ped's brain).
     pub ped_brain: Option<PedBrainPatch>,
     /// Traffic horn values per driver record (`default`, `driver_fast`, `driver_normal`, `driver_reckless`,
@@ -502,6 +508,21 @@ pub struct PedObstaclesPatch {
     /// A moving avoider's extents `{a, t a, t a}`, `a = avoid_scale x avoider_extent` (0.25, t 0.2).
     pub avoider_extent: Option<f32>,
     pub avoider_extent_tail: Option<f32>,
+    /// The path turn term that pulls a side-step back (`82E9DF70`, research b716): accel m/s^2 (40), full below
+    /// `path_turn_full_deg` (5), boosted above `path_turn_boost_deg` (10) by `path_turn_boost_rate` per rad (4.5837) up
+    /// to `path_turn_boost_max` (5), none from `path_turn_max_deg` (120), capped by `v^2 / (2 path_turn_radius)` (0.35 m)
+    /// and the sideways speed over `controller_step` (1 / 30 s).
+    pub path_turn_accel: Option<f32>,
+    pub path_turn_full_deg: Option<f32>,
+    pub path_turn_boost_deg: Option<f32>,
+    pub path_turn_boost_rate: Option<f32>,
+    pub path_turn_boost_max: Option<f32>,
+    pub path_turn_max_deg: Option<f32>,
+    pub path_turn_radius: Option<f32>,
+    pub controller_step: Option<f32>,
+    /// The contact slide's speed tests: the slow fraction (0.5) of the path speed `contact_max_speed` (2.0 m/s).
+    pub contact_slow_fraction: Option<f32>,
+    pub contact_max_speed: Option<f32>,
 }
 
 /// NPC skater line end, facing rule and riding-fakie fields (`replay::ChainConfig`): docs/hails-additions/26a-living-world-overview.md#skater-line-chain-fields
@@ -519,6 +540,8 @@ pub struct SkaterLineChainPatch {
     pub fakie_low_speed: Option<f32>,
     pub fakie_slow_seconds: Option<f32>,
     pub fakie_spawn_seconds: Option<f32>,
+    /// The mode 1 fallback takes the nearest invalid start when the nearest valid one is at least this far (m).
+    pub fallback_valid_m: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -893,7 +916,7 @@ macro_rules! merge_opts {
 
 impl Merge for SkaterFadePatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; fade_in_seconds, fade_seconds, despawn_alpha);
+        merge_opts!(self, b; fade_in_seconds, fade_seconds, despawn_alpha, bail_fade, bail_fade_lead_seconds);
     }
 }
 impl Merge for PedNavPatch {
@@ -904,7 +927,7 @@ impl Merge for PedNavPatch {
 
 impl Merge for PedObstaclesPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, target_snap, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents, contact_slide, contact_slide_dot, avoid_horizon, avoid_ray_scale, avoid_accel, avoid_scale, avoid_head_on_dot, avoid_crossing_dot, avoider_extent, avoider_extent_tail);
+        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, target_snap, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents, contact_slide, contact_slide_dot, avoid_horizon, avoid_ray_scale, avoid_accel, avoid_scale, avoid_head_on_dot, avoid_crossing_dot, avoider_extent, avoider_extent_tail, path_turn_accel, path_turn_full_deg, path_turn_boost_deg, path_turn_boost_rate, path_turn_boost_max, path_turn_max_deg, path_turn_radius, controller_step, contact_slow_fraction, contact_max_speed);
     }
 }
 impl Merge for PedVehicleContactPatch {
@@ -924,7 +947,7 @@ impl Merge for PedBodyPatch {
 }
 impl Merge for SkaterLineChainPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; radius, max_candidates, blend_seconds, keep_facing, facing_rule, steer_dead_zone_deg, steer_full_deg, fakie_high_speed, fakie_low_speed, fakie_slow_seconds, fakie_spawn_seconds);
+        merge_opts!(self, b; radius, max_candidates, blend_seconds, keep_facing, facing_rule, steer_dead_zone_deg, steer_full_deg, fakie_high_speed, fakie_low_speed, fakie_slow_seconds, fakie_spawn_seconds, fallback_valid_m);
     }
 }
 impl Merge for PedFadePatch {
@@ -955,6 +978,7 @@ impl Merge for LivingWorldPatch {
         merge_nested(&mut self.npc_avoid, &b.npc_avoid);
         merge_nested(&mut self.npc_walk_back, &b.npc_walk_back);
         merge_nested(&mut self.npc_line_controller, &b.npc_line_controller);
+        merge_nested(&mut self.skater_path, &b.skater_path);
         merge_nested(&mut self.ped_brain, &b.ped_brain);
         merge_nested(&mut self.skaters, &b.skaters);
         merge_nested(&mut self.pedestrians, &b.pedestrians);
@@ -1142,6 +1166,23 @@ settings_patch! {
     }
 }
 
+settings_patch! {
+    /// `skater_path`: the simulated NPC skaters' path follower (`skate_core::living_world::path_follow::PathTuning`):
+    /// `line_end_t` (0.8, the on-path line end trigger's segment fraction), `lost_radius` (6 m), `line_end_lost_radius`
+    /// (4.5 m), `lost_max_speed` (14 m/s); retail values by default: docs/hails-additions/26e-living-world-skater-ai.md#line-end-trigger
+    SkaterPathPatch {
+        floats: [line_end_t, lost_radius, line_end_lost_radius, lost_max_speed],
+        counts: [],
+        max_count: 0
+    }
+}
+
+impl SkaterPathPatch {
+    pub fn validate(&self) -> bool {
+        self.fields_valid() && self.line_end_t.is_none_or(|t| t <= 1.0)
+    }
+}
+
 impl NpcLineControllerPatch {
     pub fn validate(&self) -> bool {
         // The safe node picker needs at least one good node in a row (ours).
@@ -1216,14 +1257,16 @@ impl LivingWorldPatch {
     pub fn validate(&self) -> bool {
         finite(self.npc_draw_distance)
             && self.npc_grind_disttocog.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
-            && self.skater_fade.as_ref().is_none_or(|f| finite(f.fade_in_seconds) && finite(f.fade_seconds) && finite(f.despawn_alpha))
+            && self.skater_fade.as_ref().is_none_or(|f| finite(f.fade_in_seconds) && finite(f.fade_seconds) && finite(f.despawn_alpha) && finite(f.bail_fade_lead_seconds))
             && self.skater_line_chain.as_ref().is_none_or(|c| finite(c.radius) && c.max_candidates.is_none_or(|n| n <= 256) && c.blend_seconds.is_none_or(|v| v.is_finite() && (0.0..=10.0).contains(&v))
                 && c.facing_rule.as_deref().is_none_or(|r| NPC_SKATER_FACING_RULES.contains(&r))
                 && [c.steer_dead_zone_deg, c.steer_full_deg].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=180.0).contains(&v)))
-                && [c.fakie_high_speed, c.fakie_low_speed, c.fakie_slow_seconds, c.fakie_spawn_seconds].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(&v))))
+                && [c.fakie_high_speed, c.fakie_low_speed, c.fakie_slow_seconds, c.fakie_spawn_seconds, c.fallback_valid_m].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(&v))))
             && self.ped_fade.as_ref().is_none_or(|f| finite(f.fade_in_seconds) && f.distance.is_none_or(|d| d.iter().all(|v| finite(Some(*v)))))
             && self.ped_obstacles.as_ref().is_none_or(|o| {
                 [o.min_half_extent, o.moving_speed, o.recut_fraction, o.detour_margin, o.target_snap, o.step_height].into_iter().all(finite)
+                    && [o.path_turn_accel, o.path_turn_full_deg, o.path_turn_boost_deg, o.path_turn_boost_rate, o.path_turn_boost_max, o.path_turn_radius, o.controller_step, o.contact_slow_fraction, o.contact_max_speed].into_iter().all(finite)
+                    && o.path_turn_max_deg.is_none_or(|v| v.is_finite() && (0.0..=180.0).contains(&v))
             })
             && self.ped_nav.as_ref().is_none_or(|n| {
                 n.steer_rate.is_none_or(|v| v.is_finite() && (0.0..=1000.0).contains(&v))
@@ -1299,6 +1342,7 @@ impl LivingWorldPatch {
             && self.npc_avoid.as_ref().is_none_or(NpcAvoidPatch::validate)
             && self.npc_walk_back.as_ref().is_none_or(NpcWalkBackPatch::validate)
             && self.npc_line_controller.as_ref().is_none_or(NpcLineControllerPatch::validate)
+            && self.skater_path.as_ref().is_none_or(SkaterPathPatch::validate)
             && self.ped_brain.as_ref().is_none_or(|p| {
                 [p.wander_speed, p.warn_seconds, p.know_about_seconds, p.mood_want_memory_seconds, p.conversation_turn_seconds, p.conversation_gather_seconds, p.unreachable_radius, p.reach_check_seconds, p.reach_snap_window, p.run_from_honker_distance, p.run_from_honker_speed, p.attack_throw_speed, p.attack_throw_lead_seconds, p.attack_throw_jitter, p.attack_throw_lift, p.light_throw_speed, p.zombie_follow_distance, p.zombie_sprint_distance, p.zombie_ring_min, p.zombie_ring_max, p.zombie_sprint_speed, p.zombie_walk_speed, p.zombie_arrive_distance, p.skater_avoid_sense, p.skater_avoid_min_speed, p.skater_avoid_look_ahead, p.skater_avoid_radius, p.skater_avoid_jump_radius, p.skater_avoid_jump_speed, p.skater_avoid_sector, p.skater_avoid_period, p.object_flee_radius, p.object_flee_min_speed, p.object_flee_lane_margin, p.vehicle_flee_radius, p.vehicle_flee_min_dot].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
                     && p.scatter_seconds.is_none_or(|v| v.is_finite() && (0.0..=3600.0).contains(&v))

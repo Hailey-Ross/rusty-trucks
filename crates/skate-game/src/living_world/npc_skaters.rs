@@ -113,7 +113,8 @@ pub(crate) struct NpcReplay {
     /// The obstacle avoider's state: cursor lag and lateral offset ([`super::npc_avoid`]).
     pub avoid: super::npc_avoid::NpcAvoid,
     /// While simulated: the cursor frame cursor B is at (`skate_core::living_world::path_follow`, retail's projection),
-    /// used instead of the recording's clock.
+    /// used instead of the recording's clock. Wire state a client needs with `branches` / `tricks` to follow a simulated
+    /// NPC's cursor (its clock, and `LineCursor::hold_at_end`).
     pub follow_target: Option<u64>,
     /// The simulated body's branch gate and point, set by the sim each tick (`None` in the replay tier).
     pub body_gate: Option<skate_core::living_world::replay::BodyGate>,
@@ -1076,13 +1077,20 @@ pub(crate) struct AdvanceScratch {
     in_use: Vec<[u8; 16]>,
     out: Vec<CursorEvent>,
     finished: Vec<(LivingWorldId, Entity)>,
-    /// Per character the lines valid for it (`line_valid`, sorted), for the loaded line count.
-    valid: std::collections::HashMap<String, Vec<[u8; 16]>>,
-    valid_count: usize,
+    /// The cache when no [`NpcValidLines`] resource is installed (harnesses that add the systems alone).
+    own_valid: NpcValidLines,
+}
+
+/// Per character the lines valid for it (`line_valid`, sorted), for the loaded line count: filled by [`advance`], read
+/// by the simulated skaters' line end in `npc_sim::simulate` (same tick, after it).
+#[derive(Resource, Default)]
+pub(crate) struct NpcValidLines {
+    pub per_character: std::collections::HashMap<String, Vec<[u8; 16]>>,
+    pub line_count: usize,
 }
 
 /// Every other NPC's (line, node) and the lines in use, by serial order.
-fn fill_others(order: &[(LivingWorldId, [u8; 16], u32)], id: LivingWorldId, others: &mut Vec<([u8; 16], u32)>, in_use: &mut Vec<[u8; 16]>) {
+pub(crate) fn fill_others(order: &[(LivingWorldId, [u8; 16], u32)], id: LivingWorldId, others: &mut Vec<([u8; 16], u32)>, in_use: &mut Vec<[u8; 16]>) {
     others.clear();
     others.extend(order.iter().filter(|o| o.0 != id).map(|o| (o.1, o.2)));
     in_use.clear();
@@ -1101,10 +1109,14 @@ pub(crate) fn advance(
     physics: Option<Res<crate::physics::GamePhysics>>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
     mut events: MessageWriter<NpcSkaterEvent>,
-    mut scratch: Local<AdvanceScratch>,
+    (mut scratch, mut valid_lines): (Local<AdvanceScratch>, Option<ResMut<NpcValidLines>>),
 ) {
     let _span = super::timing::span(super::timing::NPC_ADVANCE);
-    let AdvanceScratch { players, order, others, in_use, out, finished, valid, valid_count } = &mut *scratch;
+    let AdvanceScratch { players, order, others, in_use, out, finished, own_valid } = &mut *scratch;
+    let NpcValidLines { per_character: valid, line_count: valid_count } = match valid_lines.as_deref_mut() {
+        Some(v) => v,
+        None => own_valid,
+    };
     let lines = npc_lines(&state);
     let tick = state.world.tick();
     players.clear();
@@ -1152,25 +1164,20 @@ pub(crate) fn advance(
         replay.cursor.facing_rule = chain.facing_rule;
         // Retail riding-fakie thresholds (data, stock graph values by default).
         replay.cursor.fakie_settings = chain.fakie;
+        // A simulated skater holds at a dead end (host and client alike, from the replicated `follow_target`).
+        replay.cursor.hold_at_end = replay.follow_target.is_some();
         let valid_lines = valid.get(&npc.character).map(Vec::as_slice);
         // The NPC's trick tables (disc profile, mod overrides), read at its trick slots.
         let trick_profile = npc_trick_profile(&state.npc.tricks, &settings.skater_trick_profiles, &npc.character);
-        // A simulated skater (its cursor follows the projection, `follow_target`) at the end of its line looks for
-        // the next line every tick, as retail does (b118); the replay tier still ends there and fades.
-        if replay.follow_target.is_some() && !mirror && lines.get(&replay.cursor.line).is_some_and(|l| replay.cursor.node as usize + 1 >= l.nodes.len()) {
-            if let Some(s) = replay.cursor.sample(&*lines, 0.0) {
-                fill_others(order, npc.id, others, in_use);
-                let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_deref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
-                // Retail's mode 1 fallback (b122): the physics skater takes the nearest free start at any distance.
-                let chain = skate_core::living_world::replay::ChainConfig { fallback: true, ..chain };
-                let ctx = BranchContext { position: s.position, forward: s.velocity, speed: length(s.velocity), players, others, in_use, preferred_skill: -1, online: observers.online, chain, tricks, body: replay.body_gate, valid_lines };
-                if replay.cursor.retry_chain(&*lines, &mut Decider::Decide(ctx), out) {
-                    info!("NPC_SKATER_CHAIN #{} {} line end: next line at node {}", npc.id.serial, npc.character, replay.cursor.node);
-                }
-            }
-        }
+        // A simulated skater's line end chains in `npc_sim::simulate` on its trigger tick (b701 / b712).
         // The loop only moves this NPC's own `order` entry, which `others` leaves out (b620).
         fill_others(order, npc.id, others, in_use);
+        // A client applies a host record at the cursor's frame even on a tick it takes no step (a restart while the
+        // host's clock stands still).
+        if mirror {
+            let r = &mut *replay;
+            r.cursor.apply_records(&*lines, &Decider::Mirror(&r.branches, &r.tricks), out);
+        }
         while replay.cursor.frames < target && !replay.cursor.finished {
             if replay.cursor.frames + FRAMES_PER_TICK >= target {
                 replay.previous = Some(replay.cursor.clone());
@@ -1230,7 +1237,8 @@ pub(crate) fn advance(
         }
         // Spawn fade in (825926F8), leave fade at a dead end (8246EA90 / 8245A9B8): docs/hails-additions/26c-living-world-npc-skaters.md#npc-fade
         fade.fade.update(&replay.cursor, &*lines, &fade_cfg);
-        let alpha = fade.fade.alpha(elapsed, &fade_cfg);
+        // A bailed simulated skater fades out before its respawn (b715).
+        let alpha = fade.fade.alpha(elapsed, &fade_cfg) * sim.map_or(1.0, |s| s.bail_alpha);
         if fade.alpha != alpha {
             fade.alpha = alpha;
         }
@@ -2118,6 +2126,7 @@ pub(crate) fn log_readout(settings: Res<LivingWorldSettings>, state: Res<Populat
 pub(crate) fn install(app: &mut App) {
     app.init_resource::<NpcSkaterIndex>()
         .init_resource::<super::npc_sim::NpcSimPool>()
+        .init_resource::<NpcValidLines>()
         .init_resource::<NpcSkaterLooks>()
         .init_resource::<super::npc_avoid::AvoidTrack>()
         .add_message::<NpcSkaterEvent>()

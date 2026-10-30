@@ -579,6 +579,9 @@ pub struct BranchRecord {
     pub from_node: u32,
     pub to_line: [u8; 16],
     pub to_node: u32,
+    /// A host restart on `to_line` / `to_node` (re-place, re-snap, bail respawn, walk-back hand back), not a branch:
+    /// the client applies [`LineCursor::respawn`]'s spawn state instead of a switch.
+    pub respawn: bool,
 }
 
 /// A trick choice at a start-trick node (host side) or the record a client mirrors.
@@ -647,6 +650,10 @@ pub struct BodyGate {
     /// The handler's gate: on-board steering, not airborne (Air+0x1B6), trick category not 1 / 2 / 5 (perform, grind /
     /// slide). False = no branch this node.
     pub may_branch: bool,
+    /// The heading the branch and line-end scores take (`sub_8246C3C0`): the effective deck forward (`82592A00`) and
+    /// the skater frame's up row, the axis the angle is measured about (`824536C8`, research b706). `None`: the
+    /// context's forward about world Y.
+    pub heading: Option<(Vec3, Vec3)>,
 }
 
 /// The trick categories in which `sub_8246BEE0` takes no branch (b674; data a mod may change).
@@ -658,6 +665,19 @@ fn yaw_angle(a: Vec3, b: Vec3) -> f32 {
     let cross = az * bx - ax * bz;
     let dot = ax * bx + az * bz;
     cross.atan2(dot)
+}
+
+/// Signed angle from `a` to `b` about `axis` (unit), both projected onto the plane across it (`824536C8`).
+fn angle_about(a: Vec3, b: Vec3, axis: Vec3) -> f32 {
+    let flat = |v: Vec3| {
+        let d = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+        [v[0] - axis[0] * d, v[1] - axis[1] * d, v[2] - axis[2] * d]
+    };
+    let (a, b) = (flat(a), flat(b));
+    let cross = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let sin = cross[0] * axis[0] + cross[1] * axis[1] + cross[2] * axis[2];
+    let cos = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    sin.atan2(cos)
 }
 
 /// Score one (line, node) candidate; `None` = rejected. Lowest wins.
@@ -675,7 +695,12 @@ pub fn branch_score(line: &ReplayLine, node: u32, ctx: &BranchContext) -> Option
     }
     // sub_8246C3C0: the next node must exist and lie within 50 deg of the forward.
     let next = line.nodes.get(node as usize + 1)?;
-    let angle = yaw_angle(ctx.forward, sub(next.position, ctx.position)).abs();
+    let to_next = sub(next.position, ctx.position);
+    let angle = match ctx.body.and_then(|b| b.heading) {
+        Some((forward, up)) => angle_about(forward, to_next, up),
+        None => yaw_angle(ctx.forward, to_next),
+    }
+    .abs();
     if !(angle < retail::BRANCH_MAX_ANGLE) {
         return None;
     }
@@ -771,7 +796,9 @@ pub fn choose_next_line(lines: &dyn LineSource, current: &ReplayLine, ctx: &Bran
     let mut nearest_valid: Option<(&ReplayLine, f32)> = None;
     let mut nearest_invalid: Option<(&ReplayLine, f32)> = None;
     lines.for_each_line(&mut |l| {
-        if candidates.len() >= ctx.chain.max_candidates || l.id == current.id || ctx.in_use.contains(&l.id) {
+        // No own-line or in-use skip: retail's line test (`82458860`) filters only by the AI's path-kind pattern
+        // (`82457620`, every ambient line passes) and the 0x200 object overlap (research b707 / b715 trace).
+        if candidates.len() >= ctx.chain.max_candidates {
             return;
         }
         let Some(start) = l.nodes.first() else { return };
@@ -862,6 +889,10 @@ pub struct LineCursor {
     pub fakie_clock: crate::animation::riding_fakie::State,
     /// Thresholds (host and client set them from [`ChainConfig::fakie`]).
     pub fakie_settings: crate::animation::riding_fakie::Settings,
+    /// Hold on the last node with nothing to chain to instead of finishing: a physics-simulated skater (retail has no
+    /// finished state, b118). Host and client set it from the replicated `follow_target`, so a mirrored cursor holds
+    /// where the host holds and applies its chain record when it comes.
+    pub hold_at_end: bool,
 }
 
 /// How a cursor takes branches: the host decides, a client mirrors records.
@@ -877,7 +908,7 @@ pub enum Decider<'a> {
 
 impl LineCursor {
     pub fn new(line: [u8; 16], node: u32) -> Self {
-        Self { line, node, frame_in_segment: 0, frames: 0, finished: false, trick_open: false, trick: -1, trick_since: 0, history: [None; PHASE_HISTORY], phase: None, phase_since: 0, previous_phase: None, previous_since: 0, switch: None, switch_blend_seconds: SWITCH_BLEND_SECONDS, facing_flipped: false, keep_facing: false, flip: false, airborne: false, facing_rule: FacingRule::RidingEntry, fakie: false, fakie_since: 0, fakie_previous_since: 0, fakie_clock: Default::default(), fakie_settings: retail::FAKIE }
+        Self { line, node, frame_in_segment: 0, frames: 0, finished: false, trick_open: false, trick: -1, trick_since: 0, history: [None; PHASE_HISTORY], phase: None, phase_since: 0, previous_phase: None, previous_since: 0, switch: None, switch_blend_seconds: SWITCH_BLEND_SECONDS, facing_flipped: false, keep_facing: false, flip: false, airborne: false, facing_rule: FacingRule::RidingEntry, fakie: false, fakie_since: 0, fakie_previous_since: 0, fakie_clock: Default::default(), fakie_settings: retail::FAKIE, hold_at_end: false }
     }
 
     /// Spawn on a line at a node (8245DA78; node world frame 8245C548 -> 82453C58): docs/hails-additions/26c-living-world-npc-skaters.md#cursor-spawn
@@ -900,16 +931,75 @@ impl LineCursor {
         c
     }
 
-    /// A physics-simulated skater on the last node of its line (finished, or held there by the projection): retail
-    /// has no finished state; the line-end test holds and `sub_8246C7F8` looks for the next line again every tick
-    /// (b118). True when it chained.
-    pub fn retry_chain(&mut self, lines: &dyn LineSource, decider: &mut Decider, out: &mut Vec<CursorEvent>) -> bool {
-        let Some(line) = lines.line(&self.line) else { return false };
-        if (self.node as usize) + 1 < line.nodes.len() || self.chain(lines, line, decider, out).is_none() {
-            return false;
+    /// The simulated skater's line end (`sub_8246D3C0` -> `sub_8246C7F8`, b701): the path follower reported the end
+    /// (on the path past t 0.8 of the second-last segment, or off it near the end), so the next line is chosen from
+    /// `ctx` (the body point) and the cursor switches from wherever it is, mid-segment included. `None` = no next line
+    /// (the skater holds and searches again next tick): docs/hails-additions/26e-living-world-skater-ai.md#line-end-trigger
+    pub fn line_end_chain(&mut self, lines: &dyn LineSource, ctx: &BranchContext, out: &mut Vec<CursorEvent>) -> Option<([u8; 16], u32)> {
+        let line = lines.line(&self.line)?;
+        let (to_line, to_node) = choose_next_line(lines, line, ctx)?;
+        let next = lines.line(&to_line)?;
+        if to_node as usize + 1 >= next.nodes.len() {
+            return None;
         }
+        out.push(CursorEvent::Branch(BranchRecord { frame: self.frames, from_line: self.line, from_node: self.node, to_line, to_node, respawn: false }));
+        self.apply_switch(line, next, to_line, to_node);
+        Some((to_line, to_node))
+    }
+
+    /// A host restart on `line` / `node` (re-place, re-snap, bail respawn, walk-back hand back): the spawn state with
+    /// the frame clock kept running, so frames never repeat and records stay unique; recorded (a `respawn`
+    /// [`BranchRecord`]) so a client restarts its mirrored cursor the same way.
+    pub fn respawn(&mut self, lines: &dyn LineSource, line: [u8; 16], node: u32, out: &mut Vec<CursorEvent>) {
+        out.push(CursorEvent::Branch(BranchRecord { frame: self.frames, from_line: self.line, from_node: self.node, to_line: line, to_node: node, respawn: true }));
+        self.restart(lines, line, node);
+    }
+
+    /// [`LineCursor::spawn`] at this cursor's frame (every frame-valued field shifted by it); the tuning fields kept.
+    fn restart(&mut self, lines: &dyn LineSource, line: [u8; 16], node: u32) {
+        let base = self.frames;
+        let (blend, keep_facing, facing_rule, fakie_settings, hold) = (self.switch_blend_seconds, self.keep_facing, self.facing_rule, self.fakie_settings, self.hold_at_end);
+        *self = Self::spawn(lines, line, node);
+        (self.switch_blend_seconds, self.keep_facing, self.facing_rule, self.fakie_settings, self.hold_at_end) = (blend, keep_facing, facing_rule, fakie_settings, hold);
+        self.frames += base;
+        self.trick_since += base;
+        self.phase_since += base;
+        self.previous_since += base;
+        self.fakie_since += base;
+        self.fakie_previous_since += base;
+        for h in self.history.iter_mut().flatten() {
+            h.since += base;
+            h.trick_since += base;
+        }
+    }
+
+    /// Switch to `to_line` at `to_node` (a branch, a chain or a mirrored record).
+    fn apply_switch(&mut self, line: &ReplayLine, next: &ReplayLine, to_line: [u8; 16], to_node: u32) {
+        self.begin_switch(line, next, to_node);
+        self.line = to_line;
+        self.node = to_node;
+        self.frame_in_segment = 0;
+        self.set_trick(next, to_node);
         self.finished = false;
-        true
+    }
+
+    /// A client applies the host's switch or restart recorded at its current frame: a simulated skater's line end
+    /// switches mid-segment (`line_end_chain`) and its restarts happen anywhere, which no node arrival would meet. Run
+    /// by `step`, and once a tick before stepping (a restart on a tick the host's clock did not move takes no step).
+    pub fn apply_records(&mut self, lines: &dyn LineSource, decider: &Decider, out: &mut Vec<CursorEvent>) {
+        let Decider::Mirror(records, _) = decider else { return };
+        let Some(r) = records.iter().find(|r| r.frame == self.frames && r.from_line == self.line && r.from_node == self.node).cloned() else { return };
+        if r.respawn {
+            out.push(CursorEvent::Branch(r.clone()));
+            self.restart(lines, r.to_line, r.to_node);
+            if lines.line(&self.line).is_none() {
+                self.finished = true;
+                out.push(CursorEvent::Finished);
+            }
+        } else if let (Some(line), Some(next)) = (lines.line(&self.line), lines.line(&r.to_line).filter(|n| (r.to_node as usize) + 1 < n.nodes.len())) {
+            out.push(CursorEvent::Branch(r.clone()));
+            self.apply_switch(line, next, r.to_line, r.to_node);
+        }
     }
 
     /// Advance one 60 Hz frame.
@@ -922,6 +1012,16 @@ impl LineCursor {
             out.push(CursorEvent::Finished);
             return;
         };
+        if matches!(decider, Decider::Mirror(..)) {
+            self.apply_records(lines, decider, out);
+            if self.finished {
+                return;
+            }
+            line = match lines.line(&self.line) {
+                Some(l) => l,
+                None => return,
+            };
+        }
         // The character's forward before this frame (the drawn skater), for the flip latch; only
         // needed while not airborne (a rising edge can follow).
         let before = (!self.airborne).then(|| self.drawn_skater(line, 0.0));
@@ -932,7 +1032,7 @@ impl LineCursor {
                 Some(next) => line = next,
                 // A simulated skater holds on the last node and searches again next tick (retail has no finished
                 // state, b118 / b701); the replay tier ends its line.
-                None if matches!(decider, Decider::Decide(ctx) if ctx.body.is_some()) => return,
+                None if self.hold_at_end || matches!(decider, Decider::Decide(ctx) if ctx.body.is_some()) => return,
                 None => {
                     self.finished = true;
                     out.push(CursorEvent::Finished);
@@ -1011,17 +1111,13 @@ impl LineCursor {
                             choose_branch(lines, line, self.node, group, &here)
                         }
                     },
-                    Decider::Mirror(records, _) => records.iter().find(|r| r.frame == self.frames && r.from_line == self.line && r.from_node == self.node).map(|r| (r.to_line, r.to_node)),
+                    Decider::Mirror(records, _) => records.iter().find(|r| !r.respawn && r.frame == self.frames && r.from_line == self.line && r.from_node == self.node).map(|r| (r.to_line, r.to_node)),
                     Decider::Stay => None,
                 };
                 if let Some((to_line, to_node)) = choice {
                     if let Some(next) = lines.line(&to_line) {
-                        out.push(CursorEvent::Branch(BranchRecord { frame: self.frames, from_line: self.line, from_node: self.node, to_line, to_node }));
-                        self.begin_switch(line, next, to_node);
-                        self.line = to_line;
-                        self.node = to_node;
-                        self.frame_in_segment = 0;
-                        self.set_trick(next, to_node);
+                        out.push(CursorEvent::Branch(BranchRecord { frame: self.frames, from_line: self.line, from_node: self.node, to_line, to_node, respawn: false }));
+                        self.apply_switch(line, next, to_line, to_node);
                         line = next;
                     }
                 }
@@ -1118,19 +1214,15 @@ impl LineCursor {
                 }
                 choose_next_line(lines, line, &here)?
             }
-            Decider::Mirror(records, _) => records.iter().find(|r| r.frame == self.frames && r.from_line == self.line && r.from_node == self.node).map(|r| (r.to_line, r.to_node))?,
+            Decider::Mirror(records, _) => records.iter().find(|r| !r.respawn && r.frame == self.frames && r.from_line == self.line && r.from_node == self.node).map(|r| (r.to_line, r.to_node))?,
             Decider::Stay => return None,
         };
         let next = lines.line(&to_line)?;
         if to_node as usize + 1 >= next.nodes.len() {
             return None;
         }
-        out.push(CursorEvent::Branch(BranchRecord { frame: self.frames, from_line: self.line, from_node: self.node, to_line, to_node }));
-        self.begin_switch(line, next, to_node);
-        self.line = to_line;
-        self.node = to_node;
-        self.frame_in_segment = 0;
-        self.set_trick(next, to_node);
+        out.push(CursorEvent::Branch(BranchRecord { frame: self.frames, from_line: self.line, from_node: self.node, to_line, to_node, respawn: false }));
+        self.apply_switch(line, next, to_line, to_node);
         Some(next)
     }
 

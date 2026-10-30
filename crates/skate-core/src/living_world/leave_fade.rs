@@ -13,15 +13,39 @@ pub struct LeaveFadeConfig {
     pub fade_seconds: f32,
     /// Opacity below which the manager removes a fading skater (retail 0.2, `sub_8245A9B8`).
     pub despawn_alpha: f32,
+    /// A bailed (simulated) skater fades out before its respawn places it again (retail on: the bail wait `8246EA90`
+    /// starts the `+1872` fade; research b715 trace: fade at 4.0 s, re-placed at 5.0 s, no removal).
+    pub bail_fade: bool,
+    /// How long before the respawn that fade starts, in seconds (retail 1.0).
+    pub bail_fade_lead_seconds: f32,
 }
 
 impl LeaveFadeConfig {
     pub const RETAIL_FADE_IN_SECONDS: f32 = 1.0;
     pub const RETAIL_FADE_SECONDS: f32 = 1.0;
     pub const RETAIL_DESPAWN_ALPHA: f32 = 0.2;
+    pub const RETAIL_BAIL_FADE_LEAD_SECONDS: f32 = 1.0;
 
     pub fn retail() -> Self {
-        Self { fade_in_seconds: Self::RETAIL_FADE_IN_SECONDS, fade_seconds: Self::RETAIL_FADE_SECONDS, despawn_alpha: Self::RETAIL_DESPAWN_ALPHA }
+        Self { fade_in_seconds: Self::RETAIL_FADE_IN_SECONDS, fade_seconds: Self::RETAIL_FADE_SECONDS, despawn_alpha: Self::RETAIL_DESPAWN_ALPHA, bail_fade: true, bail_fade_lead_seconds: Self::RETAIL_BAIL_FADE_LEAD_SECONDS }
+    }
+
+    /// Opacity of a bailed skater `ticks` 60 Hz ticks after its bail whose respawn comes at `delay_ticks`: solid until
+    /// the lead before the respawn, then the fade out (`1 - t / fade`); solid again once placed (the caller stops
+    /// asking). Research b715: docs/hails-additions/26c-living-world-npc-skaters.md#bail-fade
+    pub fn bail_alpha(&self, ticks: u64, delay_ticks: u64) -> f32 {
+        if !self.bail_fade {
+            return 1.0;
+        }
+        let start = delay_ticks.saturating_sub((self.bail_fade_lead_seconds.max(0.0) * 60.0).round() as u64);
+        if ticks < start {
+            return 1.0;
+        }
+        let fade = (self.fade_seconds.max(0.0) * 60.0).round();
+        if fade <= 0.0 {
+            return 0.0;
+        }
+        (1.0 - (ticks - start) as f32 / fade as f32).clamp(0.0, 1.0)
     }
 
     /// Fade-in length in 60 Hz frames (0 = no fade in).
