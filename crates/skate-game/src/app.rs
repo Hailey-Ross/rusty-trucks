@@ -147,6 +147,7 @@ pub(crate) fn build(
     .insert_resource(config)
     .insert_resource(crate::retail_render::RetailScene(retail_scene))
     .insert_resource(assets::AssetManifest(manifest))
+    .insert_resource(crate::living_world::npc_skaters::NpcScoreClips(crate::graph_host::motion::stock_score_clips(&graphs.motion.source)))
     .insert_resource(graphs)
     .insert_resource(physics)
     .insert_resource(skater)

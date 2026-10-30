@@ -161,6 +161,92 @@ pub(crate) fn stock_riding_fakie_settings(graph: &LoadedGraph) -> Result<Vec<ska
         .collect())
 }
 
+/// The trees the stock motion graph plays for one score name: docs/hails-additions/26c-living-world-npc-skaters.md#score-clips
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ScoreClips {
+    pub into: Option<String>,
+    pub cyc: String,
+    pub out: Option<String>,
+    /// The `ScoringGrabs` direction attribute that names it (`up` / `left` / `down` / `right`); `None` = the base name.
+    pub direction: Option<&'static str>,
+}
+
+/// Every `ScoringGrabs` / `ScoringTrick` name of a motion graph (lower case) -> the trees of the state that scores it
+/// (first in graph order wins, a transition state last), so a graph mod changes NPC grabs like the player's: docs/hails-additions/26c-living-world-npc-skaters.md#score-clips
+pub(crate) fn stock_score_clips(graph: &skate_data::state_graph::StateGraph) -> BTreeMap<String, ScoreClips> {
+    let e = &graph.elements;
+    let mut parent = vec![usize::MAX; e.len()];
+    for (i, el) in e.iter().enumerate() {
+        for &c in &el.children {
+            parent[c] = i;
+        }
+    }
+    let attr = |i: usize, n: &str| e[i].attributes.iter().find(|a| a.name.eq_ignore_ascii_case(n)).map(|a| a.text.as_str());
+    let is_state = |i: usize| e[i].tag.eq_ignore_ascii_case("state");
+    let is_behaviour = |i: usize, n: &str| e[i].tag.eq_ignore_ascii_case("behaviour") && attr(i, "name").is_some_and(|v| v.eq_ignore_ascii_case(n));
+    let ends = |i: usize, suffix: &str| attr(i, "name").is_some_and(|n| n.len() >= suffix.len() && n[n.len() - suffix.len()..].eq_ignore_ascii_case(suffix));
+    // A state's own PlayAnimation, else the first one of its sub-states (a cycle split by speed).
+    let anim = |s: usize| -> Option<String> {
+        let direct = e[s].children.iter().find(|&&c| is_behaviour(c, "PlayAnimation")).and_then(|&c| attr(c, "anim"));
+        direct.or_else(|| (s + 1..e.len()).take_while(|&i| is_inside(&parent, s, i)).find(|&i| is_behaviour(i, "PlayAnimation")).and_then(|i| attr(i, "anim"))).map(str::to_owned)
+    };
+    let cycle = |i: usize| ends(i, "Cyc") || ends(i, "Cycle");
+    let phase = |p: usize, suffix: &str| e[p].children.iter().copied().find(|&c| is_state(c) && ends(c, suffix)).and_then(anim);
+    let cyc_phase = |p: usize| e[p].children.iter().copied().find(|&c| is_state(c) && cycle(c)).and_then(anim);
+    let mut out = BTreeMap::new();
+    let mut weak = std::collections::BTreeSet::new();
+    for i in 0..e.len() {
+        let names: Vec<(&str, Option<&'static str>)> = if is_behaviour(i, "ScoringGrabs") {
+            [("grabName", None), ("up", Some("up")), ("left", Some("left")), ("down", Some("down")), ("right", Some("right"))]
+                .into_iter()
+                .filter_map(|(a, d)| attr(i, a).map(|n| (n, d)))
+                .collect()
+        } else if is_behaviour(i, "ScoringTrick") {
+            attr(i, "trick").map(|n| (n, None)).into_iter().collect()
+        } else {
+            continue;
+        };
+        let s = parent[i];
+        if s == usize::MAX {
+            continue;
+        }
+        // Grinds, slides: the scoring state's own tree; air grabs: that state is the `Cyc` between `Into` and `Out`;
+        // ground grabs: no own tree, it holds `<X>Into` / `<X>Cyc` / `<X>Out`.
+        let own = e[s].children.iter().find(|&&c| is_behaviour(c, "PlayAnimation")).and_then(|&c| attr(c, "anim")).map(str::to_owned);
+        let clips = match own {
+            Some(cyc) if cycle(s) && parent[s] != usize::MAX => Some(ScoreClips { into: phase(parent[s], "Into"), cyc, out: phase(parent[s], "Out"), direction: None }),
+            Some(cyc) => Some(ScoreClips { cyc, ..Default::default() }),
+            None if e[s].children.iter().any(|&c| is_state(c) && cycle(c)) => cyc_phase(s).map(|cyc| ScoreClips { into: phase(s, "Into"), cyc, out: phase(s, "Out"), direction: None }),
+            None => anim(s).map(|cyc| ScoreClips { cyc, ..Default::default() }),
+        };
+        let Some(clips) = clips else { continue };
+        // A grind's grab `Into` also scores the grind: a transition state names a score only when no other does.
+        let transition = ends(s, "Into") || ends(s, "Out");
+        for (name, direction) in names {
+            let key = name.to_ascii_lowercase();
+            let free = !out.contains_key(&key);
+            if transition && free {
+                weak.insert(key.clone());
+            }
+            if free || (!transition && weak.remove(&key)) {
+                out.insert(key, ScoreClips { direction, ..clips.clone() });
+            }
+        }
+    }
+    out
+}
+
+/// Whether element `i` lies under `root` (walks `i`'s parents).
+fn is_inside(parent: &[usize], root: usize, mut i: usize) -> bool {
+    while i != usize::MAX {
+        if i == root {
+            return true;
+        }
+        i = parent[i];
+    }
+    false
+}
+
 /// A motion animation over stock metadata alone (no graph), for building stock trees outside the
 /// player's host (tests, the NPC puppet's channel).
 pub(crate) fn metadata_animation(metadata: skate_data::animation_metadata::AnimationMetadata) -> super::motion_animation::MotionAnimation {

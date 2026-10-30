@@ -837,6 +837,7 @@ impl Plugin for LivingWorldPlugin {
         crate::physics::set_skitch_enabled(true);
         app.insert_resource(LivingWorldSettings::from_env())
             .init_resource::<PopulationState>()
+            .init_resource::<npc_skaters::NpcScoreClips>()
             .init_resource::<LivingWorldObservers>()
             .init_resource::<dmo_stream::DmoStreamState>()
             .add_message::<LivingWorldSpawn>()
