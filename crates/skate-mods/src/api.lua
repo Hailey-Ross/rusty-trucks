@@ -379,7 +379,7 @@ function sdk.audio.frontend(name) submit{kind="audio_frontend",name=name} end
 -- The teleport effect (screen static + the skater's teleport crackle) at amount 0..1; send it every frame to hold it.
 function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",amount=amount} end
 
--- World tuning (capability world_tuning): patch the living world ("living_world": npc_draw_distance,
+-- World tuning (capability world_tuning): patch the living world ("living_world": npc_draw_distance, npc_grind_disttocog,
 -- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, skater_stance, skater_stance_events, ped_obstacles, npc_skater_props, ped_vehicle_contact, npc_tricks, skater_trick_profiles, npc_simulated, skaters, pedestrians, vehicles, ambient_skaters, free_play), dynamic props ("props": default / by_template prop tuning, collision_box)
 -- or prop carrying ("carry": grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed,
 -- turn_rate, grip_reach, linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller,

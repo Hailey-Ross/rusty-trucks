@@ -202,6 +202,9 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
     if let Some(m) = p.npc_draw_distance {
         s.npc_draw_distance = skate_core::living_world::DrawDistance::new(m).multiplier();
     }
+    if let Some(v) = p.npc_grind_disttocog {
+        s.npc_grind_disttocog = Some(v.clamp(0.0, 1.0));
+    }
     if let Some(f) = &p.skater_fade {
         let c = &mut s.skater_fade;
         c.fade_in_seconds = f.fade_in_seconds.map_or(c.fade_in_seconds, |v| v.max(0.0));
@@ -680,6 +683,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "npc_line_controller": npc_line_controller,
                 "npc_draw_distance": s.npc_draw_distance,
                 "user_npc_draw_distance": s.user_npc_draw_distance,
+                "npc_grind_disttocog": s.npc_grind_disttocog,
                 "skater_fade": {"fade_in_seconds": s.skater_fade.fade_in_seconds, "fade_seconds": s.skater_fade.fade_seconds, "despawn_alpha": s.skater_fade.despawn_alpha},
                 "skater_line_chain": {"radius": s.skater_line_chain.radius, "max_candidates": s.skater_line_chain.max_candidates, "blend_seconds": s.skater_line_chain.blend_seconds, "keep_facing": s.skater_line_chain.keep_facing, "facing_rule": s.skater_line_chain.facing_rule.name(), "steer_dead_zone_deg": s.skater_line_chain.steer_dead_zone_deg, "steer_full_deg": s.skater_line_chain.steer_full_deg, "fakie_high_speed": s.skater_line_chain.fakie.high_speed, "fakie_low_speed": s.skater_line_chain.fakie.low_speed, "fakie_slow_seconds": s.skater_line_chain.fakie.slowly_backwards_seconds, "fakie_spawn_seconds": s.skater_line_chain.fakie.after_teleport_seconds},
                 "ped_fade": {"distance": s.ped_fade.distance, "fade_in_seconds": s.ped_fade.fade_in_seconds, "enabled": s.ped_fade.enabled},

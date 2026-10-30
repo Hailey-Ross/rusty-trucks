@@ -107,6 +107,9 @@ pub(crate) struct LivingWorldSettings {
     pub ped_nav: peds::PedNavSettings,
     /// NPC draw distance multiplier (QoL, not retail; 1.0 = retail): docs/hails-additions/26b-living-world-population.md#npc-draw-distance-setting
     pub npc_draw_distance: f32,
+    /// NPC skater grind board-to-CoG height (`DISTTOCOG`); `None` = retail's rest, the setup data's
+    /// `anim_motion/grind_height` `max_grind_disttocog`: docs/hails-additions/26c-living-world-npc-skaters.md#npc-grind-height
+    pub npc_grind_disttocog: Option<f32>,
     /// Mod overrides of the NPC skater puppet clip, keyed by the stable phase id
     /// (`ReplayPhase::name`) or `<phase>.<style>`; empty = the shipped picks
     /// (`npc_skaters::puppet_clip`). Cleared by [`Self::reset_mod_overrides`].
@@ -183,6 +186,7 @@ impl Default for LivingWorldSettings {
             ped_nav: Default::default(),
             npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
             user_npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
+            npc_grind_disttocog: None,
             user_npcs_off: false,
             skater_clips: Default::default(),
             skater_blend_seconds: Default::default(),

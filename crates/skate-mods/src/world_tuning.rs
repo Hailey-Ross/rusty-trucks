@@ -70,6 +70,8 @@ pub struct PedFadePatch {
 #[serde(deny_unknown_fields)]
 pub struct LivingWorldPatch {
     pub npc_draw_distance: Option<f32>,
+    /// NPC skater grind board-to-CoG height 0..1 (retail rest: the setup data's `max_grind_disttocog`, 0.85).
+    pub npc_grind_disttocog: Option<f32>,
     pub skater_fade: Option<SkaterFadePatch>,
     pub skater_line_chain: Option<SkaterLineChainPatch>,
     pub ped_fade: Option<PedFadePatch>,
@@ -939,7 +941,7 @@ fn merge_nested<T: Merge + Clone>(a: &mut Option<T>, b: &Option<T>) {
 }
 impl Merge for LivingWorldPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; npc_draw_distance, on_foot_vehicle_ground);
+        merge_opts!(self, b; npc_draw_distance, npc_grind_disttocog, on_foot_vehicle_ground);
         merge_nested(&mut self.skater_fade, &b.skater_fade);
         merge_nested(&mut self.skater_line_chain, &b.skater_line_chain);
         merge_nested(&mut self.ped_fade, &b.ped_fade);
@@ -1213,6 +1215,7 @@ impl Merge for ShadowsPatch {
 impl LivingWorldPatch {
     pub fn validate(&self) -> bool {
         finite(self.npc_draw_distance)
+            && self.npc_grind_disttocog.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
             && self.skater_fade.as_ref().is_none_or(|f| finite(f.fade_in_seconds) && finite(f.fade_seconds) && finite(f.despawn_alpha))
             && self.skater_line_chain.as_ref().is_none_or(|c| finite(c.radius) && c.max_candidates.is_none_or(|n| n <= 256) && c.blend_seconds.is_none_or(|v| v.is_finite() && (0.0..=10.0).contains(&v))
                 && c.facing_rule.as_deref().is_none_or(|r| NPC_SKATER_FACING_RULES.contains(&r))
@@ -1478,6 +1481,8 @@ mod tests {
     #[test]
     fn patches_parse_validate_and_reject_unknown_fields() {
         assert!(valid_patch("living_world", &json!({"npc_draw_distance": 2.0, "skater_fade": {"fade_seconds": 3.0}, "ped_fade": {"distance": [80, 100], "enabled": false}})));
+        assert!(valid_patch("living_world", &json!({"npc_grind_disttocog": 0.6})));
+        assert!(!valid_patch("living_world", &json!({"npc_grind_disttocog": 1.5})));
         assert!(valid_patch("props", &json!({"default": {"push_transfer": 0.5}, "by_template": {"bench01": {"collision_box": {"center": [0, 0.4, 0], "half_extents": [1, 0.4, 0.3]}}}})));
         assert!(valid_patch("carry", &json!({"grab_bit": 21, "grab_range": 3.5})));
         // The NPC skaters' obstacle avoider.
