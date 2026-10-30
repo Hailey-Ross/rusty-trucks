@@ -497,6 +497,9 @@ pub struct PedObstaclesPatch {
     pub avoid_scale: Option<f32>,
     pub avoid_head_on_dot: Option<f32>,
     pub avoid_crossing_dot: Option<f32>,
+    /// A moving avoider's extents `{a, t a, t a}`, `a = avoid_scale x avoider_extent` (0.25, t 0.2).
+    pub avoider_extent: Option<f32>,
+    pub avoider_extent_tail: Option<f32>,
 }
 
 /// NPC skater line end, facing rule and riding-fakie fields (`replay::ChainConfig`): docs/hails-additions/26a-living-world-overview.md#skater-line-chain-fields
@@ -899,7 +902,7 @@ impl Merge for PedNavPatch {
 
 impl Merge for PedObstaclesPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, target_snap, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents, contact_slide, contact_slide_dot, avoid_horizon, avoid_ray_scale, avoid_accel, avoid_scale, avoid_head_on_dot, avoid_crossing_dot);
+        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, target_snap, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents, contact_slide, contact_slide_dot, avoid_horizon, avoid_ray_scale, avoid_accel, avoid_scale, avoid_head_on_dot, avoid_crossing_dot, avoider_extent, avoider_extent_tail);
     }
 }
 impl Merge for PedVehicleContactPatch {

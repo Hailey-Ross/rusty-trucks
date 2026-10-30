@@ -249,6 +249,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.avoid_scale = f.avoid_scale.map_or(c.avoid_scale, |v| v.max(0.0));
         c.avoid_head_on_dot = f.avoid_head_on_dot.map_or(c.avoid_head_on_dot, |v| v.clamp(-1.0, 1.0));
         c.avoid_crossing_dot = f.avoid_crossing_dot.map_or(c.avoid_crossing_dot, |v| v.clamp(-1.0, 1.0));
+        c.avoider_extent = f.avoider_extent.map_or(c.avoider_extent, |v| v.max(0.0));
+        c.avoider_extent_tail = f.avoider_extent_tail.map_or(c.avoider_extent_tail, |v| v.max(0.0));
     }
     if let Some(v) = p.on_foot_vehicle_ground {
         s.on_foot_vehicle_ground = v;
@@ -689,7 +691,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                     "contact_slide": s.ped_obstacles.contact_slide, "contact_slide_dot": s.ped_obstacles.contact_slide_dot,
                     "avoid_horizon": s.ped_obstacles.avoid_horizon, "avoid_ray_scale": s.ped_obstacles.avoid_ray_scale,
                     "avoid_accel": s.ped_obstacles.avoid_accel, "avoid_scale": s.ped_obstacles.avoid_scale,
-                    "avoid_head_on_dot": s.ped_obstacles.avoid_head_on_dot, "avoid_crossing_dot": s.ped_obstacles.avoid_crossing_dot},
+                    "avoid_head_on_dot": s.ped_obstacles.avoid_head_on_dot, "avoid_crossing_dot": s.ped_obstacles.avoid_crossing_dot,
+                    "avoider_extent": s.ped_obstacles.avoider_extent, "avoider_extent_tail": s.ped_obstacles.avoider_extent_tail},
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
                 "ped_body": {"enabled": s.ped_body.enabled, "look_ahead": s.ped_body.look_ahead, "range": s.ped_body.range,
                     "reaction_part": s.ped_body.reaction_part,

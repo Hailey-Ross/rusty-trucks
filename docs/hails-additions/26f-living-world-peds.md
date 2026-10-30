@@ -888,7 +888,11 @@ Retail [code, TU3, research b698 / b699; constants dumped from the image 2026-10
 
 Ours ([`NavObstacles::side_step`], used by `PedNav::step_avoiding`): the ped's velocity is its last step over `dt`; retail's (x, y) is our (x, -z), so retail's left perpendicular `(-u.y, u.x)` is our `(u.z, -u.x)` (the ped's left, facing +z). The acceleration builds a lateral velocity that adds to the path direction; the steering then turns toward that sum. With no avoider ahead the lateral velocity fades at the same rate (ours: retail's path steering pulls the velocity back, its gain not read). A ped with SkaterAvoidance off (chasers) ignores skaters here as in the contact step. Mod keys `ped_obstacles.avoid_horizon` (3.0, 0 = off), `avoid_ray_scale` (0.99), `avoid_accel` (3.0), `avoid_scale` (1.3), `avoid_head_on_dot` (-0.7), `avoid_crossing_dot` (0.7). Deterministic: no RNG, id order.
 
-Open: the avoider radius is our box's footprint circumradius (retail sums the three extents `82C477B0` passes, not read); the braking skip and the path controller's max acceleration are not ported; the Flee avoid mask (b135 open 3) is not read, so fleeing peds side-step like walking ones.
+Avoider radius (b699 round 2, `82C477B0` re-read 2026-10-30): retail gives every moving avoider the extents `{a, 0.2a, 0.2a}` with `a = 1.3 x 0.25` (`0x820C6D98`, `0x82099280`), so 0.455 m whatever the box; keys `avoider_extent` (0.25) and `avoider_extent_tail` (0.2), times `avoid_scale`. The third extent is the research agent's reading of the vector code.
+
+Pull-back (b699 round 2, constants dumped 2026-10-30): retail sums the steering terms of `82E9FD78` without an acceleration clamp; `82EA0808` integrates `v += a dt` and clamps the speed. The velocity returns to the path through the path-turn term `82E9DF70` (lateral `perp x min(angle / 5 deg, 1) x A_turn`, `0x822F9374` = 11.459 per radian; boosted above 10 deg, `0x822F9368` / `0x822F936C` = 4.5837; only below 120 deg, `0x822F9370`), not a separate fade. `A_turn` comes from a runtime setting (`settings+0x2C`) not read yet, so ours keeps the fade at the side-step's own rate as the stand-in. The crossing give-way gives zero force (recomp `sub_82E9CBD0` zeroes the output first); it never applies to skaters or props.
+
+Open: the braking skip and the path controller's max acceleration are not ported; the Flee avoid mask (b135 open 3) is not read, so fleeing peds side-step like walking ones.
 
 Test: `obstacle_tests::a_ped_side_steps_a_skater_up_to_three_seconds_ahead`.
 
