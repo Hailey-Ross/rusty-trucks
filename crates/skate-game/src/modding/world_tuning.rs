@@ -210,6 +210,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.fade_in_seconds = f.fade_in_seconds.map_or(c.fade_in_seconds, |v| v.max(0.0));
         c.fade_seconds = f.fade_seconds.map_or(c.fade_seconds, |v| v.max(0.0));
         c.despawn_alpha = f.despawn_alpha.map_or(c.despawn_alpha, |v| v.clamp(0.0, 1.0));
+        c.bail_fade = f.bail_fade.unwrap_or(c.bail_fade);
+        c.bail_fade_lead_seconds = f.bail_fade_lead_seconds.map_or(c.bail_fade_lead_seconds, |v| v.max(0.0));
     }
     if let Some(f) = &p.skater_line_chain {
         let c = &mut s.skater_line_chain;
@@ -224,6 +226,7 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.fakie.low_speed = f.fakie_low_speed.map_or(c.fakie.low_speed, |v| v.max(0.0));
         c.fakie.slowly_backwards_seconds = f.fakie_slow_seconds.map_or(c.fakie.slowly_backwards_seconds, |v| v.max(0.0));
         c.fakie.after_teleport_seconds = f.fakie_spawn_seconds.map_or(c.fakie.after_teleport_seconds, |v| v.max(0.0));
+        c.fallback_valid_d2 = f.fallback_valid_m.map_or(c.fallback_valid_d2, |v| v.max(0.0) * v.max(0.0));
     }
     if let Some(f) = &p.ped_fade {
         let c = &mut s.ped_fade;
@@ -254,6 +257,10 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.avoid_crossing_dot = f.avoid_crossing_dot.map_or(c.avoid_crossing_dot, |v| v.clamp(-1.0, 1.0));
         c.avoider_extent = f.avoider_extent.map_or(c.avoider_extent, |v| v.max(0.0));
         c.avoider_extent_tail = f.avoider_extent_tail.map_or(c.avoider_extent_tail, |v| v.max(0.0));
+        for (to, from) in [(&mut c.path_turn_accel, f.path_turn_accel), (&mut c.path_turn_full_deg, f.path_turn_full_deg), (&mut c.path_turn_boost_deg, f.path_turn_boost_deg), (&mut c.path_turn_boost_rate, f.path_turn_boost_rate), (&mut c.path_turn_boost_max, f.path_turn_boost_max), (&mut c.path_turn_radius, f.path_turn_radius), (&mut c.controller_step, f.controller_step), (&mut c.contact_slow_fraction, f.contact_slow_fraction), (&mut c.contact_max_speed, f.contact_max_speed)] {
+            *to = from.map_or(*to, |v| v.max(0.0));
+        }
+        c.path_turn_max_deg = f.path_turn_max_deg.map_or(c.path_turn_max_deg, |v| v.clamp(0.0, 180.0));
     }
     if let Some(v) = p.on_foot_vehicle_ground {
         s.on_foot_vehicle_ground = v;
@@ -386,6 +393,9 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
     }
     if let Some(f) = &p.npc_walk_back {
         set!(s.npc_simulated.navmesh, f; plan_path_h, plan_path_v, goal_locate_radius, start_locate_radius, plan_direct_h, plan_direct_v, arrive_h, arrive_v, arrive_heading, line_up_h, line_up_v, leg_h, leg_v, leg_epsilon_sq, steer_full_lock, steer_gain, throttle_gain, slow_along, slow_gain, throttle_floor, floor_along, stall_steer, magnitude_cap, move_step_sq, move_anchor_sq, turn_step, turn_anchor, stall_ticks, push_period, stuck_waypoint_ticks, stuck_stall_ticks, stall_recovery_ticks);
+    }
+    if let Some(f) = &p.skater_path {
+        set!(s.npc_simulated.path, f; line_end_t, lost_radius, line_end_lost_radius, lost_max_speed);
     }
     if let Some(f) = &p.npc_line_controller {
         let c = &mut s.npc_simulated.controller;
@@ -681,11 +691,12 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             let mut out = json!({
                 "npc_walk_back": npc_walk_back,
                 "npc_line_controller": npc_line_controller,
+                "skater_path": fields!(s.npc_simulated.path; line_end_t, lost_radius, line_end_lost_radius, lost_max_speed),
                 "npc_draw_distance": s.npc_draw_distance,
                 "user_npc_draw_distance": s.user_npc_draw_distance,
                 "npc_grind_disttocog": s.npc_grind_disttocog,
-                "skater_fade": {"fade_in_seconds": s.skater_fade.fade_in_seconds, "fade_seconds": s.skater_fade.fade_seconds, "despawn_alpha": s.skater_fade.despawn_alpha},
-                "skater_line_chain": {"radius": s.skater_line_chain.radius, "max_candidates": s.skater_line_chain.max_candidates, "blend_seconds": s.skater_line_chain.blend_seconds, "keep_facing": s.skater_line_chain.keep_facing, "facing_rule": s.skater_line_chain.facing_rule.name(), "steer_dead_zone_deg": s.skater_line_chain.steer_dead_zone_deg, "steer_full_deg": s.skater_line_chain.steer_full_deg, "fakie_high_speed": s.skater_line_chain.fakie.high_speed, "fakie_low_speed": s.skater_line_chain.fakie.low_speed, "fakie_slow_seconds": s.skater_line_chain.fakie.slowly_backwards_seconds, "fakie_spawn_seconds": s.skater_line_chain.fakie.after_teleport_seconds},
+                "skater_fade": {"fade_in_seconds": s.skater_fade.fade_in_seconds, "fade_seconds": s.skater_fade.fade_seconds, "despawn_alpha": s.skater_fade.despawn_alpha, "bail_fade": s.skater_fade.bail_fade, "bail_fade_lead_seconds": s.skater_fade.bail_fade_lead_seconds},
+                "skater_line_chain": {"radius": s.skater_line_chain.radius, "max_candidates": s.skater_line_chain.max_candidates, "blend_seconds": s.skater_line_chain.blend_seconds, "keep_facing": s.skater_line_chain.keep_facing, "facing_rule": s.skater_line_chain.facing_rule.name(), "steer_dead_zone_deg": s.skater_line_chain.steer_dead_zone_deg, "steer_full_deg": s.skater_line_chain.steer_full_deg, "fakie_high_speed": s.skater_line_chain.fakie.high_speed, "fakie_low_speed": s.skater_line_chain.fakie.low_speed, "fakie_slow_seconds": s.skater_line_chain.fakie.slowly_backwards_seconds, "fakie_spawn_seconds": s.skater_line_chain.fakie.after_teleport_seconds, "fallback_valid_m": s.skater_line_chain.fallback_valid_d2.sqrt()},
                 "ped_fade": {"distance": s.ped_fade.distance, "fade_in_seconds": s.ped_fade.fade_in_seconds, "enabled": s.ped_fade.enabled},
                 "ped_obstacles": {"enabled": s.ped_obstacles.enabled, "min_half_extent": s.ped_obstacles.min_half_extent,
                     "moving_speed": s.ped_obstacles.moving_speed, "recut_fraction": s.ped_obstacles.recut_fraction,
@@ -696,7 +707,11 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                     "avoid_horizon": s.ped_obstacles.avoid_horizon, "avoid_ray_scale": s.ped_obstacles.avoid_ray_scale,
                     "avoid_accel": s.ped_obstacles.avoid_accel, "avoid_scale": s.ped_obstacles.avoid_scale,
                     "avoid_head_on_dot": s.ped_obstacles.avoid_head_on_dot, "avoid_crossing_dot": s.ped_obstacles.avoid_crossing_dot,
-                    "avoider_extent": s.ped_obstacles.avoider_extent, "avoider_extent_tail": s.ped_obstacles.avoider_extent_tail},
+                    "avoider_extent": s.ped_obstacles.avoider_extent, "avoider_extent_tail": s.ped_obstacles.avoider_extent_tail,
+                    "path_turn_accel": s.ped_obstacles.path_turn_accel, "path_turn_full_deg": s.ped_obstacles.path_turn_full_deg, "path_turn_boost_deg": s.ped_obstacles.path_turn_boost_deg,
+                    "path_turn_boost_rate": s.ped_obstacles.path_turn_boost_rate, "path_turn_boost_max": s.ped_obstacles.path_turn_boost_max, "path_turn_max_deg": s.ped_obstacles.path_turn_max_deg,
+                    "path_turn_radius": s.ped_obstacles.path_turn_radius, "controller_step": s.ped_obstacles.controller_step,
+                    "contact_slow_fraction": s.ped_obstacles.contact_slow_fraction, "contact_max_speed": s.ped_obstacles.contact_max_speed},
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
                 "ped_body": {"enabled": s.ped_body.enabled, "look_ahead": s.ped_body.look_ahead, "range": s.ped_body.range,
                     "reaction_part": s.ped_body.reaction_part,
@@ -1004,6 +1019,26 @@ mod tests {
         clear_owner(&mut w, "dev.b");
         let back = w.resource::<LivingWorldSettings>().npc_simulated;
         assert_eq!((back.navmesh, back.controller), (retail.navmesh, retail.controller), "mod disable restores retail");
+    }
+
+    /// Line end stage 3 (b701 section 3): the path follower's line end and lost values and the mode 1 fallback's
+    /// valid-line distance are mod-reachable, read back and reset on disable.
+    #[test]
+    fn npc_line_end_settings_are_mod_reachable_and_reset_on_disable() {
+        let mut w = world();
+        let (path, chain) = (LivingWorldSettings::default().npc_simulated.path, LivingWorldSettings::default().skater_line_chain);
+        assert_eq!((path.line_end_t, path.lost_radius, path.line_end_lost_radius, path.lost_max_speed, chain.fallback_valid_d2), (0.8, 6.0, 4.5, 14.0, 36.0));
+        assert_eq!(read(&w, "living_world")["skater_line_chain"]["fallback_valid_m"], json!(6.0));
+        set(&mut w, "dev.a", "living_world", Some(json!({"skater_path": {"line_end_t": 0.5, "line_end_lost_radius": 3.0}, "skater_line_chain": {"fallback_valid_m": 2.0}}))).unwrap();
+        let s = w.resource::<LivingWorldSettings>();
+        assert_eq!((s.npc_simulated.path.line_end_t, s.npc_simulated.path.line_end_lost_radius, s.npc_simulated.path.lost_radius, s.skater_line_chain.fallback_valid_d2), (0.5, 3.0, 6.0, 4.0));
+        assert_eq!(read(&w, "living_world")["skater_path"]["line_end_t"], json!(0.5));
+        for bad in [json!({"skater_path": {"line_end_t": 1.5}}), json!({"skater_path": {"lost_radius": -1.0}}), json!({"skater_line_chain": {"fallback_valid_m": -2.0}}), json!({"skater_path": {"window": 3}})] {
+            assert!(set(&mut w, "dev.c", "living_world", Some(bad.clone())).is_err(), "{bad}");
+        }
+        clear_owner(&mut w, "dev.a");
+        let back = w.resource::<LivingWorldSettings>();
+        assert_eq!((back.npc_simulated.path, back.skater_line_chain.fallback_valid_d2), (path, chain.fallback_valid_d2), "mod disable restores retail");
     }
 
     /// b616: the NPC air steer is on (retail), mod-reachable and reset on disable.

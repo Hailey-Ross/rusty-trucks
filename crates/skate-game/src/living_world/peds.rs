@@ -1346,7 +1346,12 @@ pub(crate) fn advance_peds(
                         // SkaterAvoidance off (ChangeNavModifierSetting index 2): the skaters are not obstacles.
                         skaters: mind.is_some_and(|m| !m.brain.nav_modifier(skate_core::living_world::peds::brain::nav_modifier::SKATER_AVOIDANCE)),
                     };
-                    let (next, clear) = match obstacles.resolve_step_ignoring(from, next, mesh.agent[1], ignore) {
+                    // The contact slide's tests read the ped's velocity and steer target (b717 / b718).
+                    let contact = skate_core::living_world::peds::obstacles::Contact {
+                        velocity: Some([body.velocity.x, body.velocity.z]),
+                        target: body.nav.corners.get(body.nav.next.min(body.nav.corners.len().saturating_sub(1))).map(|c| [c[0], c[2]]),
+                    };
+                    let (next, clear) = match obstacles.resolve_step_contact(from, next, mesh.agent[1], ignore, contact) {
                         Some(n) if n == next => (n, true),
                         Some(n) => {
                             let (m, k, ok) = constrain_move(mesh, body.nav.poly, from, n);

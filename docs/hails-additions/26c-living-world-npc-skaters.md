@@ -1129,7 +1129,7 @@ Retail [code, TU3]:
 - The skater's render object (`skater+1804`, a sub-object at `+14960` of the 15328-byte object built by `sub_82B973C8`, vtable `0x8231E170`) keeps an opacity at `+244`: vfunc 68 sets it, vfunc 76 (`sub_82B97190`) returns it. Default 1.0.
 - `sub_82594488(skater, dt)` drives it from two timers: `skater+1868` (fade in, opacity = clamp(t, 0, 1)) and `skater+1872` (fade out, opacity = 1 - clamp(t, 0, 1)); both grow by dt every tick, so a fade takes 1 s. `+1872` = FLT_MAX means "not fading out" (`sub_8246EF78`).
 - `sub_8246EA90` (ambient skater controller) starts the fade out (`+1872 = 0`, controller byte `+29 = 1`) once the time in its timed state is more than `duration - 1 s`: the fade ends exactly when the state does.
-- The manager's per-skater check `sub_8245A9B8` removes a skater whose controller is fading (`+29`) once the opacity (vfunc 76) is below 0.2 (constant at `0x82099280`), 0.8 s into the fade.
+- The manager's per-skater check `sub_8245A9B8` removes a skater whose controller is fading (`+29`) once the opacity (vfunc 76) is below 0.2 (constant at `0x82099280`), 0.8 s into the fade. A recomp trace of six bails saw no such removal: each was re-placed at the end of the fade ([Bail fade](#bail-fade), research b715).
 - `sub_825926F8` (skater spawn setup) sets `+1868 = 0`, so every spawned skater fades in from opacity 0 to 1 over 1 s. `sub_82594488` checks the fade in first: while `+1868 < 1` the opacity is the fade-in value even if a fade out was started (held at 0.5 while a component byte `+71` is set; not ported, the replay tier has no such component).
 
 That timed state is entered on a skater component flag (`sub_8246EF78`, byte `+59`), not at a line end: at a line end retail chains to the next line (`replay::choose_next_line`, fix 9), so an ambient skater keeps riding until the 120 m population cull. The replay tier fades only at a dead end (no line starts within the chain radius): the fade starts there with the last pose held, the NPC is removed below `despawn_alpha`. Pure and deterministic (a function of the cursor frame), so a client derives the same value.
@@ -1143,6 +1143,16 @@ Retail (fix 9): the 1 s fade and the removal at opacity 0.2 belong to a timed st
 ### Leave fade despawn
 
 The manager removes a fading skater below the threshold (`sub_8245A9B8`). Checked once the fade in is over: retail's timed state lasts at least 1.5 s (`sub_8246EE30`), so its fade out never starts while the fade in is still below 0.5, and a skater is never removed mid fade in; our lines can be shorter, so the rule is stated explicitly.
+
+### Bail fade
+
+Problem: a simulated NPC skater that bailed stayed solid on the ground until its respawn popped it onto its line.
+
+Retail [trace + code; research b715, the skate3recomp hooks NPCLATCH / NPCBAIL / NPCREMOVE, `.local/research/b705/fire_trace.tsv`]: six ambient (kind 0) bails at Aletown all ran the same chain: the bail latch (`8246EF78`) rises; the bail wait (`8246EA90`) starts the fade at 4.0 s (`pc+0x1D` set, the `+1872` timer from 0); at 5.0 s (the 5.0 s ambient delay) it places the skater again (`8246E558`, lr `0x8246ECE8`) with the timer at 0.983, and the latch falls with the post-bail countdown at 8. No removal followed any bail (`8245DCE0` never ran from the manager's opacity branch, lr `0x8245AC6C`), so the reading above that the manager removes a fading skater below 0.2 does not happen for a bail: it is faded out and re-placed. The recomp runs the retail code but is not retail; this matches the bail wait's own order (fade start, then the place).
+
+Ours: `LeaveFadeConfig::bail_alpha` (solid until `bail_fade_lead_seconds` before the respawn, then `1 - t / fade_seconds`); `npc_sim::simulate` counts ticks since the bail and sets `NpcSim::bail_alpha`, back to 1 at the respawn; `advance` multiplies the NPC's drawn alpha by it. Mod keys `skater_fade.bail_fade` (retail true) and `skater_fade.bail_fade_lead_seconds` (1.0); the fade length is `skater_fade.fade_seconds`.
+
+Test: `replay_tests::a_bailed_skater_fades_out_over_the_last_second_before_its_respawn`.
 
 ## Code reference: skater_ghost.rs
 

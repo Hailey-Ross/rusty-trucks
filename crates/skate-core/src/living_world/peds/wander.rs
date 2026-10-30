@@ -558,9 +558,10 @@ impl PedNav {
         let sv = &mut self.side_velocity;
         if a != [0.0, 0.0] {
             *sv = [sv[0] + a[0] * dt, sv[1] + a[1] * dt];
-        } else if let Some(o) = obstacles {
-            let (l, fade) = (sv[0].hypot(sv[1]), o.params.avoid_accel * o.params.avoid_scale * dt);
-            *sv = if l > fade { [sv[0] * (1.0 - fade / l), sv[1] * (1.0 - fade / l)] } else { [0.0; 2] };
+        }
+        // Retail's path turn term pulls it back every tick, also while the side-step pushes (research b716).
+        if let Some(o) = obstacles {
+            *sv = o.path_turn(*sv, forward(heading + error), velocity[0].hypot(velocity[1]), dt);
         }
         let side_stepping = *sv != [0.0, 0.0];
         if side_stepping {
