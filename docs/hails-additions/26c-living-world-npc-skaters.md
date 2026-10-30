@@ -872,6 +872,18 @@ Open: the AI's physical grind crouch (`crouch_132`) is assumed 0; whether any gr
 
 Test: `npc_tests::living_world_npc_grab_and_grind_slots_play_their_scored_trees` (data-gated): fs_50_50 -> `G_5050_FS_HI_0_CYC`; `world_tuning` valid_patch checks for the key.
 
+Research b703 (scoring data of the disc and all 10 DLC vaults): no grind schedule posts Crouch, GrindBalanceX or PhysGrindStabilityNudge (12 of the 54 grind records post only PhysGrindUpDown and Left / RightGroundGrab for the whole slot), so the intent side rests at the max and the twist keeps its entry value. The physical side (`physics/grind/advance.rs`: |deck z . grind normal| x 0.4) only lowers it with more than about 22 degrees of deck tilt; the puppet has no deck, so that part is not modelled.
+
+### NPC manuals
+
+Problem: an NPC manual (category 8, recorded as a GroundTrick phase) had no scored clip and fell back to the GroundTrick stand-in, a crouched 50-50 grind (`G_5050_FS_LOW_0_CYC`).
+
+Retail [data, stock graph; research b703]: `ground.xml` Manual -> `Manual/NoseManual.xml`: `B_NOSE_MANUAL_INTO` (0.1 s), then rolling forwards (`PhysicsSpeedCompare alongSkateZ greater 0.5`) `B_NOSE_MANUAL` (0.3 s) with `SetManualAngle`; `Manual/TailManual.xml`: `B_TAIL_MANUAL` with `SetManualAngle` only rolling backwards (`less -0.5`), else `B_TAIL_MANUAL_LOW` (0.3 s). The AI holds `Manual` = +/- 0.5 (`ai_signals` `manual_value`, + nose, - tail); `anim_motion/manual` `manual_balance` maps 0.5 to 0, so `MANUAL_ANGLE` rests at 0. `B_NOSE_MANUAL` blends over `MANUAL_ANGLE`; `B_NOSE_MANUAL_INTO` and `B_TAIL_MANUAL_LOW` over `DISTTOCOG`, which riding's Crouching keeps at its top with no crouch.
+
+Ours: `scored_trick_clip` category 8: nosemanual -> Into + cycle as a sequence (blend 0.1 s), tailmanual -> `B_TAIL_MANUAL_LOW` (0.3 s), each through the leaf picker with `MANUAL_ANGLE` from the loaded balance graph (`MotionHost::manual_rest_angle`, so a data change reaches NPCs) and `DISTTOCOG` at the top. Rolling forwards is assumed (an NPC riding fakie would take the other branch: not modelled); the manual deck-pitch crouch (`MaxCrouchFromDeckAngle`) is not modelled; the manual's OUT is left to the next phase's blend.
+
+Test: the same data-gated test: nosemanual -> `M_NOSEIDLE_N_0_INTO+...`, tailmanual a single clip, neither a 50-50.
+
 ### Trick air sequence
 
 The air part of a trick animation base: `<base>_A`, and for the kickflip family (`T_Kickflip.xml`: `LeftGround` plays `$ANIM_NAME$_A`, then as sequences `$ANIM_CYC_NAME$1..3` per extra flip and `$ANIM_OUT_NAME$<n>`) `B_<FLIP>_IN_A`, `B_<FLIP>_CYC1..n`, `B_<FLIP>_OUT<n>` with n the trick's flip count (`kickflip2` = 2; 1 without a digit). Parts are joined with `+`: the puppet plays them back to back (`transType="sequence"`, no blend).

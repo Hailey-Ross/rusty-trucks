@@ -1411,6 +1411,14 @@ Positions are (node, t): t in [0, 1] along the segment node -> node + 1. Pure an
 
 NOT RETAIL YET: the 4.5 m lost test after a line-end re-pick, the node-change handler (`sub_8246BEE0`), the `G+608` and skater flag `0x04000000` in the lost test; which body point retail projects (`sub_82467FC8`) is open (ours: the deck), and so is the lane edge axis (`sub_82454648`; ours: the segment's right).
 
+### Line end trigger
+
+Retail [code, TU3, research b694, re-read b701 2026-10-30; constants dumped]: controller A's tick (`8246D560`) runs the line end test `8246D3C0` before the projection. The nearest forward node becomes the search node at once. On the path the line end starts when A is past the second-last segment, or on it with t above 0.8 (`0x8208824C`); off the path when the nearest node is the last. A line end chains (`8246C7F8`) and then tests lost at 4.5 m (`0x821DDA68`) in the same call, from the chained-to node or, when nothing chained, the old search node; otherwise a search that stayed on its node tests lost at 6.0 m (`0x8208F74C`).
+
+Ours (stage 1 of the line end port, 2026-10-30): `PathFollow::search` (the test; true at the line end), `PathFollow::line_end_lost` (4.5 m) and `PathFollow::project` (the projection); `PathFollow::tick` runs all three for a skater that never chains. The simulated NPC runs the 4.5 m test after the cursor chained at the last node or when the search reports a line end; key `PathTuning::line_end_t` (0.8). NOT RETAIL YET (stage 2 / 3, map in research b701): the chain itself still runs in the replay cursor at the last node (later than retail's t > 0.8 trigger), from the last node rather than the body point; the mode 1 fallback's nearest-invalid rule (`fallback_valid_d2`, 6 m); the hold at the end instead of finishing; the client mirror of a mid-segment switch; and the path tuning is not yet a mod key. Retail has no leave fade at a held line end (research b702).
+
+Tests: `path_follow::tests::the_line_end_starts_past_point_eight_of_the_second_last_segment`, `a_line_end_chain_tests_lost_at_four_and_a_half_metres`.
+
 ## Code reference: living_world/ai_push.rs
 
 Detail moved out of the code comments of `crates/skate-core/src/living_world/ai_push.rs`; each comment there links its section here.

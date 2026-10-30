@@ -972,7 +972,8 @@ fn living_world_npc_grab_and_grind_slots_play_their_scored_trees() {
     let id = |n: &str| skate_core::scoring::catalog::IDENTIFIERS.iter().position(|e| e.0 == n).unwrap() as i16;
     // Retail's uncrouched grind rest (`ControlGrindCrouch`): the setup data's `max_grind_disttocog`.
     let rest = skate_data::collections::Collections::load(&root).unwrap().float("anim_motion", "grind_height", "max_grind_disttocog").unwrap();
-    let clip = |n: &str, phase: ReplayPhase| scored_trick_clip(&index, &leaf, rest, PhaseEntry { phase, since: 0, trick: id(n) }).map(|(c, _)| c);
+    // The AI's 0.5 manual sits on the balance graph's flat zero (b703).
+    let clip = |n: &str, phase: ReplayPhase| scored_trick_clip(&index, &leaf, rest, &|_| 0.0, PhaseEntry { phase, since: 0, trick: id(n) }).map(|(c, _)| c);
     for n in ["fsgrab", "fsgrab_up", "bsgrab", "nosegrab", "tailgrab", "mutegrab", "stalegrab", "dblgrab", "rocketair", "christ_air", "superman", "gnd_bsgrab", "coffin"] {
         eprintln!("{n}: air {:?} takeoff {:?}", clip(n, ReplayPhase::AirTrick), clip(n, ReplayPhase::GroundTrick));
     }
@@ -986,6 +987,13 @@ fn living_world_npc_grab_and_grind_slots_play_their_scored_trees() {
     assert_eq!(last(clip("gnd_bsgrab", ReplayPhase::GroundTrick)).as_deref(), Some("GR_GROUND_N_BS_0_CYC"));
     assert_eq!(clip("fs_50_50", ReplayPhase::GroundTrick).as_deref(), Some("G_5050_FS_HI_0_CYC"), "rests on the HI clip (b700)");
     assert_eq!(clip("fs_50_50", ReplayPhase::AirTrick), None, "a grind's hop off keeps the trick clip rules");
+    eprintln!("nosemanual: {:?} tailmanual: {:?}", clip("nosemanual", ReplayPhase::GroundTrick), clip("tailmanual", ReplayPhase::GroundTrick));
+    // B_NOSE_MANUAL_INTO / B_TAIL_MANUAL_LOW blend over DISTTOCOG (the riding rest, uncrouched), B_NOSE_MANUAL over
+    // MANUAL_ANGLE.
+    let nose = clip("nosemanual", ReplayPhase::GroundTrick).expect("nose manual clips");
+    assert!(nose.starts_with("M_NOSEIDLE_N_0_INTO+") && !nose.contains("5050"), "Into then the cycle, not a 50-50: {nose}");
+    let tail = clip("tailmanual", ReplayPhase::GroundTrick).expect("tail manual clip");
+    assert!(!tail.contains("5050") && !tail.contains('+'), "{tail}");
 }
 
 /// Data-gated (stance port): the puppet's fakie rule is the stock motion graph's

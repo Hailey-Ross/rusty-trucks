@@ -1123,6 +1123,7 @@ pub(crate) fn simulate(
                         if sim.respawn_in.is_some() || sim.teleport_pending {
                             (false, false, None)
                         } else {
+                            let mut chained = false;
                             let mut f = match sim.follow {
                                 Some((id, f)) if id == replay.cursor.line && replay.cursor.node + rules.path.window >= f.search_start => f,
                                 // A line switch (chain or branch): retail's reset `sub_82468AC8` leaves the skater off
@@ -1130,11 +1131,11 @@ pub(crate) fn simulate(
                                 Some((old, f)) => {
                                     clear_line_state(sim);
                                     skate_core::living_world::ai_controller::path_reset(&mut replay.avoid.controller);
-                                    let chained = replay.branches.last().is_some_and(|r| {
+                                    chained = replay.branches.last().is_some_and(|r| {
                                         r.from_line == old && r.to_line == replay.cursor.line
                                             && lines.get(&old).is_some_and(|l| r.from_node as usize + 1 >= l.nodes.len())
                                     });
-                                    if chained { f.chained_to(replay.cursor.node) } else { f.switch_to(replay.cursor.node) }
+                                    f.switch_to(replay.cursor.node)
                                 }
                                 None => skate_core::living_world::path_follow::PathFollow::start(replay.cursor.node, &rules.path),
                             };
@@ -1156,7 +1157,12 @@ pub(crate) fn simulate(
                                 let s = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
                                 if s > 0.01 && v[0] * heading[0] + v[1] * heading[1] + v[2] * heading[2] < 0.0 { -s } else { s }
                             });
-                            f.tick(line, pos, shape_ratio, speed, airborne_now, &rules.path);
+                            // The line end tests lost at 4.5 m after its chain (the cursor chained at the end, b674) or when
+                            // nothing chained (`sub_8246D3C0`, b701); the chain itself still runs in the cursor.
+                            if f.search(line, pos, speed, &rules.path) || chained {
+                                f.line_end_lost(line, pos, speed, &rules.path);
+                            }
+                            f.project(line, pos, shape_ratio, airborne_now, &rules.path);
                             {
                                 use skate_core::living_world::ai_controller;
                                 let c = &mut replay.avoid.controller;

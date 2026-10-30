@@ -32,11 +32,14 @@ pub struct PathTuning {
     pub progress_fraction: f32,
     /// `pc+868` divides by the narrowest same-side width of A and the next this many nodes (`sub_8246CCC8`, b524).
     pub lane_lookahead: u32,
+    /// On the path, the line end starts once A is on the second-last segment past this fraction (`sub_8246D3C0`,
+    /// `0x8208824C` = 0.8, b694).
+    pub line_end_t: f32,
 }
 
 impl Default for PathTuning {
     fn default() -> Self {
-        Self { window: 4, hysteresis: 0.5, clamp_fraction: 0.25, clamp_horizontal: 1.0, clamp_vertical: 5.0, commit: 0.5, drop: 1.0, start_node: 3, lost_radius: 6.0, line_end_lost_radius: 4.5, lost_max_speed: 14.0, progress_fraction: 0.025, lane_lookahead: 4 }
+        Self { window: 4, hysteresis: 0.5, clamp_fraction: 0.25, clamp_horizontal: 1.0, clamp_vertical: 5.0, commit: 0.5, drop: 1.0, start_node: 3, lost_radius: 6.0, line_end_lost_radius: 4.5, lost_max_speed: 14.0, progress_fraction: 0.025, lane_lookahead: 4, line_end_t: 0.8 }
     }
 }
 
@@ -65,34 +68,54 @@ pub struct PathFollow {
     /// This tick's progress flag for the stuck tracker (`sub_8246C930`, b110): false when cursor B is ahead of the
     /// candidate, A is past the start and the raw projection advanced less than `progress_fraction` of A -> B.
     pub progress: bool,
-    /// Set by [`Self::chained_to`]: the next tick runs the line end's lost test.
-    pub chained: bool,
 }
 
 impl PathFollow {
     /// A skater placed on `node` (spawn or respawn): on the path, A = B = the node.
     pub fn start(node: u32, tuning: &PathTuning) -> Self {
-        Self { search_start: node, a: (node, 0.0), b: (node, 0.0), last: (node, 0.0), on_path: true, past_start: node > tuning.start_node, dist: 0.0, inside_lane: true, lateral: 0.0, handled: node, lost: false, progress: true, chained: false }
+        Self { search_start: node, a: (node, 0.0), b: (node, 0.0), last: (node, 0.0), on_path: true, past_start: node > tuning.start_node, dist: 0.0, inside_lane: true, lateral: 0.0, handled: node, lost: false, progress: true }
     }
 
-    /// One tick at `pos` (`ratio` shaped / recorded speed, `speed` pc+808, `airborne` +438; b119).
+    /// One tick at `pos` (`ratio` shaped / recorded speed, `speed` pc+808, `airborne` +438; b119) for a skater that
+    /// never chains: [`Self::search`], at a line end [`Self::line_end_lost`] on the same line, [`Self::project`].
     pub fn tick(&mut self, line: &ReplayLine, pos: Vec3, ratio: f32, speed: f32, airborne: bool, tuning: &PathTuning) {
+        if self.search(line, pos, speed, tuning) {
+            self.line_end_lost(line, pos, speed, tuning);
+        }
+        self.project(line, pos, ratio, airborne, tuning);
+    }
+
+    /// The line end test of `sub_8246D3C0`, before the projection (b694 / b701): the nearest node becomes the search
+    /// node; true at the line end (the caller then chains, `sub_8246C7F8`, and runs [`Self::line_end_lost`]). Otherwise
+    /// a search that stayed on its node runs lost (6 m); the lost tests read the previous tick's on-path flag:
+    /// docs/hails-additions/26e-living-world-skater-ai.md#line-end-trigger
+    pub fn search(&mut self, line: &ReplayLine, pos: Vec3, speed: f32, tuning: &PathTuning) -> bool {
         self.lost = false;
         self.progress = true;
-        if line.nodes.len() < 2 {
-            return;
+        let count = line.nodes.len() as u32;
+        if count < 2 {
+            return false;
         }
         let n = nearest_forward(line, pos, self.search_start, tuning.window);
-        // A node advance runs the node-change handler instead of the lost test (`sub_8246D3C0`); the test reads the
-        // previous tick's on-path flag.
-        if std::mem::take(&mut self.chained) {
-            // The line end chains first, then tests lost from the chained-to node whatever the search finds next
-            // (`sub_8246D3C0`, b674).
-            self.lost = !self.on_path && speed < tuning.lost_max_speed && lost(line, self.search_start, pos, tuning.line_end_lost_radius);
-        } else if n == self.search_start {
+        let end = if self.on_path { self.a.0 + 2 > count || (self.a.0 + 2 == count && self.a.1 > tuning.line_end_t) } else { n + 1 >= count };
+        if !end && n == self.search_start {
             self.lost = !self.on_path && speed < tuning.lost_max_speed && lost(line, n, pos, tuning.lost_radius);
         }
         self.search_start = n;
+        end
+    }
+
+    /// The line end's lost test (`sub_82468DD8` at 4.5 m), run after the chain on the line the skater now follows.
+    pub fn line_end_lost(&mut self, line: &ReplayLine, pos: Vec3, speed: f32, tuning: &PathTuning) {
+        self.lost = !self.on_path && speed < tuning.lost_max_speed && (self.search_start as usize) < line.nodes.len() && lost(line, self.search_start, pos, tuning.line_end_lost_radius);
+    }
+
+    /// The projection (`sub_8246C930`) from the search node: A, the lane, the rejoin, B and the on-path drop.
+    pub fn project(&mut self, line: &ReplayLine, pos: Vec3, ratio: f32, airborne: bool, tuning: &PathTuning) {
+        if line.nodes.len() < 2 {
+            return;
+        }
+        let n = self.search_start.min(line.nodes.len() as u32 - 1);
         // Projection -> A.
         let proj = project(line, n, pos);
         let p = point(line, proj);
@@ -166,12 +189,7 @@ impl PathFollow {
     /// skater off the path with the search at `node`, A / B / the handled node cleared, and keeps the start gate
     /// (`pc+937` is only cleared by the full reset).
     pub fn switch_to(&self, node: u32) -> Self {
-        Self { search_start: node, a: (0, 0.0), b: (0, 0.0), last: (0, 0.0), on_path: false, past_start: self.past_start, dist: 0.0, inside_lane: false, lateral: 999.0, handled: 0, lost: false, progress: true, chained: false }
-    }
-
-    /// [`Self::switch_to`] for a chain at the line end (`sub_8246C7F8`).
-    pub fn chained_to(&self, node: u32) -> Self {
-        Self { chained: true, ..self.switch_to(node) }
+        Self { search_start: node, a: (0, 0.0), b: (0, 0.0), last: (0, 0.0), on_path: false, past_start: self.past_start, dist: 0.0, inside_lane: false, lateral: 999.0, handled: 0, lost: false, progress: true }
     }
 
     /// Recorded frames from cursor (`node`, `frame_in_segment`) forward to B (0 when B is not ahead).
@@ -483,23 +501,45 @@ mod tests {
         assert!(adv.search_start > 4 && !adv.lost);
     }
 
-    /// `sub_8246D3C0`: a line-end chain tests lost at 4.5 m from the chained-to node on its tick, node advance or not;
-    /// a junction switch keeps the 6 m test.
+    /// `sub_8246D3C0`: after a line-end chain the lost test runs at 4.5 m from the chained-to node on the same tick; a
+    /// junction switch keeps the 6 m test.
     #[test]
     fn a_line_end_chain_tests_lost_at_four_and_a_half_metres() {
         let mut l = line(10);
         l.nodes[4].width = [0, 0];
         let t = PathTuning::default();
         let start = PathFollow::start(4, &t);
-        let mut chain = start.chained_to(4);
-        chain.tick(&l, [5.0, 0.0, 4.0], 1.0, 0.0, false, &t);
-        assert!(chain.lost && !chain.chained);
+        let mut chain = start.switch_to(4);
+        chain.line_end_lost(&l, [4.6, 0.0, 4.0], 0.0, &t);
+        assert!(chain.lost, "4.6 m from the new node 0 side");
+        chain.line_end_lost(&l, [4.4, 0.0, 4.0], 0.0, &t);
+        assert!(!chain.lost);
         let mut junction = start.switch_to(4);
         junction.tick(&l, [5.0, 0.0, 4.0], 1.0, 0.0, false, &t);
         assert!(!junction.lost);
-        let mut fast = start.chained_to(4);
-        fast.tick(&l, [5.0, 0.0, 4.0], 1.0, 14.1, false, &t);
+        let mut fast = start.switch_to(4);
+        fast.line_end_lost(&l, [5.0, 0.0, 4.0], 14.1, &t);
         assert!(!fast.lost);
+        let mut on = start;
+        on.line_end_lost(&l, [5.0, 0.0, 4.0], 0.0, &t);
+        assert!(!on.lost, "on the path never lost");
+    }
+
+    /// `sub_8246D3C0` (b694 / b701): on the path the line end starts on the second-last segment past t 0.8; off the
+    /// path once the nearest node is the last.
+    #[test]
+    fn the_line_end_starts_past_point_eight_of_the_second_last_segment() {
+        let l = line(10);
+        let t = PathTuning::default();
+        let at = |a: (u32, f32), on_path: bool| PathFollow { a, b: a, last: a, on_path, search_start: a.0, ..PathFollow::start(a.0, &t) };
+        let pos = |a: (u32, f32)| [0.0, 0.0, a.0 as f32 + a.1];
+        for (a, end) in [((8, 0.79), false), ((8, 0.81), true), ((9, 0.0), true), ((7, 0.99), false)] {
+            assert_eq!(at(a, true).search(&l, pos(a), 0.0, &t), end, "on path at {a:?}");
+        }
+        assert!(!at((8, 0.0), false).search(&l, [0.0, 0.0, 8.0], 0.0, &t), "off path at node 8 of 10");
+        assert!(at((8, 0.0), false).search(&l, [0.0, 0.0, 9.0], 0.0, &t), "off path at the last node");
+        let mut late = at((8, 0.79), true);
+        assert!(late.search(&l, pos((8, 0.79)), 0.0, &PathTuning { line_end_t: 0.5, ..t }), "line_end_t from the tuning");
     }
 
     #[test]
