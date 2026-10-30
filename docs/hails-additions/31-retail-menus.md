@@ -2661,6 +2661,10 @@ the_camera`, `marquee_stand_parses_from_the_stock_bank`.
 
 **Camera input.** Retail's viewer has a camera input handler (b579 / b580), but it runs only while the viewer's record pointer (+0x60) is clear and FE 62 keeps it set (b578); the user confirmed the sticks do not move the FE 62 preview camera (2026-10-29), so the port has none.
 
+**Swap frames (2026-10-29).** Scrolling the list showed the map for a frame now and then: while the next character's model
+swapped in, `drive` returned before it placed the stage camera, so the gameplay camera's frame was drawn. The stage camera
+is now set on every open frame (`stage_camera`), the swap frames included.
+
 **Open.** A fade around the swap; a mod API for `MarqueeStage`.
 
 ## Free Play options (FE 34)

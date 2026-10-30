@@ -471,7 +471,8 @@ fn spawn_sim(
     let (context, body) = match pool.bodies.pop() {
         // A new actor on a pooled body: the per-actor parts a fresh body would have, and no record from the last owner
         // (b295 / b296 / b299; the placement's teleport reset and state Exit / Enter do the rest).
-        Some((context, mut body)) => {
+        Some((mut context, mut body)) => {
+            GamePhysics::abandon_context_queries(&mut context);
             body.runtime.reset_for_new_actor(physics.collections())?;
             (context, body)
         }

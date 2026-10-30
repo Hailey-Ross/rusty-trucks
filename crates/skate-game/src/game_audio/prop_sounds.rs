@@ -100,6 +100,8 @@ pub(crate) struct PropSounds {
     epoch: Option<u64>,
     /// Loop banks missing from the install (warned once).
     banks_missing: bool,
+    /// `Prefetch::clears` when the shared banks were last requested (a clear forgets them).
+    prefetched: Option<u64>,
     /// The dynamic-object manager's current record key (`+0x38`, never cleared), its judder and generator.
     manager_key: u64,
     judder: Judder,
@@ -119,6 +121,7 @@ impl Default for PropSounds {
             objects: Default::default(),
             epoch: None,
             banks_missing: false,
+            prefetched: None,
             manager_key: 0,
             judder: Judder::default(),
             eq: EqManager::default(),
@@ -233,6 +236,23 @@ fn owner_step(o: &mut Object, e: &PropEntry, audio: &PropAudioType, contact: boo
 }
 
 /// The process half of the pass (with the world / NPC owners', before the MixMap ticks).
+/// The start bank and loop banks every prop shares, queued on the prefetch worker from a map's first frame so the
+/// first push or loop does not decode them on the game thread: docs/hails-additions/27-dynamic-props.md#prop-sound-banks
+fn prefetch_shared_banks(prefetched: &mut Option<u64>, native: &mut Native, library: &super::Library) {
+    let clears = native.prefetch.clears();
+    if *prefetched == Some(clears) {
+        return;
+    }
+    *prefetched = Some(clears);
+    for stem in std::iter::once(moveable::START_BANK).chain(LOOP_BANKS) {
+        if !native.bank_loaded(stem)
+            && let Ok(source) = library.bank_source(stem)
+        {
+            native.prefetch.request(source);
+        }
+    }
+}
+
 pub(super) fn frame_pre(
     native: Option<ResMut<Native>>,
     physics: Option<ResMut<crate::physics::GamePhysics>>,
@@ -248,8 +268,12 @@ pub(super) fn frame_pre(
         state.epoch = Some(native.map_epoch);
         state.clear(native);
     }
+    if !requested() {
+        return;
+    }
+    prefetch_shared_banks(&mut state.prefetched, native, &library);
     let calls = native.pending.map_or(0, |p| p.calls);
-    if calls == 0 || !requested() {
+    if calls == 0 {
         return;
     }
     let Some(dynamics) = physics.prop_dynamics_mut() else {
@@ -584,5 +608,41 @@ mod tests {
         assert_eq!((i.moved, i.word_speed), (Some(0.25), 0.5), "moved: the loop speed rises by the record's 0.5 per evaluation");
         assert_eq!(owner_step(&mut o, &entry(2.0, false), &audio(), true, false, 1.0).word_speed, 1.0, "still moved after the push while moving");
         assert_eq!(owner_step(&mut o, &entry(2.0, false), &audio(), true, true, 1.0).moved, None, "another pushed prop ends it");
+    }
+
+    /// The shared start / loop banks are queued once per prefetch clear, load at the first push without a
+    /// game-thread decode, and are queued again after a map change.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn shared_prop_banks_are_prefetched_and_load_without_decoding() {
+        use super::super::library::WAV_DECODES;
+        let root = std::env::var_os("SKATE3_ASSET_ROOT").map_or_else(|| std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets")), std::path::PathBuf::from);
+        let Ok(library) = super::super::Library::load(&root) else { panic!("missing private data: no audio install") };
+        let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
+        let stems: Vec<&str> = std::iter::once(moveable::START_BANK).chain(LOOP_BANKS).filter(|s| library.bank_source(s).is_ok()).collect();
+        assert_eq!(stems.len(), 1 + LOOP_BANKS.len(), "every shared prop bank is installed");
+        let mut prefetched = None;
+        prefetch_shared_banks(&mut prefetched, &mut native, &library);
+        assert!(stems.iter().all(|s| native.prefetch.contains(s)), "requested on the first frame");
+        for stem in &stems {
+            native.prefetch.wait(stem);
+            native.prefetch.drop_bank(stem);
+        }
+        prefetch_shared_banks(&mut prefetched, &mut native, &library);
+        assert_eq!(native.prefetch.stems().count(), 0, "asked for once per clear");
+
+        native.unload_map_banks();
+        prefetch_shared_banks(&mut prefetched, &mut native, &library);
+        for stem in &stems {
+            native.prefetch.wait(stem);
+        }
+        let decodes = WAV_DECODES.with(|n| n.get());
+        for stem in &stems {
+            native.ensure_bank(&library, stem).unwrap();
+        }
+        assert_eq!(WAV_DECODES.with(|n| n.get()), decodes, "no decode on the game thread");
+        native.unload_map_banks();
+        native.ensure_bank(&library, stems[0]).unwrap();
+        assert!(WAV_DECODES.with(|n| n.get()) > decodes, "without the prefetch the bank decodes here");
     }
 }

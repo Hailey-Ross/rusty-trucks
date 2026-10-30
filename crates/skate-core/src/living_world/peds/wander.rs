@@ -170,6 +170,9 @@ pub struct PedNav {
     pub targets_chosen: u32,
     pub route: Option<PedRoute>,
     route_index: usize,
+    /// The last step found a planned route's path ended or failed (retail `82E96728` "bot done"): the goal provider
+    /// is asked for a new goal (`82E2CB08` -> provider vfn 0x10, b697).
+    pub route_done: bool,
     /// [`NavObstacles::version`] the corners were last checked against (fix 11).
     pub obstacle_version: u64,
     /// The polygon the body stands on (kept by [`constrain_move`]; fix 17). `None` = locate.
@@ -272,6 +275,7 @@ impl PedNav {
         self.route_index = 0;
         self.target = None;
         self.corners.clear();
+        self.route_done = false;
         self.hold_on_fail = false;
         self.holding = false;
     }
@@ -442,6 +446,7 @@ impl PedNav {
         }
         // Arrival / no plan: choose the next target (the bot's state 1).
         let arrived = self.corners.is_empty() || (self.next + 1 >= self.corners.len() && self.corners.last().is_some_and(|c| dist_xz(*c, position) < params.corner_radius));
+        self.route_done = arrived && self.route.is_some() && self.target.is_some();
         if give_up {
             self.reverse = true;
             self.skip_long = true;

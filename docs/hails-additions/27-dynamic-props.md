@@ -1552,6 +1552,19 @@ second centre's timer runs twice per tick).
 - Inferred, not traced: push vs pull = the sign of the prop's velocity against the local skater's (retail: against
   a player vector at +0x10); the Pn21 pan = the main loop's azimuth (retail: the last routed voice's).
 
+### Prop sound banks
+Problem (2026-10-29 session, DownTown, pushing a bench with peds seated on it): the first push froze the game for
+1.85 s and the first sliding loop 2 s later for 4.84 s. The hitch lines put both in `prop_sounds::frame_pre`,
+`audio_parts=[bank_load]`: the start bank (`DMO_Starts`) and the three loop banks (`Dynamics_Objects_Roll`,
+`_Slide_A`, `_Slide_B`) were read and their WAVs decoded on the game thread at first use (cold HDD, a trace session
+writing to the same drive). The prop's own main bank already went through the prefetch worker and did not stall.
+
+Change: `prefetch_shared_banks` queues those four banks on the prefetch worker ([doc 11, "Emitter bank prefetch"](11-audio.md#emitter-bank-prefetch-2026-10-03-follow-up))
+from a map's first frame, again after every prefetch clear (map change, content change). `Native::ensure_bank` at the
+first push / loop then takes the decoded data, so only `load_bank` runs on the game thread and the runtime sees the
+same calls in the same order. A bank still queued when the push comes loads on the game thread as before.
+Test: `shared_prop_banks_are_prefetched_and_load_without_decoding` (data-gated).
+
 ### Not modelled / open
 - Prop-on-prop contacts post against "no material" (143): retail's other-body surface for a DMO pair is not traced.
 - The two runtime terms of the sliding choice (characteristics bool 0x14C with entry +0x4C; entry +0x4E with +0x4F)

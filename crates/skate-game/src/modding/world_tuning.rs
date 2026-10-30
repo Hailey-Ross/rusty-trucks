@@ -415,6 +415,7 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         b.flee.arrival_radius = f.flee_arrival_radius.unwrap_or(b.flee.arrival_radius);
         b.flee.threat_speed_gate = f.flee_threat_speed_gate.unwrap_or(b.flee.threat_speed_gate);
         b.flee.side_blend = f.flee_side_blend.unwrap_or(b.flee.side_blend);
+        b.flee.releg_on_nav_done = f.flee_releg_on_nav_done.unwrap_or(b.flee.releg_on_nav_done);
         b.plugins.water_disables_seats = f.water_disables_seats.unwrap_or(b.plugins.water_disables_seats);
         b.plugins.water_max_depth = f.water_max_depth.unwrap_or(b.plugins.water_max_depth);
         b.plugins.water_above = f.water_above.unwrap_or(b.plugins.water_above);
@@ -709,7 +710,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 let v = s.ped_brain.vehicle_flee;
                 b.extend([("vehicle_flee".into(), json!(v.enabled)), ("vehicle_flee_radius".into(), json!(v.radius)), ("vehicle_flee_min_dot".into(), json!(v.min_dot)), ("vehicle_flee_away".into(), json!(v.away)), ("vehicle_flee_toward".into(), json!(v.toward))]);
                 let l = s.ped_brain.flee;
-                b.extend([("flee_leg".into(), json!(l.leg)), ("flee_arrival_radius".into(), json!(l.arrival_radius)), ("flee_threat_speed_gate".into(), json!(l.threat_speed_gate)), ("flee_side_blend".into(), json!(l.side_blend))]);
+                b.extend([("flee_leg".into(), json!(l.leg)), ("flee_arrival_radius".into(), json!(l.arrival_radius)), ("flee_threat_speed_gate".into(), json!(l.threat_speed_gate)), ("flee_side_blend".into(), json!(l.side_blend)), ("flee_releg_on_nav_done".into(), json!(l.releg_on_nav_done))]);
             }
             out
         }),

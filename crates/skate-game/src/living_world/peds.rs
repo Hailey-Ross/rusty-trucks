@@ -1381,7 +1381,13 @@ pub(crate) fn advance_peds(
                                 let model = t.split_once('/').map_or(t, |x| x.1).split("_0x").next().unwrap_or(t);
                                 Some(format!("{model} at [{:.2}, {:.2}, {:.2}]", c.x, c.y, c.z))
                             });
-                            let blocker = blocker.unwrap_or_else(|| if by.is_some_and(|id| id >= MOD_BODY_OBSTACLE_BASE) { "mod body".into() } else { "-".into() });
+                            let blocker = blocker.unwrap_or_else(|| match by {
+                                Some(id) if id >= skate_core::living_world::peds::obstacles::SKATER_OBSTACLE_BASE => {
+                                    format!("skater {}", id - skate_core::living_world::peds::obstacles::SKATER_OBSTACLE_BASE)
+                                }
+                                Some(id) if id >= MOD_BODY_OBSTACLE_BASE => "mod body".into(),
+                                _ => "-".into(),
+                            });
                             info!(
                                 "PED_BLOCKED ped=#{} at=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] by={by:?} ({blocker}) inside={inside} near_moved_spawn={near:?} on_mesh={on_mesh} clear={clear} tick={now}",
                                 ped.id.serial, from[0], from[1], from[2], to.x, to.y, to.z,
@@ -3509,7 +3515,9 @@ pub(crate) fn think_peds(
         let flee = settings.ped_brain.flee;
         match (mind.brain.motion_intent, mind.brain.flee_from, data.nav.as_deref()) {
             (Some(skate_core::living_world::peds::brain::motion::FLEE), Some(threat), Some(mesh)) => {
-                if mind.flee_goal.is_none_or(|g| skate_core::living_world::peds::flee::arrived(at, g, &flee)) {
+                // A new leg on arrival (82E2BC70) or when the bot is done short of the goal (82E2CB08, b697).
+                let bot_done = flee.releg_on_nav_done && body.nav.route_done;
+                if mind.flee_goal.is_none_or(|g| bot_done || skate_core::living_world::peds::flee::arrived(at, g, &flee)) {
                     if let Some(threat_at) = target(threat) {
                         let velocity = velocity_of(threat).unwrap_or([0.0; 3]);
                         let mut goal = skate_core::living_world::peds::flee::goal(at, threat_at, velocity, &flee);

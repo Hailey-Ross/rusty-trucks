@@ -120,6 +120,8 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
         viewer.bound_for = None;
         viewer.time = 0.0;
     }
+    // Every open frame, the swap frames included: the gameplay camera (`camera::present`) would show the map.
+    stage_camera(world, &mut viewer, &stage);
     if world.resource::<crate::custom_models::CustomModels>().swapping() || viewer.shown.is_none() {
         return;
     }
@@ -150,6 +152,9 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
             }
         }
     }
+}
+
+fn stage_camera(world: &mut World, viewer: &mut Viewer, stage: &MarqueeStage) {
     let camera = world.query_filtered::<Entity, With<crate::camera::GameplayCamera>>().iter(world).next();
     if let Some(camera) = camera {
         if let Some(mut transform) = world.get_mut::<Transform>(camera) {
