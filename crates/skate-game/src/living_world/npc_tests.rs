@@ -861,7 +861,7 @@ fn living_world_npc_trick_jump_has_no_pose_pop() {
             .iter()
             .map(|&(phase, since)| PhaseEntry { phase, since, trick: if matches!(phase, ReplayPhase::GroundTrick | ReplayPhase::AirTrick) { trick } else { -1 }, trick_since: 0 })
             .collect();
-        let resolve = |e: PhaseEntry, o: Option<PhaseEntry>| puppet_layer_clip(&none_clips, &none_blends, "Normal", &evaluates, &stock, &|_| None, e, o);
+        let resolve = |e: PhaseEntry, o: Option<PhaseEntry>| puppet_layer_clip(&none_clips, &none_blends, "Normal", &evaluates, &stock, &|_, _| None, e, o);
         // Phases begun up to frame `f` (`upto` = f) or before it (`upto` = f - 1: what showed
         // before a change at f, still playing at f).
         let history = |f: u64, upto: u64, keep: usize| -> Vec<(PhaseEntry, f32)> {
@@ -954,6 +954,15 @@ fn living_world_npc_score_clips_index_the_stock_graph() {
     assert_eq!((fs_tweak.x.blend_rising, fs_tweak.x.blend_out, fs_tweak.x.clamp_velocity, fs_tweak.project), (0.116, Some(0.133), Some(0.1), true));
     assert!(!get("dblgrab").tweak.expect("dblgrab Cyc eases its tweaks").project);
     assert!(get("gnd_bsgrab").tweak.is_none() && get("fs_50_50").tweak.is_none());
+    // 4c (research b708 / b710): Into / Out speeds, the release rule, the Out and ground hold blend times.
+    use crate::graph_host::motion::Release;
+    assert_eq!((fs.into_speed, fs.out_speed, fs.out_seconds), (Some(2.0), Some(2.0), Some(0.1)));
+    assert_eq!(fs_tweak.release, Some(Release { below: 0.2, y_only: false }));
+    let mute = get("mutegrab");
+    assert_eq!((mute.into_speed, mute.out_speed), (Some(1.25), None));
+    assert_eq!(mute.tweak.expect("mute eases").release, Some(Release { below: 0.2, y_only: true }));
+    assert_eq!(get("dblgrab").into_speed, Some(3.0));
+    assert_eq!(get("gnd_fsgrab").cyc_seconds, Some(0.2));
     // Every eased Cyc holds the leaf the puppet picks (so its tree replaces it) and builds as a tree whose pose moves with
     // the tweak.
     let animation = crate::graph_host::motion::metadata_animation(skate_data::animation_banks::AnimationBanks::load(&root).unwrap().metadata().unwrap());
@@ -994,7 +1003,7 @@ fn living_world_npc_grab_and_grind_slots_play_their_scored_trees() {
     // Retail's uncrouched grind rest (`ControlGrindCrouch`): the setup data's `max_grind_disttocog`.
     let rest = skate_data::collections::Collections::load(&root).unwrap().float("anim_motion", "grind_height", "max_grind_disttocog").unwrap();
     // The AI's 0.5 manual sits on the balance graph's flat zero (b703).
-    let clip = |n: &str, phase: ReplayPhase| scored_trick_clip(&index, &leaf, rest, &|_| 0.0, PhaseEntry { phase, since: 0, trick: id(n), trick_since: 0 }).map(|(c, _)| c);
+    let clip = |n: &str, phase: ReplayPhase| scored_trick_clip(&index, &leaf, rest, &|_| 0.0, PhaseEntry { phase, since: 0, trick: id(n), trick_since: 0 }, false).map(|(c, _)| c);
     for n in ["fsgrab", "fsgrab_up", "bsgrab", "nosegrab", "tailgrab", "mutegrab", "stalegrab", "dblgrab", "rocketair", "christ_air", "superman", "gnd_bsgrab", "coffin"] {
         eprintln!("{n}: air {:?} takeoff {:?}", clip(n, ReplayPhase::AirTrick), clip(n, ReplayPhase::GroundTrick));
     }
@@ -1006,6 +1015,13 @@ fn living_world_npc_grab_and_grind_slots_play_their_scored_trees() {
     assert_eq!(last(clip("fsgrab_up", ReplayPhase::AirTrick)).as_deref(), Some("GR_NBONE_N_FS_0_CYC"));
     assert!(clip("fsgrab", ReplayPhase::GroundTrick).unwrap().starts_with("OLLIE"), "an air grab takes off with the ollie");
     assert_eq!(last(clip("gnd_bsgrab", ReplayPhase::GroundTrick)).as_deref(), Some("GR_GROUND_N_BS_0_CYC"));
+    // The Into plays at its state's playBackSpeed (`T_FSBSGrab.xml` Into 2.0): docs/hails-additions/26c-living-world-npc-skaters.md#npc-grab-playback-speed
+    assert!(clip("fsgrab", ReplayPhase::AirTrick).unwrap().starts_with("GR_GRAB_N_FS_0_INTO*2+"), "{:?}", clip("fsgrab", ReplayPhase::AirTrick));
+    // Landed with the span open: the ground grab hold (b710), not a second takeoff; mute has none.
+    let landed = |n: &str| scored_trick_clip(&index, &leaf, rest, &|_| 0.0, PhaseEntry { phase: ReplayPhase::GroundTrick, since: 0, trick: id(n), trick_since: 0 }, true);
+    assert_eq!(landed("nosegrab"), Some(("GR_GROUND_N_BS_0_CYC".to_owned(), 0.2)), "nosegrab plays the BS family: its ground hold");
+    assert_eq!(landed("fsgrab").map(|c| c.1), Some(0.2));
+    assert_eq!(landed("mutegrab"), None, "mute has no ground hold: the air clip continues");
     assert_eq!(clip("fs_50_50", ReplayPhase::GroundTrick).as_deref(), Some("G_5050_FS_HI_0_CYC"), "rests on the HI clip (b700)");
     assert_eq!(clip("fs_50_50", ReplayPhase::AirTrick), None, "a grind's hop off keeps the trick clip rules");
     eprintln!("nosemanual: {:?} tailmanual: {:?}", clip("nosemanual", ReplayPhase::GroundTrick), clip("tailmanual", ReplayPhase::GroundTrick));
@@ -1502,22 +1518,78 @@ fn an_npc_grab_tweak_eases_from_the_cyc_entry_like_the_player() {
     use skate_core::animation::intent_filter::Settings;
     use skate_core::living_world::ai_signals::IntentTuple;
     let s = Settings { starting_value: 0.0, default_value: 0.0, scale: 1.0, filters: [8; 4], ramp_time: None, blend_rising: 0.116, blend_falling: 0.116, blend_out: Some(0.133), clamp_velocity: Some(0.1), clamp_acceleration: None };
-    let filter = crate::graph_host::motion::TweakFilter { x: s, y: s, project: true };
+    let filter = crate::graph_host::motion::TweakFilter { x: s, y: s, project: true, release: Some(crate::graph_host::motion::Release { below: 0.2, y_only: false }) };
     let id = |n: &str| skate_core::input::skater_intent::SKATER_INTENTS.iter().position(|x| *x == n).unwrap() as u32;
     let down = [IntentTuple { intent: id("TweakY"), value: -1.0, start: 0, end: -1 }];
-    let y = |ticks: f32| grab_tweak(&filter, &down, 0, ticks)[1];
+    let y = |ticks: f32| grab_tweak(&filter, &down, 0, ticks, None)[1];
     for (ticks, want) in [(0.0, -0.1), (1.0, -0.2), (2.0, -0.2928), (9.0, -0.70166)] {
         assert!((y(ticks) - want).abs() < 1e-4, "tick {ticks}: {} vs {want}", y(ticks));
     }
     assert!((y(0.5) - (-0.15)).abs() < 1e-4, "between ticks the value interpolates");
     // A window that starts later: nothing before it, and the Cyc entry offsets the slot tick.
     let late = [IntentTuple { intent: id("TweakY"), value: -1.0, start: 10, end: -1 }];
-    assert_eq!(grab_tweak(&filter, &late, 0, 5.0)[1], 0.0);
-    assert!((grab_tweak(&filter, &late, 10, 0.0)[1] + 0.1).abs() < 1e-6);
+    assert_eq!(grab_tweak(&filter, &late, 0, 5.0, None)[1], 0.0);
+    assert!((grab_tweak(&filter, &late, 10, 0.0, None)[1] + 0.1).abs() < 1e-6);
     // Both axes at 1: settled, then projected onto abs(x) + abs(y) = 1; raw SetBlend keeps them.
     let both = [IntentTuple { intent: id("TweakX"), value: 1.0, start: 0, end: -1 }, IntentTuple { intent: id("TweakY"), value: 1.0, start: 0, end: -1 }];
-    let v = grab_tweak(&filter, &both, 0, 200.0);
+    let v = grab_tweak(&filter, &both, 0, 200.0, None);
     assert!((v[0] - 0.5).abs() < 1e-3 && (v[1] - 0.5).abs() < 1e-3, "{v:?}");
-    let raw = grab_tweak(&crate::graph_host::motion::TweakFilter { project: false, ..filter }, &both, 0, 200.0);
+    let raw = grab_tweak(&crate::graph_host::motion::TweakFilter { project: false, ..filter }, &both, 0, 200.0, None);
     assert!(raw[0] > 0.99 && raw[1] > 0.99, "{raw:?}");
+}
+
+/// A grab span still open at touchdown takes the scored ground hold, else the air clip continues (one layer); it never
+/// takes off again. Sequence parts carry their playback speed: docs/hails-additions/26c-living-world-npc-skaters.md#npc-grab-touchdown
+#[test]
+fn a_grab_landed_open_holds_or_continues_and_never_takes_off_again() {
+    use skate_core::living_world::replay::PhaseEntry;
+    let (clips, blends) = (BTreeMap::new(), BTreeMap::new());
+    let evaluates = |_: &str| true;
+    let stock = |n: &str| Some(n.to_owned());
+    let trick = skate_core::scoring::catalog::IDENTIFIERS.iter().position(|e| e.0 == "mutegrab").unwrap() as i16;
+    let air = PhaseEntry { phase: ReplayPhase::AirTrick, since: 10, trick, trick_since: 5 };
+    let ground = PhaseEntry { phase: ReplayPhase::GroundTrick, since: 30, trick, trick_since: 5 };
+    let continues = |_: PhaseEntry, landed: bool| (!landed).then(|| ("INTO*2+CYC".to_owned(), 0.1));
+    assert_eq!(puppet_layer_clip(&clips, &blends, "Normal", &evaluates, &stock, &continues, ground, Some(air)), ("INTO*2+CYC".to_owned(), 0.0));
+    let holds = |_: PhaseEntry, landed: bool| Some(if landed { ("HOLD".to_owned(), 0.2) } else { ("INTO*2+CYC".to_owned(), 0.1) });
+    assert_eq!(puppet_layer_clip(&clips, &blends, "Normal", &evaluates, &stock, &holds, ground, Some(air)), ("HOLD".to_owned(), 0.2));
+    // Another span (a new trick start) is a takeoff again.
+    let other = PhaseEntry { trick_since: 25, ..ground };
+    assert_eq!(puppet_layer_clip(&clips, &blends, "Normal", &evaluates, &stock, &holds, other, Some(air)), ("INTO*2+CYC".to_owned(), 0.1));
+    assert_eq!(part_speed("GR_GRAB_N_FS_0_INTO*2"), ("GR_GRAB_N_FS_0_INTO", 2.0));
+    assert_eq!(part_speed("B_MUTE_INTO*1.25"), ("B_MUTE_INTO", 1.25));
+    assert_eq!(part_speed("PLAIN"), ("PLAIN", 1.0));
+    assert_eq!(part_speed("BAD*x"), ("BAD*x", 1.0));
+    assert_eq!(with_speed("A".into(), Some(2.0)), "A*2");
+    assert_eq!(with_speed("A".into(), Some(1.0)), "A");
+    // A part at speed 2 lasts half as long in the stance window.
+    let data = |n: &str| (n == "A").then(|| (1.0f32, vec![("EV", 0.4f32, 0.45f32)]));
+    assert_eq!(sequence_attributes("A*2+B", 0.15, 0.25, |n| data(n).or(Some((1.0, Vec::new())))), vec!["EV".to_owned()]);
+    assert!(sequence_attributes("A+B", 0.15, 0.25, |n| data(n).or(Some((1.0, Vec::new())))).is_empty());
+}
+
+/// After the slot ends the tweak eases out with blendOut (the AG copy is gone) and the Out begins on the update after it
+/// drops below the release level (research b708: about 12 ticks for a unit tweak).
+#[test]
+fn an_npc_grab_releases_into_its_out_once_the_tweak_eases_below_the_level() {
+    use skate_core::animation::intent_filter::Settings;
+    use skate_core::living_world::ai_signals::IntentTuple;
+    let s = Settings { starting_value: 0.0, default_value: 0.0, scale: 1.0, filters: [8; 4], ramp_time: None, blend_rising: 0.116, blend_falling: 0.116, blend_out: Some(0.133), clamp_velocity: Some(0.1), clamp_acceleration: None };
+    let filter = crate::graph_host::motion::TweakFilter { x: s, y: s, project: true, release: Some(crate::graph_host::motion::Release { below: 0.2, y_only: false }) };
+    let id = |n: &str| skate_core::input::skater_intent::SKATER_INTENTS.iter().position(|x| *x == n).unwrap() as u32;
+    let down = [IntentTuple { intent: id("TweakY"), value: -1.0, start: 0, end: -1 }];
+    // Slot over at tick 60 (settled near -1): input gone from there, no snap.
+    let before = grab_tweak(&filter, &down, 0, 59.0, Some(60))[1];
+    let after = grab_tweak(&filter, &down, 0, 61.0, Some(60))[1];
+    assert!(before < -0.95 && after > before && after < -0.75, "{before} {after}");
+    let r = grab_release_tick(&filter, &down, 0, 60).unwrap();
+    assert!((70..=76).contains(&r), "released {r} ticks in");
+    assert!(grab_tweak(&filter, &down, 0, r as f32 - 1.0, Some(60))[1].abs() < 0.2);
+    assert!(grab_tweak(&filter, &down, 0, r as f32 - 2.0, Some(60))[1].abs() >= 0.2);
+    // No release rule in the graph: no Out.
+    assert_eq!(grab_release_tick(&crate::graph_host::motion::TweakFilter { release: None, ..filter }, &down, 0, 60), None);
+    // Mute / stale test only |TweakY|.
+    let side = [IntentTuple { intent: id("TweakX"), value: 1.0, start: 0, end: -1 }];
+    let y_only = crate::graph_host::motion::TweakFilter { project: false, release: Some(crate::graph_host::motion::Release { below: 0.2, y_only: true }), ..filter };
+    assert_eq!(grab_release_tick(&y_only, &side, 0, 60), Some(61), "TweakX alone never holds a mute / stale Cyc");
 }

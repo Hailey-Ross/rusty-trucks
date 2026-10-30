@@ -165,6 +165,13 @@ pub(crate) fn stock_riding_fakie_settings(graph: &LoadedGraph) -> Result<Vec<ska
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ScoreClips {
     pub into: Option<String>,
+    /// The `Into` / `Out` state's `playBackSpeed` (`None` = 1).
+    pub into_speed: Option<f32>,
+    pub out_speed: Option<f32>,
+    /// A ground grab's `<X>Cyc` blend time (`PlayAnimation time`): the hold an air grab lands into.
+    pub cyc_seconds: Option<f32>,
+    /// The `Out` state's blend time (`PlayAnimation time`).
+    pub out_seconds: Option<f32>,
     pub cyc: String,
     pub out: Option<String>,
     /// The `ScoringGrabs` direction attribute that names it (`up` / `left` / `down` / `right`); `None` = the base name.
@@ -180,6 +187,16 @@ pub(crate) struct TweakFilter {
     pub x: skate_core::animation::intent_filter::Settings,
     pub y: skate_core::animation::intent_filter::Settings,
     pub project: bool,
+    /// Cyc -> Out: the filtered tweak below this (`HasTweak less`, the x / y magnitude; or `HasFilteredMotionGraphIntent`
+    /// TweakY `abs less`, `y_only`).
+    pub release: Option<Release>,
+}
+
+/// The tweak level an air grab's Cyc leaves for its Out at (research b708).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Release {
+    pub below: f32,
+    pub y_only: bool,
 }
 
 /// Every `ScoringGrabs` / `ScoringTrick` name of a motion graph (lower case) -> the trees of the state that scores it
@@ -203,12 +220,41 @@ pub(crate) fn stock_score_clips(graph: &skate_data::state_graph::StateGraph) -> 
     };
     let cycle = |i: usize| ends(i, "Cyc") || ends(i, "Cycle");
     let phase = |p: usize, suffix: &str| e[p].children.iter().copied().find(|&c| is_state(c) && ends(c, suffix)).and_then(anim);
+    let cyc_seconds = |p: usize| {
+        let s = e[p].children.iter().copied().find(|&c| is_state(c) && cycle(c))?;
+        let play = e[s].children.iter().copied().find(|&c| is_behaviour(c, "PlayAnimation"))?;
+        attr(play, "time")?.trim().parse::<f32>().ok()
+    };
+    let speed = |p: usize, suffix: &str| {
+        let s = e[p].children.iter().copied().find(|&c| is_state(c) && ends(c, suffix))?;
+        let play = e[s].children.iter().copied().find(|&c| is_behaviour(c, "PlayAnimation"))?;
+        attr(play, "playBackSpeed")?.trim().parse::<f32>().ok().filter(|v| v.is_finite() && *v > 0.0 && *v != 1.0)
+    };
     let cyc_phase = |p: usize| e[p].children.iter().copied().find(|&c| is_state(c) && cycle(c)).and_then(anim);
     let filter = |s: usize, intent: &str| {
         let c = e[s].children.iter().copied().find(|&c| is_behaviour(c, "FilterMotionGraphIntent") && attr(c, "filteredIntent").is_some_and(|v| v.eq_ignore_ascii_case(intent)))?;
         Some(super::motion_intent_filter::Operation::parse(&skate_data::state_graph::attributes::Attributes::new(&e[c].attributes)).settings)
     };
-    let tweak = |s: usize| Some(TweakFilter { x: filter(s, "TweakX")?, y: filter(s, "TweakY")?, project: e[s].children.iter().any(|&c| is_behaviour(c, "TweakProject")) });
+    let release = |s: usize| {
+        let t = e[s].children.iter().copied().find(|&c| e[c].tag.eq_ignore_ascii_case("transition") && attr(c, "target").is_some_and(|v| v.eq_ignore_ascii_case("Out")))?;
+        let is_condition = |i: usize, n: &str| e[i].tag.eq_ignore_ascii_case("condition") && attr(i, "name").is_some_and(|v| v.eq_ignore_ascii_case(n));
+        (t + 1..e.len()).take_while(|&i| is_inside(&parent, t, i)).find_map(|i| {
+            let y_only = if is_condition(i, "HasTweak") {
+                false
+            } else if is_condition(i, "HasFilteredMotionGraphIntent") && attr(i, "intent").is_some_and(|v| v.eq_ignore_ascii_case("TweakY")) {
+                true
+            } else {
+                return None;
+            };
+            Some(Release { below: attr(i, "less")?.trim().parse().ok()?, y_only })
+        })
+    };
+    let tweak = |s: usize| Some(TweakFilter { x: filter(s, "TweakX")?, y: filter(s, "TweakY")?, project: e[s].children.iter().any(|&c| is_behaviour(c, "TweakProject")), release: release(s) });
+    let out_seconds = |p: usize| {
+        let s = e[p].children.iter().copied().find(|&c| is_state(c) && ends(c, "Out"))?;
+        let play = e[s].children.iter().copied().find(|&c| is_behaviour(c, "PlayAnimation"))?;
+        attr(play, "time")?.trim().parse::<f32>().ok()
+    };
     let mut out = BTreeMap::new();
     let mut weak = std::collections::BTreeSet::new();
     for i in 0..e.len() {
@@ -230,9 +276,9 @@ pub(crate) fn stock_score_clips(graph: &skate_data::state_graph::StateGraph) -> 
         // ground grabs: no own tree, it holds `<X>Into` / `<X>Cyc` / `<X>Out`.
         let own = e[s].children.iter().find(|&&c| is_behaviour(c, "PlayAnimation")).and_then(|&c| attr(c, "anim")).map(str::to_owned);
         let clips = match own {
-            Some(cyc) if cycle(s) && parent[s] != usize::MAX => Some(ScoreClips { into: phase(parent[s], "Into"), cyc, out: phase(parent[s], "Out"), direction: None, tweak: tweak(s) }),
+            Some(cyc) if cycle(s) && parent[s] != usize::MAX => Some(ScoreClips { into: phase(parent[s], "Into"), into_speed: speed(parent[s], "Into"), cyc, out: phase(parent[s], "Out"), out_speed: speed(parent[s], "Out"), cyc_seconds: None, out_seconds: out_seconds(parent[s]), direction: None, tweak: tweak(s) }),
             Some(cyc) => Some(ScoreClips { cyc, ..Default::default() }),
-            None if e[s].children.iter().any(|&c| is_state(c) && cycle(c)) => cyc_phase(s).map(|cyc| ScoreClips { into: phase(s, "Into"), cyc, out: phase(s, "Out"), direction: None, tweak: None }),
+            None if e[s].children.iter().any(|&c| is_state(c) && cycle(c)) => cyc_phase(s).map(|cyc| ScoreClips { into: phase(s, "Into"), into_speed: speed(s, "Into"), cyc, out: phase(s, "Out"), out_speed: speed(s, "Out"), cyc_seconds: cyc_seconds(s), out_seconds: out_seconds(s), direction: None, tweak: None }),
             None => anim(s).map(|cyc| ScoreClips { cyc, ..Default::default() }),
         };
         let Some(clips) = clips else { continue };
