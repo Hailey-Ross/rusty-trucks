@@ -281,7 +281,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     // powershell.exe (1 to 2.5 s on the laptop, 2026-10-19), so they are fetched in the background at start and after
     // every change (version picked, job finished) and the tiles open from memory. A tile pressed before its fetch is
     // done waits only for the rest of it.
-    static readonly string[] Prefetched = { "entries", "versions", "notes" };
+    static readonly string[] Prefetched = { "entries", "versions", "notes", "status" };
     static readonly Dictionary<string, Task<string>> cache = new Dictionary<string, Task<string>>();
     static Task<string> Fetch(string args) {
         lock (cache) {
@@ -297,6 +297,14 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         catch { lock (cache) { Task<string> c; if (cache.TryGetValue(args, out c) && c == t) cache.Remove(args); } throw; }
     }
     static void Prefetch() { foreach (var a in Prefetched) Fetch(a); }
+    // Waits for the prefetched lists off the window thread (a failed one is fetched again when read), so the menu is
+    // built from memory: waiting on them in the window froze it for seconds, and Windows offered to end it (USER-ASKS 436).
+    static void WaitListed() {
+        var all = new List<Task>();
+        foreach (var a in Prefetched) all.Add(Fetch(a));
+        try { Task.WaitAll(all.ToArray()); } catch { }
+    }
+    void WhenListed(Action then) { Task.Run((Action)WaitListed).ContinueWith(t => BeginInvoke(then)); }
     static void ForgetCache() { lock (cache) cache.Clear(); }
     static List<string[]> Rows(string args, int min) {
         var rows = new List<string[]>();
@@ -330,13 +338,20 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     static string VerArg(string v) { return string.IsNullOrEmpty(v) ? "" : " -Version " + v; }
     static string RunningGames() {
         string r = "";
-        foreach (var n in GameNames) if (Process.GetProcessesByName(n).Length > 0) r += (r == "" ? "" : ", ") + n + ".exe";
+        foreach (var n in GameNames) {
+            var found = Process.GetProcessesByName(n);
+            if (found.Length > 0) r += (r == "" ? "" : ", ") + n + ".exe";
+            foreach (var p in found) p.Dispose();
+        }
         // A Refresh Game Files run (launcher.ps1 Refresh-GameFiles) is named instead of its exe (USER-ASKS 72).
         string marker = Path.Combine(StateDir(), "REFRESHING.txt");
         if (r != "" && File.Exists(marker)) { try { r = "Refresh game files (" + File.ReadAllText(marker).Trim() + ")"; } catch { } }
         return r;
     }
-    void RefreshStatus() {
+    // From the prefetched status when `cached` (just fetched with the lists), else a fresh run (after a share toggle).
+    void RefreshStatus() { RefreshStatus(false); }
+    void RefreshStatus(bool cached) {
+        if (!cached) lock (cache) cache.Remove("status");
         status.Clear();
         foreach (var r in Rows("status", 2)) status[r[0]] = r[1];
     }
@@ -378,6 +393,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         // The splash stays at least SplashMinSeconds, so a fast check does not flash it.
         Task.Run(() => {
             int code = RunPending(false);
+            // The menu's lists load behind the splash (not when an updated exe takes over, or in direct mode).
+            if (direct.Length == 0 && !File.Exists(Path.Combine(StateDir(), "restart.txt"))) { startStage = "Loading the menu"; Prefetch(); WaitListed(); }
             int left = (int)((SplashMinSeconds - (DateTime.Now - startSince).TotalSeconds) * 1000);
             if (left > 0) Task.Delay(left).Wait();
             return code;
@@ -426,7 +443,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             outroAt = (float)clock.Elapsed.TotalSeconds;
         }
         Prefetch();
-        RefreshStatus();
+        RefreshStatus(true);
         pages.Push(MainPage());
         if (St("setup_missing") != "") pages.Push(SetupPage());
         if (code == 10 || afterUpdate) ShowText(LastSession().Contains("launcher update") || afterUpdate ? "Launcher updated" : "Previous session (closed before its check)", LastSession(), null);
@@ -570,7 +587,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         foreach (var v in Rows("versions", 3)) {
             var row = v;
             p.Items.Add(new Item((row.Length > 3 && row[3] == "*" ? "> " : "") + row[1], row[2], true, delegate {
-                Run("version-set " + row[0]); RebuildMain(); pages.Pop(); }));
+                pages.Pop(); switching = true; Invalidate();
+                Task.Run(() => Run("version-set " + row[0])).ContinueWith(t => BeginInvoke((Action)RebuildMain)); }));
             if (row.Length > 3 && row[3] == "*") p.Sel = p.Items.Count - 1;
         }
         return p;
@@ -587,16 +605,26 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     }
     void RebuildMain() {
         // A version change or a finished job can change every list (entries, versions, notes): fetch them again.
+        // The menu is rebuilt when they are in (off the window thread; the newest request wins).
         ForgetCache();
         Prefetch();
-        RefreshStatus();
-        var all = new List<Page>(pages); all.Reverse();
-        pages.Clear();
-        foreach (var pg in all) {
-            if (pg.Title == "Skate launcher" && pg.OnBack != null) { var m = MainPage(); m.Sel = Math.Min(pg.Sel, m.Items.Count - 1); pages.Push(m); }
-            else pages.Push(pg);
-        }
+        int gen = ++rebuildGen;
+        WhenListed(delegate {
+            if (gen != rebuildGen) return;
+            switching = false;
+            RefreshStatus(true);
+            var all = new List<Page>(pages); all.Reverse();
+            pages.Clear();
+            foreach (var pg in all) {
+                if (pg.Title == "Skate launcher" && pg.OnBack != null) { var m = MainPage(); m.Sel = Math.Min(pg.Sel, m.Items.Count - 1); pages.Push(m); }
+                else pages.Push(pg);
+            }
+            Invalidate();
+        });
     }
+    int rebuildGen;
+    // A version switch until the menu is rebuilt for it: Play waits for it (no start of the old version).
+    bool switching;
     void ShowText(string title, string body, Action back) { ShowText(title, body, back, null); }
     void ShowText(string title, string body, Action back, string mono) {
         var p = new Page { Title = title, Body = body, Mono = mono };
@@ -607,6 +635,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
 
     // ---------- jobs ----------
     void Begin(string entry, string label, string name) {
+        if (switching) return;
         string g = RunningGames();
         if (g != "" && !entry.StartsWith("tool-")) {
             waitEntry = entry; waitLabel = label; waitName = name;
@@ -659,7 +688,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     void WatchGame() {
         if (job == null || (jobHidGame && (DateTime.Now - hidAt).TotalSeconds > 300)) return;
         foreach (var n in GameNames) foreach (var p in Process.GetProcessesByName(n)) {
-            IntPtr w = p.MainWindowHandle;
+            IntPtr w;
+            using (p) w = p.MainWindowHandle;
             if (w == IntPtr.Zero || w == gameWindow || !Native.IsWindowVisible(w)) continue;
             gameWindow = w; Native.Front(w);
             if (!jobHidGame) { jobHidGame = true; hidAt = DateTime.Now; Hide(); }
@@ -682,14 +712,19 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         return 0;
     }
+    DateTime scannedAt;
     void Poll() {
         if (closeAt >= 0) {
             int left = (int)Math.Ceiling((closeTime - DateTime.Now).TotalSeconds);
             if (left <= 0) { Close(); return; }
             if (left != closeAt) { closeAt = left; Invalidate(); }
         }
-        if (waitEntry != null && RunningGames() == "") { string e = waitEntry; waitEntry = null; pages.Pop(); Begin(e, waitLabel, waitName); }
-        WatchGame();
+        // Process scans 4 times a second, not every 16 ms frame: each one lists every process on the PC (USER-ASKS 436).
+        if ((DateTime.Now - scannedAt).TotalMilliseconds >= 250) {
+            scannedAt = DateTime.Now;
+            if (waitEntry != null && RunningGames() == "") { string e = waitEntry; waitEntry = null; pages.Pop(); Begin(e, waitLabel, waitName); }
+            WatchGame();
+        }
         if (dirty || Animating()) { dirty = false; Invalidate(); }
         // The rolling boards and the Play glow: about 30 frames a second while the menu or a job shows.
         if (Visible && ++frame % 2 == 0 && (job != null || starting || (pages.Count > 0 && IsMain(pages.Peek())))) Invalidate();

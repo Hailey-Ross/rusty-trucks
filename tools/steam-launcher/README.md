@@ -192,6 +192,10 @@ build of `<id>`), `list`.
 
 ## Notes
 
+- The window never waits on a `launcher.ps1` call: the menu's lists (entries, versions, notes, status) load behind the
+  start splash ("Loading the menu") and, after a job or a version switch, in the background before the menu is rebuilt
+  (Play waits for a switch to finish); the game window checks run 4 times a second, not every frame. Waiting on them in
+  the window froze it at the end of a job and at start, long enough for Windows to offer to end it (USER-ASKS 436).
 - One launcher per folder: starting it again (a second Steam shortcut, a double click) brings the open window to the front
   instead of opening a second one. The build log closes when the build ends, and the after-session send skips a file
   another program still writes (it goes with the next send) and keeps the share's error next to the fallback's.
