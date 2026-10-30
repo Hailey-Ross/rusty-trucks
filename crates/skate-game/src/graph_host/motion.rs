@@ -172,6 +172,10 @@ pub(crate) struct ScoreClips {
     pub cyc_seconds: Option<f32>,
     /// The `Out` state's blend time (`PlayAnimation time`).
     pub out_seconds: Option<f32>,
+    /// The Out leaves for InAir this long before its clip ends (`WillExpire InTime`).
+    pub out_expire: Option<f32>,
+    /// The grab landing a Cyc still active at touchdown plays (`Land.GrabLanding.<X>`).
+    pub landing: Option<GrabLanding>,
     pub cyc: String,
     pub out: Option<String>,
     /// The `ScoringGrabs` direction attribute that names it (`up` / `left` / `down` / `right`); `None` = the base name.
@@ -190,6 +194,14 @@ pub(crate) struct TweakFilter {
     /// Cyc -> Out: the filtered tweak below this (`HasTweak less`, the x / y magnitude; or `HasFilteredMotionGraphIntent`
     /// TweakY `abs less`, `y_only`).
     pub release: Option<Release>,
+}
+
+/// `Land.GrabLanding.<X>`: its tree, blend time and how long before its end `Land` leaves for OnBoard (`WillExpire`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GrabLanding {
+    pub tree: String,
+    pub seconds: f32,
+    pub expire: f32,
 }
 
 /// The tweak level an air grab's Cyc leaves for its Out at (research b708).
@@ -250,6 +262,22 @@ pub(crate) fn stock_score_clips(graph: &skate_data::state_graph::StateGraph) -> 
         })
     };
     let tweak = |s: usize| Some(TweakFilter { x: filter(s, "TweakX")?, y: filter(s, "TweakY")?, project: e[s].children.iter().any(|&c| is_behaviour(c, "TweakProject")), release: release(s) });
+    // A state's transition to `target` (last path segment) that fires on `WillExpire`: its InTime.
+    let expire = |s: usize, target: &str| {
+        let t = e[s].children.iter().copied().find(|&c| e[c].tag.eq_ignore_ascii_case("transition") && attr(c, "target").is_some_and(|v| v.rsplit('.').next().is_some_and(|l| l.eq_ignore_ascii_case(target))))?;
+        (t + 1..e.len()).take_while(|&i| is_inside(&parent, t, i)).find(|&i| e[i].tag.eq_ignore_ascii_case("condition") && attr(i, "name").is_some_and(|v| v.eq_ignore_ascii_case("WillExpire"))).and_then(|i| attr(i, "InTime")?.trim().parse::<f32>().ok())
+    };
+    let out_expire = |p: usize| expire(e[p].children.iter().copied().find(|&c| is_state(c) && ends(c, "Out"))?, "InAir");
+    let name_is = |i: usize, n: &str| attr(i, "name").is_some_and(|v| v.eq_ignore_ascii_case(n));
+    // The Cyc's `...GrabLanding.<X>` target: the state X under a `GrabLanding` state, and its parent's (`Land`) OnBoard exit.
+    let landing = |s: usize| {
+        let target = e[s].children.iter().copied().filter(|&c| e[c].tag.eq_ignore_ascii_case("transition")).filter_map(|c| attr(c, "target")).find(|t| t.split('.').rev().nth(1).is_some_and(|g| g.eq_ignore_ascii_case("GrabLanding")))?;
+        let x = target.rsplit('.').next()?;
+        let st = (0..e.len()).find(|&i| is_state(i) && name_is(i, x) && parent[i] != usize::MAX && is_state(parent[i]) && name_is(parent[i], "GrabLanding"))?;
+        let play = e[st].children.iter().copied().find(|&c| is_behaviour(c, "PlayAnimation"))?;
+        let land = parent[parent[st]];
+        Some(GrabLanding { tree: attr(play, "anim")?.to_owned(), seconds: attr(play, "time")?.trim().parse().ok()?, expire: (land != usize::MAX).then(|| expire(land, "OnBoard")).flatten()? })
+    };
     let out_seconds = |p: usize| {
         let s = e[p].children.iter().copied().find(|&c| is_state(c) && ends(c, "Out"))?;
         let play = e[s].children.iter().copied().find(|&c| is_behaviour(c, "PlayAnimation"))?;
@@ -276,9 +304,9 @@ pub(crate) fn stock_score_clips(graph: &skate_data::state_graph::StateGraph) -> 
         // ground grabs: no own tree, it holds `<X>Into` / `<X>Cyc` / `<X>Out`.
         let own = e[s].children.iter().find(|&&c| is_behaviour(c, "PlayAnimation")).and_then(|&c| attr(c, "anim")).map(str::to_owned);
         let clips = match own {
-            Some(cyc) if cycle(s) && parent[s] != usize::MAX => Some(ScoreClips { into: phase(parent[s], "Into"), into_speed: speed(parent[s], "Into"), cyc, out: phase(parent[s], "Out"), out_speed: speed(parent[s], "Out"), cyc_seconds: None, out_seconds: out_seconds(parent[s]), direction: None, tweak: tweak(s) }),
+            Some(cyc) if cycle(s) && parent[s] != usize::MAX => Some(ScoreClips { into: phase(parent[s], "Into"), into_speed: speed(parent[s], "Into"), cyc, out: phase(parent[s], "Out"), out_speed: speed(parent[s], "Out"), cyc_seconds: None, out_seconds: out_seconds(parent[s]), out_expire: out_expire(parent[s]), landing: landing(s), direction: None, tweak: tweak(s) }),
             Some(cyc) => Some(ScoreClips { cyc, ..Default::default() }),
-            None if e[s].children.iter().any(|&c| is_state(c) && cycle(c)) => cyc_phase(s).map(|cyc| ScoreClips { into: phase(s, "Into"), into_speed: speed(s, "Into"), cyc, out: phase(s, "Out"), out_speed: speed(s, "Out"), cyc_seconds: cyc_seconds(s), out_seconds: out_seconds(s), direction: None, tweak: None }),
+            None if e[s].children.iter().any(|&c| is_state(c) && cycle(c)) => cyc_phase(s).map(|cyc| ScoreClips { into: phase(s, "Into"), into_speed: speed(s, "Into"), cyc, out: phase(s, "Out"), out_speed: speed(s, "Out"), cyc_seconds: cyc_seconds(s), out_seconds: out_seconds(s), out_expire: None, landing: None, direction: None, tweak: None }),
             None => anim(s).map(|cyc| ScoreClips { cyc, ..Default::default() }),
         };
         let Some(clips) = clips else { continue };

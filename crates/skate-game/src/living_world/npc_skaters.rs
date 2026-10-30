@@ -582,7 +582,16 @@ pub(crate) fn grab_release_tick(filter: &crate::graph_host::motion::TweakFilter,
 
 /// The tweak tree of an air grab layer the score index plays (no mod clip): the `Cyc` tree once the sequence reaches
 /// its last part, with [`grab_tweak`] from the Cyc entry (the Into's end).
-fn grab_tree(clips: &BTreeMap<String, String>, scores: &NpcScoreClips, skater: &crate::physics::SkaterRuntime, history: &[(PhaseEntry, f32)], l: &PuppetLayer) -> Option<(PuppetTree, Option<PuppetLayer>)> {
+/// What follows an air grab layer: the Out and the air pose after it (inserted after the grab while they began before
+/// the next layer), or at a touchdown with the Cyc still active the grab landing in place of the touchdown layer (with
+/// the seconds it plays before that layer takes over).
+#[derive(Default)]
+struct GrabFollow {
+    after: Vec<PuppetLayer>,
+    landing: Option<(PuppetLayer, f32)>,
+}
+
+fn grab_tree(clips: &BTreeMap<String, String>, scores: &NpcScoreClips, skater: &crate::physics::SkaterRuntime, history: &[(PhaseEntry, f32)], l: &PuppetLayer, air: (&str, f32)) -> Option<(PuppetTree, GrabFollow)> {
     let i = history.iter().position(|(e, _)| e.since == l.since)?;
     let e = match history[i].0 {
         e if e.phase == ReplayPhase::Air => history.get(i + 1).map(|h| h.0).filter(|o| o.phase == ReplayPhase::AirTrick)?,
@@ -609,15 +618,40 @@ fn grab_tree(clips: &BTreeMap<String, String>, scores: &NpcScoreClips, skater: &
     let end = history[..i].iter().rev().map(|h| h.0).find(|h| h.since > e.since && !matches!(h.phase, ReplayPhase::AirTrick | ReplayPhase::GroundTrick));
     let end_tick = end.map(|h| h.since as i64 - e.trick_since as i64);
     let tree = PuppetTree { name: c.cyc.clone(), time, tweak: grab_tweak(filter, schedule, entry_tick, l.time * 60.0 - entry, end_tick) };
-    // Released in the air: the Out at its speed once the eased tweak drops below the release level.
-    let out = end.filter(|h| h.phase == ReplayPhase::Air).and_then(|_| {
-        let start = entry + grab_release_tick(filter, schedule, entry_tick, end_tick?)? as f32;
+    let meta = skater.animation.motion.animation.metadata();
+    let weight = skate_core::animation::playback_transition::transition_weight;
+    let mut follow = GrabFollow::default();
+    // Released in the air: the Out at its speed once the eased tweak drops below the release level, then the air pose
+    // (Out -> InAir on `WillExpire`).
+    let release = end.filter(|h| h.phase == ReplayPhase::Air).and_then(|_| Some(entry + grab_release_tick(filter, schedule, entry_tick, end_tick?)? as f32));
+    if let Some(start) = release {
         let out_time = (l.time * 60.0 - start) / 60.0;
-        let clip = with_speed(stock_tree_leaf_at(skater.animation.motion.animation.metadata(), c.out.as_deref()?, &[("MAGNITUDE", 0.0)])?, c.out_speed);
-        let weight = skate_core::animation::playback_transition::transition_weight(out_time, c.out_seconds?);
-        (out_time >= 0.0).then(|| PuppetLayer { clip, time: out_time, weight, since: l.since + start as u64, tree: None })
-    });
-    Some((tree, out))
+        let out = c.out.as_deref().and_then(|o| stock_tree_leaf_at(meta, o, &[("MAGNITUDE", 0.0)]));
+        if let (true, Some(out), Some(blend)) = (out_time >= 0.0, out, c.out_seconds) {
+            let length = skater.animation.evaluator.clip_length(&out).ok().map(|n| n / c.out_speed.unwrap_or(1.0));
+            follow.after.push(PuppetLayer { clip: with_speed(out, c.out_speed), time: out_time, weight: weight(out_time, blend), since: l.since + start as u64, tree: None });
+            if let (Some(length), Some(expire)) = (length, c.out_expire) {
+                let air_time = out_time - (length - expire).max(0.0);
+                if air_time >= 0.0 {
+                    let since = l.since + start as u64 + ((length - expire).max(0.0) * 60.0) as u64;
+                    follow.after.push(PuppetLayer { clip: air.0.to_owned(), time: air_time, weight: weight(air_time, air.1), since, tree: None });
+                }
+            }
+        }
+    }
+    // Touchdown with the Cyc still active (the span ended, no Out yet, past the Into): the grab landing; a tweak at the
+    // WipeOut level never reaches touchdown on the shipped lines (survey `living_world_npc_grab_touchdowns_on_the_shipped_lines`).
+    let touch = history[..i].iter().rev().find(|h| h.0.since > e.since && matches!(h.0.phase, ReplayPhase::Rolling | ReplayPhase::Crouched));
+    if let (Some(&(t, seconds)), Some(g), Some(_)) = (touch, c.landing.as_ref(), end) {
+        let at = t.since as f32 - l.since as f32;
+        if at >= entry && release.is_none_or(|r| r > at) {
+            if let Some(clip) = stock_tree_leaf_at(meta, &g.tree, &[]) {
+                let length = skater.animation.evaluator.clip_length(&clip).unwrap_or(0.0);
+                follow.landing = Some((PuppetLayer { clip, time: seconds, weight: weight(seconds, g.seconds), since: t.since, tree: None }, (length - g.expire).max(0.0)));
+            }
+        }
+    }
+    Some((tree, follow))
 }
 
 /// Whether `clip` is `tree` or one of its blend children (`depth` levels down).
@@ -791,18 +825,51 @@ pub(crate) fn npc_puppet_layers_into(settings: &LivingWorldSettings, scores: &Np
         history[n] = entry;
         n += 1;
     }
-    puppet_layers_into(&history[..n], resolve, out);
+    puppet_layers_into(&history[..n], &resolve, out);
     if let Some(k) = skater {
+        // The air pose after a grab's Out: the Air phase clip at its blend.
+        let air = resolve_puppet_clip(&settings.skater_clips, ReplayPhase::Air, style);
+        let air = (if evaluates(air) { air } else { puppet_clip(ReplayPhase::Air, style) }, blend_seconds(&settings.skater_blend_seconds, ReplayPhase::Air));
         let mut i = 0;
         while i < out.len() {
-            let (tree, release) = grab_tree(&settings.skater_clips, scores, k, &history[..n], &out[i]).unzip();
+            let (tree, follow) = grab_tree(&settings.skater_clips, scores, k, &history[..n], &out[i], air).unzip();
             out[i].tree = tree;
-            // The Out between the grab and the next layer, when it began before that one (else the grab was still held).
-            if let Some(r) = release.flatten().filter(|r| out.get(i + 1).is_none_or(|next| next.since > r.since)) {
+            let follow = follow.unwrap_or_default();
+            // The Out / air pose between the grab and the next layer, when they began before it (else the grab was held).
+            let next = out.get(i + 1).map(|x| x.since);
+            for layer in follow.after.into_iter().filter(|r| next.is_none_or(|s| s > r.since)) {
                 i += 1;
-                out.insert(i, r);
+                out.insert(i, layer);
             }
             i += 1;
+        }
+        // A touchdown layer whose span's grab still held its Cyc: the grab landing until Land leaves for OnBoard, then
+        // the touchdown layer blends back in (found from the history, so it outlives the grab layer's blend-out).
+        let mut j = 0;
+        while j < out.len() {
+            let landed = history[..n].iter().position(|h| h.0.since == out[j].since && out[j].tree.is_none() && matches!(h.0.phase, ReplayPhase::Rolling | ReplayPhase::Crouched)).and_then(|ti| {
+                let t = history[ti].0;
+                let gi = (ti + 1..n).filter(|&g| history[g].0.trick_since == t.trick_since && matches!(history[g].0.phase, ReplayPhase::GroundTrick | ReplayPhase::AirTrick)).last()?;
+                let (clip, _) = resolve(history[gi].0, history.get(gi + 1).map(|h| h.0));
+                let grab = PuppetLayer { clip, time: history[gi].1, weight: 1.0, since: history[gi].0.since, tree: None };
+                grab_tree(&settings.skater_clips, scores, k, &history[..n], &grab, air)?.1.landing.filter(|(l, _)| l.since == t.since)
+            });
+            if let Some((landing, plays)) = landed {
+                let back = landing.time - plays;
+                let seconds = history[..n].iter().find(|h| h.0.since == out[j].since).map_or(RETAIL_BLEND_SECONDS, |h| blend_seconds(&settings.skater_blend_seconds, h.0.phase));
+                let weight = skate_core::animation::playback_transition::transition_weight(back.max(0.0), seconds);
+                if back < 0.0 {
+                    out[j] = landing;
+                } else if weight < 1.0 {
+                    let ground = std::mem::replace(&mut out[j], landing);
+                    j += 1;
+                    out.insert(j, PuppetLayer { time: back, weight, ..ground });
+                } else {
+                    // Fully back: the landing is gone; the touchdown layer keeps the time it came back with.
+                    out[j].time = back;
+                }
+            }
+            j += 1;
         }
     }
 }

@@ -912,7 +912,9 @@ Retail [data, stock graph; research b709 / b710, main checked `T_FSBSGrab.xml` C
 
 Ours: `puppet_layer_clip` marks a GroundTrick right after the same span's AirTrick as landed; `scored_trick_clip` (`landed`) gives the FS / BS / DBL family's ground grab Cyc with its `cyc_seconds` blend; otherwise the air clip continues in one layer. Never a second takeoff.
 
-Open: the grab landing (`L_FSGRAB` / `L_BSGRAB` / `L_DBLGRAB`, a span that ends at touchdown with the tweak still above the release level) and the WipeOut at a filtered tweak of 0.4 are not ported; the ground hold's own Out (`B_FSGRAB_OUT`) is left to the next phase's blend.
+Grab landing [data, `Landing.xml` `Land.GrabLanding.<X>`; ported 2026-10-30]: a span that ended before touchdown with the Cyc still active (no Out yet, past the Into) lands into `L_FSGRAB` / `L_BSGRAB` / `L_DBLGRAB` (time 0.1); `Land` leaves for OnBoard on `WillExpire 0.1`. Ours: `ScoreClips::landing` (tree, blend, expire, read from the Cyc's transition target in the loaded graph); `npc_puppet_layers_into` finds a touchdown layer's grab span in the phase history (so the landing outlives the grab layer's blend-out), plays the landing in its place, then blends the touchdown layer back in with the time it came back with.
+
+WipeOut (Cyc: off air or trucks / deck in contact and `HasTweak greaterEqual 0.4`) is not ported for the replay puppet: the survey `npc_tests::living_world_npc_grab_touchdowns_on_the_shipped_lines` (every ambient line of the three districts through the puppet's cursor and timing) finds 0 of 645 air grab touchdowns at or above 0.4 (612 released before touchdown, 17 during the Into, 9 grab landings, 6 ground holds). Simulated NPCs run the real graph and bail through it. The ground hold's own Out (`B_FSGRAB_OUT`) is left to the next phase's blend.
 
 ### NPC grab release
 
@@ -922,7 +924,9 @@ Retail [data, stock graph; research b708]: when the slot ends (END_TRICK) the gr
 
 Ours: `ScoreClips::tweak.release` and `out_seconds` from the loaded graph; `grab_tweak` / `grab_release_tick` stop the schedule input at the span's end (the first newer phase outside it) and find the release tick; `npc_puppet_layers_into` inserts the Out as its own layer after the grab, when it began before the next layer (a later landing blends over it). Pure function of the cursor history and the schedule.
 
-Open: blend vs blendOut after the slot end is inferred (blendOut: the AG copy is gone); after Out retail returns to InAir (WillExpire 0.01), the puppet holds the Out's last frame until the landing phase; `B_MUTE_OUT`'s `Magnitude` is taken as 0.
+After the Out: the Out leaves for InAir on its `WillExpire` (0.01 s before its clip ends, `ScoreClips::out_expire` from the graph) and the puppet blends in the Air phase clip (the puppet's own Air clip and blend). End to end on the shipped lines: `living_world_npc_grab_landings_and_air_after_out_show_on_the_shipped_lines` (data-gated, loads a skater runtime).
+
+Open: blend vs blendOut after the slot end is inferred (blendOut: the AG copy is gone); `B_MUTE_OUT`'s `Magnitude` is taken as 0.
 
 Test: `npc_tests::an_npc_grab_releases_into_its_out_once_the_tweak_eases_below_the_level` (eases out after the slot, release tick, no rule = no Out, mute / stale TweakY only); data-gated checks of the parsed rules in `living_world_npc_score_clips_index_the_stock_graph`.
 

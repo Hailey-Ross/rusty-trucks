@@ -963,6 +963,13 @@ fn living_world_npc_score_clips_index_the_stock_graph() {
     assert_eq!(mute.tweak.expect("mute eases").release, Some(Release { below: 0.2, y_only: true }));
     assert_eq!(get("dblgrab").into_speed, Some(3.0));
     assert_eq!(get("gnd_fsgrab").cyc_seconds, Some(0.2));
+    // 437: the grab landing (Landing.xml GrabLanding, Land -> OnBoard WillExpire 0.1) and Out -> InAir (WillExpire 0.01).
+    use crate::graph_host::motion::GrabLanding;
+    assert_eq!(fs.landing, Some(GrabLanding { tree: "L_FSGRAB".into(), seconds: 0.1, expire: 0.1 }));
+    assert_eq!(get("bsgrab_down").landing.as_ref().map(|g| g.tree.as_str()), Some("L_BSGRAB"));
+    assert_eq!(get("dblgrab").landing.as_ref().map(|g| g.tree.as_str()), Some("L_DBLGRAB"));
+    assert_eq!(get("mutegrab").landing, None, "mute / stale land normally");
+    assert_eq!(fs.out_expire, Some(0.01));
     // Every eased Cyc holds the leaf the puppet picks (so its tree replaces it) and builds as a tree whose pose moves with
     // the tweak.
     let animation = crate::graph_host::motion::metadata_animation(skate_data::animation_banks::AnimationBanks::load(&root).unwrap().metadata().unwrap());
@@ -1592,4 +1599,138 @@ fn an_npc_grab_releases_into_its_out_once_the_tweak_eases_below_the_level() {
     let side = [IntentTuple { intent: id("TweakX"), value: 1.0, start: 0, end: -1 }];
     let y_only = crate::graph_host::motion::TweakFilter { project: false, release: Some(crate::graph_host::motion::Release { below: 0.2, y_only: true }), ..filter };
     assert_eq!(grab_release_tick(&y_only, &side, 0, 60), Some(61), "TweakX alone never holds a mute / stale Cyc");
+}
+
+/// Data-gated survey (research for the grab touchdown port): every ambient line's grab spans through the puppet's cursor,
+/// classified at touchdown by the Cyc state's rules (doc 26c "NPC grab touchdown").
+#[test]
+#[ignore = "survey: requires the converted assets (SKATE3_ASSET_ROOT)"]
+fn living_world_npc_grab_touchdowns_on_the_shipped_lines() {
+    use skate_core::living_world::replay::{Decider, PhaseEntry};
+    let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("SKATE3_ASSET_ROOT"));
+    let assets = skate_data::GameAssets::load(&root).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(&root, &assets).unwrap();
+    let index = crate::graph_host::motion::stock_score_clips(&graphs.motion.source);
+    let (evaluator, meta) = stock_evaluator().unwrap();
+    let scoring = skate_data::scoring::ScoringData::load(&skate_data::collections::Collections::load(&root).unwrap()).unwrap();
+    let len = |tree: &str| stock_tree_leaf_at(&meta, tree, &[("TWEAK_X", 0.0), ("TWEAK_Y", 0.0), ("ANGLE", 0.0)]).and_then(|c| evaluator.clip_length(&c).ok());
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    let mut wipes = Vec::new();
+    for district in ["DownTown", "Industrial", "University"] {
+        let pack = std::fs::read(root.join("private/living_world/skater_paths").join(format!("{district}.bin"))).unwrap();
+        let tiles = skate_data::aipath::parse_pack(&pack).unwrap();
+        let (paths, _) = skate_data::aipath::district_paths(&tiles).unwrap();
+        let lines: BTreeMap<[u8; 16], skate_core::living_world::replay::ReplayLine> = paths.iter().filter(|p| p.path.id.is_ambient()).map(|p| (p.path.id.0, skate_data::living_world::replay_line(&p.path))).collect();
+        for id in lines.keys() {
+            let mut c = LineCursor::spawn(&lines, *id, 0);
+            let mut entries: Vec<PhaseEntry> = Vec::new();
+            for _ in 0..20000 {
+                if c.finished || c.line != *id {
+                    break;
+                }
+                if let Some((e, _)) = c.phase_history().next() {
+                    if entries.last() != Some(&e) {
+                        entries.push(e);
+                    }
+                }
+                c.advance(1, &lines, &mut Decider::Stay, &mut Vec::new());
+            }
+            for (i, e) in entries.iter().enumerate() {
+                let Some(&(name, _, 4)) = skate_core::scoring::catalog::IDENTIFIERS.get(e.trick.max(0) as usize).filter(|_| e.trick >= 0) else { continue };
+                // The span's first entry only.
+                if i > 0 && entries[i - 1].trick_since == e.trick_since && entries[i - 1].trick == e.trick {
+                    continue;
+                }
+                let span: Vec<_> = entries[i..].iter().take_while(|x| x.trick_since == e.trick_since && matches!(x.phase, ReplayPhase::AirTrick | ReplayPhase::GroundTrick)).collect();
+                let Some(air) = span.iter().position(|x| x.phase == ReplayPhase::AirTrick) else {
+                    *counts.entry("ground grab (no air)".into()).or_default() += 1;
+                    continue;
+                };
+                let Some(c) = index.get(retail_grab_score(name, false)) else { continue };
+                let Some(filter) = c.tweak else {
+                    *counts.entry(format!("no tweak state ({name})")).or_default() += 1;
+                    continue;
+                };
+                let takeoff = if span[0].phase == ReplayPhase::GroundTrick { len("B_OLLIE_G").unwrap_or(0.0) } else { 0.0 };
+                let into = c.into.as_deref().and_then(len).unwrap_or(0.0) / c.into_speed.unwrap_or(1.0);
+                let cyc_entry = span[0].since as i64 + ((takeoff + into) * 60.0).ceil() as i64;
+                let after = &entries[i + span.len()..];
+                let open_landing = span[air..].iter().find(|x| x.phase == ReplayPhase::GroundTrick).map(|x| x.since);
+                let end = after.first().map(|x| x.since as i64);
+                let touch = open_landing.map(|f| f as i64).or_else(|| after.iter().find(|x| matches!(x.phase, ReplayPhase::Rolling | ReplayPhase::Crouched)).map(|x| x.since as i64));
+                let Some(touch) = touch else { continue };
+                let schedule = scoring.by_id(e.trick as usize).map_or(&[][..], |d| d.intents.as_slice());
+                let entry_tick = cyc_entry - e.trick_since as i64;
+                let end_tick = end.map(|f| f - e.trick_since as i64);
+                let at = (touch - cyc_entry) as f32;
+                let class = if at < 0.0 {
+                    "touchdown during the Into".to_owned()
+                } else {
+                    let released = open_landing.is_none() && end_tick.and_then(|t| grab_release_tick(&filter, schedule, entry_tick, t)).is_some_and(|r| (r as f32) <= at);
+                    let v = grab_tweak(&filter, schedule, entry_tick, at, if open_landing.is_some() { None } else { end_tick });
+                    let mag = v[0].hypot(v[1]);
+                    if released {
+                        "released before touchdown".to_owned()
+                    } else if mag >= 0.4 {
+                        wipes.push(format!("{district} {name} tweak {mag:.2} open {}", open_landing.is_some()));
+                        format!("WIPEOUT (tweak >= 0.4, {})", if open_landing.is_some() { "span open" } else { "span ended" })
+                    } else if open_landing.is_some() {
+                        "ground hold (span open, tweak < 0.4)".to_owned()
+                    } else {
+                        "grab landing (Cyc active, tweak < 0.4)".to_owned()
+                    }
+                };
+                *counts.entry(class).or_default() += 1;
+            }
+        }
+    }
+    for (k, v) in &counts {
+        eprintln!("GRAB_TOUCHDOWN {v:5} {k}");
+    }
+    for w in wipes.iter().take(30) {
+        eprintln!("GRAB_WIPE {w}");
+    }
+}
+
+/// Data-gated, end to end: the shipped lines through the real puppet layering show the grab landings and the air pose
+/// after a grab's Out (doc 26c "NPC grab release", "NPC grab touchdown").
+#[test]
+#[ignore = "requires the converted assets (SKATE3_ASSET_ROOT); loads a skater runtime"]
+fn living_world_npc_grab_landings_and_air_after_out_show_on_the_shipped_lines() {
+    use skate_core::living_world::replay::Decider;
+    let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("SKATE3_ASSET_ROOT"));
+    let assets = skate_data::GameAssets::load(&root).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(&root, &assets).unwrap();
+    let physics = crate::physics::GamePhysics::load_with_difficulty(&root, None, crate::difficulty::Difficulty::Easy).unwrap();
+    let skater = crate::physics::SkaterRuntime::load(&root, &graphs, &physics, "easy").unwrap();
+    let scores = NpcScoreClips(crate::graph_host::motion::stock_score_clips(&graphs.motion.source));
+    let settings = LivingWorldSettings::default();
+    let air = puppet_clip(ReplayPhase::Air, "Normal");
+    let (mut landings, mut air_after_out, mut frames) = (0u32, 0u32, 0u32);
+    for district in ["DownTown", "Industrial", "University"] {
+        let pack = std::fs::read(root.join("private/living_world/skater_paths").join(format!("{district}.bin"))).unwrap();
+        let tiles = skate_data::aipath::parse_pack(&pack).unwrap();
+        let (paths, _) = skate_data::aipath::district_paths(&tiles).unwrap();
+        let lines: BTreeMap<[u8; 16], skate_core::living_world::replay::ReplayLine> = paths.iter().filter(|p| p.path.id.is_ambient()).map(|p| (p.path.id.0, skate_data::living_world::replay_line(&p.path))).collect();
+        for id in lines.keys() {
+            let mut c = LineCursor::spawn(&lines, *id, 0);
+            for _ in 0..20000 {
+                if c.finished || c.line != *id {
+                    break;
+                }
+                let layers = npc_puppet_layers(&settings, &scores, "Normal", Some(&skater), &c, 0.0);
+                frames += 1;
+                if layers.iter().any(|l| l.clip.starts_with("L_") && l.clip.contains("GRAB")) {
+                    landings += 1;
+                }
+                if layers.windows(2).any(|w| w[0].clip.contains("_OUT") && w[1].clip == air) {
+                    air_after_out += 1;
+                }
+                c.advance(1, &lines, &mut Decider::Stay, &mut Vec::new());
+            }
+        }
+    }
+    eprintln!("GRAB_E2E frames {frames} landing frames {landings} air-after-out frames {air_after_out}");
+    assert!(landings > 0, "a grab landing shows on the shipped lines (9 touchdowns in the survey)");
+    assert!(air_after_out > 0, "the air pose follows a grab's Out");
 }
