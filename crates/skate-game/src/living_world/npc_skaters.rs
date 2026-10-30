@@ -438,6 +438,7 @@ pub(crate) fn scored_trick_clip(
     scores: &BTreeMap<String, crate::graph_host::motion::ScoreClips>,
     leaf: &dyn Fn(&str, &[(&str, f32)]) -> Option<String>,
     grind_disttocog: f32,
+    manual_angle: &dyn Fn(f32) -> f32,
     e: PhaseEntry,
 ) -> Option<(String, f32)> {
     let (name, _, category) = *skate_core::scoring::catalog::IDENTIFIERS.get(usize::try_from(e.trick).ok()?)?;
@@ -466,6 +467,17 @@ pub(crate) fn scored_trick_clip(
         // `T_Grind.xml` `PlayAnimation time="0.3"`; neutral twist (ours), the uncrouched rest height:
         // docs/hails-additions/26c-living-world-npc-skaters.md#npc-grind-height
         (5, ReplayPhase::GroundTrick) => Some((leaf(&scores.get(name)?.cyc, &[("TWIST", 0.0), ("DISTTOCOG", grind_disttocog)])?, 0.3)),
+        // Manuals rolling forwards (`Manual/NoseManual.xml` Into 0.1 then `B_NOSE_MANUAL` 0.3 with SetManualAngle;
+        // `TailManual.xml` `B_TAIL_MANUAL_LOW` 0.3 unless rolling backwards): docs/hails-additions/26c-living-world-npc-skaters.md#npc-manuals
+        (8, ReplayPhase::GroundTrick) => {
+            let value = skate_core::living_world::ai_signals::SignalSettings::default().manual_value;
+            let targets = [("MANUAL_ANGLE", manual_angle(value)), ("DISTTOCOG", 1.0e6), ("ANGLE", 0.0)];
+            match name {
+                "nosemanual" => Some((format!("{}+{}", leaf("B_NOSE_MANUAL_INTO", &targets)?, leaf("B_NOSE_MANUAL", &targets)?), 0.1)),
+                "tailmanual" => Some((leaf("B_TAIL_MANUAL_LOW", &targets)?, 0.3)),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -626,7 +638,8 @@ pub(crate) fn npc_puppet_layers_into(settings: &LivingWorldSettings, scores: &Np
     };
     // No skater runtime (headless): the top of the range, where retail rests.
     let grind = settings.npc_grind_disttocog.or_else(|| skater.map(|k| k.animation.motion.grind_rest_disttocog())).unwrap_or(1.0e6);
-    let scored = |e: PhaseEntry| scored_trick_clip(&scores.0, &leaf, grind, e);
+    let manual = |m: f32| skater.map_or(0.0, |k| k.animation.motion.manual_rest_angle(m));
+    let scored = |e: PhaseEntry| scored_trick_clip(&scores.0, &leaf, grind, &manual, e);
     let resolve = |e: PhaseEntry, older: Option<PhaseEntry>| puppet_layer_clip(&settings.skater_clips, &settings.skater_blend_seconds, style, &evaluates, &stock, &scored, e, older);
     let mut entries = cursor.phase_history().map(|(e, frames)| (e, (frames as f32 + sub_frame) / 60.0));
     let Some(first) = entries.next() else {

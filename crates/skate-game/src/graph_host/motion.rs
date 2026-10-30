@@ -343,6 +343,12 @@ impl MotionHost {
         self.grind_settings.height[1]
     }
 
+    /// `SetManualAngle`'s target for a held `Manual` intent (`anim_motion/manual` balance graph, signed).
+    pub(crate) fn manual_rest_angle(&self, manual: f32) -> f32 {
+        let t = self.manual.balance.evaluate(manual.abs());
+        if manual >= 0.0 { t } else { -t }
+    }
+
     pub fn from_graph(
         graph: &LoadedGraph,
         data: &Collections,
