@@ -268,7 +268,7 @@ pub(crate) fn puppet_layer_clip(
     style: &str,
     evaluates: &dyn Fn(&str) -> bool,
     stock: &dyn Fn(&str) -> Option<String>,
-    scored: &dyn Fn(PhaseEntry) -> Option<(String, f32)>,
+    scored: &dyn Fn(PhaseEntry, bool) -> Option<(String, f32)>,
     e: PhaseEntry,
     older: Option<PhaseEntry>,
 ) -> (String, f32) {
@@ -285,13 +285,17 @@ pub(crate) fn puppet_layer_clip(
         names.split('+').map(stock).collect::<Option<Vec<_>>>().map(|v| v.join("+"))
     };
     // A grab / grind slot plays the trees of the stock graph state it scores, unless a mod names its animation.
-    let scored = |entry: PhaseEntry| {
+    let scored = |entry: PhaseEntry, landed: bool| {
         let name = skate_core::scoring::catalog::IDENTIFIERS.get(usize::try_from(entry.trick).ok()?)?.0;
-        if !clips.is_empty() && clips.contains_key(&format!("trick.{name}")) { None } else { scored(entry) }
+        if !clips.is_empty() && clips.contains_key(&format!("trick.{name}")) { None } else { scored(entry, landed) }
     };
+    // The span's air phase before this ground one: the trick landed still open (no new takeoff).
+    let air_before = older.filter(|o| e.phase == ReplayPhase::GroundTrick && o.phase == ReplayPhase::AirTrick && o.trick == e.trick && o.trick_since == e.trick_since);
     if let Some(c) = match e.phase {
-        ReplayPhase::GroundTrick | ReplayPhase::AirTrick => scored(e),
-        ReplayPhase::Air => older.filter(|o| o.phase == ReplayPhase::AirTrick).and_then(scored).map(|(c, _)| (c, 0.0)),
+        // Landed with the span open: the scored hold, else the air clip continues (one layer).
+        ReplayPhase::GroundTrick if air_before.is_some() => scored(e, true).or_else(|| air_before.and_then(|o| scored(o, false)).map(|(c, _)| (c, 0.0))),
+        ReplayPhase::GroundTrick | ReplayPhase::AirTrick => scored(e, false),
+        ReplayPhase::Air => older.filter(|o| o.phase == ReplayPhase::AirTrick).and_then(|o| scored(o, false)).map(|(c, _)| (c, 0.0)),
         _ => None,
     } {
         return c;
@@ -440,9 +444,19 @@ pub(crate) fn scored_trick_clip(
     grind_disttocog: f32,
     manual_angle: &dyn Fn(f32) -> f32,
     e: PhaseEntry,
+    landed: bool,
 ) -> Option<(String, f32)> {
     let (name, _, category) = *skate_core::scoring::catalog::IDENTIFIERS.get(usize::try_from(e.trick).ok()?)?;
     match (category, e.phase) {
+        // An air grab still open at touchdown: the FS / BS / DBL Cyc takes the ground grab hold
+        // (`T_FSBSGrab.xml` / `DBLGrab.xml` Cyc -> `OnGround...Grabbing.<X>.<X>Cyc`, the AI posting Ground<X>Grab on the
+        // first ground tick, research b710); mute / stale have none: docs/hails-additions/26c-living-world-npc-skaters.md#npc-grab-touchdown
+        (4, ReplayPhase::GroundTrick) if landed => {
+            let air = retail_grab_score(name, false);
+            let family = ["fsgrab", "bsgrab", "dblgrab"].into_iter().find(|f| air.starts_with(f))?;
+            let c = scores.get(&format!("gnd_{family}"))?;
+            Some((leaf(&c.cyc, &[("ANGLE", 0.0)])?, c.cyc_seconds?))
+        }
         (4, ReplayPhase::GroundTrick | ReplayPhase::AirTrick) => {
             let on_ground = e.phase == ReplayPhase::GroundTrick && GROUND_GRABS.contains(&name);
             let c = scores.get(retail_grab_score(name, on_ground))?;
@@ -455,7 +469,12 @@ pub(crate) fn scored_trick_clip(
                 _ => (0.0, 0.0),
             };
             let targets = [("TWEAK_X", x), ("TWEAK_Y", y), ("ANGLE", 0.0)];
-            let grab = [c.into.as_deref(), Some(c.cyc.as_str())].into_iter().flatten().map(|t| leaf(t, &targets)).collect::<Option<Vec<_>>>()?.join("+");
+            // The Into at its state's `playBackSpeed` ([`part_speed`]).
+            let into = match c.into.as_deref() {
+                Some(t) => Some(with_speed(leaf(t, &targets)?, c.into_speed)),
+                None => None,
+            };
+            let grab = into.into_iter().chain(Some(leaf(&c.cyc, &targets)?)).collect::<Vec<_>>().join("+");
             Some(match e.phase {
                 // `GroundGrabs/T_Grab.xml` Into `time="0.1"`.
                 ReplayPhase::GroundTrick if on_ground => (grab, 0.1),
@@ -517,27 +536,14 @@ const TWEAK_TICKS: u64 = 600;
 
 /// The `Cyc` state's tweaks `ticks` (fractional) after its entry: TweakX / TweakY from the slot `schedule` at slot tick
 /// `entry_tick + m`, eased per 60 Hz tick by the state's `FilterMotionGraphIntent`s from Begin (no stored state, so a
-/// scrub or a late peer gets the same value), then `TweakProject`'s clamp: docs/hails-additions/26c-living-world-npc-skaters.md#npc-grab-tweaks
-pub(crate) fn grab_tweak(filter: &crate::graph_host::motion::TweakFilter, schedule: &[skate_core::living_world::ai_signals::IntentTuple], entry_tick: i64, ticks: f32) -> [f32; 2] {
-    use skate_core::animation::intent_filter::State;
-    // `slot_signals`: the first 6 tuples, present from start to end (end < 0 = open); the AG copy defaults to 0.
-    let input = |name: &str, t: i64| {
-        schedule.iter().take(6).filter(|e| skate_core::input::skater_intent::name(e.intent) == Some(name) && t >= i64::from(e.start) && (e.end < 0 || t <= i64::from(e.end))).last().map_or(0.0, |e| e.value)
-    };
-    let (mut x, mut y) = (State::default(), State::default());
-    x.begin(&filter.x);
-    y.begin(&filter.y);
+/// scrub or a late peer gets the same value), then `TweakProject`'s clamp. From slot tick `end` (the slot is over) the
+/// AG copy is gone and the filter eases out: docs/hails-additions/26c-living-world-npc-skaters.md#npc-grab-tweaks
+pub(crate) fn grab_tweak(filter: &crate::graph_host::motion::TweakFilter, schedule: &[skate_core::living_world::ai_signals::IntentTuple], entry_tick: i64, ticks: f32, end: Option<i64>) -> [f32; 2] {
     let ticks = ticks.max(0.0);
     let n = (ticks.floor() as u64).min(TWEAK_TICKS);
-    let mut step = |m: u64| {
-        let t = entry_tick + m as i64;
-        [x.update(&filter.x, Some(input("TweakX", t)), 1.0 / 60.0, (false, false)), y.update(&filter.y, Some(input("TweakY", t)), 1.0 / 60.0, (false, false))]
-    };
-    let mut now = [0.0; 2];
-    for m in 0..=n {
-        now = step(m);
-    }
-    let next = step(n + 1);
+    let mut steps = tweak_steps(filter, schedule, entry_tick, end);
+    let now = steps.nth(n as usize).unwrap_or([0.0; 2]);
+    let next = steps.next().unwrap_or(now);
     let a = if n == TWEAK_TICKS { 0.0 } else { ticks.fract() };
     let mut v = [now[0] + (next[0] - now[0]) * a, now[1] + (next[1] - now[1]) * a];
     let total = v[0].abs() + v[1].abs();
@@ -547,9 +553,36 @@ pub(crate) fn grab_tweak(filter: &crate::graph_host::motion::TweakFilter, schedu
     v
 }
 
+/// The filtered (TweakX, TweakY) after each Cyc tick 0, 1, ... (Begin, then one update per tick; see [`grab_tweak`]).
+fn tweak_steps<'a>(filter: &'a crate::graph_host::motion::TweakFilter, schedule: &'a [skate_core::living_world::ai_signals::IntentTuple], entry_tick: i64, end: Option<i64>) -> impl Iterator<Item = [f32; 2]> + 'a {
+    use skate_core::animation::intent_filter::State;
+    // `slot_signals`: the first 6 tuples, present from start to end (end < 0 = open); the AG copy defaults to 0.
+    let input = move |name: &str, t: i64| {
+        if end.is_some_and(|e| t >= e) {
+            return None;
+        }
+        Some(schedule.iter().take(6).filter(|e| skate_core::input::skater_intent::name(e.intent) == Some(name) && t >= i64::from(e.start) && (e.end < 0 || t <= i64::from(e.end))).last().map_or(0.0, |e| e.value))
+    };
+    let (mut x, mut y) = (State::default(), State::default());
+    x.begin(&filter.x);
+    y.begin(&filter.y);
+    (0..=TWEAK_TICKS + 1).map(move |m| {
+        let t = entry_tick + m as i64;
+        [x.update(&filter.x, input("TweakX", t), 1.0 / 60.0, (false, false)), y.update(&filter.y, input("TweakY", t), 1.0 / 60.0, (false, false))]
+    })
+}
+
+/// The Cyc tick the Out begins: the first update after the slot's `end` whose filtered tweak is below the release
+/// level ([`crate::graph_host::motion::Release`]) moves the graph on the next update (research b708).
+pub(crate) fn grab_release_tick(filter: &crate::graph_host::motion::TweakFilter, schedule: &[skate_core::living_world::ai_signals::IntentTuple], entry_tick: i64, end: i64) -> Option<u64> {
+    let r = filter.release?;
+    let from = (end - entry_tick).max(0) as usize;
+    tweak_steps(filter, schedule, entry_tick, Some(end)).enumerate().skip(from).find(|(_, [x, y])| if r.y_only { y.abs() < r.below } else { x.hypot(*y) < r.below }).map(|(m, _)| m as u64 + 1)
+}
+
 /// The tweak tree of an air grab layer the score index plays (no mod clip): the `Cyc` tree once the sequence reaches
 /// its last part, with [`grab_tweak`] from the Cyc entry (the Into's end).
-fn grab_tree(clips: &BTreeMap<String, String>, scores: &NpcScoreClips, skater: &crate::physics::SkaterRuntime, history: &[(PhaseEntry, f32)], l: &PuppetLayer) -> Option<PuppetTree> {
+fn grab_tree(clips: &BTreeMap<String, String>, scores: &NpcScoreClips, skater: &crate::physics::SkaterRuntime, history: &[(PhaseEntry, f32)], l: &PuppetLayer) -> Option<(PuppetTree, Option<PuppetLayer>)> {
     let i = history.iter().position(|(e, _)| e.since == l.since)?;
     let e = match history[i].0 {
         e if e.phase == ReplayPhase::Air => history.get(i + 1).map(|h| h.0).filter(|o| o.phase == ReplayPhase::AirTrick)?,
@@ -563,7 +596,8 @@ fn grab_tree(clips: &BTreeMap<String, String>, scores: &NpcScoreClips, skater: &
     let filter = c.tweak.as_ref()?;
     let (body, last) = l.clip.rsplit_once('+').unwrap_or(("", &l.clip));
     let evaluator = &skater.animation.evaluator;
-    let prefix = if body.is_empty() { 0.0 } else { body.split('+').map(|p| evaluator.clip_length(p).ok()).sum::<Option<f32>>()? };
+    let prefix = if body.is_empty() { 0.0 } else { body.split('+').map(|p| part_speed(p)).map(|(p, speed)| evaluator.clip_length(p).ok().map(|l| l / speed)).sum::<Option<f32>>()? };
+    let last = part_speed(last).0;
     let time = l.time - prefix;
     if time < 0.0 || !tree_holds(skater.animation.motion.animation.metadata(), &c.cyc, last, 4) {
         return None;
@@ -571,7 +605,19 @@ fn grab_tree(clips: &BTreeMap<String, String>, scores: &NpcScoreClips, skater: &
     let schedule = skater.scoring.data.by_id(usize::try_from(e.trick).ok()?).map_or(&[][..], |d| d.intents.as_slice());
     let entry = (prefix * 60.0).ceil();
     let entry_tick = l.since as i64 + entry as i64 - e.trick_since as i64;
-    Some(PuppetTree { name: c.cyc.clone(), time, tweak: grab_tweak(filter, schedule, entry_tick, l.time * 60.0 - entry) })
+    // The span's end (END_TRICK: the slot and the grab intent end), from the first newer phase outside it.
+    let end = history[..i].iter().rev().map(|h| h.0).find(|h| h.since > e.since && !matches!(h.phase, ReplayPhase::AirTrick | ReplayPhase::GroundTrick));
+    let end_tick = end.map(|h| h.since as i64 - e.trick_since as i64);
+    let tree = PuppetTree { name: c.cyc.clone(), time, tweak: grab_tweak(filter, schedule, entry_tick, l.time * 60.0 - entry, end_tick) };
+    // Released in the air: the Out at its speed once the eased tweak drops below the release level.
+    let out = end.filter(|h| h.phase == ReplayPhase::Air).and_then(|_| {
+        let start = entry + grab_release_tick(filter, schedule, entry_tick, end_tick?)? as f32;
+        let out_time = (l.time * 60.0 - start) / 60.0;
+        let clip = with_speed(stock_tree_leaf_at(skater.animation.motion.animation.metadata(), c.out.as_deref()?, &[("MAGNITUDE", 0.0)])?, c.out_speed);
+        let weight = skate_core::animation::playback_transition::transition_weight(out_time, c.out_seconds?);
+        (out_time >= 0.0).then(|| PuppetLayer { clip, time: out_time, weight, since: l.since + start as u64, tree: None })
+    });
+    Some((tree, out))
 }
 
 /// Whether `clip` is `tree` or one of its blend children (`depth` levels down).
@@ -733,7 +779,7 @@ pub(crate) fn npc_puppet_layers_into(settings: &LivingWorldSettings, scores: &Np
     // No skater runtime (headless): the top of the range, where retail rests.
     let grind = settings.npc_grind_disttocog.or_else(|| skater.map(|k| k.animation.motion.grind_rest_disttocog())).unwrap_or(1.0e6);
     let manual = |m: f32| skater.map_or(0.0, |k| k.animation.motion.manual_rest_angle(m));
-    let scored = |e: PhaseEntry| scored_trick_clip(&scores.0, &leaf, grind, &manual, e);
+    let scored = |e: PhaseEntry, landed: bool| scored_trick_clip(&scores.0, &leaf, grind, &manual, e, landed);
     let resolve = |e: PhaseEntry, older: Option<PhaseEntry>| puppet_layer_clip(&settings.skater_clips, &settings.skater_blend_seconds, style, &evaluates, &stock, &scored, e, older);
     let mut entries = cursor.phase_history().map(|(e, frames)| (e, (frames as f32 + sub_frame) / 60.0));
     let Some(first) = entries.next() else {
@@ -747,8 +793,16 @@ pub(crate) fn npc_puppet_layers_into(settings: &LivingWorldSettings, scores: &Np
     }
     puppet_layers_into(&history[..n], resolve, out);
     if let Some(k) = skater {
-        for l in out.iter_mut() {
-            l.tree = grab_tree(&settings.skater_clips, scores, k, &history[..n], l);
+        let mut i = 0;
+        while i < out.len() {
+            let (tree, release) = grab_tree(&settings.skater_clips, scores, k, &history[..n], &out[i]).unzip();
+            out[i].tree = tree;
+            // The Out between the grab and the next layer, when it began before that one (else the grab was still held).
+            if let Some(r) = release.flatten().filter(|r| out.get(i + 1).is_none_or(|next| next.since > r.since)) {
+                i += 1;
+                out.insert(i, r);
+            }
+            i += 1;
         }
     }
 }
@@ -814,13 +868,14 @@ pub(crate) fn sequence_attributes<N: AsRef<str>>(clip: &str, previous_time: f32,
     let mut parts = clip.split('+').peekable();
     while let Some(part) = parts.next() {
         let last = parts.peek().is_none();
-        let Some((length, attributes)) = clip_data(part) else { break };
-        let end = offset + length;
+        let (name, speed) = part_speed(part);
+        let Some((length, attributes)) = clip_data(name) else { break };
+        let end = offset + length / speed;
         let reached = time >= offset;
         let left = !last && previous_time >= end;
         if reached && !left {
-            let p = (previous_time - offset).clamp(0.0, length);
-            let t = (time - offset).clamp(0.0, length);
+            let p = ((previous_time - offset) * speed).clamp(0.0, length);
+            let t = ((time - offset) * speed).clamp(0.0, length);
             out.extend(attributes.iter().filter(|(_, b, e)| skate_core::living_world::stance::attribute_in_window(*b, *e, length, p, t)).map(|(n, ..)| n.as_ref().to_owned()));
         }
         if !reached {
@@ -1795,7 +1850,7 @@ pub(crate) fn puppet_pose_in_flags_into(evaluator: &crate::animation_pose::PoseE
     // Pushes layer `i`'s pose: its tree in its last part, else the clip playing.
     let sample = |commands: &mut Vec<PoseCommand>, i: usize, l: &PuppetLayer| -> bool {
         let Some((clip, time)) = sequence_part(evaluator, &l.clip, l.time) else { return false };
-        if let Some(tree) = trees.get(i).filter(|t| !t.is_empty() && l.clip.rsplit('+').next() == Some(clip)) {
+        if let Some(tree) = trees.get(i).filter(|t| !t.is_empty() && l.clip.rsplit('+').next().map(|p| part_speed(p).0) == Some(clip)) {
             commands.extend_from_slice(tree);
             return true;
         }
@@ -1865,22 +1920,40 @@ pub(crate) fn puppet_pose_in_flags_into(evaluator: &crate::animation_pose::PoseE
     true
 }
 
-/// The part of a `+`-joined clip sequence playing `time` s in and the time inside it: parts play
-/// back to back, the last one holds (or loops when it is a `_CYC` clip). A plain clip is itself.
+/// The part of a `+`-joined clip sequence playing `time` s in and the clip time inside it: parts play
+/// back to back at their [`part_speed`], the last one holds (or loops when it is a `_CYC` clip). A plain clip is itself.
 pub(crate) fn sequence_part<'a>(evaluator: &crate::animation_pose::PoseEvaluator, clip: &'a str, time: f32) -> Option<(&'a str, f32)> {
     let mut parts = clip.split('+').peekable();
     let mut t = time.max(0.0);
     while let Some(part) = parts.next() {
+        let (name, speed) = part_speed(part);
         if parts.peek().is_none() {
-            return Some((part, t));
+            return Some((name, t * speed));
         }
-        let len = evaluator.clip_length(part).ok()?;
+        let len = evaluator.clip_length(name).ok()? / speed;
         if t < len {
-            return Some((part, t));
+            return Some((name, t * speed));
         }
         t -= len;
     }
     None
+}
+
+/// A sequence part's clip and playback speed: `NAME*2` plays `NAME` at twice its rate (a state's `playBackSpeed`, the
+/// clip clock's length (frames - 1) / (fps x speed)); a plain name plays at 1: docs/hails-additions/26c-living-world-npc-skaters.md#npc-grab-playback-speed
+pub(crate) fn part_speed(part: &str) -> (&str, f32) {
+    match part.rsplit_once('*').map(|(name, s)| (name, s.parse::<f32>())) {
+        Some((name, Ok(speed))) if speed.is_finite() && speed > 0.0 => (name, speed),
+        _ => (part, 1.0),
+    }
+}
+
+/// `clip` as a sequence part played at `speed` (`None` or 1 = the plain name).
+pub(crate) fn with_speed(clip: String, speed: Option<f32>) -> String {
+    match speed {
+        Some(s) if s != 1.0 => format!("{clip}*{s}"),
+        _ => clip,
+    }
 }
 
 /// One-line NPC summary for the debug readout: count, the nearest NPC (distance, line, phase).

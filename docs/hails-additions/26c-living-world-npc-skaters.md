@@ -892,9 +892,39 @@ Retail [data, stock graph; research b700 / b704, read 2026-10-30]: an air grab's
 
 Ours: `graph_host::motion::stock_score_clips` keeps each score's Cyc filter settings and projection (`ScoreClips::tweak`, read from the loaded graph, so a graph mod changes NPC easing like the player's). `npc_skaters::grab_tree` gives an air grab layer its Cyc tree once the puppet's sequence reaches the last part; `grab_tweak` re-runs the player's filter (`skate_core::animation::intent_filter::State`) from Begin over every 60 Hz tick since the Cyc entry with the schedule value at that slot tick, so there is no stored state (a scrub or a late-joining peer gets the same pose). The slot tick comes from the cursor's new `trick_since` (the frame the span's START_TRICK was crossed, on `LineCursor` and each `PhaseEntry`). `present_pose` negates x for a mirrored layer and builds the tree with `graph_host::motion::named_tree_commands_into` (one reused tree per name, attributes set each frame); the pose plays the tree in place of the leaf clip.
 
-Open (research b708): the puppet times the Into from the unscaled clip length, but retail plays it at `playBackSpeed` (FS / BS 2.0, mute / stale 1.25, DBL 3.0), so the Cyc starts late; the Cyc -> Out step (slot end, then filtered tweak below 0.2) and the Out clips are not played; the Cyc entry is taken as the Into's end (retail's AG / MG entry delay is not measured).
+Open: the Cyc entry is taken as the Into's end (retail's AG / MG entry delay is not measured); the Into -> Cyc step is a cut (retail blends 0.1 s).
 
 Tests: `npc_tests::an_npc_grab_tweak_eases_from_the_cyc_entry_like_the_player` (b704 sample values, schedule windows, the projection); data-gated `living_world_npc_score_clips_index_the_stock_graph` (filter settings from the graph, every eased Cyc holds the leaf the puppet picks, the tweak moves the BS pose). The NPC goldens are unchanged (`npc_present_pose_and_advance_match_golden`, `npc_present_pose_posed_matches_golden`).
+
+### NPC grab playback speed
+
+Problem: the puppet played every sequence part at its clip's own rate, but retail's grab `Into` states set `playBackSpeed` (FS / BS 2.0, mute / stale 1.25, DBL 3.0; Out FS / BS / DBL 2.0), so NPC grabs reached their Cyc late.
+
+Retail [data, stock graph; our port `skate-core/src/animation/clip_clock.rs` `set_speed`: length = (frames - 1) / (fps x speed); research b708]. Ours: `ScoreClips::into_speed` / `out_speed` from the state's `PlayAnimation playBackSpeed` (read from the loaded graph); a sequence part carries it as `NAME*speed` (`npc_skaters::part_speed`, `with_speed`), and `sequence_part`, `sequence_attributes` (stance events) and the grab tree's Cyc entry all scale the part's length and time by it.
+
+Test: `npc_tests::a_grab_landed_open_holds_or_continues_and_never_takes_off_again` (parsing, a 2x part's event window), data-gated `living_world_npc_score_clips_index_the_stock_graph` and `living_world_npc_grab_and_grind_slots_play_their_scored_trees` (`GR_GRAB_N_FS_0_INTO*2+...`).
+
+### NPC grab touchdown
+
+Problem: a grab span still open when the NPC touched down started a new GroundTrick layer whose clip was the takeoff sequence (`B_OLLIE_G+Into+Cyc`), so the NPC replayed its ollie on landing.
+
+Retail [data, stock graph; research b709 / b710, main checked `T_FSBSGrab.xml` Cyc transitions and our AG-before-MG order `skater_animation.rs`]: the FS / BS / DBL Cyc's high-priority transitions are WipeOut, then the ground grab hold `OnGround...Grabbing.<X>.<X>Cyc`, then `Land.GrabLanding.<X>`. The AG posts `GroundFSGrab` / `GroundBSGrab` on the first ground tick before the MG picks, so a slot still open at touchdown plays the ground hold (`GroundGrabs/FSGrab.xml` `BLEND_FSGRAB`, time 0.2). Mute / stale have neither (normal landing).
+
+Ours: `puppet_layer_clip` marks a GroundTrick right after the same span's AirTrick as landed; `scored_trick_clip` (`landed`) gives the FS / BS / DBL family's ground grab Cyc with its `cyc_seconds` blend; otherwise the air clip continues in one layer. Never a second takeoff.
+
+Open: the grab landing (`L_FSGRAB` / `L_BSGRAB` / `L_DBLGRAB`, a span that ends at touchdown with the tweak still above the release level) and the WipeOut at a filtered tweak of 0.4 are not ported; the ground hold's own Out (`B_FSGRAB_OUT`) is left to the next phase's blend.
+
+### NPC grab release
+
+Problem: the puppet held an air grab's Cyc until landing; retail plays the grab's Out.
+
+Retail [data, stock graph; research b708]: when the slot ends (END_TRICK) the grab intent goes and the Cyc's filters ease out (`blendOut`, no input); the Cyc leaves for `Out` on the update after the filtered tweak drops below the transition's level (`HasTweak less="0.2"`, the x / y magnitude, for FS / BS / DBL; `HasFilteredMotionGraphIntent TweakY abs less="0.2"` for mute / stale). Out blends in over its `time` (0.1 s) at its `playBackSpeed`.
+
+Ours: `ScoreClips::tweak.release` and `out_seconds` from the loaded graph; `grab_tweak` / `grab_release_tick` stop the schedule input at the span's end (the first newer phase outside it) and find the release tick; `npc_puppet_layers_into` inserts the Out as its own layer after the grab, when it began before the next layer (a later landing blends over it). Pure function of the cursor history and the schedule.
+
+Open: blend vs blendOut after the slot end is inferred (blendOut: the AG copy is gone); after Out retail returns to InAir (WillExpire 0.01), the puppet holds the Out's last frame until the landing phase; `B_MUTE_OUT`'s `Magnitude` is taken as 0.
+
+Test: `npc_tests::an_npc_grab_releases_into_its_out_once_the_tweak_eases_below_the_level` (eases out after the slot, release tick, no rule = no Out, mute / stale TweakY only); data-gated checks of the parsed rules in `living_world_npc_score_clips_index_the_stock_graph`.
 
 ### Trick air sequence
 
