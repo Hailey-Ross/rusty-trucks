@@ -860,6 +860,18 @@ schedule (see the 2026-10-29 paragraph above), ground grabs keeping their own sc
 `scored_trick_clip` turns it into the clip sequence through the index and `stock_tree_leaf_at` (blend space / phase
 blend -> nearest child by its clip's attribute value; sub-tree children by rank).
 
+### NPC grind height
+
+Problem: the grabs port step 3 played every grind and slide on its LOW clip (the board at the bottom of the `DISTTOCOG` range, a deep crouch). Retail rests on the HI clips.
+
+Retail [data + our port of the TU3 behaviour, research b700, values checked 2026-10-30]: `Grinds/Grinds.xml` runs `ControlGrindCrouch` every tick, which eases `disttocog` toward `min(bound(1 - Crouch, min, max), bound(1 - physical grind crouch, min, max))` at `grind_disttocog_speed` (`skate-core/src/animation/grind_control.rs` `crouch`). `anim_motion/grind_height` in the setup data: `min_grind_disttocog` 0.6, `max_grind_disttocog` 0.85, speed 0.6 /s. The AI posts no Crouch during a trick (`ai_signals.rs`, `in_trick` gate), so with no crouch the value rests at 0.85: `G_5050_FS_HI_0_CYC` (clip DISTTOCOG 0.859; LOW is 0.684).
+
+Ours: `scored_trick_clip` picks the grind tree's child at the rest height, read from the loaded grind settings (`MotionHost::grind_rest_disttocog`, the setup data's `max_grind_disttocog`), so a data change moves both tiers. Mod key `living_world.npc_grind_disttocog` (0..1; unset = the data value), reset on mod disable. The entry ease from the landing height is not modelled (the puppet has no landing height; the clip starts at the rest). Twist stays 0 (ours: retail takes the physical body angle at entry, which a replay puppet does not have).
+
+Open: the AI's physical grind crouch (`crouch_132`) is assumed 0; whether any grind schedule posts Crouch or GrindBalanceX is not checked.
+
+Test: `npc_tests::living_world_npc_grab_and_grind_slots_play_their_scored_trees` (data-gated): fs_50_50 -> `G_5050_FS_HI_0_CYC`; `world_tuning` valid_patch checks for the key.
+
 ### Trick air sequence
 
 The air part of a trick animation base: `<base>_A`, and for the kickflip family (`T_Kickflip.xml`: `LeftGround` plays `$ANIM_NAME$_A`, then as sequences `$ANIM_CYC_NAME$1..3` per extra flip and `$ANIM_OUT_NAME$<n>`) `B_<FLIP>_IN_A`, `B_<FLIP>_CYC1..n`, `B_<FLIP>_OUT<n>` with n the trick's flip count (`kickflip2` = 2; 1 without a digit). Parts are joined with `+`: the puppet plays them back to back (`transType="sequence"`, no blend).

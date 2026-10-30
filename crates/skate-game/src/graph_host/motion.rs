@@ -338,6 +338,11 @@ impl MotionHost {
         self.gesture_publication = None;
     }
 
+    /// The grind's rest board-to-CoG height with no crouch (`ControlGrindCrouch`): `max_grind_disttocog`.
+    pub(crate) fn grind_rest_disttocog(&self) -> f32 {
+        self.grind_settings.height[1]
+    }
+
     pub fn from_graph(
         graph: &LoadedGraph,
         data: &Collections,

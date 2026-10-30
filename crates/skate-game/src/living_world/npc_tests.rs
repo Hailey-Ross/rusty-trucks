@@ -970,7 +970,9 @@ fn living_world_npc_grab_and_grind_slots_play_their_scored_trees() {
     let (evaluator, meta) = stock_evaluator().unwrap();
     let leaf = |n: &str, t: &[(&str, f32)]| stock_tree_leaf_at(&meta, n, t).filter(|c| evaluator.clip_length(c).is_ok());
     let id = |n: &str| skate_core::scoring::catalog::IDENTIFIERS.iter().position(|e| e.0 == n).unwrap() as i16;
-    let clip = |n: &str, phase: ReplayPhase| scored_trick_clip(&index, &leaf, PhaseEntry { phase, since: 0, trick: id(n) }).map(|(c, _)| c);
+    // Retail's uncrouched grind rest (`ControlGrindCrouch`): the setup data's `max_grind_disttocog`.
+    let rest = skate_data::collections::Collections::load(&root).unwrap().float("anim_motion", "grind_height", "max_grind_disttocog").unwrap();
+    let clip = |n: &str, phase: ReplayPhase| scored_trick_clip(&index, &leaf, rest, PhaseEntry { phase, since: 0, trick: id(n) }).map(|(c, _)| c);
     for n in ["fsgrab", "fsgrab_up", "bsgrab", "nosegrab", "tailgrab", "mutegrab", "stalegrab", "dblgrab", "rocketair", "christ_air", "superman", "gnd_bsgrab", "coffin"] {
         eprintln!("{n}: air {:?} takeoff {:?}", clip(n, ReplayPhase::AirTrick), clip(n, ReplayPhase::GroundTrick));
     }
@@ -982,7 +984,7 @@ fn living_world_npc_grab_and_grind_slots_play_their_scored_trees() {
     assert_eq!(last(clip("fsgrab_up", ReplayPhase::AirTrick)).as_deref(), Some("GR_NBONE_N_FS_0_CYC"));
     assert!(clip("fsgrab", ReplayPhase::GroundTrick).unwrap().starts_with("OLLIE"), "an air grab takes off with the ollie");
     assert_eq!(last(clip("gnd_bsgrab", ReplayPhase::GroundTrick)).as_deref(), Some("GR_GROUND_N_BS_0_CYC"));
-    assert_eq!(clip("fs_50_50", ReplayPhase::GroundTrick).as_deref(), Some("G_5050_FS_LOW_0_CYC"));
+    assert_eq!(clip("fs_50_50", ReplayPhase::GroundTrick).as_deref(), Some("G_5050_FS_HI_0_CYC"), "rests on the HI clip (b700)");
     assert_eq!(clip("fs_50_50", ReplayPhase::AirTrick), None, "a grind's hop off keeps the trick clip rules");
 }
 

@@ -437,6 +437,7 @@ pub(crate) fn retail_grab_score(name: &str, on_ground: bool) -> &str {
 pub(crate) fn scored_trick_clip(
     scores: &BTreeMap<String, crate::graph_host::motion::ScoreClips>,
     leaf: &dyn Fn(&str, &[(&str, f32)]) -> Option<String>,
+    grind_disttocog: f32,
     e: PhaseEntry,
 ) -> Option<(String, f32)> {
     let (name, _, category) = *skate_core::scoring::catalog::IDENTIFIERS.get(usize::try_from(e.trick).ok()?)?;
@@ -462,8 +463,9 @@ pub(crate) fn scored_trick_clip(
                 _ => (grab, RETAIL_TRICK_AIR_SECONDS),
             })
         }
-        // `T_Grind.xml` `PlayAnimation time="0.3"`; neutral twist, the board low to the CoG.
-        (5, ReplayPhase::GroundTrick) => Some((leaf(&scores.get(name)?.cyc, &[("TWIST", 0.0), ("DISTTOCOG", -1.0e6)])?, 0.3)),
+        // `T_Grind.xml` `PlayAnimation time="0.3"`; neutral twist (ours), the uncrouched rest height:
+        // docs/hails-additions/26c-living-world-npc-skaters.md#npc-grind-height
+        (5, ReplayPhase::GroundTrick) => Some((leaf(&scores.get(name)?.cyc, &[("TWIST", 0.0), ("DISTTOCOG", grind_disttocog)])?, 0.3)),
         _ => None,
     }
 }
@@ -622,7 +624,9 @@ pub(crate) fn npc_puppet_layers_into(settings: &LivingWorldSettings, scores: &Np
         Some(m) => stock_tree_leaf_at(m, name, targets).filter(|c| evaluates(c)),
         None => Some(name.to_owned()),
     };
-    let scored = |e: PhaseEntry| scored_trick_clip(&scores.0, &leaf, e);
+    // No skater runtime (headless): the top of the range, where retail rests.
+    let grind = settings.npc_grind_disttocog.or_else(|| skater.map(|k| k.animation.motion.grind_rest_disttocog())).unwrap_or(1.0e6);
+    let scored = |e: PhaseEntry| scored_trick_clip(&scores.0, &leaf, grind, e);
     let resolve = |e: PhaseEntry, older: Option<PhaseEntry>| puppet_layer_clip(&settings.skater_clips, &settings.skater_blend_seconds, style, &evaluates, &stock, &scored, e, older);
     let mut entries = cursor.phase_history().map(|(e, frames)| (e, (frames as f32 + sub_frame) / 60.0));
     let Some(first) = entries.next() else {
