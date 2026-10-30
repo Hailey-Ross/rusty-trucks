@@ -718,7 +718,7 @@ fn living_world_npc_skater_prop_volumes_and_mod_switch() {
 #[test]
 fn living_world_npc_puppet_layers_nest_running_blends() {
     use skate_core::living_world::replay::PhaseEntry;
-    let e = |phase, since| PhaseEntry { phase, since, trick: -1 };
+    let e = |phase, since| PhaseEntry { phase, since, trick: -1, trick_since: 0 };
     let clip = |e: PhaseEntry, _: Option<PhaseEntry>| (e.phase.name().to_owned(), 0.2);
     // Rolling long ago, crouched 0.1 s ago, air 0.05 s ago: three layers, oldest first.
     let h = [(e(ReplayPhase::Air, 100), 0.05), (e(ReplayPhase::Crouched, 97), 0.1), (e(ReplayPhase::Rolling, 0), 5.0)];
@@ -859,7 +859,7 @@ fn living_world_npc_trick_jump_has_no_pose_pop() {
     ] {
         let entries: Vec<PhaseEntry> = timeline
             .iter()
-            .map(|&(phase, since)| PhaseEntry { phase, since, trick: if matches!(phase, ReplayPhase::GroundTrick | ReplayPhase::AirTrick) { trick } else { -1 } })
+            .map(|&(phase, since)| PhaseEntry { phase, since, trick: if matches!(phase, ReplayPhase::GroundTrick | ReplayPhase::AirTrick) { trick } else { -1 }, trick_since: 0 })
             .collect();
         let resolve = |e: PhaseEntry, o: Option<PhaseEntry>| puppet_layer_clip(&none_clips, &none_blends, "Normal", &evaluates, &stock, &|_| None, e, o);
         // Phases begun up to frame `f` (`upto` = f) or before it (`upto` = f - 1: what showed
@@ -949,6 +949,27 @@ fn living_world_npc_score_clips_index_the_stock_graph() {
     assert_eq!((fs.into.as_deref(), fs.cyc.as_str(), fs.out.as_deref()), (Some("GR_GRAB_N_FS_0_INTO"), "BLEND_FS_TWEAK2", Some("GR_GRAB_N_FS_0_OUT")));
     assert_eq!(get("fsgrab_up").direction, Some("up"));
     assert_eq!(get("bsgrab").cyc, "BLEND_BS_TWEAK");
+    // The Cyc state's tweak easing (`T_FSBSGrab.xml` FilterMotionGraphIntent + TweakProject, `DBLGrab.xml` raw SetBlend).
+    let fs_tweak = fs.tweak.expect("fsgrab Cyc eases its tweaks");
+    assert_eq!((fs_tweak.x.blend_rising, fs_tweak.x.blend_out, fs_tweak.x.clamp_velocity, fs_tweak.project), (0.116, Some(0.133), Some(0.1), true));
+    assert!(!get("dblgrab").tweak.expect("dblgrab Cyc eases its tweaks").project);
+    assert!(get("gnd_bsgrab").tweak.is_none() && get("fs_50_50").tweak.is_none());
+    // Every eased Cyc holds the leaf the puppet picks (so its tree replaces it) and builds as a tree whose pose moves with
+    // the tweak.
+    let animation = crate::graph_host::motion::metadata_animation(skate_data::animation_banks::AnimationBanks::load(&root).unwrap().metadata().unwrap());
+    for (score, c) in index.iter().filter(|(_, c)| c.tweak.is_some()) {
+        let leaf = stock_tree_leaf_at(&meta, &c.cyc, &[("TWEAK_X", 0.0), ("TWEAK_Y", -1.0), ("ANGLE", 0.0)]).unwrap_or_else(|| panic!("{score}: a leaf"));
+        assert!(tree_holds(&meta, &c.cyc, &leaf, 4), "{score}: {} holds {leaf}", c.cyc);
+    }
+    let (mut caches, mut a, mut b) = (Vec::new(), Vec::new(), Vec::new());
+    let attrs = |x: f32, y: f32| {
+        use skate_core::animation::{playback_parameters::SettableAttribute, skeleton_input::name::encode};
+        [SettableAttribute { name: encode(b"tweak_x"), value: x, normalized: false, sequence_id: -1 }, SettableAttribute { name: encode(b"tweak_y"), value: y, normalized: false, sequence_id: -1 }]
+    };
+    crate::graph_host::motion::named_tree_commands_into(&animation, &mut caches, "BLEND_BS_TWEAK", &attrs(0.0, 0.0), 0.2, &mut a).unwrap();
+    crate::graph_host::motion::named_tree_commands_into(&animation, &mut caches, "BLEND_BS_TWEAK", &attrs(0.0, -1.0), 0.2, &mut b).unwrap();
+    assert_eq!(caches.len(), 1, "one reused tree per name");
+    assert_ne!(a, b, "the tweak moves the BS grab pose");
     let gnd = get("gnd_bsgrab");
     assert_eq!((gnd.into.as_deref(), gnd.cyc.as_str(), gnd.out.as_deref()), (Some("BLEND_BSGRAB_INTO"), "BLEND_BSGRAB", Some("B_BSGRAB_OUT")));
     assert_eq!(get("fs_50_50").cyc, "B_GRIND5050");
@@ -973,7 +994,7 @@ fn living_world_npc_grab_and_grind_slots_play_their_scored_trees() {
     // Retail's uncrouched grind rest (`ControlGrindCrouch`): the setup data's `max_grind_disttocog`.
     let rest = skate_data::collections::Collections::load(&root).unwrap().float("anim_motion", "grind_height", "max_grind_disttocog").unwrap();
     // The AI's 0.5 manual sits on the balance graph's flat zero (b703).
-    let clip = |n: &str, phase: ReplayPhase| scored_trick_clip(&index, &leaf, rest, &|_| 0.0, PhaseEntry { phase, since: 0, trick: id(n) }).map(|(c, _)| c);
+    let clip = |n: &str, phase: ReplayPhase| scored_trick_clip(&index, &leaf, rest, &|_| 0.0, PhaseEntry { phase, since: 0, trick: id(n), trick_since: 0 }).map(|(c, _)| c);
     for n in ["fsgrab", "fsgrab_up", "bsgrab", "nosegrab", "tailgrab", "mutegrab", "stalegrab", "dblgrab", "rocketair", "christ_air", "superman", "gnd_bsgrab", "coffin"] {
         eprintln!("{n}: air {:?} takeoff {:?}", clip(n, ReplayPhase::AirTrick), clip(n, ReplayPhase::GroundTrick));
     }
@@ -1034,7 +1055,7 @@ fn living_world_npc_fakie_rule_and_channel_match_the_stock_graph() {
     }).collect();
     eprintln!("{FAKIE_CHANNEL} at torso {FAKIE_TORSO_RIDING}: {} commands, clips {clips:?}", tree.len());
     assert!(clips.iter().all(|c| evaluator.clip_length(c).is_ok()), "every channel clip evaluates");
-    let base = [PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0, since: 0 }];
+    let base = [PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0, since: 0, tree: None }];
     let plain = puppet_layers_pose(&evaluator, &base).unwrap();
     let fakie = puppet_pose_with_channel(&evaluator, &base, Some((&tree, 1.0))).unwrap();
     let moved: Vec<&str> = plain
@@ -1075,7 +1096,7 @@ fn living_world_npc_regular_puppet_is_mirrored() {
         eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
         return;
     };
-    let base = [PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0, since: 0 }];
+    let base = [PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0, since: 0, tree: None }];
     let goofy = puppet_pose_in_stance(&evaluator, &base, None, false).unwrap();
     assert_eq!(goofy, puppet_layers_pose(&evaluator, &base).unwrap(), "goofy = the pre-port pose");
     let regular = puppet_pose_in_stance(&evaluator, &base, None, true).unwrap();
@@ -1124,7 +1145,7 @@ fn living_world_npc_stance_track_follows_trick_clip_events() {
             _ => None,
         }
     };
-    let layer = |clip: &str, since: u64, time: f32| PuppetLayer { clip: clip.into(), time, weight: 1.0, since };
+    let layer = |clip: &str, since: u64, time: f32| PuppetLayer { clip: clip.into(), time, weight: 1.0, since, tree: None };
     let retail = StanceEvents::retail();
     for stance in [NaturalStance::Goofy, NaturalStance::Regular] {
         let natural = StanceFlags::natural(stance);
@@ -1175,7 +1196,7 @@ fn living_world_npc_fakie_axis_after_a_shove_it_is_retails() {
         let mut t = NpcStanceTrack::new(stance);
         assert!(!t.flags.board_flipped(), "{stance:?}: natural bits ride the board unflipped");
         for i in 0..40 {
-            t.step(&PuppetLayer { clip: "SHUV_A".into(), time: i as f32 / 30.0, weight: 1.0, since: 1 }, &StanceEvents::retail(), |c, p, n| sequence_attributes(c, p, n, data));
+            t.step(&PuppetLayer { clip: "SHUV_A".into(), time: i as f32 / 30.0, weight: 1.0, since: 1, tree: None }, &StanceEvents::retail(), |c, p, n| sequence_attributes(c, p, n, data));
         }
         assert_eq!(t.flags.board_flipped(), t.flags.board_backward ^ t.flags.mirrored);
         assert!(t.flags.board_flipped(), "{stance:?}: after the shove-it the board is flipped");
@@ -1212,8 +1233,8 @@ fn living_world_npc_trick_clips_toggle_the_board_bit() {
     eprintln!("trick clips with the board event: {board:?}");
     assert!(!board.is_empty(), "some recorded tricks turn the board (shove-it family)");
     assert!(has("POPSHUVIT_HIGH_A", "ANIMBOARDBACKWARD") && has("R_SWITCH_RIDE_N_0_N", "MIRRORED") && has("R_SWITCH_RIDE_N_0_N", "SWITCH"));
-    let a = PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0, since: 0 };
-    let b = PuppetLayer { clip: "POPSHUVIT_HIGH_A".into(), time: 0.2, weight: 0.5, since: 10 };
+    let a = PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0, since: 0, tree: None };
+    let b = PuppetLayer { clip: "POPSHUVIT_HIGH_A".into(), time: 0.2, weight: 0.5, since: 10, tree: None };
     let layers = [a, b];
     let goofy = StanceFlags::default();
     let turned = StanceFlags { board_backward: true, ..goofy };
@@ -1384,6 +1405,18 @@ fn npc_skaters_react_to_the_players_wipeout_near_them() {
     assert_eq!(read(&mut app), vec![(near, SkaterReaction::SlamB, 0)]);
 }
 
+/// Debug text without the `trick_since` fields (added after the goldens; the digests cover behaviour, not the layout).
+fn without_trick_since(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find(", trick_since: ") {
+        out.push_str(&rest[..i]);
+        rest = rest[i + ", trick_since: ".len()..].trim_start_matches(|c: char| c.is_ascii_digit());
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Golden digest of the NPC presentation and advance (b620): docs/hails-additions/34-physics-performance.md#npc-and-replay-per-frame-allocations-first-pass-2026-10-28-research-b620
 fn npc_frame_digest(posed_runtime: Option<crate::physics::SkaterRuntime>) -> (u64, usize) {
     fn mix(h: &mut u64, bytes: &[u8]) {
@@ -1414,7 +1447,7 @@ fn npc_frame_digest(posed_runtime: Option<crate::physics::SkaterRuntime>) -> (u6
         }
         a.update();
         let mut q = a.world_mut().query::<(&NpcSkater, &NpcReplay, Option<&NpcPuppetClip>, &Transform, Option<&NpcPuppet>)>();
-        let mut rows: Vec<_> = q.iter(a.world()).map(|(n, r, c, t, p)| (n.id, format!("{r:?}{c:?}").replace(", body_gate: None", ""), bits(t), p.map(|p| p.joints()).unwrap_or_default())).collect();
+        let mut rows: Vec<_> = q.iter(a.world()).map(|(n, r, c, t, p)| (n.id, without_trick_since(&format!("{r:?}{c:?}").replace(", body_gate: None", "").replace(", tree: None", "")), bits(t), p.map(|p| p.joints()).unwrap_or_default())).collect();
         rows.sort_by_key(|r| r.0);
         for (id, text, root, joints) in rows {
             mix(&mut h, format!("{id:?}").as_bytes());
@@ -1461,3 +1494,30 @@ fn npc_present_pose_posed_matches_golden() {
 
 const NPC_GOLDEN_UNPOSED: u64 = 0x4e6ad2fe9bebac23;
 const NPC_GOLDEN_POSED: u64 = 0xd2e279baed9b8d16;
+
+/// The NPC grab tweak eases like the player's Cyc filter (research b704 samples: 0.1, 0.2, 0.2928 .. 0.70166 after
+/// 1, 2, 3 .. 10 updates), follows a schedule step, and TweakProject keeps abs(x) + abs(y) <= 1.
+#[test]
+fn an_npc_grab_tweak_eases_from_the_cyc_entry_like_the_player() {
+    use skate_core::animation::intent_filter::Settings;
+    use skate_core::living_world::ai_signals::IntentTuple;
+    let s = Settings { starting_value: 0.0, default_value: 0.0, scale: 1.0, filters: [8; 4], ramp_time: None, blend_rising: 0.116, blend_falling: 0.116, blend_out: Some(0.133), clamp_velocity: Some(0.1), clamp_acceleration: None };
+    let filter = crate::graph_host::motion::TweakFilter { x: s, y: s, project: true };
+    let id = |n: &str| skate_core::input::skater_intent::SKATER_INTENTS.iter().position(|x| *x == n).unwrap() as u32;
+    let down = [IntentTuple { intent: id("TweakY"), value: -1.0, start: 0, end: -1 }];
+    let y = |ticks: f32| grab_tweak(&filter, &down, 0, ticks)[1];
+    for (ticks, want) in [(0.0, -0.1), (1.0, -0.2), (2.0, -0.2928), (9.0, -0.70166)] {
+        assert!((y(ticks) - want).abs() < 1e-4, "tick {ticks}: {} vs {want}", y(ticks));
+    }
+    assert!((y(0.5) - (-0.15)).abs() < 1e-4, "between ticks the value interpolates");
+    // A window that starts later: nothing before it, and the Cyc entry offsets the slot tick.
+    let late = [IntentTuple { intent: id("TweakY"), value: -1.0, start: 10, end: -1 }];
+    assert_eq!(grab_tweak(&filter, &late, 0, 5.0)[1], 0.0);
+    assert!((grab_tweak(&filter, &late, 10, 0.0)[1] + 0.1).abs() < 1e-6);
+    // Both axes at 1: settled, then projected onto abs(x) + abs(y) = 1; raw SetBlend keeps them.
+    let both = [IntentTuple { intent: id("TweakX"), value: 1.0, start: 0, end: -1 }, IntentTuple { intent: id("TweakY"), value: 1.0, start: 0, end: -1 }];
+    let v = grab_tweak(&filter, &both, 0, 200.0);
+    assert!((v[0] - 0.5).abs() < 1e-3 && (v[1] - 0.5).abs() < 1e-3, "{v:?}");
+    let raw = grab_tweak(&crate::graph_host::motion::TweakFilter { project: false, ..filter }, &both, 0, 200.0);
+    assert!(raw[0] > 0.99 && raw[1] > 0.99, "{raw:?}");
+}

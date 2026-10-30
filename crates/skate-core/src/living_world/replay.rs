@@ -522,6 +522,8 @@ pub struct PhaseEntry {
     pub phase: ReplayPhase,
     pub since: u64,
     pub trick: i16,
+    /// Frame the span's trick started (its slot tick 0, research b704): docs/hails-additions/26c-living-world-npc-skaters.md#npc-grab-tweaks
+    pub trick_since: u64,
 }
 
 /// The NPC's state at one instant.
@@ -825,6 +827,8 @@ pub struct LineCursor {
     trick_open: bool,
     /// Recorded trick of the open span (`-1` = none / no slot).
     trick: i16,
+    /// Frame `trick` started.
+    trick_since: u64,
     /// Entered phases, newest first (`history[0]` = the current phase).
     history: [Option<PhaseEntry>; PHASE_HISTORY],
     phase: Option<ReplayPhase>,
@@ -873,7 +877,7 @@ pub enum Decider<'a> {
 
 impl LineCursor {
     pub fn new(line: [u8; 16], node: u32) -> Self {
-        Self { line, node, frame_in_segment: 0, frames: 0, finished: false, trick_open: false, trick: -1, history: [None; PHASE_HISTORY], phase: None, phase_since: 0, previous_phase: None, previous_since: 0, switch: None, switch_blend_seconds: SWITCH_BLEND_SECONDS, facing_flipped: false, keep_facing: false, flip: false, airborne: false, facing_rule: FacingRule::RidingEntry, fakie: false, fakie_since: 0, fakie_previous_since: 0, fakie_clock: Default::default(), fakie_settings: retail::FAKIE }
+        Self { line, node, frame_in_segment: 0, frames: 0, finished: false, trick_open: false, trick: -1, trick_since: 0, history: [None; PHASE_HISTORY], phase: None, phase_since: 0, previous_phase: None, previous_since: 0, switch: None, switch_blend_seconds: SWITCH_BLEND_SECONDS, facing_flipped: false, keep_facing: false, flip: false, airborne: false, facing_rule: FacingRule::RidingEntry, fakie: false, fakie_since: 0, fakie_previous_since: 0, fakie_clock: Default::default(), fakie_settings: retail::FAKIE }
     }
 
     /// Spawn on a line at a node (8245DA78; node world frame 8245C548 -> 82453C58): docs/hails-additions/26c-living-world-npc-skaters.md#cursor-spawn
@@ -882,7 +886,7 @@ impl LineCursor {
         if let Some(l) = lines.line(&line) {
             c.set_trick(l, node);
             c.phase = l.nodes.get(node as usize).map(|n| ReplayPhase::of(n.flags, c.trick_open));
-            c.history[0] = c.phase.map(|phase| PhaseEntry { phase, since: 0, trick: c.trick });
+            c.history[0] = c.phase.map(|phase| PhaseEntry { phase, since: 0, trick: c.trick, trick_since: 0 });
             if let Some(n) = l.nodes.get(node as usize) {
                 // In the air: retail's first update sees the rising edge against the spawn frame.
                 // Riding: a labelled stand-in (retail holds 0 until the first takeoff, which tests
@@ -973,6 +977,7 @@ impl LineCursor {
                     }
                     if let Some(t) = chosen {
                         self.trick = t;
+                        self.trick_since = self.frames;
                         if matches!(decider, Decider::Decide(_)) {
                             out.push(CursorEvent::Trick(TrickRecord { frame: self.frames, line: self.line, node: self.node, recorded, chosen: t }));
                         }
@@ -1047,7 +1052,7 @@ impl LineCursor {
                 self.phase = Some(phase);
                 self.phase_since = self.frames;
                 self.history.copy_within(0..PHASE_HISTORY - 1, 1);
-                self.history[0] = Some(PhaseEntry { phase, since: self.frames, trick: if self.trick_open { self.trick } else { -1 } });
+                self.history[0] = Some(PhaseEntry { phase, since: self.frames, trick: if self.trick_open { self.trick } else { -1 }, trick_since: self.trick_since });
             }
         }
         // A finished switch blend is dropped (the weight only grows from here).
@@ -1132,6 +1137,9 @@ impl LineCursor {
     fn set_trick(&mut self, line: &ReplayLine, node: u32) {
         let open = line.open_trick_at(node);
         self.trick_open = open.is_some();
+        if open.unwrap_or(-1) != self.trick {
+            self.trick_since = self.frames;
+        }
         self.trick = open.unwrap_or(-1);
     }
 

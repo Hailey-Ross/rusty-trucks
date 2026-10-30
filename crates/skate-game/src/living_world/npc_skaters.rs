@@ -498,6 +498,94 @@ pub(crate) struct PuppetLayer {
     /// Cursor frame the layer began (its phase entry's `since`): the layer's identity, which
     /// keys the stance bits it was built with ([`NpcStanceTrack`]). 0 where no cursor drives it.
     pub since: u64,
+    /// An air grab's `Cyc` tree, played in place of the sequence's last clip ([`grab_tree`]).
+    pub tree: Option<PuppetTree>,
+}
+
+/// An air grab layer's `Cyc` tweak tree: docs/hails-additions/26c-living-world-npc-skaters.md#npc-grab-tweaks
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PuppetTree {
+    pub name: String,
+    /// Seconds into the tree.
+    pub time: f32,
+    /// `tweak_x` / `tweak_y` unmirrored (a mirrored layer negates x: `air.xml` TweakX `mirrorFilter="negate"`).
+    pub tweak: [f32; 2],
+}
+
+/// Ticks [`grab_tweak`] eases over at most (the filter has long settled).
+const TWEAK_TICKS: u64 = 600;
+
+/// The `Cyc` state's tweaks `ticks` (fractional) after its entry: TweakX / TweakY from the slot `schedule` at slot tick
+/// `entry_tick + m`, eased per 60 Hz tick by the state's `FilterMotionGraphIntent`s from Begin (no stored state, so a
+/// scrub or a late peer gets the same value), then `TweakProject`'s clamp: docs/hails-additions/26c-living-world-npc-skaters.md#npc-grab-tweaks
+pub(crate) fn grab_tweak(filter: &crate::graph_host::motion::TweakFilter, schedule: &[skate_core::living_world::ai_signals::IntentTuple], entry_tick: i64, ticks: f32) -> [f32; 2] {
+    use skate_core::animation::intent_filter::State;
+    // `slot_signals`: the first 6 tuples, present from start to end (end < 0 = open); the AG copy defaults to 0.
+    let input = |name: &str, t: i64| {
+        schedule.iter().take(6).filter(|e| skate_core::input::skater_intent::name(e.intent) == Some(name) && t >= i64::from(e.start) && (e.end < 0 || t <= i64::from(e.end))).last().map_or(0.0, |e| e.value)
+    };
+    let (mut x, mut y) = (State::default(), State::default());
+    x.begin(&filter.x);
+    y.begin(&filter.y);
+    let ticks = ticks.max(0.0);
+    let n = (ticks.floor() as u64).min(TWEAK_TICKS);
+    let mut step = |m: u64| {
+        let t = entry_tick + m as i64;
+        [x.update(&filter.x, Some(input("TweakX", t)), 1.0 / 60.0, (false, false)), y.update(&filter.y, Some(input("TweakY", t)), 1.0 / 60.0, (false, false))]
+    };
+    let mut now = [0.0; 2];
+    for m in 0..=n {
+        now = step(m);
+    }
+    let next = step(n + 1);
+    let a = if n == TWEAK_TICKS { 0.0 } else { ticks.fract() };
+    let mut v = [now[0] + (next[0] - now[0]) * a, now[1] + (next[1] - now[1]) * a];
+    let total = v[0].abs() + v[1].abs();
+    if filter.project && total > 1.0 {
+        v = [v[0] / total, v[1] / total];
+    }
+    v
+}
+
+/// The tweak tree of an air grab layer the score index plays (no mod clip): the `Cyc` tree once the sequence reaches
+/// its last part, with [`grab_tweak`] from the Cyc entry (the Into's end).
+fn grab_tree(clips: &BTreeMap<String, String>, scores: &NpcScoreClips, skater: &crate::physics::SkaterRuntime, history: &[(PhaseEntry, f32)], l: &PuppetLayer) -> Option<PuppetTree> {
+    let i = history.iter().position(|(e, _)| e.since == l.since)?;
+    let e = match history[i].0 {
+        e if e.phase == ReplayPhase::Air => history.get(i + 1).map(|h| h.0).filter(|o| o.phase == ReplayPhase::AirTrick)?,
+        e => e,
+    };
+    let (name, _, category) = *skate_core::scoring::catalog::IDENTIFIERS.get(usize::try_from(e.trick).ok()?)?;
+    if category != 4 || !matches!(e.phase, ReplayPhase::GroundTrick | ReplayPhase::AirTrick) || (!clips.is_empty() && clips.contains_key(&format!("trick.{name}"))) {
+        return None;
+    }
+    let c = scores.0.get(retail_grab_score(name, e.phase == ReplayPhase::GroundTrick && GROUND_GRABS.contains(&name)))?;
+    let filter = c.tweak.as_ref()?;
+    let (body, last) = l.clip.rsplit_once('+').unwrap_or(("", &l.clip));
+    let evaluator = &skater.animation.evaluator;
+    let prefix = if body.is_empty() { 0.0 } else { body.split('+').map(|p| evaluator.clip_length(p).ok()).sum::<Option<f32>>()? };
+    let time = l.time - prefix;
+    if time < 0.0 || !tree_holds(skater.animation.motion.animation.metadata(), &c.cyc, last, 4) {
+        return None;
+    }
+    let schedule = skater.scoring.data.by_id(usize::try_from(e.trick).ok()?).map_or(&[][..], |d| d.intents.as_slice());
+    let entry = (prefix * 60.0).ceil();
+    let entry_tick = l.since as i64 + entry as i64 - e.trick_since as i64;
+    Some(PuppetTree { name: c.cyc.clone(), time, tweak: grab_tweak(filter, schedule, entry_tick, l.time * 60.0 - entry) })
+}
+
+/// Whether `clip` is `tree` or one of its blend children (`depth` levels down).
+pub(crate) fn tree_holds(meta: &skate_data::animation_metadata::AnimationMetadata, tree: &str, clip: &str, depth: u8) -> bool {
+    use skate_data::animation_metadata::TreeMetadata;
+    if tree.eq_ignore_ascii_case(clip) {
+        return true;
+    }
+    let children = match meta.tree(tree) {
+        Ok(TreeMetadata::BlendSpace(b)) if depth > 0 => b.children.clone(),
+        Ok(TreeMetadata::PhaseBlend(p)) if depth > 0 => p.children.clone(),
+        _ => return false,
+    };
+    children.iter().any(|c| tree_holds(meta, c, clip, depth - 1))
 }
 
 /// The puppet's layers, oldest first, from the phase history (same clip = one layer). Pure.
@@ -532,7 +620,7 @@ pub(crate) fn puppet_layers_into(history: &[(PhaseEntry, f32)], resolve: impl Fn
         }
         let (clip, seconds, time, since) = current;
         let weight = skate_core::animation::playback_transition::transition_weight(time, seconds);
-        out.push(PuppetLayer { clip, time, weight, since });
+        out.push(PuppetLayer { clip, time, weight, since, tree: None });
         if weight >= 1.0 {
             break;
         }
@@ -584,6 +672,12 @@ pub(crate) struct NpcPuppetClip {
     pub fakie: Option<PuppetLayer>,
 }
 
+/// `tweak_x` / `tweak_y` (the names `TweakProject` binds, TU3 factory 82BC9510).
+fn tweak_attributes(v: [f32; 2]) -> [skate_core::animation::playback_parameters::SettableAttribute; 2] {
+    use skate_core::animation::{playback_parameters::SettableAttribute, skeleton_input::name::encode};
+    [SettableAttribute { name: encode(b"tweak_x"), value: v[0], normalized: false, sequence_id: -1 }, SettableAttribute { name: encode(b"tweak_y"), value: v[1], normalized: false, sequence_id: -1 }]
+}
+
 /// Fakie channel tree (FakieHeadChannel82BAC778, blend 0.3 s, transition 0.1 s); mod-replaceable.
 pub(crate) const FAKIE_CHANNEL: &str = "B_FAKIE_CHANNEL";
 
@@ -603,7 +697,7 @@ pub(crate) fn fakie_channel_layer(cursor: &LineCursor, alpha: f32, tree: &str) -
     }
     let began = if cursor.fakie { cursor.fakie_since } else { cursor.fakie_previous_since };
     let time = (cursor.frames - began.min(cursor.frames)) as f32 / 60.0 + alpha.clamp(0.0, 1.0) / 60.0;
-    Some(PuppetLayer { clip: tree.to_owned(), time, weight, since: began })
+    Some(PuppetLayer { clip: tree.to_owned(), time, weight, since: began, tree: None })
 }
 
 /// The fakie channel tree's parameters: `torso` = [`FAKIE_TORSO_RIDING`] (pass to
@@ -651,7 +745,12 @@ pub(crate) fn npc_puppet_layers_into(settings: &LivingWorldSettings, scores: &Np
         history[n] = entry;
         n += 1;
     }
-    puppet_layers_into(&history[..n], resolve, out)
+    puppet_layers_into(&history[..n], resolve, out);
+    if let Some(k) = skater {
+        for l in out.iter_mut() {
+            l.tree = grab_tree(&settings.skater_clips, scores, k, &history[..n], l);
+        }
+    }
 }
 
 /// Layer starts an NPC remembers (its puppet shows at most a few layers at once).
@@ -761,7 +860,7 @@ pub(crate) fn track_stance(
             let Some(s) = replay.cursor.sample(&*lines, 0.0) else { continue };
             let clip = resolve_puppet_clip(&settings.skater_clips, s.phase, style);
             let clip = if skater.is_none_or(|k| k.animation.evaluator.clip_length(clip).is_ok()) { clip } else { puppet_clip(s.phase, style) };
-            layers.push(PuppetLayer { clip: clip.to_owned(), time: s.phase_frames as f32 / 60.0, weight: 1.0, since: replay.cursor.frames.saturating_sub(s.phase_frames) });
+            layers.push(PuppetLayer { clip: clip.to_owned(), time: s.phase_frames as f32 / 60.0, weight: 1.0, since: replay.cursor.frames.saturating_sub(s.phase_frames), tree: None });
         }
         let Some(top) = layers.last() else { continue };
         let before = track.flags;
@@ -1333,11 +1432,12 @@ pub(crate) fn present_pose(
     mut joints: Query<&mut Transform, Without<NpcReplay>>,
     mut scratch: Local<NpcPoseScratch>,
 ) {
-    let NpcPoseScratch { layers, layer_flags, channel, fakie_tree, pose, transforms, before, pose_now, pose_before } = &mut *scratch;
+    let NpcPoseScratch { layers, layer_flags, channel, fakie_tree, grab_trees, pose, transforms, before, pose_now, pose_before } = &mut *scratch;
     let no_scores = NpcScoreClips::default();
     let scores = scores.as_deref().unwrap_or(&no_scores);
     if skater.as_ref().is_none_or(|s| s.is_added()) {
         *fakie_tree = None;
+        grab_trees.clear();
     }
     let lines = npc_lines(&state);
     // Render interpolation: the fraction of the next world tick, drawn from one tick back (fix 14).
@@ -1402,7 +1502,7 @@ pub(crate) fn present_pose(
         // Clip and blend time include the render sub-frame (no 60 Hz stair steps under a smooth root).
         npc_puppet_layers_into(&settings, scores, style, skater.as_deref(), &cursor, s.sub_frame, layers);
         if layers.is_empty() {
-            layers.push(PuppetLayer { clip: usable(s.phase).to_owned(), time: (s.phase_frames as f32 + s.sub_frame) / 60.0, weight: 1.0, since: cursor.frames.saturating_sub(s.phase_frames) });
+            layers.push(PuppetLayer { clip: usable(s.phase).to_owned(), time: (s.phase_frames as f32 + s.sub_frame) / 60.0, weight: 1.0, since: cursor.frames.saturating_sub(s.phase_frames), tree: None });
         }
         // The stance bits each layer was built with (natural stance, toggled by trick clips).
         let natural = StanceFlags::natural(npc.stance);
@@ -1423,6 +1523,16 @@ pub(crate) fn present_pose(
             let weight = fakie.as_ref().and_then(|f| {
                 crate::graph_host::motion::cached_tree_commands_into(&skater.animation.motion.animation, fakie_tree, &f.clip, &fakie_channel_attributes(), f.time, channel).ok().map(|_| f.weight)
             });
+            pose.trees.resize_with(layers.len(), Vec::new);
+            for ((l, flags), out) in layers.iter().zip(layer_flags.iter()).zip(pose.trees.iter_mut()) {
+                out.clear();
+                if let Some(t) = &l.tree {
+                    let x = if flags.mirrored { -t.tweak[0] } else { t.tweak[0] };
+                    if crate::graph_host::motion::named_tree_commands_into(&skater.animation.motion.animation, grab_trees, &t.name, &tweak_attributes([x, t.tweak[1]]), t.time, out).is_err() {
+                        out.clear();
+                    }
+                }
+            }
             if !puppet_pose_in_flags_into(&skater.animation.evaluator, layers, layer_flags, weight.map(|w| (channel.as_slice(), w)), pose) {
                 return None;
             }
@@ -1466,6 +1576,7 @@ pub(crate) struct NpcPoseScratch {
     layer_flags: Vec<StanceFlags>,
     channel: Vec<skate_core::animation::playback_tree::PoseCommand>,
     fakie_tree: Option<crate::graph_host::motion::TreeCache>,
+    grab_trees: Vec<crate::graph_host::motion::TreeCache>,
     pose: PoseScratch,
     transforms: Vec<(Entity, Transform)>,
     before: Vec<(Entity, Transform)>,
@@ -1597,9 +1708,9 @@ pub(crate) fn evaluator_pose(evaluator: &crate::animation_pose::PoseEvaluator, c
 pub(crate) fn puppet_blend_pose(evaluator: &crate::animation_pose::PoseEvaluator, clip: &str, time: f32, blend: Option<&PuppetBlend>) -> Option<Vec<Mat4>> {
     let mut layers = Vec::with_capacity(2);
     if let Some(b) = blend {
-        layers.push(PuppetLayer { clip: b.from.clone(), time: b.from_time, weight: 1.0, since: 0 });
+        layers.push(PuppetLayer { clip: b.from.clone(), time: b.from_time, weight: 1.0, since: 0, tree: None });
     }
-    layers.push(PuppetLayer { clip: clip.to_owned(), time, weight: blend.map_or(1.0, |b| b.weight), since: 0 });
+    layers.push(PuppetLayer { clip: clip.to_owned(), time, weight: blend.map_or(1.0, |b| b.weight), since: 0, tree: None });
     puppet_layers_pose(evaluator, &layers)
 }
 
@@ -1671,6 +1782,8 @@ pub(crate) fn puppet_pose_in_flags(evaluator: &crate::animation_pose::PoseEvalua
 #[derive(Default)]
 pub(crate) struct PoseScratch {
     commands: Vec<skate_core::animation::playback_tree::PoseCommand>,
+    /// Per layer: the pose commands of its tree ([`PuppetLayer::tree`]), played in place of its last clip; empty = none.
+    pub trees: Vec<Vec<skate_core::animation::playback_tree::PoseCommand>>,
     locals: Vec<Mat4>,
     pub globals: Vec<Mat4>,
 }
@@ -1678,16 +1791,23 @@ pub(crate) struct PoseScratch {
 /// [`puppet_pose_in_flags`] into `scratch.globals`; false where it gives `None`.
 pub(crate) fn puppet_pose_in_flags_into(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer], flags: &[StanceFlags], channel: Option<(&[skate_core::animation::playback_tree::PoseCommand], f32)>, scratch: &mut PoseScratch) -> bool {
     use skate_core::animation::playback_tree::PoseCommand;
-    let sample = |clip: &str, time: f32| -> Option<PoseCommand> {
-        let (clip, time) = sequence_part(evaluator, clip, time)?;
-        let time = puppet_clip_time(clip, time, evaluator.clip_length(clip).ok()?);
-        Some(PoseCommand::Clip { name: clip.to_owned(), previous_time: time, time, loops: 0 })
+    let PoseScratch { commands, trees, locals, globals } = scratch;
+    // Pushes layer `i`'s pose: its tree in its last part, else the clip playing.
+    let sample = |commands: &mut Vec<PoseCommand>, i: usize, l: &PuppetLayer| -> bool {
+        let Some((clip, time)) = sequence_part(evaluator, &l.clip, l.time) else { return false };
+        if let Some(tree) = trees.get(i).filter(|t| !t.is_empty() && l.clip.rsplit('+').next() == Some(clip)) {
+            commands.extend_from_slice(tree);
+            return true;
+        }
+        let Ok(length) = evaluator.clip_length(clip) else { return false };
+        let time = puppet_clip_time(clip, time, length);
+        commands.push(PoseCommand::Clip { name: clip.to_owned(), previous_time: time, time, loops: 0 });
+        true
     };
     let flag = |i: usize| flags.get(i).copied().unwrap_or_default();
     let Some((top, older)) = layers.split_last() else { return false };
     let top_flags = flag(layers.len() - 1);
     let mixed = (0..layers.len()).any(|i| flag(i) != top_flags);
-    let commands = &mut scratch.commands;
     commands.clear();
     commands.reserve(layers.len() * 8 + 8);
     // Per-layer tails once the bits differ (each layer closed before it blends in).
@@ -1697,18 +1817,18 @@ pub(crate) fn puppet_pose_in_flags_into(evaluator: &crate::animation_pose::PoseE
         }
     };
     for (i, l) in older.iter().enumerate() {
-        if let Some(c) = sample(&l.clip, l.time) {
-            let base = commands.is_empty();
-            commands.push(c);
+        let base = commands.is_empty();
+        if sample(commands, i, l) {
             closed(commands, i);
             if !base {
                 commands.push(PoseCommand::Blend { weight: l.weight });
             }
         }
     }
-    let Some(to) = sample(&top.clip, top.time) else { return false };
     let base = commands.is_empty();
-    commands.push(to);
+    if !sample(commands, layers.len() - 1, top) {
+        return false;
+    }
     closed(commands, layers.len() - 1);
     if !base {
         commands.push(PoseCommand::Blend { weight: top.weight });
@@ -1730,11 +1850,9 @@ pub(crate) fn puppet_pose_in_flags_into(evaluator: &crate::animation_pose::PoseE
         stance_tail_into(top_flags, commands);
     }
     let Ok(pose) = evaluator.evaluate(commands) else { return false };
-    let locals = &mut scratch.locals;
     locals.clear();
     locals.extend(pose.iter().copied().map(skate_core::animation::output::sqt_to_matrix).map(crate::animation::native_matrix));
     let parents = &evaluator.frames.parents;
-    let globals = &mut scratch.globals;
     globals.clear();
     globals.reserve(locals.len());
     for (i, local) in locals.iter().enumerate() {
