@@ -884,6 +884,18 @@ Ours: `scored_trick_clip` category 8: nosemanual -> Into + cycle as a sequence (
 
 Test: the same data-gated test: nosemanual -> `M_NOSEIDLE_N_0_INTO+...`, tailmanual a single clip, neither a 50-50.
 
+### NPC grab tweaks
+
+Problem: the grabs port step 3 showed an air grab's `Cyc` as one clip, the blend space vertex nearest the score's unit direction, so a grab snapped to its end pose and never eased.
+
+Retail [data, stock graph; research b700 / b704, read 2026-10-30]: an air grab's `Cyc` state (`GrabsTweaks/T_FSBSGrab.xml`, `T_MuteStaleGrab.xml`, `DBLGrab.xml`) runs `FilterMotionGraphIntent` on TweakX and TweakY (`blend 0.116`, `blendOut 0.133`, `clampVel 0.1`, per graph update), then `TweakProject` (FS / BS: abs(x) + abs(y) clamped to 1) or a raw `SetBlend` (mute, stale, DBL) into the tree's `tweak_x` / `tweak_y`. The input is the AI's schedule (`sub_82470ED0`, `slot_signals`), copied AG -> MG with a 0 default and TweakX negated when mirrored (`ActionGraphIncludes/air.xml` Grabbing, `mirrorFilter="negate"`). Ground grabs have no tweak.
+
+Ours: `graph_host::motion::stock_score_clips` keeps each score's Cyc filter settings and projection (`ScoreClips::tweak`, read from the loaded graph, so a graph mod changes NPC easing like the player's). `npc_skaters::grab_tree` gives an air grab layer its Cyc tree once the puppet's sequence reaches the last part; `grab_tweak` re-runs the player's filter (`skate_core::animation::intent_filter::State`) from Begin over every 60 Hz tick since the Cyc entry with the schedule value at that slot tick, so there is no stored state (a scrub or a late-joining peer gets the same pose). The slot tick comes from the cursor's new `trick_since` (the frame the span's START_TRICK was crossed, on `LineCursor` and each `PhaseEntry`). `present_pose` negates x for a mirrored layer and builds the tree with `graph_host::motion::named_tree_commands_into` (one reused tree per name, attributes set each frame); the pose plays the tree in place of the leaf clip.
+
+Open (research b708): the puppet times the Into from the unscaled clip length, but retail plays it at `playBackSpeed` (FS / BS 2.0, mute / stale 1.25, DBL 3.0), so the Cyc starts late; the Cyc -> Out step (slot end, then filtered tweak below 0.2) and the Out clips are not played; the Cyc entry is taken as the Into's end (retail's AG / MG entry delay is not measured).
+
+Tests: `npc_tests::an_npc_grab_tweak_eases_from_the_cyc_entry_like_the_player` (b704 sample values, schedule windows, the projection); data-gated `living_world_npc_score_clips_index_the_stock_graph` (filter settings from the graph, every eased Cyc holds the leaf the puppet picks, the tweak moves the BS pose). The NPC goldens are unchanged (`npc_present_pose_and_advance_match_golden`, `npc_present_pose_posed_matches_golden`).
+
 ### Trick air sequence
 
 The air part of a trick animation base: `<base>_A`, and for the kickflip family (`T_Kickflip.xml`: `LeftGround` plays `$ANIM_NAME$_A`, then as sequences `$ANIM_CYC_NAME$1..3` per extra flip and `$ANIM_OUT_NAME$<n>`) `B_<FLIP>_IN_A`, `B_<FLIP>_CYC1..n`, `B_<FLIP>_OUT<n>` with n the trick's flip count (`kickflip2` = 2; 1 without a digit). Parts are joined with `+`: the puppet plays them back to back (`transType="sequence"`, no blend).

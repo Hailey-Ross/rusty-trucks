@@ -1012,15 +1012,16 @@ fn replay_cursor_keeps_a_phase_history_with_the_span_trick() {
     let mut c = LineCursor::spawn(&ls, id(1), 0);
     c.advance(29, &ls, &mut Decider::Stay, &mut Vec::new());
     let h: Vec<(PhaseEntry, u64)> = c.phase_history().collect();
-    let e = |phase, since, trick| PhaseEntry { phase, since, trick };
+    // `trick_since` = the frame the span's START_TRICK was crossed (kept after the span).
+    let e = |phase, since, trick, trick_since| PhaseEntry { phase, since, trick, trick_since };
     assert_eq!(
         h,
         vec![
-            (e(ReplayPhase::Rolling, 28, -1), 1),
-            (e(ReplayPhase::Air, 20, -1), 9),
-            (e(ReplayPhase::AirTrick, 14, 96), 15),
-            (e(ReplayPhase::GroundTrick, 10, 96), 19),
-            (e(ReplayPhase::Rolling, 0, -1), 29),
+            (e(ReplayPhase::Rolling, 28, -1, 10), 1),
+            (e(ReplayPhase::Air, 20, -1, 10), 9),
+            (e(ReplayPhase::AirTrick, 14, 96, 10), 15),
+            (e(ReplayPhase::GroundTrick, 10, 96, 10), 19),
+            (e(ReplayPhase::Rolling, 0, -1, 0), 29),
         ]
     );
     // Spawned inside the span: the trick comes from the span's START_TRICK node.

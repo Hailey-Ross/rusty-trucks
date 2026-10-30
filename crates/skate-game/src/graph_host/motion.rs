@@ -169,6 +169,17 @@ pub(crate) struct ScoreClips {
     pub out: Option<String>,
     /// The `ScoringGrabs` direction attribute that names it (`up` / `left` / `down` / `right`); `None` = the base name.
     pub direction: Option<&'static str>,
+    /// The `Cyc` state's tweak easing, when it has one (air grabs).
+    pub tweak: Option<TweakFilter>,
+}
+
+/// An air grab `Cyc`'s `FilterMotionGraphIntent` TweakX / TweakY and whether `TweakProject` (abs(x) + abs(y) <= 1)
+/// or a raw `SetBlend` writes `tweak_x` / `tweak_y`: docs/hails-additions/26c-living-world-npc-skaters.md#npc-grab-tweaks
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TweakFilter {
+    pub x: skate_core::animation::intent_filter::Settings,
+    pub y: skate_core::animation::intent_filter::Settings,
+    pub project: bool,
 }
 
 /// Every `ScoringGrabs` / `ScoringTrick` name of a motion graph (lower case) -> the trees of the state that scores it
@@ -193,6 +204,11 @@ pub(crate) fn stock_score_clips(graph: &skate_data::state_graph::StateGraph) -> 
     let cycle = |i: usize| ends(i, "Cyc") || ends(i, "Cycle");
     let phase = |p: usize, suffix: &str| e[p].children.iter().copied().find(|&c| is_state(c) && ends(c, suffix)).and_then(anim);
     let cyc_phase = |p: usize| e[p].children.iter().copied().find(|&c| is_state(c) && cycle(c)).and_then(anim);
+    let filter = |s: usize, intent: &str| {
+        let c = e[s].children.iter().copied().find(|&c| is_behaviour(c, "FilterMotionGraphIntent") && attr(c, "filteredIntent").is_some_and(|v| v.eq_ignore_ascii_case(intent)))?;
+        Some(super::motion_intent_filter::Operation::parse(&skate_data::state_graph::attributes::Attributes::new(&e[c].attributes)).settings)
+    };
+    let tweak = |s: usize| Some(TweakFilter { x: filter(s, "TweakX")?, y: filter(s, "TweakY")?, project: e[s].children.iter().any(|&c| is_behaviour(c, "TweakProject")) });
     let mut out = BTreeMap::new();
     let mut weak = std::collections::BTreeSet::new();
     for i in 0..e.len() {
@@ -214,9 +230,9 @@ pub(crate) fn stock_score_clips(graph: &skate_data::state_graph::StateGraph) -> 
         // ground grabs: no own tree, it holds `<X>Into` / `<X>Cyc` / `<X>Out`.
         let own = e[s].children.iter().find(|&&c| is_behaviour(c, "PlayAnimation")).and_then(|&c| attr(c, "anim")).map(str::to_owned);
         let clips = match own {
-            Some(cyc) if cycle(s) && parent[s] != usize::MAX => Some(ScoreClips { into: phase(parent[s], "Into"), cyc, out: phase(parent[s], "Out"), direction: None }),
+            Some(cyc) if cycle(s) && parent[s] != usize::MAX => Some(ScoreClips { into: phase(parent[s], "Into"), cyc, out: phase(parent[s], "Out"), direction: None, tweak: tweak(s) }),
             Some(cyc) => Some(ScoreClips { cyc, ..Default::default() }),
-            None if e[s].children.iter().any(|&c| is_state(c) && cycle(c)) => cyc_phase(s).map(|cyc| ScoreClips { into: phase(s, "Into"), cyc, out: phase(s, "Out"), direction: None }),
+            None if e[s].children.iter().any(|&c| is_state(c) && cycle(c)) => cyc_phase(s).map(|cyc| ScoreClips { into: phase(s, "Into"), cyc, out: phase(s, "Out"), direction: None, tweak: None }),
             None => anim(s).map(|cyc| ScoreClips { cyc, ..Default::default() }),
         };
         let Some(clips) = clips else { continue };
@@ -322,6 +338,39 @@ pub(crate) fn cached_tree_commands_into(
     })();
     if result.is_err() {
         *cache = None;
+    }
+    result
+}
+
+/// [`tree_commands_into`] on one reused tree per name (attributes set every call, for values that move each frame
+/// like an NPC grab's tweaks). Clear `caches` when `animation` is replaced.
+pub(crate) fn named_tree_commands_into(
+    animation: &super::motion_animation::MotionAnimation,
+    caches: &mut Vec<TreeCache>,
+    name: &str,
+    attributes: &[SettableAttribute],
+    time: f32,
+    out: &mut Vec<skate_core::animation::playback_tree::PoseCommand>,
+) -> Result<(), String> {
+    out.clear();
+    caches.retain(|c| c.construction == animation.construction_values);
+    let i = match caches.iter().position(|c| c.name == name) {
+        Some(i) => i,
+        None => {
+            let tree = animation.build_tree(name)?;
+            caches.push(TreeCache { name: name.to_owned(), construction: animation.construction_values.clone(), attributes: Vec::new(), tree });
+            caches.len() - 1
+        }
+    };
+    let c = &mut caches[i];
+    let result = (|| {
+        c.tree.set_attributes(attributes)?;
+        let length = c.tree.length();
+        c.tree.set_time(if length > 0.0 { time.max(0.0).rem_euclid(length) } else { 0.0 });
+        c.tree.evaluate(skate_core::animation::playback_tree::Evaluation { cull_threshold: 0.0, update_history: false }, true, out).map(|_| ())
+    })();
+    if result.is_err() {
+        caches.remove(i);
     }
     result
 }
