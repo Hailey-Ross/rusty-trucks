@@ -1250,6 +1250,7 @@ pub(crate) fn advance_peds(
                     // The graph's Pedestrian nav modifier off (a chase): no avoiding other peds.
                     let avoid_peds = mind.is_none_or(|m| m.brain.nav_modifier(skate_core::living_world::peds::brain::nav_modifier::PEDESTRIAN));
                     let neighbours_now: &[_] = if avoid_peds { &neighbours } else { &[] };
+                    body.nav.ignore_skaters = mind.is_some_and(|m| !m.brain.nav_modifier(skate_core::living_world::peds::brain::nav_modifier::SKATER_AVOIDANCE));
                     let out = body.nav.step_avoiding(mesh, &nav_settings.wander, nav_settings.crosswalk, signals, me, body.position.to_array(), body.heading, body.player.state, neighbours_now, Some(obstacles), dt);
                     // Fleeing: run (the chase run cycle) where the nav walks.
                     let fleeing = mind.is_some_and(|m| m.flee_goal.is_some() || m.chase_goal.is_some());

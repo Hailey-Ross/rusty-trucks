@@ -486,6 +486,17 @@ pub struct PedObstaclesPatch {
     /// Player skaters are ped obstacles (retail on, b135) and their box half extents (NOT RETAIL YET size).
     pub skaters: Option<bool>,
     pub skater_half_extents: Option<[f32; 3]>,
+    /// Contact slide round a moving body (`82E9D0C0`): fraction of the push (0.7) and the heading-in dot (-0.3).
+    pub contact_slide: Option<f32>,
+    pub contact_slide_dot: Option<f32>,
+    /// Predictive side-step (`82E9CE90` / `82E9CBD0`): look-ahead s (3.0, 0 = off), ray scale (0.99), acceleration
+    /// base (3.0) x NavPower scale (1.3), head-on (-0.7) and same-direction (0.7) dots.
+    pub avoid_horizon: Option<f32>,
+    pub avoid_ray_scale: Option<f32>,
+    pub avoid_accel: Option<f32>,
+    pub avoid_scale: Option<f32>,
+    pub avoid_head_on_dot: Option<f32>,
+    pub avoid_crossing_dot: Option<f32>,
 }
 
 /// NPC skater line end, facing rule and riding-fakie fields (`replay::ChainConfig`): docs/hails-additions/26a-living-world-overview.md#skater-line-chain-fields
@@ -888,7 +899,7 @@ impl Merge for PedNavPatch {
 
 impl Merge for PedObstaclesPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, target_snap, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents);
+        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, target_snap, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents, contact_slide, contact_slide_dot, avoid_horizon, avoid_ray_scale, avoid_accel, avoid_scale, avoid_head_on_dot, avoid_crossing_dot);
     }
 }
 impl Merge for PedVehicleContactPatch {

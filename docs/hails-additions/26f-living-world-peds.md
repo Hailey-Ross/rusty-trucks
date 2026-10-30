@@ -870,6 +870,28 @@ Deterministic: obstacles are kept by stable id in a `BTreeMap`, the grid is a `B
 
 A moving (uncut) object is solid for a ped's step ([`NavObstacles::step_ok`]). NOT RETAIL YET: retail hands a moving object to NavPower's moving avoider instead (`sub_82E99998`: an 88-byte record in the planner's obstacle database, position and velocity refreshed every tick by `sub_82E998C8`, radius = 0.35 x a planner-wide value, independent of the box); how NavPower's bots steer round it is middleware internals, not decoded. `false` = moving objects do not block a ped's step (the switch a decoded avoider port would replace).
 
+### Contact slide
+
+Problem (DownTown session 2026-10-29): a fleeing ped met the player's standing skater head-on and stood pressed against it for 45 s. The face clamp of [`NavObstacles::resolve_step`] keeps only the part of the step along the face; head-on that part is zero, so the ped never moved.
+
+Retail [code, TU3, research b698, re-read 2026-10-30]: the path controller's steering (`82E9FD78`) adds, for every moving avoider the ped touches (`0 < dist < r_sum`), a push-out along `n = (p_ped - p_avoider) / dist` and, from `82E9D0C0`, a tangential slide `perp(n) * 0.7 * |push|` (`0x821161AC`). The slide applies when the ped heads into the body, `dot(dir, n) < -0.3` (`0x822F862C`), and the avoider's speed along `dir` is below 0.5 x the ped's max speed (`0x8209975C`). `dir` is the goal direction while the ped is slower than half its max speed, else its velocity direction (the 0.5 test only picks `dir`; b698 read it as a second trigger). The side is the one `dir` already leans to (sign of `cross(n, dir)`); dead centre takes a fixed side of `n`.
+
+Ours: in the step resolver, for a moving (uncut) body only, the step is replaced by a tangential step of `(|dot(d, t)| + 0.7 x |dot(d, n)|) x step length`, the push cancelling the inward part as in retail's sum; the result is still face-clamped and step-checked. Cut props keep the face clamp (retail routes round cuts on the mesh). Mod keys `ped_obstacles.contact_slide` (0.7, 0 = off) and `contact_slide_dot` (-0.3). Deterministic (no RNG; first blocker in id order).
+
+Open: the avoider-speed test is not applied yet (our root-motion peds have no max speed value; research b699 reads retail's controller max speed). The dead-centre side assumes retail (x, y) maps to our (x, -z).
+
+Test: `obstacle_tests::a_ped_running_head_on_into_a_skater_slides_round_it`.
+
+### Predictive side-step
+
+Retail [code, TU3, research b698 / b699; constants dumped from the image 2026-10-30]: before contact, the path controller (`82E9FD78`) adds a sideways acceleration for the moving avoider with the nearest predicted contact. Pick (`82E9CE90`): relative velocity `dv = v_av - v_ped`; a ray from the avoider along `dv` against `0.99` (`0x820ED5E8`) x the combined radius round the ped gives the contact time `t`; kept when `0 <= t < 3.0` s (`0x82063B08`), strictly lowest first (id order), never for bodies already overlapping. Force (`82E9CBD0`): `s x 3.0 x 1.3` along the left perpendicular of the ped's velocity, 1.3 being the NavPower global scale (`0x82099484`, written by `8292E230`); skater and prop avoiders weigh FLT_MAX (`82E99998`), so the weight factor is 1. Side `s`: head-on (velocity dot < -0.7, `0x822F8F80`) or a standing avoider -> away from the avoider's predicted position as seen from the ped's current one, dead centre left; crossing (dot <= 0.7) -> by the side of the avoider's velocity (the ped never has right of way over a skater or prop); same direction -> by comparing both predicted positions. Skipped while the ped brakes for its path end (`82E9FC20`).
+
+Ours ([`NavObstacles::side_step`], used by `PedNav::step_avoiding`): the ped's velocity is its last step over `dt`; retail's (x, y) is our (x, -z), so retail's left perpendicular `(-u.y, u.x)` is our `(u.z, -u.x)` (the ped's left, facing +z). The acceleration builds a lateral velocity that adds to the path direction; the steering then turns toward that sum. With no avoider ahead the lateral velocity fades at the same rate (ours: retail's path steering pulls the velocity back, its gain not read). A ped with SkaterAvoidance off (chasers) ignores skaters here as in the contact step. Mod keys `ped_obstacles.avoid_horizon` (3.0, 0 = off), `avoid_ray_scale` (0.99), `avoid_accel` (3.0), `avoid_scale` (1.3), `avoid_head_on_dot` (-0.7), `avoid_crossing_dot` (0.7). Deterministic: no RNG, id order.
+
+Open: the avoider radius is our box's footprint circumradius (retail sums the three extents `82C477B0` passes, not read); the braking skip and the path controller's max acceleration are not ported; the Flee avoid mask (b135 open 3) is not read, so fleeing peds side-step like walking ones.
+
+Test: `obstacle_tests::a_ped_side_steps_a_skater_up_to_three_seconds_ahead`.
+
 ## Code reference: living_world/peds/nav.rs
 
 Detail moved out of the code comments of `crates/skate-core/src/living_world/peds/nav.rs`; each comment there links its section here.

@@ -42,6 +42,24 @@ pub struct ObstacleParams {
     /// A skater obstacle's half extents (x, y, z), m. NOT RETAIL YET: retail's avoider is `{a, 0.2a, 0.2a}`,
     /// `a = 0.25 R` with `R` a planner-wide value not read yet; this is a body-sized stand-in.
     pub skater_half_extents: Vec3,
+    /// Contact slide round a moving body (`82E9D0C0`, b698): tangential step as this fraction of the push
+    /// [code `0x821161AC` = 0.7]; 0 = the face clamp only.
+    pub contact_slide: f32,
+    /// The slide needs the step heading into the body: `dot(dir, n)` below this [code `0x822F862C` = -0.3].
+    pub contact_slide_dot: f32,
+    /// Predictive side-step round a moving body (`82E9CE90` / `82E9CBD0`, b698 / b699): look-ahead, s [code
+    /// `0x82063B08` = 3.0]; 0 = off.
+    pub avoid_horizon: f32,
+    /// Contact ray against this x the combined radius [code `0x820ED5E8` = 0.99].
+    pub avoid_ray_scale: f32,
+    /// Side-step acceleration base [code `0x82063B08` = 3.0] times the NavPower global scale [data `0x82099484` = 1.3,
+    /// set by `8292E230`], m/s^2.
+    pub avoid_accel: f32,
+    pub avoid_scale: f32,
+    /// Head-on below this velocity dot, same direction above `avoid_crossing_dot` [code `0x822F8F80` = -0.7,
+    /// `0x821161AC` = 0.7].
+    pub avoid_head_on_dot: f32,
+    pub avoid_crossing_dot: f32,
 }
 
 /// Obstacle ids of player skaters (`SKATER_OBSTACLE_BASE + player index`); always moving avoiders.
@@ -63,7 +81,7 @@ impl Ignore {
 
 impl Default for ObstacleParams {
     fn default() -> Self {
-        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, target_snap: 0.5, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3] }
+        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, target_snap: 0.5, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3], contact_slide: 0.7, contact_slide_dot: -0.3, avoid_horizon: 3.0, avoid_ray_scale: 0.99, avoid_accel: 3.0, avoid_scale: 1.3, avoid_head_on_dot: -0.7, avoid_crossing_dot: 0.7 }
     }
 }
 
@@ -190,6 +208,8 @@ pub struct ObstacleState {
     pub inactive: bool,
     /// Held this tick (diagnostics; an obstacle unless `held_is_obstacle` is off).
     pub held: bool,
+    /// Ground velocity (x, z) this tick, m/s.
+    pub velocity: [f32; 2],
 }
 
 const CELL: f32 = 4.0;
@@ -242,8 +262,9 @@ impl NavObstacles {
             // A skater is always a moving avoider (never a cut), whatever its speed.
             let moving = speed > p.moving_speed || input.id >= SKATER_OBSTACLE_BASE;
             let inactive = input.inactive || (input.held && !p.held_is_obstacle) || !p.enabled;
-            let state = self.states.entry(input.id).or_insert(ObstacleState { cut: None, cut_at: input.center, now, moving, inactive, held: input.held });
+            let state = self.states.entry(input.id).or_insert(ObstacleState { cut: None, cut_at: input.center, now, moving, inactive, held: input.held, velocity: [0.0; 2] });
             state.now = now;
+            state.velocity = [input.velocity[0], input.velocity[2]];
             state.moving = moving;
             state.inactive = inactive;
             state.held = input.held;
@@ -450,9 +471,13 @@ impl NavObstacles {
             return Some(to);
         }
         let r = radius + 0.01;
-        let mut blocking: Vec<Footprint> = self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).into_iter().filter(|(id, _)| !ignore.skips(*id)).map(|(_, f)| f).collect();
-        blocking.extend(self.loose.iter().filter(|id| !ignore.skips(**id)).filter_map(|id| self.states.get(id).map(|s| s.now)));
-        let f = blocking.into_iter().find(|f| f.applies(to[1], self.params.step_height) && f.contains(to, radius) && !f.contains(from, radius))?;
+        let mut blocking: Vec<(Footprint, bool)> = self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).into_iter().filter(|(id, _)| !ignore.skips(*id)).map(|(_, f)| (f, false)).collect();
+        blocking.extend(self.loose.iter().filter(|id| !ignore.skips(**id)).filter_map(|id| self.states.get(id).map(|s| (s.now, true))));
+        let (f, loose) = blocking.into_iter().find(|(f, _)| f.applies(to[1], self.params.step_height) && f.contains(to, radius) && !f.contains(from, radius))?;
+        let to = if loose { self.contact_slide(&f, from, to).unwrap_or(to) } else { to };
+        if !f.contains(to, radius) {
+            return self.step_ok_ignoring(from, to, radius, ignore).then_some(to);
+        }
         // Keep `to` on the face `from` is outside of (the axis where `from` is beyond the grown half).
         let (lf, lt) = (f.local([from[0], from[2]]), f.local([to[0], to[2]]));
         let mut l = lt;
@@ -462,6 +487,90 @@ impl NavObstacles {
         let w = f.world(l);
         let slid = [w[0], to[1], w[1]];
         self.step_ok_ignoring(from, slid, radius, ignore).then_some(slid)
+    }
+
+    /// The moving bodies (no cut, active) in id order, without those `ignore` skips.
+    pub fn moving_avoiders(&self, ignore: Ignore) -> impl Iterator<Item = (u64, &ObstacleState)> + '_ {
+        self.loose.iter().filter(move |id| !ignore.skips(**id)).filter_map(|id| self.states.get(id).map(|s| (*id, s)))
+    }
+
+    /// Retail's predictive side-step (`82E9CE90` picks the avoider, `82E9CBD0` the force): the lateral acceleration
+    /// (x, z) for a ped at `p` moving with `v`: docs/hails-additions/26f-living-world-peds.md#predictive-side-step
+    pub fn side_step(&self, p: Vec3, v: [f32; 2], radius: f32, ignore: Ignore) -> [f32; 2] {
+        let pr = &self.params;
+        let speed = v[0].hypot(v[1]);
+        if pr.avoid_horizon <= 0.0 || speed < 1e-4 {
+            return [0.0; 2];
+        }
+        let cross = |a: [f32; 2], b: [f32; 2]| a[0] * b[1] - a[1] * b[0];
+        let me = [p[0], p[2]];
+        let mut best: Option<(f32, [f32; 2], [f32; 2])> = None;
+        for (_, s) in self.moving_avoiders(ignore) {
+            if !s.now.applies(p[1], pr.step_height) {
+                continue;
+            }
+            let dv = [s.velocity[0] - v[0], s.velocity[1] - v[1]];
+            let dvl = dv[0].hypot(dv[1]);
+            let r_sum = radius + s.now.half[0].hypot(s.now.half[1]);
+            let rel = [s.now.center[0] - me[0], s.now.center[1] - me[1]];
+            let dist2 = rel[0] * rel[0] + rel[1] * rel[1];
+            if dvl <= 0.0 || dist2 < r_sum * r_sum {
+                continue;
+            }
+            // Ray from the avoider along the relative velocity against the ped's circle.
+            let dir = [dv[0] / dvl, dv[1] / dvl];
+            let along = -(rel[0] * dir[0] + rel[1] * dir[1]);
+            let rr = pr.avoid_ray_scale * r_sum;
+            let off2 = dist2 - along * along;
+            if along < 0.0 || off2 > rr * rr {
+                continue;
+            }
+            let t = (along - (rr * rr - off2).sqrt()) / dvl;
+            if (0.0..pr.avoid_horizon).contains(&t) && best.is_none_or(|(b, _, _)| t < b) {
+                best = Some((t, s.now.center, s.velocity));
+            }
+        }
+        let Some((t, c, va)) = best else { return [0.0; 2] };
+        let u = [v[0] / speed, v[1] / speed];
+        let val = va[0].hypot(va[1]);
+        let at = [c[0] + va[0] * t, c[1] + va[1] * t];
+        // Retail's (x, y) is our (x, -z), so its `cross <= 0` is ours `>= 0` and its left perpendicular is (u.z, -u.x).
+        let left = if val <= 0.0 || (u[0] * va[0] + u[1] * va[1]) / val < pr.avoid_head_on_dot {
+            cross(u, [at[0] - me[0], at[1] - me[1]]) >= 0.0
+        } else if (u[0] * va[0] + u[1] * va[1]) / val <= pr.avoid_crossing_dot {
+            // Skaters and props weigh FLT_MAX (`82E99998`): the ped never has right of way.
+            cross(u, va) >= 0.0
+        } else {
+            let ua = [va[0] / val, va[1] / val];
+            let mine = [me[0] + v[0] * t, me[1] + v[1] * t];
+            cross(u, [at[0] - me[0], at[1] - me[1]]) >= cross(ua, [mine[0] - c[0], mine[1] - c[1]])
+        };
+        let k = pr.avoid_accel * pr.avoid_scale * if left { 1.0 } else { -1.0 };
+        [u[1] * k, -u[0] * k]
+    }
+
+    /// Retail's contact slide round a moving body (`82E9D0C0`): docs/hails-additions/26f-living-world-peds.md#contact-slide
+    fn contact_slide(&self, f: &Footprint, from: Vec3, to: Vec3) -> Option<Vec3> {
+        let (dx, dz) = (to[0] - from[0], to[2] - from[2]);
+        let len = dx.hypot(dz);
+        let (nx, nz) = (from[0] - f.center[0], from[2] - f.center[1]);
+        let nl = nx.hypot(nz);
+        if self.params.contact_slide <= 0.0 || len < 1e-6 || nl < 1e-6 {
+            return None;
+        }
+        let (d, n) = ([dx / len, dz / len], [nx / nl, nz / nl]);
+        let into = d[0] * n[0] + d[1] * n[1];
+        if into >= self.params.contact_slide_dot {
+            return None;
+        }
+        // Tangent on the side the step already leans to; dead centre takes retail's fixed side.
+        let mut t = [n[1], -n[0]];
+        let along = d[0] * t[0] + d[1] * t[1];
+        if along < 0.0 {
+            t = [-t[0], -t[1]];
+        }
+        let s = (along.abs() + self.params.contact_slide * -into) * len;
+        Some([from[0] + t[0] * s, to[1], from[2] + t[1] * s])
     }
 
     /// Whether a ped body of `radius` may step from `from` to `to`: no obstacle (cut or moving,

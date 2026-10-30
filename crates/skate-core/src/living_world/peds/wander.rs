@@ -190,6 +190,11 @@ pub struct PedNav {
     pub repath_due: bool,
     /// How often the ped re-pathed to its target (logs, tests).
     pub repaths: u32,
+    /// SkaterAvoidance off: skaters are not side-stepped (set by the host each step).
+    pub ignore_skaters: bool,
+    /// The last step's position (the ped's velocity) and the side-step's lateral velocity (x, z).
+    pub last_position: Option<Vec3>,
+    pub side_velocity: [f32; 2],
 }
 
 fn rotate_y(v: [f32; 2], angle: f32) -> [f32; 2] {
@@ -409,6 +414,8 @@ impl PedNav {
         obstacles: Option<&NavObstacles>,
         dt: f32,
     ) -> NavOutput {
+        let velocity = self.last_position.filter(|_| dt > 0.0).map_or([0.0; 2], |l| [(position[0] - l[0]) / dt, (position[2] - l[2]) / dt]);
+        self.last_position = Some(position);
         let here = self.poly.and_then(|k| mesh.point_on(k, position)).or_else(|| mesh.locate(position));
         let Some(here) = here else {
             self.waiting = NavWait::OffMesh;
@@ -546,9 +553,24 @@ impl PedNav {
             let steer = [to[0] + push[0] * 2.0, to[1] + push[1] * 2.0];
             error = wrap(heading_of(steer) - heading);
         }
+        // Side-step round skaters and moving props: docs/hails-additions/26f-living-world-peds.md#predictive-side-step
+        let a = obstacles.map_or([0.0; 2], |o| o.side_step(position, velocity, radius, super::obstacles::Ignore { id: None, skaters: self.ignore_skaters }));
+        let sv = &mut self.side_velocity;
+        if a != [0.0, 0.0] {
+            *sv = [sv[0] + a[0] * dt, sv[1] + a[1] * dt];
+        } else if let Some(o) = obstacles {
+            let (l, fade) = (sv[0].hypot(sv[1]), o.params.avoid_accel * o.params.avoid_scale * dt);
+            *sv = if l > fade { [sv[0] * (1.0 - fade / l), sv[1] * (1.0 - fade / l)] } else { [0.0; 2] };
+        }
+        let side_stepping = *sv != [0.0, 0.0];
+        if side_stepping {
+            let speed = velocity[0].hypot(velocity[1]);
+            let base = forward(heading + error);
+            error = wrap(heading_of([base[0] * speed + sv[0], base[1] * speed + sv[1]]) - heading);
+        }
         // Ours: while the avoidance stand-in steers, no turn is posted and the stand-in's stop / pivot rule runs (it
         // walks the ped off its path on purpose; retail's avoidance is NavPower's, not decoded).
-        let avoiding = blocker.is_some() || push != [0.0, 0.0];
+        let avoiding = blocker.is_some() || push != [0.0, 0.0] || side_stepping;
 
         // Crosswalk rule (mods): wait before the first road polygon while the walk light is not
         // green.

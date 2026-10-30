@@ -313,6 +313,56 @@ fn a_standing_skater_is_a_moving_avoider_unless_the_ped_ignores_skaters() {
     o.set_params(ObstacleParams { skaters: false, ..ObstacleParams::default() });
 }
 
+/// Retail's predictive side-step (`82E9CE90` / `82E9CBD0`, b699): left round a standing skater dead ahead, behind a
+/// crossing one, nothing beyond 3 s or once touching.
+#[test]
+fn a_ped_side_steps_a_skater_up_to_three_seconds_ahead() {
+    let skater = |x: f32, z: f32, v: [f32; 3]| ObstacleInput { id: SKATER_OBSTACLE_BASE, center: [x, 0.9, z], axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], half_extents: [0.3, 0.9, 0.3], velocity: v, inactive: false, held: false };
+    let mut o = NavObstacles::new(ObstacleParams::default());
+    let (p, v, r) = ([0.0, 0.0, 0.0], [0.0, 1.4], 0.35);
+    o.update(&[skater(0.0, 3.5, [0.0; 3])]);
+    let a = o.side_step(p, v, r, Ignore::default());
+    assert!((a[0] - 3.9).abs() < 1e-4 && a[1].abs() < 1e-6, "dead ahead -> left (+x when facing +z): {a:?}");
+    assert_eq!(o.side_step(p, v, r, Ignore { id: None, skaters: true }), [0.0; 2], "SkaterAvoidance off");
+    o.update(&[skater(0.0, 5.0, [0.0; 3])]);
+    assert_eq!(o.side_step(p, v, r, Ignore::default()), [0.0; 2], "contact later than 3 s");
+    o.update(&[skater(0.0, 0.6, [0.0; 3])]);
+    assert_eq!(o.side_step(p, v, r, Ignore::default()), [0.0; 2], "already touching: the contact slide's job");
+    // Crossing from the ped's right to its left (+x): the ped steers right, behind it.
+    o.update(&[skater(-2.0, 2.0, [1.0, 0.0, 0.0])]);
+    let a = o.side_step(p, v, r, Ignore::default());
+    assert!(a[0] < 0.0, "behind the crossing skater: {a:?}");
+    o.set_params(ObstacleParams { avoid_horizon: 0.0, ..ObstacleParams::default() });
+    o.update(&[skater(0.0, 3.5, [0.0; 3])]);
+    assert_eq!(o.side_step(p, v, r, Ignore::default()), [0.0; 2], "mod switch off");
+}
+
+/// Retail's contact slide (`82E9D0C0`, b698): a ped walking head-on into a standing skater slides round it instead of
+/// standing pressed against it (DownTown 2026-10-29: 45 s); a cut prop keeps the face clamp.
+#[test]
+fn a_ped_running_head_on_into_a_skater_slides_round_it() {
+    let mut o = NavObstacles::new(ObstacleParams::default());
+    let h = ObstacleParams::default().skater_half_extents;
+    let skater = ObstacleInput { id: SKATER_OBSTACLE_BASE, center: [0.0, h[1], 0.0], axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], half_extents: h, velocity: [0.0; 3], inactive: false, held: false };
+    o.update(&[skater]);
+    let radius = 0.35;
+    let mut p = [-0.66, 0.0, 0.0];
+    for _ in 0..200 {
+        let to = [p[0] + 0.05, 0.0, p[2]];
+        p = o.resolve_step(p, to, radius).expect("never refused head-on");
+        assert!(!o.blocked(p, radius), "never inside the skater");
+    }
+    assert!(p[2].abs() > 0.65 && p[0] > 1.0, "slid round the side: {p:?}");
+    // Grazing (dot >= -0.3): the face clamp only, no extra slide.
+    let g = o.resolve_step([-0.66, 0.0, 0.0], [-0.6, 0.0, 0.3], radius).unwrap();
+    assert!((g[2] - 0.3).abs() < 1e-4 && g[0] <= -0.65 + 1e-3);
+    // Mod switch off: the old stand against the face.
+    o.set_params(ObstacleParams { contact_slide: 0.0, ..ObstacleParams::default() });
+    o.update(&[skater]);
+    let q = o.resolve_step([-0.66, 0.0, 0.0], [-0.61, 0.0, 0.0], radius).unwrap();
+    assert!(q[2].abs() < 1e-6);
+}
+
 /// A prop that comes to rest with a ped inside its grown footprint (its own dropped hand prop, laptop 2026-10-19): a step
 /// toward the nearest free point (`snap_out`) is allowed, a step on through the middle is not (the walker then walks
 /// the ped out first, `peds.rs`, b349).
