@@ -554,7 +554,13 @@ impl PedNav {
             error = wrap(heading_of(steer) - heading);
         }
         // Side-step round skaters and moving props: docs/hails-additions/26f-living-world-peds.md#predictive-side-step
-        let a = obstacles.map_or([0.0; 2], |o| o.side_step(position, velocity, radius, super::obstacles::Ignore { id: None, skaters: self.ignore_skaters }));
+        let ignore = super::obstacles::Ignore { id: None, skaters: self.ignore_skaters };
+        // Braking at the path end skips the side-step and stops the ped (`82E9FC20`, research b716).
+        let braking = obstacles.is_some_and(|o| o.brakes(position, velocity, [corner[0], corner[2]], ignore));
+        if braking {
+            yield_to = true;
+        }
+        let a = if braking { [0.0; 2] } else { obstacles.map_or([0.0; 2], |o| o.side_step(position, velocity, radius, ignore)) };
         let sv = &mut self.side_velocity;
         if a != [0.0, 0.0] {
             *sv = [sv[0] + a[0] * dt, sv[1] + a[1] * dt];

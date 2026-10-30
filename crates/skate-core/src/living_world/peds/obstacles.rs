@@ -86,6 +86,15 @@ pub struct ObstacleParams {
     /// The ped's path speed `S` (`settings+0` x agent `+0x14C` x `+0x144`): 2.0 m/s for walking peds (1.0 on some legs;
     /// run / flee not traced).
     pub contact_max_speed: f32,
+    /// Braking for a blocker at the path end (`82E9FC20` / `82E9F9F0`, research b716): within `brake_goal_radius` of
+    /// the steer target (2.0 m; retail sets it per path leg, 0.75 / 0.31 also seen) a moving body ahead closer than the
+    /// stopping distance `v^2 / (2 brake_decel)` (80 m/s^2) stops the ped and skips its side-step. The ray tests
+    /// `brake_body_radius` (1.225 m = settings +0x08 + 0x0C + 0x10) plus the body's avoider extents; bodies moving away
+    /// at `brake_away_fraction` (0.25) of the ped's speed or more are left out. 0 decel = off.
+    pub brake_decel: f32,
+    pub brake_goal_radius: f32,
+    pub brake_body_radius: f32,
+    pub brake_away_fraction: f32,
 }
 
 /// Obstacle ids of player skaters (`SKATER_OBSTACLE_BASE + player index`); always moving avoiders.
@@ -107,7 +116,7 @@ impl Ignore {
 
 impl Default for ObstacleParams {
     fn default() -> Self {
-        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, target_snap: 0.5, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3], contact_slide: 0.7, contact_slide_dot: -0.3, avoid_horizon: 3.0, avoid_ray_scale: 0.99, avoid_accel: 3.0, avoid_scale: 1.3, avoid_head_on_dot: -0.7, avoid_crossing_dot: 0.7, avoider_extent: 0.25, avoider_extent_tail: 0.2, path_turn_accel: 40.0, path_turn_full_deg: 5.0, path_turn_boost_deg: 10.0, path_turn_boost_rate: 4.5837, path_turn_boost_max: 5.0, path_turn_max_deg: 120.0, path_turn_radius: 0.35, controller_step: 1.0 / 30.0, contact_slow_fraction: 0.5, contact_max_speed: 2.0 }
+        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, target_snap: 0.5, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3], contact_slide: 0.7, contact_slide_dot: -0.3, avoid_horizon: 3.0, avoid_ray_scale: 0.99, avoid_accel: 3.0, avoid_scale: 1.3, avoid_head_on_dot: -0.7, avoid_crossing_dot: 0.7, avoider_extent: 0.25, avoider_extent_tail: 0.2, path_turn_accel: 40.0, path_turn_full_deg: 5.0, path_turn_boost_deg: 10.0, path_turn_boost_rate: 4.5837, path_turn_boost_max: 5.0, path_turn_max_deg: 120.0, path_turn_radius: 0.35, controller_step: 1.0 / 30.0, contact_slow_fraction: 0.5, contact_max_speed: 2.0, brake_decel: 80.0, brake_goal_radius: 2.0, brake_body_radius: 1.225, brake_away_fraction: 0.25 }
     }
 }
 
@@ -589,6 +598,34 @@ impl NavObstacles {
         };
         let k = pr.avoid_accel * pr.avoid_scale * if left { 1.0 } else { -1.0 };
         [u[1] * k, -u[0] * k]
+    }
+
+    /// Whether a ped at `p` moving with `v` brakes this step (`82E9FC20`, research b716): within the goal radius of
+    /// its steer target `target`, the nearest moving body along `v` (not moving away) is closer than the stopping
+    /// distance: docs/hails-additions/26f-living-world-peds.md#predictive-side-step
+    pub fn brakes(&self, p: Vec3, v: [f32; 2], target: [f32; 2], ignore: Ignore) -> bool {
+        let pr = &self.params;
+        let speed = v[0].hypot(v[1]);
+        if pr.brake_decel <= 0.0 || speed < 1e-4 || (target[0] - p[0]).hypot(target[1] - p[2]) >= pr.brake_goal_radius {
+            return false;
+        }
+        let stop = speed * speed / (2.0 * pr.brake_decel);
+        let u = [v[0] / speed, v[1] / speed];
+        let r = pr.brake_body_radius + pr.avoid_scale * pr.avoider_extent * (1.0 + 2.0 * pr.avoider_extent_tail);
+        self.moving_avoiders(ignore).any(|(_, s)| {
+            if s.velocity[0] * u[0] + s.velocity[1] * u[1] >= pr.brake_away_fraction * speed {
+                return false;
+            }
+            // The ray from the ped along `u` against a circle of `r` round the body: the first hit distance.
+            let c = [s.now.center[0] - p[0], s.now.center[1] - p[2]];
+            let along = c[0] * u[0] + c[1] * u[1];
+            let off2 = c[0] * c[0] + c[1] * c[1] - along * along;
+            if off2 > r * r {
+                return false;
+            }
+            let hit = along - (r * r - off2).sqrt();
+            hit < stop && along >= 0.0
+        })
     }
 
     /// Retail's path turn term (`82E9DF70`, research b716) on the sideways velocity `sv` of a ped moving `speed` along

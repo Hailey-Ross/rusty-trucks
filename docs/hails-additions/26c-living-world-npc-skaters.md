@@ -578,8 +578,8 @@ DownTown baseline (radius 150 m, 150 s, player idle): 17 bails, 79 on/off-path s
   "finished" line for an AI skater: at the end it looks for the next line every tick (`sub_8246C7F8`), and every
   switch runs the reset `sub_82468AC8`, which leaves the skater off the path (rejoin commit again) but keeps the start
   gate `pc+937`. Ours handed a simulated skater at a line end back to the replay tier, which faded it out, and
-  restarted the projection on the path after a switch. Now `LineCursor::retry_chain` each tick for simulated skaters
-  (log `NPC_SKATER_CHAIN`), no line-end hand-back, and `PathFollow::switch_to` on a switch and on controller B's
+  restarted the projection on the path after a switch. Then `LineCursor::retry_chain` each tick for simulated skaters
+  (log `NPC_SKATER_CHAIN`; replaced 2026-10-30 by the chain inside `npc_sim::simulate` on the trigger tick, doc 26e "Line end trigger"), no line-end hand-back, and `PathFollow::switch_to` on a switch and on controller B's
   hand-back. The retry runs whenever the cursor sits on the last node (the projection holds it there, so it never
   became "finished" and never retried at first).
 - **Line-end fallback** (research `.local/research/npc/b122-line-candidates.md`, `sub_82458968` mode 1): with no
@@ -757,7 +757,7 @@ riding mode. `824660A0` writes `pc+922` every call (not a one-way latch).
 - NOT RETAIL YET: retail places with the actor reply only and pushes from the hold branch; our reply-only variant
   bailed more. Needs a recomp trace of the branch `824701F8` takes after `8246E558` (pc+888 / pc+924 on the first ticks).
 - Remaining bails are mostly in the air (KnownAir / PhysicsAir request 1, pose displacement) and spread over lines and
-  nodes; walk-backs stood still for ~10 s before the stuck monitor wiped them out (new log `NPC_WALK_PROGRESS`).
+  nodes; long walk-backs were wiped out by the stuck monitor after ~10 s (new log `NPC_WALK_PROGRESS`; the log shows them walking until then, not standing).
 - Logs added: `WIPEOUT_REASONS`, `GRIND_WIPEOUT`, `PED_DESPAWN at= focus= distance=`, `NPC_AVOID` (bad cursor),
   `NPC_SKATER_PLACE_FRAME`, `NPC_SKATER_STEER` (debug), `NPC_WALK_PROGRESS`.
 

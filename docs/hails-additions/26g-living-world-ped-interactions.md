@@ -1403,14 +1403,13 @@ goal vtable `0x8232C8A8` slot 0x18 = `82E31D58` and our lines):
   InterceptChasee Update `826A3BF0` hands the mover the chasee's raw position unless the ped and the chasee are
   reachable (`82C465A8`) and the solver finds an intercept; then the lead point, projected onto the mesh where it can be
   (`82C460E0`), else raw. Nothing on the way to the bot (`82E2CFC0` -> `82C47010` -> `82E95C00`, `bot+0x268`) snaps
-  it, so a swimmer fails the check. A path request to an off-mesh point keeps the old path (`82E957F8` returns).
+  it, so a swimmer fails the check. A path request to an off-mesh point paths to the nearest point of the flooded region, with no distance limit (`82E957F8` -> `82933E18`, snap `8292F9F0`; research b733, static read, corrects b306).
   Ours before kept the last on-mesh goal (`chase_goal`) when no goal could be made, so a ped that had a goal before
   the skater jumped in tested that stale bank point and never set the bit; and it made goals by line of sight
   (`clear_line`), not reachability. Changed: the destination is rebuilt every think from that table (reachability
   gate, raw chasee otherwise; no record = no intercept = the chasee itself), the route follows it only while it is on
   the mesh. skate-game unit tests 814 passed.
-- Open: the area-class case; whether Pursue / Block use the same goal object; NavPower's own destination search
-  distance (`82933E18`), which may path to the bank while the check tests the raw point.
+- Open: the area-class case; whether Pursue / Block use the same goal object. Not ported: routing to the nearest bank point (ours keeps the old route for an off-mesh destination, `peds.rs` InterceptChasee); `locate_nearest` is a linear scan, so per-think calls need an optimisation pass first.
 
 ## A ped stuck in front of the bench it wants to sit on (2026-10-14)
 

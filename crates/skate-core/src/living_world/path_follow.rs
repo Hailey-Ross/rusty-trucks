@@ -97,7 +97,8 @@ impl PathFollow {
             return false;
         }
         let n = nearest_forward(line, pos, self.search_start, tuning.window);
-        let end = if self.on_path { self.a.0 + 2 > count || (self.a.0 + 2 == count && self.a.1 > tuning.line_end_t) } else { n + 1 >= count };
+        // On the path it reads last tick's B (pc+704 / +708, research b729).
+        let end = if self.on_path { self.b.0 + 2 > count || (self.b.0 + 2 == count && self.b.1 > tuning.line_end_t) } else { n + 1 >= count };
         if !end && n == self.search_start {
             self.lost = !self.on_path && speed < tuning.lost_max_speed && lost(line, n, pos, tuning.lost_radius);
         }
@@ -126,10 +127,10 @@ impl PathFollow {
         let b_ahead = self.b.0 > cand.0 || (self.b.0 == cand.0 && self.b.1 > cand.1);
         if b_ahead && (self.a.0 > 0 || self.a.1 > 0.1) {
             let dab = along(line, self.a, self.b);
-            if dab > 0.0 && along(line, self.last, proj) < tuning.progress_fraction * dab {
-                self.progress = false;
-            }
             if dab > 0.0 && along(line, self.a, cand) < tuning.clamp_fraction * dab {
+                if along(line, self.last, proj) < tuning.progress_fraction * dab {
+                    self.progress = false;
+                }
                 let q = advance(line, self.a, tuning.clamp_fraction * dab);
                 let qp = point(line, q);
                 let horizontal = (qp[0] - pos[0]).powi(2) + (qp[2] - pos[2]).powi(2);
@@ -540,6 +541,22 @@ mod tests {
         assert!(at((8, 0.0), false).search(&l, [0.0, 0.0, 9.0], 0.0, &t), "off path at the last node");
         let mut late = at((8, 0.79), true);
         assert!(late.search(&l, pos((8, 0.79)), 0.0, &PathTuning { line_end_t: 0.5, ..t }), "line_end_t from the tuning");
+        assert!(PathFollow { b: (8, 0.81), ..at((8, 0.5), true) }.search(&l, pos((8, 0.5)), 0.0, &t), "B past the threshold, A short of it (b729)");
+        assert!(!PathFollow { a: (8, 0.81), b: (8, 0.5), ..at((8, 0.5), true) }.search(&l, pos((8, 0.5)), 0.0, &t), "A past the threshold, B short of it");
+    }
+
+    /// `sub_8246C930` (b728 / b729): the no-progress test sits inside the "A -> candidate below 0.25 of A -> B" test.
+    #[test]
+    fn no_progress_counts_only_while_the_candidate_is_near_a() {
+        let l = line(10);
+        let t = PathTuning::default();
+        let at = |a: (u32, f32), last: (u32, f32), search_start: u32| PathFollow { a, b: (9, 0.0), last, search_start, ..PathFollow::start(a.0, &t) };
+        let mut far = at((2, 0.0), (5, 0.0), 5);
+        far.project(&l, [0.0, 0.0, 5.0], 0.0, false, &t);
+        assert!(far.progress, "the raw projection stood still, but the candidate is far from A");
+        let mut near = at((2, 0.0), (2, 0.0), 2);
+        near.project(&l, [0.0, 0.0, 2.0], 0.0, false, &t);
+        assert!(!near.progress, "the raw projection stood still with the candidate at A");
     }
 
     #[test]
