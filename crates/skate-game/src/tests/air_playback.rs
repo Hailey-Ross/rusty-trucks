@@ -76,9 +76,10 @@ fn roll_off_sequence(
     let assets = skate_data::GameAssets::load(root).unwrap();
     let graphs = crate::graph_runtime::StockGraphs::load(root, &assets).unwrap();
     let mut physics = GamePhysics::load_with_terrain(root, ground::Terrain::Course).unwrap();
+    let edges = physics.world.query_metadata().unwrap().static_edges.clone();
     // Keep this air fixture's open edge now that the production level has a
     // downhill ramp. The dedicated ramp regression uses the unmodified world.
-    physics.world = (BoardWorld::new(
+    physics.world = (ground::with_authored_metadata(
         physics
             .world
             .triangles()
@@ -88,11 +89,12 @@ fn roll_off_sequence(
                 !(face.tag == 1 && face.triangle.vertices.iter().any(|vertex| vertex.z > 4.0))
             })
             .collect(),
+        edges.clone(),
     )).into();
     if grab_hand.is_some() || ai_trick.is_some() {
         // A deeper test landing gives the held cycle and OUT animation time
         // to run before contact can hide a failed airborne release.
-        physics.world = (BoardWorld::new(
+        physics.world = (ground::with_authored_metadata(
             physics
                 .world
                 .triangles()
@@ -115,6 +117,7 @@ fn roll_off_sequence(
                     .unwrap()
                 })
                 .collect(),
+            edges.clone(),
         )).into();
     }
     let mut skater = SkaterRuntime::load(root, &graphs, &physics, "normal").unwrap();
@@ -126,13 +129,16 @@ fn roll_off_sequence(
     let mut landed_frames = 0;
     let mut airborne_frames = 0;
     let mut grab_frames = 0;
+    let mut airborne_stick_frames = 0;
     let mut saw_grab = false;
     let mut saw_release = false;
     let mut ai_slot = skate_core::living_world::ai_signals::TrickSlot { category: 4, ..Default::default() };
     for tick in 0..1000 {
+        // The stock ActionGraph only reaches BoardAdjusting.Up.TailGrab with the stick already held.
+        if tailwalk && saw_air { airborne_stick_frames += 1; }
         let mut triggers = [0; 2];
         if let Some(hand) = grab_hand {
-            if saw_air && grab_frames < if tailwalk { 100 } else { 35 } {
+            if saw_air && grab_frames < if tailwalk { 100 } else { 35 } && !(tailwalk && airborne_stick_frames < 6) {
                 triggers[hand] = 255;
             }
         }
@@ -146,7 +152,7 @@ fn roll_off_sequence(
             },
             triggers,
             left: [if saw_air { air_stick.unwrap_or(0) } else { 0 }, 0],
-            right: if triggers != [0; 2] {
+            right: if triggers != [0; 2] || (tailwalk && saw_air) {
                 grab_stick
             } else {
                 [0; 2]
