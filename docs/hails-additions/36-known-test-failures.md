@@ -37,6 +37,20 @@ own rule; no engine behaviour changes.
 - `cargo test -p skate-core --lib` and `cargo test -p skate-game --bin skate3rust` on the branch (results in the
   commit message).
 
+## The full data-gated run (2026-10-30)
+
+`cargo test -p skate-game -- --ignored` with `SKATE3_ASSET_ROOT` and `SKATE3_MAP` (DownTown) set: 198 passed, 37 failed of 235. None of the 37 is a failure of the branch's code as far as checked:
+
+- 8 fail with the same messages on upstream `main` 2e166977: three `air_tests` and `stock_skater_startup` (no authored query metadata on the course terrain), three `climbing::tests` (`climbing/tests.rs:184`), `powerslide_tests` (the slide latch never starts). Not investigated further.
+- 1 needs another map: `skater_dropped_onto_the_industrial_sea_floor` passes with `SKATE3_MAP` = Industrial.
+- 1 needs a connected controller: `xinput_identity_of_connected_pad`.
+- 27 stop at a setup check: an unset variable or export (audio state logs, recomp sessions, `SKATE3_GRIND_MAP`, `SKATE_BUDGET_MAP` and so on) or a missing local file. They were not run with those supplied.
+
+Two traps found on the way:
+
+- **A dead `assets` junction** in a worktree (it pointed at a deleted install) raised the count to 100, because many tests read `assets/` directly and ignore `SKATE3_ASSET_ROOT`. Check the junction first. That run also ended once in `0xc0000409` (`STATUS_STACK_BUFFER_OVERRUN`); it did not come back after repointing, and the cause was not found.
+- **A leaked process-wide flag:** `carry_direction_tests` turned `PROP_GRAB` on and left it on, so `downtown_dragged_props_rest_on_the_floor` failed whenever it ran later in the same process and passed alone. Tests now set it through `prop_grab_for_test`, which serialises them and restores it.
+
 ## Open questions
 
 - Whether retail's on-foot ground filter really ignores the normal (`ignore_ground`, offboard threshold 0.3) was not

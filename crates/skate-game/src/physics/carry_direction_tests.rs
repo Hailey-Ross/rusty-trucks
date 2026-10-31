@@ -31,7 +31,7 @@ fn move_object_with_the_board_hidden() {
 
 fn carry(hide_board: bool) {
     // As in the game (`LivingWorldPlugin`): props are in the grab scene and Move Object binds their authored records.
-    crate::physics::prop_dynamics::set_prop_grab_enabled(true);
+    let _grab = crate::physics::prop_dynamics::prop_grab_for_test(true);
     let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
     let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
     let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();

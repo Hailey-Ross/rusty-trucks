@@ -458,9 +458,48 @@ fn path_goal_snaps_to_the_nearest_reachable_point() {
     let s = ControllerBSettings::default();
     let input = BInput { position: start.position, body: [1.0, 0.0, 0.0], can_move: true, ..Default::default() };
     let path = PathService::solve(&m, start.position, [-1.2, 0.0, 0.5], s.goal_locate_radius, s.start_locate_radius).unwrap();
-    assert_eq!(path.last().unwrap().entry, [0.0, 0.0, 0.5]);
+    assert_eq!(path.last().unwrap().exit, [0.0, 0.0, 0.5]);
     assert!(ControllerB::activate(&s, &m, [-1.2, 0.0, 0.5], [1.0, 0.0, 0.0], &input).is_some());
     assert!(ControllerB::activate(&s, &m, [-2.67, 0.0, 0.5], [1.0, 0.0, 0.0], &input).is_none());
+}
+
+/// b726: one path element per polygon crossed, chained (end = next start), from the raw start to the snapped goal.
+#[test]
+fn path_elements_cross_one_polygon_each_and_chain() {
+    use super::nav::{dist_xz, NavPoint};
+    let row = mesh(&grid(20, 1, 1.0, |_, _| Some(AREA_DEFAULT)));
+    let (from, to) = (row.locate([0.5, 0.0, 0.5]).unwrap(), row.locate([19.5, 0.0, 0.5]).unwrap());
+    let path = row.find_path_elements(from.position, from, to).unwrap();
+    assert!(path.len() >= 19, "one per crossing: {}", path.len());
+    assert_eq!((path[0].0, path.last().unwrap().1), (from.position, to.position));
+    assert!(path.windows(2).all(|w| w[0].1 == w[1].0), "end = next start");
+    assert!(path.iter().all(|(a, b)| dist_xz(*a, *b) <= 1.5), "a leg is one polygon: {path:?}");
+    // A funnel corner stays on the path: the walk round a cut still turns where it did.
+    let cut = mesh(&grid(10, 10, 1.0, |i, j| (!((3..=6).contains(&i) && (3..=6).contains(&j))).then_some(AREA_DEFAULT)));
+    let (from, to) = (cut.locate([1.5, 0.0, 5.0]).unwrap(), cut.locate([8.5, 0.0, 5.0]).unwrap());
+    let path = cut.find_path_elements(from.position, from, to).unwrap();
+    for corner in cut.find_path(from, to).unwrap() {
+        assert!(path.iter().any(|(_, end)| *end == corner), "corner {corner:?} in {path:?}");
+    }
+    // Within one polygon: start to goal. A raw start off its snap point gets its own element.
+    let (a, b) = (row.locate([0.2, 0.0, 0.5]).unwrap(), row.locate([0.8, 0.0, 0.5]).unwrap());
+    assert_eq!(row.find_path_elements(a.position, a, b).unwrap(), vec![(a.position, b.position)]);
+    let raw = [0.2, 0.0, 0.9];
+    let off = NavPoint { poly: a.poly, position: [0.2, 0.0, 0.5] };
+    assert_eq!(row.find_path_elements(raw, off, b).unwrap()[0], (raw, off.position));
+}
+
+/// b725 / b726: a long straight walk resets the waypoint limit at each crossing, so it arrives instead of being wiped out.
+#[test]
+fn a_long_walk_keeps_under_the_waypoint_limit_of_one_element() {
+    use super::nav::dist_xz;
+    use crate::living_world::controller_b::{ControllerBSettings, PathService};
+    let row = mesh(&grid(80, 1, 1.0, |_, _| Some(AREA_DEFAULT)));
+    let s = ControllerBSettings::default();
+    let path = PathService::solve(&row, [0.5, 0.0, 0.5], [79.5, 0.0, 0.5], s.goal_locate_radius, s.start_locate_radius).unwrap();
+    let ticks_at_walk_speed = |a: [f32; 3], b: [f32; 3]| dist_xz(a, b) / 5.0 * 60.0;
+    assert!(path.iter().all(|e| ticks_at_walk_speed(e.entry, e.exit) < s.stuck_waypoint_ticks as f32));
+    assert!(ticks_at_walk_speed([0.5, 0.0, 0.5], [79.5, 0.0, 0.5]) > s.stuck_waypoint_ticks as f32, "the whole walk as one leg would trip it");
 }
 
 /// b324: a walk-back start off the mesh (a skater stalled on a grind block, inside the block's navmesh cut, 2-3 m up)
