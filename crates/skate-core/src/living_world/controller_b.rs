@@ -134,8 +134,7 @@ impl PathService for super::peds::NavMesh {
     fn solve(&self, from: [f32; 3], to: [f32; 3], goal_radius: f32, start_radius: f32) -> Option<Vec<PathElement>> {
         let a = self.locate(from).or_else(|| self.locate_start_nearest(from, start_radius))?;
         let b = self.locate_nearest(to, a.poly, goal_radius)?;
-        let corners = self.find_path(a, b)?;
-        Some(corners.into_iter().map(|c| PathElement { entry: c, exit: c }).collect())
+        Some(self.find_path_elements(from, a, b)?.into_iter().map(|(entry, exit)| PathElement { entry, exit }).collect())
     }
 }
 
@@ -363,7 +362,7 @@ impl ControllerB {
         self.waypoint = 0;
         let Some(path) = paths.solve(position, self.target, s.goal_locate_radius, s.start_locate_radius) else { return false };
         let ok = match path.last() {
-            Some(last) => within(sub(self.target, last.entry), s.plan_path_h, s.plan_path_v),
+            Some(last) => within(sub(self.target, last.exit), s.plan_path_h, s.plan_path_v),
             None => within(sub(self.target, position), s.plan_direct_h, s.plan_direct_v),
         };
         if !ok {

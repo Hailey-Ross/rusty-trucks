@@ -321,6 +321,20 @@ pub(crate) fn prop_grab_enabled() -> bool {
 pub(crate) fn set_prop_grab_enabled(on: bool) {
     PROP_GRAB.store(on, std::sync::atomic::Ordering::Relaxed);
 }
+/// Holds [`PROP_GRAB`] at `on` for one test, serialised with the others, and restores it off even after a panic.
+#[cfg(test)]
+pub(crate) fn prop_grab_for_test(on: bool) -> impl Drop {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    struct Restore(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            set_prop_grab_enabled(false);
+        }
+    }
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    set_prop_grab_enabled(on);
+    Restore(guard)
+}
 
 /// Height of a generated grab spline over the box bottom, m (the authored splines sit at about hand height, ~0.98 m
 /// on the DownTown tables); a lower box is held by its top.
@@ -6095,6 +6109,7 @@ mod tests {
     #[test]
     #[ignore]
     fn downtown_dragged_props_rest_on_the_floor() {
+        let _grab = prop_grab_for_test(false);
         let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT"));
         let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").expect("set SKATE3_MAP"));
         let map = skate_data::skate_map::SkateMap::parse(&std::fs::read(&map_path).unwrap()).unwrap();

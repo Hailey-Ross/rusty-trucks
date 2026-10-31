@@ -43,11 +43,13 @@ pub struct NavRules {
     pub locate_height: f32,
     /// Polygons A* may expand per query (ours, a cost cap).
     pub max_expansions: usize,
+    /// A raw path start farther than this in plane from its snap point gets its own element (`82928530`: 0.1 x the NavPower scale 1.3).
+    pub raw_start_offset: f32,
 }
 
 impl Default for NavRules {
     fn default() -> Self {
-        Self { blocked_areas: vec![AREA_OTHER], area_cost: Vec::new(), locate_radius: 0.5, locate_height: 4.0, max_expansions: 6000 }
+        Self { blocked_areas: vec![AREA_OTHER], area_cost: Vec::new(), locate_radius: 0.5, locate_height: 4.0, max_expansions: 6000, raw_start_offset: 0.13 }
     }
 }
 
@@ -623,11 +625,40 @@ impl NavMesh {
     /// Path corners from `from` to `to` (both located), or `None` when unreachable or the search
     /// cap is hit. The first corner is the first turn (not the start), the last is `to`.
     pub fn find_path(&self, from: NavPoint, to: NavPoint) -> Option<Vec<Vec3>> {
+        let portals = self.path_portals(from, to)?;
+        Some(funnel(from.position, to.position, &portals))
+    }
+
+    /// NavPower's path elements as (start, end), one per polygon crossed, from the raw start to `to`:
+    /// docs/hails-additions/26e-living-world-skater-ai.md#controller-b-path-service
+    pub fn find_path_elements(&self, raw: Vec3, from: NavPoint, to: NavPoint) -> Option<Vec<(Vec3, Vec3)>> {
+        let portals = self.path_portals(from, to)?;
+        let mut points = vec![raw];
+        if dist_xz(raw, from.position) > self.rules.raw_start_offset {
+            points.push(from.position);
+        }
+        let (mut prev, mut first) = (from.position, 0);
+        for (corner, last) in funnel_spans(from.position, to.position, &portals) {
+            for &portal in &portals[first.min(portals.len())..last.min(portals.len())] {
+                let p = crossing(prev, corner, portal);
+                if points.last().is_none_or(|l| dist_xz(*l, p) >= 1e-5) {
+                    points.push(p);
+                }
+            }
+            points.push(corner);
+            prev = corner;
+            first = last + 1;
+        }
+        Some(points.windows(2).map(|w| (w[0], w[1])).collect())
+    }
+
+    /// The (left, right) portals along the A* polygon chain; empty within one polygon.
+    fn path_portals(&self, from: NavPoint, to: NavPoint) -> Option<Vec<(Vec3, Vec3)>> {
         if !self.reachable(from.poly, to.poly) {
             return None;
         }
         if from.poly == to.poly {
-            return Some(vec![to.position]);
+            return Some(Vec::new());
         }
         let n = self.polys.len();
         let mut g = vec![f32::INFINITY; n];
@@ -672,23 +703,37 @@ impl NavMesh {
             at = prev;
         }
         chain.reverse();
-        let portals: Vec<(Vec3, Vec3)> = chain
-            .iter()
-            .map(|&(p, e, q)| {
-                let (a, b) = self.portal(p, e, q);
-                // Orient as (left, right) seen along the travel from p to q (x right of +z,
-                // the funnel's convention: right = larger cross(v - centre, travel)).
-                let c = self.polys[p as usize].centre;
-                let dir = sub2(self.polys[q as usize].centre, c);
-                if cross2(sub2(a, c), dir) <= cross2(sub2(b, c), dir) { (a, b) } else { (b, a) }
-            })
-            .collect();
-        Some(funnel(from.position, to.position, &portals))
+        Some(
+            chain
+                .iter()
+                .map(|&(p, e, q)| {
+                    let (a, b) = self.portal(p, e, q);
+                    // Orient as (left, right) seen along the travel from p to q (x right of +z,
+                    // the funnel's convention: right = larger cross(v - centre, travel)).
+                    let c = self.polys[p as usize].centre;
+                    let dir = sub2(self.polys[q as usize].centre, c);
+                    if cross2(sub2(a, c), dir) <= cross2(sub2(b, c), dir) { (a, b) } else { (b, a) }
+                })
+                .collect(),
+        )
     }
+}
+
+/// Where the line `a` to `b` crosses a portal in xz, clamped to the portal (`8293C158`).
+fn crossing(a: Vec3, b: Vec3, portal: (Vec3, Vec3)) -> Vec3 {
+    let (edge, dir) = (sub2(portal.1, portal.0), sub2(b, a));
+    let denom = cross2(edge, dir);
+    let t = if denom.abs() < 1e-6 { 0.5 } else { (cross2(sub2(a, portal.0), dir) / denom).clamp(0.0, 1.0) };
+    [portal.0[0] + (portal.1[0] - portal.0[0]) * t, portal.0[1] + (portal.1[1] - portal.0[1]) * t, portal.0[2] + (portal.1[2] - portal.0[2]) * t]
 }
 
 /// The simple stupid funnel over (left, right) portals in xz; returns the corners after `start`.
 pub fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)]) -> Vec<Vec3> {
+    funnel_spans(start, goal, portals).into_iter().map(|(p, _)| p).collect()
+}
+
+/// [`funnel`] with the index of the portal each corner sits on (`portals.len()` for the goal).
+fn funnel_spans(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)]) -> Vec<(Vec3, usize)> {
     let mut pts: Vec<(Vec3, Vec3)> = portals.to_vec();
     pts.push((goal, goal));
     let mut out = Vec::new();
@@ -712,7 +757,7 @@ pub fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)]) -> Vec<Vec3> {
                 right = pr;
                 ri = i;
             } else {
-                out.push(left);
+                out.push((left, li));
                 apex = left;
                 ri = li;
                 i = li + 1;
@@ -727,7 +772,7 @@ pub fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)]) -> Vec<Vec3> {
                 left = pl;
                 li = i;
             } else {
-                out.push(right);
+                out.push((right, ri));
                 apex = right;
                 li = ri;
                 i = ri + 1;
@@ -738,12 +783,13 @@ pub fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)]) -> Vec<Vec3> {
         }
         i += 1;
     }
-    if out.last().is_none_or(|l| !eq(*l, goal)) {
-        out.push(goal);
+    match out.last_mut() {
+        Some(last) if eq(last.0, goal) => last.1 = portals.len(),
+        _ => out.push((goal, portals.len())),
     }
-    out.retain(|p| !eq(*p, start));
+    out.retain(|p| !eq(p.0, start));
     if out.is_empty() {
-        out.push(goal);
+        out.push((goal, portals.len()));
     }
     out
 }
