@@ -46,6 +46,28 @@ own rule; no engine behaviour changes.
 - 1 needs a connected controller: `xinput_identity_of_connected_pad`.
 - 27 stop at a setup check: an unset variable or export (audio state logs, recomp sessions, `SKATE3_GRIND_MAP`, `SKATE_BUDGET_MAP` and so on) or a missing local file. They were not run with those supplied.
 
+### Fixed and re-run (2026-10-30 evening)
+
+Same run with the map and audio inputs supplied (`SKATE3_MAP` = `<install>/maps/DownTown.skate`, `SKATE_BUDGET_MAP`, `SKATE_MAP_TEST_PATH`, `SKATE_TRANSITION_TEST_ASSETS`, `SKATE3_GRIND_MAP` = University, `SKATE3_WATER_MAP` = Industrial, the `.local` audio exports listed in doc 11): 223 passed, 12 failed of 235.
+
+The earlier 8 upstream failures and one more:
+
+- **Query metadata (`air_tests` x2, `stock_skater_startup`):** the tests rebuilt the world with `BoardWorld::new`, which has none. They now use `ground::with_authored_metadata` / `ground::flat_world`. The startup test's old 20 m floor was also too small for its braking run.
+- **Tailwalk (`airborne_tailwalk...`):** the test pressed the trigger and the right stick on the same tick, which enters `Grabbing`. `ActionGraph_OnBoard` only reaches `BoardAdjusting.Up.TailGrab` with the stick already held, so the test now holds it first.
+- **Powerslide:** the test pushed the stick forward; retail's start window is back and to the side (`riding_intentions.rs`). It also expected `Slide` unchanged, but retail's handler negates it (`*(iVar20 + 0xaac) = -*pfVar23`, 82BDA0D0).
+- **`static_draw_budget`:** the test world never registered `Assets<SkyMaterial>`.
+- **Climbing, an engine bug:** with clips installed the camera failed every attached tick, because `frame::advance` had reset the output snapshot and the tick was counted after the camera. `climbing::advance` now counts the tick and calls `frame::publish_output` first. No install has the clips, so players never reached this.
+
+Climbing tests now build their clips from the stock skeleton (`install_fixture_clips`) because `private/custom/climbing.json` is written by no setup. The dropped board is also moved off the run-up: the skater ran over it and was thrown 5 m up, which was not investigated further.
+
+The 12 still failing:
+
+- **2 show a real bug, left failing:** `hybrid_climb...` and `climbing_with_a_dropped_board...`. After the mantle the motion graph is still in its paused jump state, so `flags_2484` bit 16 selects `BipedAir` on the first tick, the skater jumps 0.37 m and wipes out. The fixture clips could contribute, but the stale graph state does not depend on them. Fixing it needs a graph reset at the handoff, which does not exist yet.
+- **1 needs its map:** `skater_dropped_onto_the_industrial_sea_floor` fails on DownTown and passes with `SKATE3_MAP` = Industrial.
+- **9 need files that are not here:** `SKATE_TEST_LIBRARY` / `SKATE_TEST_ASSETS`, `SKATE_TEST_CHARACTER`, `SKATE_CAC_TEST_LIBRARY`, `SKATE_ONLINE_TEST_GLB`, `SKATE3_MOTION_INVENTORY`, `SKATE3_INPUT_RECORDING`, and `private/custom/crouch-treflip.json` (three tests). These have not run.
+
+`xinput_identity_of_connected_pad` needs a connected controller; it passed in this run.
+
 Two traps found on the way:
 
 - **A dead `assets` junction** in a worktree (it pointed at a deleted install) raised the count to 100, because many tests read `assets/` directly and ignore `SKATE3_ASSET_ROOT`. Check the junction first. That run also ended once in `0xc0000409` (`STATUS_STACK_BUFFER_OVERRUN`); it did not come back after repointing, and the cause was not found.
