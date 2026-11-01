@@ -9,7 +9,7 @@
 
 **Other downloads:** `skate-launcher-windows.zip` is the Steam / couch launcher on its own, for testers who switch between versions (it builds each version on your PC; see "Launcher-only download" in `tools/steam-launcher/README.md`). Developers clone the repository.
 
-**Refreshing game files.** When a build needs newer converted files, the Guide / F1 / Esc menu says **GAME FILES OUT OF DATE**: open **Extras > Refresh Game Files** and the game restarts into setup, converts only what changed and starts again.
+**Refreshing game files.** When a build needs newer converted files, the Guide / F1 / Esc menu says **GAME FILES OUT OF DATE**: open **Extras > Refresh Game Files** and the game restarts into setup, converts only what changed and starts again. An install from before the skater select background is now caught too, and the launcher's Refresh game files rebuilds whatever changed since setup.
 
 **Early features** are in the Guide / F1 / Esc menu under **OPT-INS**: Zombie Mode, More Audible World and Visualize Grabs are off by default; NPC Skater Physics and Ped Speech (needs a refresh to decode the speech) are on and can be switched off. Please say which were on when you report a problem.
 
