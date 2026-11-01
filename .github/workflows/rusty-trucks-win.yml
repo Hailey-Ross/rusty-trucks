@@ -27,9 +27,9 @@ jobs:
       group: fork-build-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || github.ref }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
           cache: pip
@@ -59,7 +59,7 @@ jobs:
         if: always()
         shell: pwsh
         run: sccache --show-stats
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: skate3rust-windows-x64
           retention-days: 7
@@ -77,8 +77,8 @@ jobs:
       group: fork-release-publish
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: skate3rust-windows-x64
           path: target
