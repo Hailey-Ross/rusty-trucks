@@ -60,7 +60,7 @@ jobs:
       - name: Build SkateLauncher.exe
         shell: pwsh
         run: |
-          & "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe" /nologo /target:winexe /out:target/SkateLauncher.exe tools/steam-launcher/SkateLauncher.cs
+          & "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe" /nologo /target:winexe "/out:target\SkateLauncher.exe" "tools\steam-launcher\SkateLauncher.cs"
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $text = [IO.File]::ReadAllText("$PWD/tools/steam-launcher/SkateLauncher.cs", [Text.Encoding]::UTF8).Replace("`r", '')
           $source = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($text))) -replace '-', '').ToLower()
