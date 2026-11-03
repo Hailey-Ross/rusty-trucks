@@ -104,7 +104,7 @@ try {
     } else {
         [pscustomobject]@{}
     }
-    Copy-IfExists @('README.md', 'docs/THIRD_PARTY_NOTICES.md') $stage
+    Copy-IfExists @('README.md', 'docs/THIRD_PARTY_NOTICES.md', 'PLAY-WITH-LOG.bat') $stage
     New-Item -ItemType Directory -Path "$stage/docs/images" -Force | Out-Null
     Copy-IfExists @(
         'docs/installation.md', 'docs/retail-renderer.md', 'docs/crash-reports.md',

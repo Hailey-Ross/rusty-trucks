@@ -13,7 +13,7 @@ What it does:
   Every other list page (Play, Choose version, Tools, Recomp, ...) is a grid of buttons two wide (short labels) with a
   large panel beside it for the selected option: its full name, READY or why it is not available, what it does and,
   for the play options, what it records (FILES / GAME LOG rows from launcher.ps1 `entries` columns 8 and 9).
-  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|play|play-traceall|waiting|fetching|checking|job|build|failed]` draws one screen at 1920x1080
+  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|setup|play|play-traceall|waiting|fetching|checking|job|build|failed]` draws one screen at 1920x1080
   into a PNG and exits (checking the look without opening the window).
   The window opens centred on the main monitor. `SkateLauncher.exe --same-monitor` (or Tools > "Open on", saved as
   `open-on-launching-monitor.txt` in the state folder) opens it on the monitor of the window it was started from
@@ -37,8 +37,14 @@ What it does:
   copied to `dlc\<pack name>\` in the state folder (`dlc_dir` in `config.json` moves it). Every game, setup and refresh
   the launcher starts gets that folder as `SKATE3_DLC_DIR`; run Refresh Game Files afterwards to convert what the packs
   add (the Create pack's replay editor, DLC maps as they are supported).
-- **First-time setup:** on a fresh PC the window opens on a setup page that checks Git, Rust, the C++ build tools,
-  LLVM, Python 3.13 and Vulkan, and installs what is missing with winget (one UAC prompt for the machine-wide tools).
+- **First-time setup:** the first start opens **Set up the launcher** (USER-ASKS 461): the game folder (versions and
+  their builds: `storage_root`, then `target_root` = `<folder>\builds`, `build_cap_dir` = `<folder>` and, standalone,
+  `versions_root` = `<folder>\versions`), the space builds may use (`build_cap_gb`), the Skate 3 ISO or `default.xex`
+  (`disc`: Play converts the game files from it when a version has none), the Skate 3 Recompiled folder
+  (`recomp.working_dir`, with `recomp.exe` found inside it) and RPCS3 (`rpcs3.exe`, `rpcs3.game`). It saves only what
+  changed and sets `first_setup_done`; **Tools > Set up the launcher** opens it again. On a fresh PC a page after it
+  checks Git, Rust, the C++ build tools, LLVM, Python 3.13 and Vulkan, and installs what is missing with winget (one
+  UAC prompt for the machine-wide tools).
 - **Size cap:** optional, the build folders never grow over a set size: before a build the launcher deletes the build
   cache of the version built longest ago.
 - **Clear builds:** Tools > Clear builds and build caches frees space by hand: everything, every build cache, or one
@@ -55,19 +61,28 @@ the first-time setup installs the rest.
 ## Launcher-only download (standalone)
 
 Each fork release also has `skate-launcher-windows.zip`: the launcher on its own, without a game build and without a
-copy of the repository. It downloads and builds only the versions you use:
+copy of the repository. It downloads only the versions you use:
 
 1. Extract the zip to a folder of its own (for example `C:\Games\SkateLauncher`). The `STANDALONE.txt` inside marks it
    as standalone: its config, state and versions all stay in this folder.
-2. Run `powershell -ExecutionPolicy Bypass -File setup.ps1 -Install` once (git, Rust and the build tools; one UAC
-   prompt), then `build.bat` (makes `SkateLauncher.exe`), then add `SkateLauncher.exe` to Steam as a non-Steam game.
+2. Double-click `build.bat`: it downloads the release's prebuilt `SkateLauncher.exe` (when it was built from this
+   `SkateLauncher.cs`; otherwise it compiles it) and starts it. **Set up the launcher** asks for the game folder, the
+   space for builds, your Skate 3 disc and, optionally, the recomp and RPCS3; then **Install what is missing** installs
+   what the selected version needs (one UAC prompt): Git only for a prebuilt version, plus Rust and the build tools for
+   one built from source. Add `SkateLauncher.exe` to Steam as a non-Steam game for the couch.
 3. Choose your versions (optional): by default the launcher lists hails-additions and upstream main. To keep only
    one, put `{"builtin_versions": ["hails-additions"]}` in `config.json`; add your own branches in `versions.json`
    (each with `"url"` and `"branch"`).
-4. Play. The first time a version is played or built it is downloaded (only that branch, into `versions\<id>`) and
-   built; later starts fetch it and rebuild only when it moved. A version you never start is never downloaded.
-5. Game files: the first version needs them converted from your Skate 3 disc once; the launcher says how
-   (`tools\setup-dev-assets.ps1 -Disc ...` in that version's folder). Every other version then shares them.
+4. Play. **Prebuilt versions** (USER-ASKS 463: a version with `"release"`, a release tag of its repository; the
+   built-in hails-additions has its rolling release): the first play downloads that release's
+   `skate3rust-windows-x64.zip` (checksum checked) into `versions\<id>` in the game folder; later starts read its
+   `release.json` and download again only when the revision moved, over the old build (the converted game files, logs
+   and settings stay). `config.json` `"use_releases"` (default on for this download, off in a checkout) switches it.
+   **Other versions** are cloned (only that branch) and built; later starts fetch them and rebuild only when they
+   moved. A version you never start is never downloaded.
+5. Game files: the first version needs them converted from your Skate 3 disc once; with the disc picked in **Set up
+   the launcher**, Play does it (a prebuilt version's own setup gets it as `SKATE3_SETUP_DISC` and starts without
+   asking; a source version runs `tools\setup-dev-assets.ps1 -Disc ...`). Every other source version then shares them.
 
 ## Updating the launcher itself
 
@@ -75,7 +90,8 @@ The launcher keeps itself current with the newest pushed `hails-additions` on th
 at every start (not while a game runs), before **Tools > Update and build the selected version**, and from **Tools >
 Update the launcher**. It fetches that branch into its own small clone (`self.git` in the state folder), copies
 `tools\steam-launcher` (into the launcher's folder) and `tools\second-pc` from it, rebuilds `SkateLauncher.exe`
-when its source changed and restarts into the new window (the old one waits hidden, so Steam keeps tracking it).
+when its source changed (the release's prebuilt `SkateLauncher.exe` when its `SkateLauncher.exe.source-sha256`
+names that source, else compiled) and restarts into the new window (the old one waits hidden, so Steam keeps tracking it).
 Nothing else of the checkout is touched and nothing is committed. A local file that differs (for example one copied
 in by `get-patches.ps1`) is backed up to `self-update-backup\<time>\` first. The main screen shows the launcher's
 commit next to the wordmark, and the fork's newer one when it did not update. Log: `self-update.log`; on a failure
@@ -91,7 +107,7 @@ picks another branch (default `hails-additions`, from `fork_url`).
 | `launcher.ps1` | Does the work: versions, builds, launching, session checks, tools. The window runs it; it runs from a shell too. |
 | `setup.ps1` | The first-time setup: `setup.ps1` checks, `setup.ps1 -Install` installs what is missing. |
 | `launcher.bat` | `launcher.bat <entry> [label] [-Version <id>]` from a keyboard; no argument opens the window. |
-| `build.bat` | Builds `SkateLauncher.exe` (the first time; afterwards the launcher rebuilds itself when it updates). |
+| `build.bat` | Gets `SkateLauncher.exe` (the release's prebuilt one, or compiled) and starts it; afterwards the launcher updates itself the same way. |
 | `versions.example.json`, `config.example.json` | Examples for your own versions and settings. |
 
 State and your own settings live in `.local\steam-launcher\` (gitignored): `versions.json`, `config.json`,

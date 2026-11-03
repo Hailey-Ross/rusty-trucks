@@ -1,6 +1,6 @@
 @echo off
 rem Starts skate3rust.exe and saves its session log in the logs folder next to it.
-rem Put this file in the folder that holds skate3rust.exe and double-click it.
+rem It ships next to skate3rust.exe in the release zip; double-click it to play.
 cd /d "%~dp0"
 if not exist "skate3rust.exe" (
     echo skate3rust.exe is not in this folder. Put PLAY-WITH-LOG.bat next to skate3rust.exe.

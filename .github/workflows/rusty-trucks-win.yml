@@ -55,6 +55,17 @@ jobs:
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || 'experimental' }}
           RUSTC_WRAPPER: sccache
         run: ./scripts/Build-Release.ps1
+      # The launcher's prebuilt exe (USER-ASKS 463): build.bat and the launcher's self-update download it when the
+      # sidecar names their SkateLauncher.cs (sha256 of the text without CR), else they compile it themselves.
+      - name: Build SkateLauncher.exe
+        shell: pwsh
+        run: |
+          & "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe" /nologo /target:winexe /out:target/SkateLauncher.exe tools/steam-launcher/SkateLauncher.cs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $text = [IO.File]::ReadAllText("$PWD/tools/steam-launcher/SkateLauncher.cs", [Text.Encoding]::UTF8).Replace("`r", '')
+          $source = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($text))) -replace '-', '').ToLower()
+          $exe = (Get-FileHash target/SkateLauncher.exe -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("$PWD/target/SkateLauncher.exe.source-sha256", "source $source`nexe $exe`n")
       - name: Report compiler cache hits
         if: always()
         shell: pwsh
@@ -67,6 +78,8 @@ jobs:
             target/skate3rust-windows-x64.zip
             target/skate3rust-windows-x64.zip.sha256
             target/release.json
+            target/SkateLauncher.exe
+            target/SkateLauncher.exe.source-sha256
   publish:
     needs: windows
     if: github.repository == 'Hailey-Ross/rusty-trucks' && (github.event_name == 'release' || inputs.release_tag != '' || github.ref == 'refs/heads/hails-additions')
@@ -101,8 +114,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python tools/publish_branch.py --directory target --branch hails-additions --notes-file docs/hails-additions/RELEASE-NOTES.md
-          gh release upload hails-additions PLAY-WITH-LOG.bat --clobber
           gh release upload hails-additions launcher-out/skate-launcher-windows.zip launcher-out/skate-launcher-windows.zip.sha256 --clobber
+          gh release upload hails-additions target/SkateLauncher.exe target/SkateLauncher.exe.source-sha256 --clobber
       - name: Attach release package
         if: github.event_name == 'release' || inputs.release_tag != ''
         env:

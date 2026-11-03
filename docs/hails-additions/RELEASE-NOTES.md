@@ -1,13 +1,17 @@
 > **EARLY ALPHA, rolling build.** The latest `hails-additions` branch of the Hailey-Ross fork, built on top of upstream `main` (SK8-ENGINE/skate-3-rust-engine). Expect bugs and please report them (see **Testing and reports**). You need your own Skate 3 Xbox 360 disc image; no game files are included.
 
-## Setup
+## Setup (with the Skate launcher, recommended)
 
-1. **You need** Windows 10 or 11 (64-bit), a Skate 3 Xbox 360 disc image (`.iso`) or an extracted game folder with `default.xex`, a controller, and about 10 GB free.
-2. **Download** `skate3rust-windows-x64.zip` and `PLAY-WITH-LOG.bat` below. Extract the zip to a folder of its own (not inside Program Files) and put the .bat next to `skate3rust.exe`.
-3. **Start** with `PLAY-WITH-LOG.bat`. On the first start, pick your ISO or `default.xex`; setup converts the game files into the `data` folder, then starts the game.
-4. **Updates:** Esc > **EXTRAS** > **Updates**, Branch `hails-additions`.
+The Skate launcher keeps you on the newest build: every start checks the fork, downloads the new build when there is one and keeps a session log of every game, so reports always have one.
 
-**Other downloads:** `skate-launcher-windows.zip` is the Steam / couch launcher on its own, for testers who switch between versions (it builds each version on your PC; see "Launcher-only download" in `tools/steam-launcher/README.md`). Developers clone the repository.
+1. **You need** Windows 10 or 11 (64-bit), a Skate 3 Xbox 360 disc image (`.iso`) or an extracted game folder with `default.xex`, a controller, and about 15 GB free (the build and the converted game files).
+2. **Download** `skate-launcher-windows.zip` below and extract it to a folder of its own (for example `C:\Games\SkateLauncher`, not inside Program Files).
+3. **Double-click** `build.bat` once. It downloads `SkateLauncher.exe` and starts it.
+4. **Set up:** the first start opens **Set up the launcher**: pick the game folder (where versions and builds go), the space builds may use, your Skate 3 ISO or `default.xex`, and, if you have them, Skate 3 Recompiled and RPCS3 for comparing. If Git is missing, **Install what is missing** installs it (Windows asks once).
+5. **Play.** The first play downloads the newest `hails-additions` build and converts the game files from your disc once (Skate 3's setup window shows the progress); later starts download a new build only when there is one.
+6. **Optional:** add `SkateLauncher.exe` to Steam as a non-Steam game to start it from the couch with the controller. Everything set up in step 4 can be changed later in **Tools > Set up the launcher**.
+
+**Without the launcher:** download `skate3rust-windows-x64.zip` instead, extract it to a folder of its own and start `PLAY-WITH-LOG.bat` inside it; on the first start, pick your ISO or `default.xex`. Updates: Esc > **EXTRAS** > **Updates**, Branch `hails-additions`. Developers clone the repository.
 
 **Refreshing game files.** When a build needs newer converted files, the Guide / F1 / Esc menu says **GAME FILES OUT OF DATE**: open **Extras > Refresh Game Files** and the game restarts into setup, converts only what changed and starts again. An install from before the skater select background is now caught too, and the launcher's Refresh game files rebuilds whatever changed since setup.
 
@@ -23,7 +27,7 @@
 
 ## Testing and reports
 
-- Start with `PLAY-WITH-LOG.bat`: it saves the session to `logs\game-<date>-<time>.stderr.log` and names the file when you quit. A crash also writes a report to `%LOCALAPPDATA%\Skate3RustEngine\CrashReports`; please send both.
+- Every game the launcher starts saves its session log to `logs\game-<date>-<time>.stderr.log` in the version's folder (`versions\hails-additions` in your game folder) and names the file when you quit. Without the launcher, `PLAY-WITH-LOG.bat` does the same. A crash also writes a report to `%LOCALAPPDATA%\Skate3RustEngine\CrashReports`; please send both.
 - For frame rate problems, turn on **GRAPHICS > Frame-time counter** and include a screenshot or video.
 - One problem per session if you can, with roughly when (minutes in) and where (map and spot). A short video helps a lot.
 - Report here: [**New test report**](https://github.com/Hailey-Ross/rusty-trucks/issues/new?title=Test%20report%3A%20&body=%2A%2ABuild%3A%2A%2A%20hails-additions%20rolling%20build%20%28number%20at%20the%20top%20of%20the%20release%29%0A%2A%2AMap%20and%20spot%3A%2A%2A%20%28for%20example%20DownTown%2C%20by%20the%20default%20spawn%2C%20near%20the%20road%20curb%29%0A%2A%2AWhat%20I%20did%3A%2A%2A%0A%2A%2AWhat%20happened%3A%2A%2A%0A%2A%2AWhat%20retail%20Skate%203%20does%20instead%3A%2A%2A%0A%2A%2AAbout%20when%20in%20the%20session%3A%2A%2A%20%28minutes%20in%2C%20or%20the%20time%20on%20your%20clock%29%0A%0AAttach%3A%0A-%20the%20session%20log%20logs%5Cgame-....stderr.log%20%28from%20PLAY-WITH-LOG.bat%29%0A-%20a%20crash%20report%20from%20%25LOCALAPPDATA%25%5CSkate3RustEngine%5CCrashReports%20if%20the%20game%20closed%0A-%20a%20short%20video%20if%20you%20have%20one%0A)

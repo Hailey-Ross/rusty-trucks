@@ -47,6 +47,27 @@ $ConfigFile = Join-Path $StateDir 'config.json'
 if (Test-Path $ConfigFile) { $Config = Read-Json $ConfigFile }
 function Setting([string]$Name, $Default) { if ($Config -and $null -ne $Config.$Name -and "$($Config.$Name)" -ne '') { return $Config.$Name }; return $Default }
 $Remote = Setting 'remote' 'origin'
+# A configured path, or '' while it is unset or still the config.example.json placeholder.
+function Setting-Path([string]$Name, [string]$Sub = '') {
+    $o = $Config; if ($Sub) { if (-not $o -or $null -eq $o.$Sub) { return '' }; $o = $o.$Sub }
+    if (-not $o -or $null -eq $o.$Name) { return '' }
+    $v = [string]$o.$Name; if ($v -like 'C:\path\to*') { return '' }; return $v
+}
+# First-time setup (the window's wizard): writes the dotted keys of a JSON file into config.json, keeping the rest.
+function Set-ConfigValues([string]$File) {
+    $pairs = Read-Json $File
+    $c = if (Test-Path $ConfigFile) { Read-Json $ConfigFile } else { [pscustomobject]@{} }
+    foreach ($p in $pairs.PSObject.Properties) {
+        $parts = $p.Name.Split('.'); $o = $c
+        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+            if ($null -eq $o.($parts[$i])) { $o | Add-Member -NotePropertyName $parts[$i] -NotePropertyValue ([pscustomobject]@{}) }
+            $o = $o.($parts[$i])
+        }
+        $k = $parts[-1]
+        if ($o.PSObject.Properties[$k]) { $o.$k = $p.Value } else { $o | Add-Member -NotePropertyName $k -NotePropertyValue $p.Value }
+    }
+    [IO.File]::WriteAllText($ConfigFile, ($c | ConvertTo-Json -Depth 20) + "`n", (New-Object Text.UTF8Encoding $false))
+}
 
 # The player's Skate 3 DLC packages (Tools > Import DLC copies them here): every game, setup and refresh the launcher
 # starts gets the folder as SKATE3_DLC_DIR, so setup converts what they hold (the Create pack's replay editor, DLC
@@ -131,7 +152,7 @@ function Copy-Dlc([string[]]$files) {
 # versions.json entry with the same id replaces the built-in one.
 $Builtin = @(
     [pscustomobject]@{ id = 'hails-additions'; name = 'hails-additions (newest on the fork)'; branch = 'hails-additions'
-                       url = (Setting 'fork_url' 'https://github.com/Hailey-Ross/rusty-trucks.git'); dir = $(if ($Standalone) { 'versions/hails-additions' } else { '.local/versions/hails-additions' }); detached = $true
+                       url = (Setting 'fork_url' 'https://github.com/Hailey-Ross/rusty-trucks.git'); dir = $(if ($Standalone) { 'versions/hails-additions' } else { '.local/versions/hails-additions' }); detached = $true; release = 'hails-additions'
                        notes = 'Always the newest pushed hails-additions: every launch fetches it and rebuilds when it moved. What changed: docs\hails-additions\RELEASE-NOTES.md.' },
     [pscustomobject]@{ id = 'upstream-main'; name = 'Upstream main (for comparing)'; branch = 'main'
                        url = (Setting 'upstream_url' 'https://github.com/SK8-ENGINE/skate-3-rust-engine.git'); dir = $(if ($Standalone) { 'versions/upstream-main' } else { '.local/versions/upstream-main' }); detached = $true
@@ -161,7 +182,13 @@ function Get-Version([string]$Id) {
     if (-not $v) { $v = $Versions[0] }
     return $v
 }
-function Version-Dir($v) { if ($v.dir -eq '.') { return $Repo }; return (Join-Path $Repo $v.dir) }
+function Version-Dir($v) {
+    if ($v.dir -eq '.') { return $Repo }
+    # The standalone download's versions go to the game folder picked in the first-time setup (config.json "versions_root").
+    $vr = Setting-Path 'versions_root'
+    if ($vr -and $Standalone -and $v.dir -like 'versions/*') { return (Join-Path $vr ($v.dir.Substring(9))) }
+    return (Join-Path $Repo $v.dir)
+}
 function Invoke-Git([string]$Dir) { $ErrorActionPreference = 'Continue'; & git.exe -C $Dir @args 2>$null }
 # Where a version's branch is fetched from and the ref it follows: its own URL (the built-ins) or the remote.
 function Version-Source($v) {
@@ -184,7 +211,79 @@ function Fetch-Version($v, [string]$Dir) {
 }
 
 # One line of status for a version: built (commit) / needs a build / not set up.
+# Prebuilt builds (USER-ASKS 463): a version with "release" (a release tag of its repository; the built-in
+# hails-additions has one) is downloaded from that release instead of cloned and built while config.json "use_releases"
+# is on (default: on for the standalone download). Its folder holds the extracted player package.
+function Use-Release($v) { return ([bool]$v.release -and [bool](Setting 'use_releases' $Standalone)) }
+function Release-Base($v) {
+    $u = if ($v.url) { $v.url } else { Setting 'fork_url' 'https://github.com/Hailey-Ross/rusty-trucks.git' }
+    $repo = ($u -replace '\.git$', '') -replace '^https://github\.com/', ''
+    return "https://github.com/$repo/releases/download/$($v.release)"
+}
+function Get-Url([string]$Url, [string]$Out) {
+    $ProgressPreference = 'SilentlyContinue'
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Out -TimeoutSec 900
+}
+function Release-Installed($v) {
+    $f = Join-Path (Version-Dir $v) 'release.json'
+    if (Test-Path $f) { try { return (Read-Json $f) } catch {} }
+    return $null
+}
+# The release folder's PLAY.bat: the game with its session log in logs\ (what PLAY-WITH-LOG.bat does, without the pause).
+function Write-ReleasePlay([string]$Dir) {
+    $bat = @('@echo off', 'cd /d "%~dp0"', 'if not exist "logs" mkdir "logs"',
+        'for /f %%t in (''powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"'') do set "STAMP=%%t"',
+        '"%~dp0skate3rust.exe" > "logs\game-%STAMP%.log" 2> "logs\game-%STAMP%.stderr.log"') -join "`r`n"
+    [IO.File]::WriteAllText((Join-Path $Dir 'PLAY.bat'), $bat + "`r`n", (New-Object Text.ASCIIEncoding))
+}
+# Downloads the version's release when it moved (checksum checked) and installs it over the old build; the converted
+# game files (data\), logs and settings stay. True = a build is there to play.
+function Ensure-Release($v) {
+    $ErrorActionPreference = 'Continue'
+    $d = Version-Dir $v; $base = Release-Base $v
+    $have = Test-Path (Join-Path $d 'skate3rust.exe')
+    $tmp = Join-Path $env:TEMP ('skate-release-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    try {
+        Write-Host "  Checking the $($v.release) release..."
+        try { Get-Url "$base/release.json" (Join-Path $tmp 'release.json') } catch {
+            if ($have) { Write-Host '  Could not reach the release; playing the installed build.'; return $true }
+            Write-Host "  Could not download $($v.name) ($($_.Exception.Message))."; return $false
+        }
+        $meta = Read-Json (Join-Path $tmp 'release.json'); $cur = Release-Installed $v
+        if ($have -and $cur -and $cur.revision -eq $meta.revision) { Write-ReleasePlay $d; return $true }
+        Write-Host "  Downloading $($v.name) build $($meta.build)..."
+        $zip = Join-Path $tmp 'package.zip'
+        try {
+            Get-Url "$base/skate3rust-windows-x64.zip" $zip
+            Get-Url "$base/skate3rust-windows-x64.zip.sha256" "$zip.sha256"
+        } catch {
+            Write-Host "  The download failed ($($_.Exception.Message))."
+            return $have
+        }
+        $want = ((Get-Content "$zip.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
+        if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne $want) { Write-Host '  The download does not match its checksum; not installed.'; return $have }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $x = Join-Path $tmp 'x'
+        [IO.Compression.ZipFile]::ExtractToDirectory($zip, $x)
+        $src = Join-Path $x 'skate3rust-windows-x64'; if (-not (Test-Path $src)) { $src = $x }
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        # release.json last, so a copy that fails part way is downloaded again next time.
+        & robocopy.exe $src $d /E /XF release.json /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) { Write-Host '  Could not copy the new build into place (is the game still running?).'; return $have }
+        Copy-Item -LiteralPath (Join-Path $src 'release.json') -Destination $d -Force
+        Write-ReleasePlay $d
+        Write-Host "  Installed $($v.name) build $($meta.build)."
+        return $true
+    } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+}
 function Version-Status($v) {
+    if (Use-Release $v) {
+        $cur = Release-Installed $v
+        if (-not $cur -or -not (Test-Path (Join-Path (Version-Dir $v) 'skate3rust.exe'))) { return 'not downloaded yet (first launch downloads it)' }
+        return "release build $($cur.build) ($("$($cur.revision)".Substring(0, 7)))"
+    }
     $d = Version-Dir $v
     if (-not (Test-Path (Join-Path $d '.git'))) { return 'not set up yet (first launch builds it)' }
     $exe = Join-Path $d 'bin\skate3rust.exe'
@@ -314,11 +413,33 @@ function Launcher-Commit {
 function Fork-Commit { if (Test-Path (Join-Path $SelfGit 'HEAD')) { return ((Invoke-Git $SelfGit rev-parse --verify -q refs/heads/self) | Select-Object -First 1) }; return '' }
 # Builds SkateLauncher.exe from SkateLauncher.cs. The running exe can be renamed (not overwritten), so the new one takes
 # its name and the next start uses it. True = rebuilt.
+# The prebuilt exe (USER-ASKS 463): the fork release's SkateLauncher.exe, when its sidecar names this SkateLauncher.cs
+# (sha256 of the text without CR) and the download matches the exe hash in it. True = $Out holds it.
+function Get-PrebuiltLauncher([string]$Out) {
+    $ErrorActionPreference = 'Continue'
+    $repo = ((Setting 'fork_url' 'https://github.com/Hailey-Ross/rusty-trucks.git') -replace '\.git$', '') -replace '^https://github\.com/', ''
+    $base = "https://github.com/$repo/releases/download/$(Setting 'launcher_branch' 'hails-additions')"
+    $side = "$Out.sha256"
+    try {
+        Get-Url "$base/SkateLauncher.exe.source-sha256" $side
+        $f = @{}; foreach ($l in (Get-Content $side)) { $kv = "$l".Trim() -split '\s+'; if ($kv.Count -eq 2) { $f[$kv[0]] = $kv[1].ToLower() } }
+        $text = [IO.File]::ReadAllText((Join-Path $Here 'SkateLauncher.cs'), [Text.Encoding]::UTF8).Replace("`r", '')
+        $sha = [Security.Cryptography.SHA256]::Create()
+        $mine = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))) -replace '-', '').ToLower()
+        if ($f['source'] -ne $mine) { return $false }
+        Get-Url "$base/SkateLauncher.exe" $Out
+        if ((Get-FileHash $Out -Algorithm SHA256).Hash.ToLower() -ne $f['exe']) { Remove-Item $Out -ErrorAction SilentlyContinue; return $false }
+        return $true
+    } catch { Remove-Item $Out -ErrorAction SilentlyContinue; return $false }
+    finally { Remove-Item $side -ErrorAction SilentlyContinue }
+}
 function Rebuild-LauncherExe {
     $cs = Join-Path $Here 'SkateLauncher.cs'; $exe = Join-Path $Here 'SkateLauncher.exe'; $old = Join-Path $Here 'SkateLauncher.old.exe'
     $new = Join-Path $Here 'SkateLauncher.new.exe'
-    & (Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe') /nologo /target:winexe "/out:$new" $cs | Out-Null
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $new)) { Remove-Item $new -ErrorAction SilentlyContinue; return $false }
+    if (-not (Get-PrebuiltLauncher $new)) {
+        & (Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe') /nologo /target:winexe "/out:$new" $cs | Out-Null
+    }
+    if (-not (Test-Path $new)) { Remove-Item $new -ErrorAction SilentlyContinue; return $false }
     try {
         if (Test-Path $old) { Remove-Item $old -ErrorAction Stop }
         if (Test-Path $exe) { Move-Item $exe $old -Force }
@@ -420,6 +541,7 @@ function Build-Holder($v, [string]$Target) {
 
 # Makes sure the version's worktree exists, follows its pushed branch and is built. True = ready.
 function Ensure-Version($v) {
+    if (Use-Release $v) { return (Ensure-Release $v) }
     $ErrorActionPreference = 'Continue'
     $d = Version-Dir $v
     if (-not (Test-Path (Join-Path $d '.git'))) {
@@ -913,7 +1035,9 @@ function TraceAll-Records($v) {
 }
 
 # What the first-time setup still needs ('' = nothing): setup.ps1's checks (git, Rust, C++ build tools, LLVM, Python,
-# Vulkan). The window opens on the setup page while this names something.
+# Vulkan). The window opens on the setup page while this names something. The selected version is a prebuilt release:
+# no build tools (a version built from source asks for them when it is picked).
+if (Use-Release (Get-Version $Version)) { $env:SKATE_LAUNCHER_RELEASES = '1' }
 . (Join-Path $Here 'setup.ps1')
 $script:MissingCache = $null
 function Setup-Missing { if ($null -eq $script:MissingCache) { $script:MissingCache = Missing-Tools }; return $script:MissingCache }
@@ -958,6 +1082,10 @@ function Save-Result([string]$Text) { Set-Content -Path $LastSession -Value $Tex
 function Refresh-GameFiles($Ver) {
     if (-not (Ensure-Version $Ver)) { return "Refresh game files: $($Ver.name) could not be built. Build log: $script:BuildLog" }
     $d = Version-Dir $Ver
+    if (Use-Release $Ver) {
+        & (Join-Path $d 'skate3rust.exe') --update-game-files 2>&1 | ForEach-Object { Write-Host "  $_" }
+        return "Refresh game files: exit code $LASTEXITCODE."
+    }
     . (Join-Path $d 'scripts\Resolve-DevAssets.ps1')
     $assets = Resolve-DevAssets -ProjectRoot $d
     Write-Host "  Checking the game files ($assets)..."
@@ -1025,7 +1153,15 @@ function Launch([string]$Key, [string]$Lbl) {
         }
         $play = Join-Path (Version-Dir $ver) 'PLAY.bat'
         # Without converted game files the game only shows an error; say what to do instead (couch users).
-        if (-not (Test-Path (Join-Path (Version-Dir $ver) 'assets\private\stock'))) {
+        # The disc picked in the first-time setup: convert the game files from it once, then play.
+        $disc = Setting-Path 'disc'
+        # A release build's own setup converts them on its first start, from that disc without asking.
+        if (Use-Release $ver) { if ($disc) { $env:SKATE3_SETUP_DISC = $disc } }
+        elseif ($disc -and (Test-Path -LiteralPath $disc) -and -not (Test-Path (Join-Path (Version-Dir $ver) 'assets\private\stock'))) {
+            Write-Host "  Converting the game files from $disc (once; this takes a while)..."
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path (Version-Dir $ver) 'tools\setup-dev-assets.ps1') -Disc $disc
+        }
+        if (-not (Use-Release $ver) -and -not (Test-Path (Join-Path (Version-Dir $ver) 'assets\private\stock'))) {
             $msg = "Not started: $($ver.name) has no game files (assets\private). Convert them from the disc once: powershell -ExecutionPolicy Bypass -File `"$(Join-Path (Version-Dir $ver) 'tools\setup-dev-assets.ps1')`" -Disc <your Skate 3 ISO or default.xex>."
             Save-Result $msg; Write-Host "  $msg"
             return
@@ -1179,10 +1315,32 @@ if ($Entry -eq 'status') {
     "share`t$(Share-Status (Version-Dir $v))"
     "fixed_executor`t$(Fixed-Executor)"
     "setup_missing`t$(Setup-Missing)"
+    "first_setup`t$(if (Setting 'first_setup_done' $false) { '' } else { '1' })"
     # The launcher's own commit and the fork's newest (as of the last check at start), for the main screen.
     $lc = Launcher-Commit; $fc = Fork-Commit
     "launcher`t$(Self-Short $lc)"
     "launcher_newer`t$(if ($fc -and $lc -and $fc -ne $lc) { Self-Short $fc } else { '' })"
+    exit 0
+}
+# build.bat: SkateLauncher.exe from the release (built from this SkateLauncher.cs) or compiled here.
+if ($Entry -eq 'launcher-exe') { if (Rebuild-LauncherExe) { 'ok'; exit 0 }; 'failed'; exit 1 }
+# The first-time setup's values (the window's wizard): key, value; "standalone" says where versions go by default.
+if ($Entry -eq 'config-get') {
+    "standalone`t$(if ($Standalone) { '1' } else { '' })"
+    "default_root`t$(if ($Standalone) { $Here } else { '' })"
+    "storage_root`t$(Setting-Path 'storage_root')"
+    "target_root`t$(Setting-Path 'target_root')"
+    "build_cap_gb`t$(Setting 'build_cap_gb' 0)"
+    "disc`t$(Setting-Path 'disc')"
+    "recomp.exe`t$(Setting-Path 'exe' 'recomp')"
+    "recomp.working_dir`t$(Setting-Path 'working_dir' 'recomp')"
+    "rpcs3.exe`t$(Setting-Path 'exe' 'rpcs3')"
+    "rpcs3.game`t$(Setting-Path 'game' 'rpcs3')"
+    exit 0
+}
+# config-set <file>: the wizard's changed values (a JSON object of dotted keys), merged into config.json; the file is removed.
+if ($Entry -eq 'config-set') {
+    try { Set-ConfigValues $Label; 'saved' } finally { Remove-Item -LiteralPath $Label -ErrorAction SilentlyContinue }
     exit 0
 }
 if ($Entry -eq 'setup-check') { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Here 'setup.ps1'); exit $LASTEXITCODE }

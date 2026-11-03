@@ -222,6 +222,9 @@ def main():
     # program updates do not force another ISO picker for matching installs.
     if updating and reuse is not None:
         window.after(200,lambda:begin(reuse) if not running else None)
+    # A first setup started by the Skate launcher gets the disc picked there (SKATE3_SETUP_DISC), so it is not asked again.
+    elif not updating and os.environ.get('SKATE3_SETUP_DISC') and Path(os.environ['SKATE3_SETUP_DISC']).is_file():
+        window.after(200,lambda:begin(os.environ['SKATE3_SETUP_DISC']) if not running else None)
     window.mainloop()
     return 0 if success else 2
 

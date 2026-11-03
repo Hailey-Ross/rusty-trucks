@@ -223,6 +223,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         else pages.Push(MainPage());
         if (screen == "versions") pages.Push(VersionPage());
         if (screen == "tools") pages.Push(EntryPage("Tools", "tools"));
+        if (screen == "setup") pages.Push(WizardPage());
         if (screen == "play" || screen == "play-traceall") pages.Push(EntryPage("Play: " + St("version"), "rust"));
         if (screen == "play-traceall") pages.Peek().Sel = Math.Min(1, pages.Peek().Items.Count - 1);
         if (screen == "waiting") {
@@ -446,6 +447,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         RefreshStatus(true);
         pages.Push(MainPage());
         if (St("setup_missing") != "") pages.Push(SetupPage());
+        if (St("first_setup") != "") pages.Push(WizardPage());
         if (code == 10 || afterUpdate) ShowText(LastSession().Contains("launcher update") || afterUpdate ? "Launcher updated" : "Previous session (closed before its check)", LastSession(), null);
         Invalidate();
     }
@@ -500,6 +502,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (group == "rust" || group == "tools") p.Items.Add(ShareItem());
         if (group == "tools") p.Items.Add(new Item("Opt-ins and settings", "The game's opt-ins and settings, the same ones as its Guide / F1 overlay.", true, delegate { pages.Push(GameSettingsPage("Opt-ins")); }));
         if (group == "tools") p.Items.Add(SameMonitorItem());
+        if (group == "tools") p.Items.Add(new Item("Set up the launcher", "Game folder, space for builds, the Skate 3 disc, the recomp and RPCS3.", true, delegate { wiz = null; pages.Push(WizardPage()); }));
         if (group == "tools") p.Items.Add(new Item("Clear builds and build caches", "Frees disk space: everything, or one version's build cache or whole build. Asks before deleting.", true, delegate { pages.Push(ClearPage()); }));
         if (p.Items.Count == 0) p.Items.Add(new Item("Nothing here yet", "See README.md to set these up.", false, null));
         return p;
@@ -602,6 +605,103 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         p.Items.Add(new Item("Install what is missing", "Windows asks once for permission (UAC). The C++ build tools take 10 minutes or more.", true, delegate { pages.Pop(); Begin("tool-setup", "", "First-time setup"); }));
         p.Items.Add(new Item("Not now", "The Play entries stay greyed out until the tools are there.", true, delegate { pages.Pop(); }));
         return p;
+    }
+
+    // First-time setup (USER-ASKS 461): where the game versions and builds go, the space they get, the Skate 3 disc, the
+    // recomp and RPCS3. launcher.ps1 "config-get" reads the values, "config-set" writes the changed ones to config.json.
+    Dictionary<string, string> wiz, wizStart;
+    static readonly int[] CapChoices = { 0, 50, 100, 150, 200, 300, 500 };
+    string W(string k) { string v; return wiz != null && wiz.TryGetValue(k, out v) ? v : ""; }
+    static string Or(string a, string b) { return a == "" ? b : a; }
+    static string Now(string v, string unset) { return "Now: " + Or(v, unset) + "\n\n"; }
+    static string FreeOn(string path) {
+        try {
+            string root = Path.GetPathRoot(Path.GetFullPath(path));
+            return "Free on " + root + ": " + (new DriveInfo(root).AvailableFreeSpace >> 30) + " GB.";
+        } catch { return ""; }
+    }
+    Page WizardPage() {
+        if (wiz == null) {
+            wiz = new Dictionary<string, string>();
+            foreach (var r in Rows("config-get", 2)) wiz[r[0]] = r[1];
+            if (W("storage_root") == "") wiz["storage_root"] = Or(W("target_root"), W("default_root"));
+            wizStart = new Dictionary<string, string>(wiz);
+        }
+        var p = new Page { Title = "Set up the launcher" };
+        string root = W("storage_root");
+        int cap; int.TryParse(W("build_cap_gb"), out cap);
+        p.Items.Add(new Item("Game folder", Now(root, "not set") + (W("standalone") == "1" ? "Where the launcher keeps the game versions and their builds" : "Where the launcher keeps the builds") + " (one version with its build takes about 15 to 45 GB). " + FreeOn(root), true, delegate { PickFolder("storage_root", "Choose the folder for the game versions and their builds"); }));
+        p.Items.Add(new Item("Space for builds", Now(cap > 0 ? cap + " GB" : "no limit", "") + "Press to change. Before a build would go over it, the launcher deletes the build cache of the version built longest ago. " + FreeOn(root), true, delegate {
+            int i = Array.IndexOf(CapChoices, cap);
+            wiz["build_cap_gb"] = CapChoices[(i + 1) % CapChoices.Length].ToString(); ReshowWizard();
+        }));
+        p.Items.Add(new Item("Skate 3 disc", Now(W("disc"), "not set") + "Your Xbox 360 Skate 3 ISO or default.xex. The first play converts the game files from it once.", true, delegate { PickFile("disc", "Choose your Skate 3 ISO or default.xex", "Skate 3 (*.iso, default.xex)|*.iso;default.xex|All files (*.*)|*.*"); }));
+        p.Items.Add(new Item("Skate 3 Recompiled", Now(W("recomp.working_dir"), "not set (optional)") + "The skate3recomp game folder (with skate3.exe). Adds the Recomp entries.", true, delegate { PickRecomp(); }));
+        p.Items.Add(new Item("RPCS3", Now(W("rpcs3.exe"), "not set (optional)") + "rpcs3.exe, to play retail Skate 3 (PS3) for comparison.", true, delegate { PickFile("rpcs3.exe", "Choose rpcs3.exe", "RPCS3 (rpcs3.exe)|rpcs3.exe|Programs (*.exe)|*.exe"); }));
+        p.Items.Add(new Item("RPCS3 Skate 3 game", Now(W("rpcs3.game"), "not set (optional)") + "The folder of your Skate 3 PS3 game (the one with PS3_GAME or EBOOT.BIN).", true, delegate { PickFolder("rpcs3.game", "Choose your Skate 3 PS3 game folder"); }));
+        p.Items.Add(new Item("Done", "Saves these settings. Change them later in Tools > Set up the launcher.", true, delegate { SaveWizard(); }));
+        p.Items.Add(new Item("Not now", "Saves nothing; this page opens again at the next start.", true, delegate { wiz = null; pages.Pop(); Invalidate(); }));
+        p.OnBack = delegate { wiz = null; pages.Pop(); Invalidate(); };
+        return p;
+    }
+    void ReshowWizard() {
+        int sel = pages.Peek().Sel; pages.Pop();
+        var p = WizardPage(); p.Sel = Math.Min(sel, p.Items.Count - 1); pages.Push(p); Invalidate();
+    }
+    void PickFolder(string key, string title) {
+        using (var d = new FolderBrowserDialog { Description = title, ShowNewFolderButton = true }) {
+            if (Directory.Exists(W(key))) d.SelectedPath = W(key);
+            if (d.ShowDialog(this) == DialogResult.OK) { wiz[key] = d.SelectedPath; ReshowWizard(); }
+        }
+    }
+    string AskFile(string current, string title, string filter) {
+        using (var d = new OpenFileDialog { Title = title, Filter = filter, CheckFileExists = true }) {
+            try { if (current != "" && Directory.Exists(Path.GetDirectoryName(current))) d.InitialDirectory = Path.GetDirectoryName(current); } catch { }
+            return d.ShowDialog(this) == DialogResult.OK ? d.FileName : null;
+        }
+    }
+    void PickFile(string key, string title, string filter) {
+        string f = AskFile(W(key), title, filter);
+        if (f != null) { wiz[key] = f; ReshowWizard(); }
+    }
+    // The recomp's game folder; skate3.exe is taken from it (or a folder under it), else asked for.
+    void PickRecomp() {
+        string dir;
+        using (var d = new FolderBrowserDialog { Description = "Choose your Skate 3 Recompiled game folder" }) {
+            if (Directory.Exists(W("recomp.working_dir"))) d.SelectedPath = W("recomp.working_dir");
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            dir = d.SelectedPath;
+        }
+        string exe = Path.Combine(dir, "skate3.exe");
+        if (!File.Exists(exe)) {
+            exe = null;
+            try { var found = Directory.GetFiles(dir, "skate3.exe", SearchOption.AllDirectories); if (found.Length > 0) exe = found[0]; } catch { }
+            if (exe == null) exe = AskFile(dir + "\\x", "Choose the recomp's skate3.exe", "skate3.exe|skate3.exe|Programs (*.exe)|*.exe");
+            if (exe == null) return;
+        }
+        wiz["recomp.working_dir"] = dir; wiz["recomp.exe"] = exe; ReshowWizard();
+    }
+    static string Js(string v) { return "\"" + v.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""; }
+    void SaveWizard() {
+        var parts = new List<string>();
+        foreach (var k in new[] { "disc", "recomp.exe", "recomp.working_dir", "rpcs3.exe", "rpcs3.game" })
+            if (W(k) != wizStart[k]) parts.Add(Js(k) + ": " + Js(W(k)));
+        if (W("build_cap_gb") != wizStart["build_cap_gb"]) parts.Add(Js("build_cap_gb") + ": " + W("build_cap_gb"));
+        string root = W("storage_root");
+        if (root != wizStart["storage_root"] && root != "") {
+            parts.Add(Js("storage_root") + ": " + Js(root));
+            parts.Add(Js("target_root") + ": " + Js(Path.Combine(root, "builds")));
+            parts.Add(Js("build_cap_dir") + ": " + Js(root));
+            if (W("standalone") == "1") parts.Add(Js("versions_root") + ": " + Js(Path.Combine(root, "versions")));
+        }
+        parts.Add(Js("first_setup_done") + ": true");
+        string file = Path.Combine(StateDir(), "config-set.json");
+        File.WriteAllText(file, "{" + string.Join(", ", parts.ToArray()) + "}", new UTF8Encoding(false));
+        string r = Run("config-set \"" + file + "\"");
+        wiz = null; pages.Pop();
+        if (r.Trim() != "saved") ShowText("Set up the launcher", "The settings could not be saved:\n\n" + r, null);
+        RebuildMain();
+        Invalidate();
     }
     void RebuildMain() {
         // A version change or a finished job can change every list (entries, versions, notes): fetch them again.
