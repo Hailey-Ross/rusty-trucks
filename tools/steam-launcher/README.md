@@ -45,7 +45,7 @@ What it does:
   changed and sets `first_setup_done`; **Tools > Set up the launcher** opens it again. On a fresh PC a page after it
   checks Git, Rust, the C++ build tools, LLVM, Python 3.13 and Vulkan, and installs what is missing with winget (one
   UAC prompt for the machine-wide tools).
-- **Size cap:** optional, the build folders never grow over a set size: before a build the launcher deletes the build
+- **Size cap:** optional. The build folders never grow over a set size: before a build the launcher deletes the build
   cache of the version built longest ago.
 - **Clear builds:** Tools > Clear builds and build caches frees space by hand: everything, every build cache, or one
   version's build cache (it still plays) or whole build (cache and `bin\`, it builds again at its next launch), each
