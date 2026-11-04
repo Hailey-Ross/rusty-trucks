@@ -49,7 +49,7 @@ system behaves exactly like the original.
 
 ## Play
 
-[Download Experimental](https://github.com/SK8-ENGINE/skate-3-rust-engine/releases/tag/experimental).
+[Download Experimental](https://github.com/Hailey-Ross/rusty-trucks/releases/tag/hails-additions).
 Successful `main` builds replace this prerelease. Choose **Latest** in Updates
 for experimental updates; **Stable** is the default.
 
