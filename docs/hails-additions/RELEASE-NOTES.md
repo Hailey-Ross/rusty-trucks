@@ -1,5 +1,9 @@
 > **EARLY ALPHA, rolling build.** The latest `hails-additions` branch of the Hailey-Ross fork, built on top of upstream `main` (SK8-ENGINE/skate-3-rust-engine). Expect bugs and please report them (see **Testing and reports**). You need your own Skate 3 Xbox 360 disc image; no game files are included.
 
+<p align="center"><img src="https://raw.githubusercontent.com/Hailey-Ross/rusty-trucks/pr-assets/launcher/01-camcorder-lcd-panel.gif" alt="The Skate launcher: a camcorder's LCD panel swings open, shows the HOME menu and folds shut" width="640"></p>
+
+The Skate launcher: the flip-out LCD panel of a mid-2000s skate camcorder. It swings open, shows its menu and folds shut with POWER.
+
 ## Setup (with the Skate launcher, recommended)
 
 The Skate launcher keeps you on the newest build: every start checks the fork, downloads the new build when there is one and keeps a session log of every game, so reports always have one.

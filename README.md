@@ -8,6 +8,16 @@ A Rust and Bevy skating project built from Skate 3 reverse-engineering research.
 Includes skating, tricks, grinds, offboard movement, difficulty settings and
 `.skate` map support. Gameplay parity is still a work in progress.
 
+## Skate launcher
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Hailey-Ross/rusty-trucks/pr-assets/launcher/01-camcorder-lcd-panel.gif" alt="The Skate launcher: a camcorder's LCD panel swings open, shows the HOME menu and folds shut" width="640">
+</p>
+
+The couch launcher ([`tools/steam-launcher`](tools/steam-launcher/README.md)) starts any version, the recomp
+with a trace option or retail Skate 3 in RPCS3 from Steam with a controller. It looks like the flip-out LCD
+panel of a mid-2000s skate camcorder ([details](docs/hails-additions/41-launcher-camcorder-viewfinder.md#change)).
+
 ## History
 
 Before this rewrite existed, **dumbad** spent more than two years reverse
