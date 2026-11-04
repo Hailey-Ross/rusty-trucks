@@ -217,6 +217,9 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
 
     // Draws one screen into a PNG (the --snapshot mode): main, versions, tools or job (a sample build log).
     public void Snapshot(string file, string screen, int w, int h) {
+        // "<screen>@0.4": that screen 40 % through the viewfinder's fold-out.
+        float fold = 1; int at = screen.IndexOf('@');
+        if (at > 0) { float.TryParse(screen.Substring(at + 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out fold); screen = screen.Substring(0, at); }
         MakeFonts(h);
         RefreshStatus();
         if (screen == "checking") { starting = true; selfFetching = true; startSince = DateTime.Now.AddSeconds(-7); }
@@ -253,7 +256,11 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         using (var bmp = new Bitmap(w, h)) {
             // Twice: the first frame starts the screen-change fade; the second draws it finished.
-            using (var g = Graphics.FromImage(bmp)) { Render(g, w, h); screenAt = selAt = stageAt = -10; Render(g, w, h); }
+            using (var g = Graphics.FromImage(bmp)) { Render(g, w, h); screenAt = selAt = stageAt = -10; Render(g, w, h); Viewfinder(g, w, h); }
+            if (fold < 1) using (var folded = new Bitmap(w, h)) {
+                using (var g = Graphics.FromImage(folded)) { g.Clear(Color.Black); DrawFolded(g, bmp, w, h, fold); }
+                folded.Save(file, System.Drawing.Imaging.ImageFormat.Png); return;
+            }
             bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
         }
     }
@@ -814,6 +821,10 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     }
     DateTime scannedAt;
     void Poll() {
+        if (foldShutAt >= 0 && !foldDone) {
+            if ((float)clock.Elapsed.TotalSeconds - foldShutAt >= FoldSecs) { foldDone = true; Close(); return; }
+            Invalidate(); return;
+        }
         if (closeAt >= 0) {
             int left = (int)Math.Ceiling((closeTime - DateTime.Now).TotalSeconds);
             if (left <= 0) { Close(); return; }
@@ -826,6 +837,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             WatchGame();
         }
         if (dirty || Animating()) { dirty = false; Invalidate(); }
+        // The viewfinder's clock: once a second (its counter only runs during a job, which already redraws).
+        if (Visible && viewfinder && DateTime.Now.Second != vfSecond) { vfSecond = DateTime.Now.Second; Invalidate(); }
         // The rolling boards and the Play glow: about 30 frames a second while the menu or a job shows.
         if (Visible && ++frame % 2 == 0 && (job != null || starting || (pages.Count > 0 && IsMain(pages.Peek())))) Invalidate();
         // Only while the menu is in front: XInput reports the pad to every process, so the game's presses would
@@ -962,12 +975,183 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     readonly Stopwatch clock = Stopwatch.StartNew();
     DateTime jobStart;
 
-    protected override void OnPaint(PaintEventArgs ev) { Render(ev.Graphics, ClientSize.Width, ClientSize.Height); Outro(ev.Graphics, ClientSize.Width, ClientSize.Height); }
+    protected override void OnPaint(PaintEventArgs ev) {
+        int w = ClientSize.Width, h = ClientSize.Height;
+        float open = FoldOpen();
+        if (open >= 1) { Render(ev.Graphics, w, h); Outro(ev.Graphics, w, h); Viewfinder(ev.Graphics, w, h); return; }
+        if (foldShot == null || foldShot.Width != w || foldShot.Height != h) { if (foldShot != null) foldShot.Dispose(); foldShot = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb); }
+        using (var g = Graphics.FromImage(foldShot)) { Render(g, w, h); Outro(g, w, h); Viewfinder(g, w, h); }
+        ev.Graphics.Clear(Color.Black);
+        DrawFolded(ev.Graphics, foldShot, w, h, open);
+    }
+
+    // The camcorder's flip-out screen: the window swings open on a hinge at its left edge at start and shut before it
+    // closes (USER-ASKS 484). Off with the viewfinder.
+    const float FoldSecs = 0.6f;
+    Bitmap foldShot; float foldOpenAt = -1, foldShutAt = -1; bool foldDone;
+    float FoldOpen() {
+        if (!viewfinder) return 1;
+        float t = (float)clock.Elapsed.TotalSeconds;
+        if (foldShutAt >= 0) return 1 - Ease((t - foldShutAt) / FoldSecs);
+        if (foldOpenAt < 0) foldOpenAt = t;
+        return Ease((t - foldOpenAt) / FoldSecs);
+    }
+    bool Folding() {
+        if (!viewfinder) return false;
+        float t = (float)clock.Elapsed.TotalSeconds;
+        return foldShutAt >= 0 || foldOpenAt < 0 || t - foldOpenAt < FoldSecs + 0.05f;
+    }
+    // Vertical strips with perspective: the hinge edge stays full size, the free edge swings away and shrinks.
+    static void DrawFolded(Graphics g, Bitmap shot, int w, int h, float open) {
+        if (open <= 0.001f) return;
+        double a = (1 - open) * Math.PI / 2;
+        float cos = (float)Math.Cos(a), sin = (float)Math.Sin(a), dist = w * 1.4f, cy = h / 2f;
+        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+        const int strips = 96;
+        float prevX = 0;
+        for (int i = 0; i < strips; i++) {
+            float u1 = (i + 1f) / strips, um = (i + 0.5f) / strips;
+            float s1 = dist / (dist + u1 * w * sin), sm = dist / (dist + um * w * sin);
+            float x1 = u1 * w * cos * s1;
+            int sx = i * w / strips, sw = (i + 1) * w / strips - sx;
+            var dest = new RectangleF(prevX, cy - cy * sm, Math.Max(1, x1 - prevX + 0.5f), h * sm);
+            g.DrawImage(shot, dest, new RectangleF(sx, 0, sw, h), GraphicsUnit.Pixel);
+            prevX = x1;
+        }
+        // Darker while it faces away, like a screen turned from the light.
+        int dark = (int)(200 * (1 - open));
+        if (dark > 0) {
+            float s = dist / (dist + w * sin);
+            var pts = new[] { new PointF(0, 0), new PointF(prevX, cy - cy * s), new PointF(prevX, cy + cy * s), new PointF(0, h) };
+            using (var b = new SolidBrush(Color.FromArgb(dark, 0, 0, 0))) g.FillPolygon(b, pts);
+        }
+    }
+    protected override void OnFormClosing(FormClosingEventArgs e) {
+        if (viewfinder && Visible && !foldDone && e.CloseReason == CloseReason.UserClosing) {
+            e.Cancel = true;
+            if (foldShutAt < 0) { foldShutAt = (float)clock.Elapsed.TotalSeconds; if (!tick.Enabled) tick.Start(); Invalidate(); }
+            return;
+        }
+        base.OnFormClosing(e);
+    }
+
+    // ---------- camcorder viewfinder (USER-ASKS 484) ----------
+    // A 2000s MiniDV viewfinder over every screen; layout and choices: docs/hails-additions/41-launcher-camcorder-viewfinder.md.
+    // viewfinder-off.txt in the state folder turns it off.
+    static readonly bool viewfinder = !File.Exists(Path.Combine(StateDir(), "viewfinder-off.txt"));
+    Bitmap vfLens, vfOsd; float vfRight = -1; int vfSecond = -1;
+    bool vfRec; DateTime vfRecSince; TimeSpan vfRecTotal;
+
+    // Vignette and scanlines, drawn once per window size.
+    Bitmap Lens(int w, int h) {
+        if (vfLens != null && vfLens.Width == w && vfLens.Height == h) return vfLens;
+        if (vfLens != null) vfLens.Dispose();
+        vfLens = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using (var g = Graphics.FromImage(vfLens)) {
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var oval = new RectangleF(-w * 0.1f, -h * 0.16f, w * 1.2f, h * 1.32f);
+            using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
+                path.AddEllipse(oval);
+                using (var outside = new Region(new RectangleF(0, 0, w, h))) {
+                    outside.Exclude(path);
+                    using (var b = new SolidBrush(Color.FromArgb(120, 0, 0, 0))) g.FillRegion(b, outside);
+                }
+                using (var pg = new System.Drawing.Drawing2D.PathGradientBrush(path)) {
+                    pg.CenterColor = Color.FromArgb(0, 0, 0, 0); pg.SurroundColors = new[] { Color.FromArgb(120, 0, 0, 0) };
+                    pg.FocusScales = new PointF(0.62f, 0.55f);
+                    g.FillPath(pg, path);
+                }
+            }
+            int step = Math.Max(2, h / 360);
+            using (var b = new SolidBrush(Color.FromArgb(22, 0, 0, 0))) for (int y = 0; y < h; y += step) g.FillRectangle(b, 0, y, w, Math.Max(1, step / 2));
+        }
+        return vfLens;
+    }
+
+    // OSD text in the viewfinder's look: hard pixels, a black outline.
+    static void OsdText(Graphics g, string s, Font f, Color c, float x, float y) {
+        using (var black = new SolidBrush(Color.Black))
+            for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++) if (dx != 0 || dy != 0) g.DrawString(s, f, black, x + dx, y + dy);
+        using (var b = new SolidBrush(c)) g.DrawString(s, f, b, x, y);
+    }
+    static void OsdBox(Graphics g, Color c, float x, float y, float bw, float bh) {
+        using (var black = new SolidBrush(Color.Black)) g.FillRectangle(black, x - 1, y - 1, bw + 2, bh + 2);
+        using (var b = new SolidBrush(c)) g.FillRectangle(b, x, y, bw, bh);
+    }
+
+    void Viewfinder(Graphics g, int w, int h) {
+        if (!viewfinder || w < 64 || h < 64) return;
+        g.DrawImageUnscaled(Lens(w, h), 0, 0);
+        // The OSD is drawn at a third of 1080p (one OSD pixel = k screen pixels) and scaled up without smoothing.
+        int k = Math.Max(2, (int)Math.Round(h / 360f)), W = w / k, H = h / k;
+        if (vfOsd == null || vfOsd.Width != W || vfOsd.Height != H) { if (vfOsd != null) vfOsd.Dispose(); vfOsd = new Bitmap(W, H, System.Drawing.Imaging.PixelFormat.Format32bppPArgb); }
+        DateTime now = DateTime.Now;
+        bool rec = job != null;
+        if (rec && !vfRec) vfRecSince = now;
+        if (!rec && vfRec) vfRecTotal += now - vfRecSince;
+        vfRec = rec;
+        TimeSpan tape = vfRecTotal + (rec ? now - vfRecSince : TimeSpan.Zero);
+        using (var o = Graphics.FromImage(vfOsd))
+        using (var big = new Font("Tahoma", H / 31f, FontStyle.Bold, GraphicsUnit.Pixel))
+        using (var small = new Font("Tahoma", H / 39f, FontStyle.Bold, GraphicsUnit.Pixel)) {
+            o.Clear(Color.Transparent);
+            o.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+            o.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit;
+            var white = Color.FromArgb(240, 240, 232);
+            // Framing marks in the corners and a small centre cross.
+            float ix = W * 0.012f, iy = H * 0.018f, arm = H * 0.05f;
+            foreach (var c in new[] { new PointF(ix, iy), new PointF(W - ix, iy), new PointF(ix, H - iy), new PointF(W - ix, H - iy) }) {
+                float sx = c.X < W / 2 ? 1 : -1, sy = c.Y < H / 2 ? 1 : -1;
+                OsdBox(o, white, sx > 0 ? c.X : c.X - arm, sy > 0 ? c.Y : c.Y - 1, arm, 1);
+                OsdBox(o, white, sx > 0 ? c.X : c.X - 1, sy > 0 ? c.Y : c.Y - arm, 1, arm);
+            }
+            float cx = W / 2f, cy = H / 2f, ca = H * 0.014f;
+            OsdBox(o, Fade(white, 170), cx - ca, cy, 2 * ca + 1, 1); OsdBox(o, Fade(white, 170), cx, cy - ca, 1, 2 * ca + 1);
+            // Top right, left of the version chip: STBY / REC, SP, the tape counter, the battery.
+            float barH = H * 0.085f, right = (vfRight > 0 ? vfRight : w - w * 0.045f) / k - H * 0.03f;
+            string counter = string.Format("{0}:{1:00}:{2:00}:{3:00}", (int)tape.TotalHours, tape.Minutes, tape.Seconds, tape.Milliseconds * 30 / 1000);
+            float ty = (barH - big.Height) / 2f;
+            float bw = H * 0.05f, bh = big.Height * 0.62f, by = ty + (big.Height - bh) / 2f;
+            var mins = o.MeasureString("60min", small);
+            float x = right - mins.Width;
+            OsdText(o, "60min", small, white, x, ty + (big.Height - small.Height) / 2f);
+            x -= bw + 3;
+            OsdBox(o, white, x, by, bw, bh); OsdBox(o, white, x + bw, by + bh * 0.3f, 2, bh * 0.4f);
+            using (var bl = new SolidBrush(Color.Black)) o.FillRectangle(bl, x + 1, by + 1, bw - 2, bh - 2);
+            for (int i = 0; i < 4; i++) using (var seg = new SolidBrush(white)) o.FillRectangle(seg, x + 2 + i * (bw - 3) / 4f, by + 2, (bw - 3) / 4f - 1, bh - 4);
+            x -= o.MeasureString(counter, big).Width + H * 0.03f;
+            OsdText(o, counter, big, white, x, ty);
+            x -= o.MeasureString("SP", big).Width + H * 0.025f;
+            OsdText(o, "SP", big, white, x, ty);
+            string mode = rec ? "REC" : "STBY";
+            x -= o.MeasureString(mode, big).Width + H * 0.03f;
+            OsdText(o, mode, big, white, x, ty);
+            if (rec && now.Millisecond < 600) {
+                float d = big.Height * 0.5f;
+                using (var bl = new SolidBrush(Color.Black)) o.FillEllipse(bl, x - d - 4, ty + (big.Height - d) / 2f - 1, d + 2, d + 2);
+                using (var red = new SolidBrush(Color.FromArgb(232, 36, 30))) o.FillEllipse(red, x - d - 3, ty + (big.Height - d) / 2f, d, d);
+            }
+            // Bottom, left of the button prompts: the date and time stamp, stacked.
+            string date = now.ToString("MMM. d yyyy", System.Globalization.CultureInfo.InvariantCulture).ToUpperInvariant();
+            string clockS = now.ToString("h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
+            float footTop = H - barH, sx2 = (w - w * 0.045f - w * 0.2f) / k - H * 0.06f;
+            float lw = Math.Max(o.MeasureString(date, small).Width, o.MeasureString(clockS, small).Width);
+            float ly = footTop + (barH - small.Height * 2) / 2f;
+            OsdText(o, date, small, white, sx2 - lw, ly);
+            OsdText(o, clockS, small, white, sx2 - lw, ly + small.Height);
+        }
+        var st = g.Save();
+        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+        g.DrawImage(vfOsd, new Rectangle(0, 0, W * k, H * k), 0, 0, W, H, GraphicsUnit.Pixel);
+        g.Restore(st);
+    }
 
     // Screen and selection animations (seconds on `clock`): short and eased out, so input never waits on them.
     string screenKey = ""; int screenDepth, screenDir = 1, selIndex = -1; float screenAt = -1, selAt = -1, selEase = 1;
     static float Ease(float x) { x = Math.Max(0, Math.Min(1, x)); float r = 1 - x; return 1 - r * r * r; }
-    bool Animating() { float t = (float)clock.Elapsed.TotalSeconds; return t - screenAt < 0.2f || t - selAt < 0.14f || splashShot != null; }
+    bool Animating() { float t = (float)clock.Elapsed.TotalSeconds; return t - screenAt < 0.2f || t - selAt < 0.14f || splashShot != null || Folding(); }
     // The incoming screen fades up from the backdrop (the top bar stays).
     static void Veil(Graphics g, int w, int h, float barH, float ease) {
         if (ease >= 1) return;
@@ -1106,10 +1290,11 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             Write(g, lv, smallFont, St("launcher_newer") != "" ? Accent : Faint, new RectangleF(lx, 0, w * 0.45f, barH), StringAlignment.Near, StringAlignment.Center, false);
         }
         string chip = St("version") == "" ? "" : St("version");
+        vfRight = w - m;
         if (chip != "") {
             var cs = g.MeasureString(chip, smallFont);
             var cr = new RectangleF(w - m - cs.Width - smallFont.Height * 1.6f, barH * 0.28f, cs.Width + smallFont.Height * 1.6f, barH * 0.44f);
-            Card(g, cr, cr.Height / 2, PanelHi, Panel, Stroke, 1);
+            Card(g, cr, cr.Height / 2, PanelHi, Panel, Stroke, 1); vfRight = cr.X;
             using (var dot = new SolidBrush(Accent)) g.FillEllipse(dot, cr.X + cr.Height * 0.35f, cr.Y + cr.Height * 0.38f, cr.Height * 0.24f, cr.Height * 0.24f);
             Write(g, chip, smallFont, Ink, new RectangleF(cr.X + cr.Height * 0.7f, cr.Y, cr.Width - cr.Height * 0.7f, cr.Height), StringAlignment.Near, StringAlignment.Center, false);
         }

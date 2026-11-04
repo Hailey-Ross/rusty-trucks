@@ -13,7 +13,7 @@ What it does:
   Every other list page (Play, Choose version, Tools, Recomp, ...) is a grid of buttons two wide (short labels) with a
   large panel beside it for the selected option: its full name, READY or why it is not available, what it does and,
   for the play options, what it records (FILES / GAME LOG rows from launcher.ps1 `entries` columns 8 and 9).
-  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|setup|play|play-traceall|waiting|fetching|checking|job|build|failed]` draws one screen at 1920x1080
+  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|setup|play|play-traceall|waiting|fetching|checking|job|build|failed][@<fold>]` draws one screen at 1920x1080 (`main@0.45`: 45 % through the viewfinder fold-out, [doc 41](../../docs/hails-additions/41-launcher-camcorder-viewfinder.md#change))
   into a PNG and exits (checking the look without opening the window).
   The window opens centred on the main monitor. `SkateLauncher.exe --same-monitor` (or Tools > "Open on", saved as
   `open-on-launching-monitor.txt` in the state folder) opens it on the monitor of the window it was started from
