@@ -61,7 +61,7 @@ Playing this branch's rolling build on a second PC (couch testing): [second-pc-t
 | 38 | [DLC support: the player's own Skate 3 DLC packages](38-dlc-support.md) | Setup (Python) + Game (Rust) | In #52 (pushed on `world/replay`; open items in the doc): STFS (Xbox 360 package format) reader, DLC folder input, the Create pack's replay editor movie and text exported; DLC maps next. Not play-tested |
 | 39 | [skate.Park layouts: the Full / Basic worlds place their pieces](39-skatepark-layouts.md) | Setup (Python) + Game (Rust) | In #52, item 9 (pushed on `world/replay`; open items in the doc): static pieces with collision and rails, Challenge Map Full / Empty rows; park shaders and movable pieces next. Not play-tested |
 | 40 | [Map block decode: exact-size buffers (upstream PR #66, extended)](40-map-block-decode.md) | Engine (skate-data) | Committed on `world/replay` (b28b9746, PR #52): #66's exact reserve plus one buffer for the geometry blocks and a bounded reservation for bad files; all 17 maps decode identically; #66 is still open |
-| 41 | [Launcher: camcorder viewfinder look](41-launcher-camcorder-viewfinder.md) | Launcher (C#) | On `hails-additions`, launcher only, not for upstream: MiniDV viewfinder overlay (STBY / REC, counter, battery, date stamp, vignette), flip-out open / close, off with `viewfinder-off.txt` |
+| 41 | [Launcher: the camcorder](41-launcher-camcorder-viewfinder.md) | Launcher (C#) | On `hails-additions`, launcher only, not for upstream: the window is a 2000s MiniDV camcorder (layered window, camera keys, flip-out LCD with full bezel, low-res Handycam-style menus), unfolds / folds with per-run variance, a worn per-user skate sticker (game stickers replace it later) |
 
 ## Environment used for verification
 

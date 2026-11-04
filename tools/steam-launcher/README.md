@@ -6,15 +6,19 @@ controller, and see after each session whether it went fine. Built for testing f
 back to back, try a PR exactly as it was pushed, record a recomp trace session, without touching a keyboard.
 
 What it does:
-- **A real window:** `SkateLauncher.exe` is a full-screen menu for the controller (XInput), the keyboard and Steam's
-  desktop layout (arrows, Enter, Esc / Space). It hides while a game runs, so the game gets the front and Steam's
-  gamepad layout, and comes back with the session's result when the game closes. The main screen is a hero card
-  with the selected version and Play, then tiles (D-pad in all four directions); the splash's skateboard is the mark.
-  Every other list page (Play, Choose version, Tools, Recomp, ...) is a grid of buttons two wide (short labels) with a
-  large panel beside it for the selected option: its full name, READY or why it is not available, what it does and,
-  for the play options, what it records (FILES / GAME LOG rows from launcher.ps1 `entries` columns 8 and 9).
-  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|setup|play|play-traceall|waiting|fetching|checking|job|build|failed][@<fold>]` draws one screen at 1920x1080 (`main@0.45`: 45 % through the viewfinder fold-out, [doc 41](../../docs/hails-additions/41-launcher-camcorder-viewfinder.md#change))
-  into a PNG and exits (checking the look without opening the window).
+- **A real window, shaped like a camcorder:** `SkateLauncher.exe` is a 2000s MiniDV camcorder on your desktop (a
+  borderless see-through window, drag it by its body) with a menu for the controller (XInput), the keyboard, Steam's
+  desktop layout (arrows, Enter, Esc / Space) and the mouse: the camera's keys work too (MENU = back, the SEL / PUSH
+  EXEC dial and the zoom rocker move and select, START/STOP plays, POWER closes). It unfolds when it starts and folds
+  away when it closes. It hides while a game runs, so the game gets the front and Steam's gamepad layout, and comes
+  back with the session's result when the game closes. Every screen is the camera's own LCD menu: a list with the
+  selected option's info beside it (its full name, READY or why it is not available, what it does and, for the play
+  options, what it records: FILES / GAME LOG rows from launcher.ps1 `entries` columns 8 and 9). A worn skate sticker,
+  picked once per user, sits on the camera (`camcorder-sticker.txt`; PNGs in `stickers\` in the state folder replace
+  the built-in set). Details: [doc 41](../../docs/hails-additions/41-launcher-camcorder-viewfinder.md#change).
+  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|setup|play|play-traceall|waiting|fetching|checking|job|build|failed][@<0..1>][#<seed>] [<w>x<h>]` draws one screen at 1920x1080
+  into a PNG and exits (checking the look without opening the window; `@0.5` = halfway through the power-on, `#7` = the
+  sticker from seed 7). `SkateLauncher.exe --bench <out.txt> [<w>x<h>]` writes the time per frame through the power-on.
   The window opens centred on the main monitor. `SkateLauncher.exe --same-monitor` (or Tools > "Open on", saved as
   `open-on-launching-monitor.txt` in the state folder) opens it on the monitor of the window it was started from
   (Steam, Explorer), or under the mouse when there is none.

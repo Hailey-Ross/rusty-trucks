@@ -1,5 +1,5 @@
-// Couch launcher for Steam / Steam Link (see README.md): a full-screen window with a menu for the controller, the
-// keyboard or Steam's desktop layout. launcher.ps1 does the work (versions, builds, launching, session checks) and
+// Couch launcher for Steam / Steam Link (see README.md): a camcorder-shaped window (docs/hails-additions/41-...) with a
+// menu for the controller, the keyboard, the mouse or Steam's desktop layout. launcher.ps1 does the work (versions, builds, launching, session checks) and
 // this window shows its output; the entry and version lists come from launcher.ps1 too.
 //   D-pad / left stick = move, A = select, B = back. Arrows / Enter / Esc / Space (Steam's desktop layout) work too.
 //   SkateLauncher.exe <entry> [label] [@version]  runs an entry directly (one-click Steam shortcuts), shows the
@@ -10,6 +10,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -30,6 +32,26 @@ static class Native {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] public static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
+    [StructLayout(LayoutKind.Sequential)] struct Pt { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] struct Sz { public int W, H; }
+    [StructLayout(LayoutKind.Sequential, Pack = 1)] struct Blend { public byte Op, Flags, Alpha, Format; }
+    [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref Pt pos, ref Sz size, IntPtr src, ref Pt srcPos, int key, ref Blend b, int flags);
+    public static void DeleteHbitmap(IntPtr h) { DeleteObject(h); }
+    // Hands a frame with per-pixel alpha to a layered window (the camcorder's outline is its own alpha).
+    public static void Push(IntPtr hwnd, Bitmap bmp, int x, int y, byte alpha) {
+        IntPtr screen = GetDC(IntPtr.Zero), mem = CreateCompatibleDC(screen), hb = bmp.GetHbitmap(Color.FromArgb(0)), old = SelectObject(mem, hb);
+        var pos = new Pt { X = x, Y = y }; var size = new Sz { W = bmp.Width, H = bmp.Height }; var src = new Pt(); var bl = new Blend { Alpha = alpha, Format = 1 };
+        UpdateLayeredWindow(hwnd, screen, ref pos, ref size, mem, ref src, 0, ref bl, 2);
+        SelectObject(mem, old); DeleteObject(hb); DeleteDC(mem); ReleaseDC(IntPtr.Zero, screen);
+    }
 
     // Windows only lets the foreground owner hand the foreground on; a window Steam or a hidden launcher starts is
     // otherwise left behind the last active one. Joining the foreground thread's input for the call lifts that.
@@ -47,7 +69,6 @@ static class Native {
 class Item {
     public string Text, Hint; public bool On = true; public Action Run;
     public string Info = ""; public string[] Records = new string[0];   // the play screen's detail panel
-    public string Icon;   // the text the tile's glyph is picked from (null = Text)
     public Item(string text, string hint, bool on, Action run) { Text = text; Hint = hint ?? ""; On = on; Run = run; }
 }
 class Page {
@@ -174,17 +195,18 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         sameMonitorFlag = Array.IndexOf(argv, "--same-monitor") >= 0;
         direct = Array.FindAll(argv, a => a != "--after-update" && a != "--same-monitor");
         Text = "Skate launcher";
-        // A normal window: 70 % of the screen's work area at 16:10, centred, resizable (the layout scales with it). On the
-        // main monitor, or with --same-monitor / the Tools setting on the monitor of the window it was started from.
+        // The camcorder as its own window (no frame, its outline is the drawing's alpha): 72 % of the work area's height
+        // at the camera's 16:10, centred. On the main monitor, or with --same-monitor / the Tools setting on the monitor
+        // of the window it was started from.
         var area = StartScreen().WorkingArea;
-        int h = Math.Min(area.Height * 7 / 10, area.Width * 7 / 10 * 10 / 16);
+        int h = Math.Min(area.Height * 72 / 100, area.Width * 72 / 100 * 10 / 16);
+        FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual; ClientSize = new Size(h * 16 / 10, h);
         Location = new Point(area.Left + (area.Width - Width) / 2, area.Top + (area.Height - Height) / 2);
-        MinimumSize = new Size(800, 540);
         BackColor = Color.FromArgb(18, 20, 24); ForeColor = Color.White;
         DoubleBuffered = true; KeyPreview = true;
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-        tick.Interval = 16; tick.Tick += delegate { Poll(); };
+        tick.Interval = 16; tick.Tick += delegate { Poll(); if (needPresent) Present(); };
         // The window paints first; the start check (launcher.ps1 pending: self update, session check) runs behind a card
         // (it froze the start with no window during a slow self-update fetch; b522).
         Load += delegate { tick.Start(); };
@@ -215,11 +237,31 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         iconSmall = new Font("Segoe MDL2 Assets", h / 40f, GraphicsUnit.Pixel);
     }
 
+    public string Bench(int w, int h) {
+        snapshotMode = true; RefreshStatus(); pages.Push(MainPage());
+        var sb = new StringBuilder();
+        using (var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb)) using (var g = Graphics.FromImage(bmp)) {
+            foreach (float at in new[] { 0.3f, 0.5f, 0.65f, 0.9f, 1f }) {
+                snapPanel = at; flipScale = -1; Render(g, w, h);
+                var sw = Stopwatch.StartNew();
+                for (int i = 0; i < 20; i++) { g.Clear(Color.Transparent); Render(g, w, h); }
+                double ms = sw.Elapsed.TotalMilliseconds / 20;
+                sw.Restart();
+                for (int i = 0; i < 20; i++) { IntPtr hb = bmp.GetHbitmap(Color.FromArgb(0)); Native.DeleteHbitmap(hb); }
+                sb.AppendLine(string.Format(System.Globalization.CultureInfo.InvariantCulture, "assembly {0:0.00}: render {1:0.0} ms, GetHbitmap {2:0.0} ms", at, ms, sw.Elapsed.TotalMilliseconds / 20));
+            }
+        }
+        return sb.ToString();
+    }
+
     // Draws one screen into a PNG (the --snapshot mode): main, versions, tools or job (a sample build log).
     public void Snapshot(string file, string screen, int w, int h) {
-        // "<screen>@0.4": that screen 40 % through the viewfinder's fold-out.
-        float fold = 1; int at = screen.IndexOf('@');
-        if (at > 0) { float.TryParse(screen.Substring(at + 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out fold); screen = screen.Substring(0, at); }
+        // "<screen>#7": the sticker from seed 7; "<screen>@0.4": 40 % through the power-on (the camera unfolding).
+        snapshotMode = true; snapPanel = 1;
+        int hash = screen.IndexOf('#');
+        if (hash > 0) { int.TryParse(screen.Substring(hash + 1), out snapSeed); screen = screen.Substring(0, hash); }
+        int at = screen.IndexOf('@');
+        if (at > 0) { float.TryParse(screen.Substring(at + 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out snapPanel); screen = screen.Substring(0, at); }
         MakeFonts(h);
         RefreshStatus();
         if (screen == "checking") { starting = true; selfFetching = true; startSince = DateTime.Now.AddSeconds(-7); }
@@ -255,12 +297,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             foreach (var l in new[] { "Fetching hails-additions at 94774ce", "   Compiling bevy_render v0.18.1", "   Compiling skate-core v0.1.0", "warning: unused import: `skitch_enabled`", "   Compiling skate-game v0.1.0" }) log.Add(l);
         }
         using (var bmp = new Bitmap(w, h)) {
-            // Twice: the first frame starts the screen-change fade; the second draws it finished.
-            using (var g = Graphics.FromImage(bmp)) { Render(g, w, h); screenAt = selAt = stageAt = -10; Render(g, w, h); Viewfinder(g, w, h); }
-            if (fold < 1) using (var folded = new Bitmap(w, h)) {
-                using (var g = Graphics.FromImage(folded)) { g.Clear(Color.Black); DrawFolded(g, bmp, w, h, fold); }
-                folded.Save(file, System.Drawing.Imaging.ImageFormat.Png); return;
-            }
+            using (var g = Graphics.FromImage(bmp)) { Render(g, w, h); }
+
             bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
         }
     }
@@ -391,10 +429,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     readonly object startLock = new object(); Process startProc; volatile bool selfFetching, selfFetched, skipped;
     // The start check's current step (LAUNCHER_STAGE lines), shown under the rolling board.
     volatile string startStage;
-    // The step shown, the one fading out and when it changed (the status line cross-fades).
-    string stageShown, stagePrev; float stageAt = -10;
     const double SplashMinSeconds = 1.1;
-    Bitmap splashShot; float outroAt = -10;
     void Start() {
         Activate(); Native.Front(Handle);
         starting = true; startSince = DateTime.Now; selfFetching = selfFetched = skipped = skipArmed = false; startStage = null; Invalidate();
@@ -444,12 +479,6 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         string ent = "", lbl = "", ver = "";
         foreach (var a in direct) { if (a.StartsWith("@")) ver = a.Substring(1); else if (ent == "") ent = a; else if (lbl == "") lbl = a; }
         if (ent != "") { Direct(ent, lbl, ver); return; }
-        // The last splash frame dissolves over the menu (Outro).
-        if (ClientSize.Width > 0 && ClientSize.Height > 0) {
-            splashShot = new Bitmap(ClientSize.Width, ClientSize.Height);
-            using (var g = Graphics.FromImage(splashShot)) RenderSplash(g, ClientSize.Width, ClientSize.Height);
-            outroAt = (float)clock.Elapsed.TotalSeconds;
-        }
         Prefetch();
         RefreshStatus(true);
         pages.Push(MainPage());
@@ -821,8 +850,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     }
     DateTime scannedAt;
     void Poll() {
-        if (foldShutAt >= 0 && !foldDone) {
-            if ((float)clock.Elapsed.TotalSeconds - foldShutAt >= FoldSecs) { foldDone = true; Close(); return; }
+        if (powerOffAt >= 0 && !poweredOff) {
+            if ((float)clock.Elapsed.TotalSeconds - powerOffAt >= OffTime) { poweredOff = true; Close(); return; }
             Invalidate(); return;
         }
         if (closeAt >= 0) {
@@ -837,10 +866,8 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             WatchGame();
         }
         if (dirty || Animating()) { dirty = false; Invalidate(); }
-        // The viewfinder's clock: once a second (its counter only runs during a job, which already redraws).
-        if (Visible && viewfinder && DateTime.Now.Second != vfSecond) { vfSecond = DateTime.Now.Second; Invalidate(); }
         // The rolling boards and the Play glow: about 30 frames a second while the menu or a job shows.
-        if (Visible && ++frame % 2 == 0 && (job != null || starting || (pages.Count > 0 && IsMain(pages.Peek())))) Invalidate();
+        if (Visible && ++frame % 2 == 0) Invalidate();
         // Only while the menu is in front: XInput reports the pad to every process, so the game's presses would
         // otherwise drive the menu behind it.
         if (job != null && Form.ActiveForm == this && ((build.Waiting != null && !build.Ended) || build.FetchWaiting())) {
@@ -904,6 +931,11 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             else if (job == null) Act("back", false);
         }
         else if (key == "A" && job == null) Act("ok", false);
+        // The camcorder's keys: MENU = back, the dial and the zoom rocker move, START/STOP plays, POWER closes.
+        else if (key == "MENU") PromptPress("B");
+        else if (job == null && (key == "U" || key == "D" || key == "L" || key == "R")) Act(key == "U" ? "up" : key == "D" ? "down" : key == "L" ? "left" : "right", false);
+        else if (key == "PLAY" && job == null && !starting && pages.Count > 0) { var p = pages.Peek(); if (IsMain(p) && p.Items.Count > 0) p.Sel = 0; Act("ok", false); }
+        else if (key == "POWER") Close();
     }
     protected override void OnMouseMove(MouseEventArgs e) {
         base.OnMouseMove(e);
@@ -938,8 +970,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         } else if (p.Items.Count > 0) {
             // "ok" first: the main page's grid move used to swallow it, so A / Enter did nothing there (laptop 2026-10-18).
             if (a == "ok") { var it = p.Items[p.Sel]; if (it.On && it.Run != null) it.Run(); }
-            else if (IsMain(p)) p.Sel = GridMove(p.Sel, a, p.Items.Count);
-            else if (GridCols(p) > 0) p.Sel = PageGridMove(p.Sel, a, p.Items.Count, GridCols(p));
+            // Every screen is one of the camcorder's menu lists (W / T on the zoom rocker step like the jog dial).
             else if (a == "up" || a == "left") p.Sel = (p.Sel - 1 + p.Items.Count) % p.Items.Count;
             else if (a == "down" || a == "right") p.Sel = (p.Sel + 1) % p.Items.Count;
         } else if (a == "ok" && p.Body != null) {
@@ -948,220 +979,10 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         Invalidate();
     }
 
-    // The main page's grid: 0 = the hero's Play card, then tiles in rows of TileCols.
-    static int GridMove(int sel, string a, int count) {
-        if (a == "left") return Math.Max(0, sel - 1);
-        if (a == "right") return Math.Min(count - 1, sel + 1);
-        if (a == "down") return sel == 0 ? Math.Min(1, count - 1) : Math.Min(count - 1, sel + TileCols);
-        if (a == "up") return sel <= TileCols ? 0 : sel - TileCols;
-        return sel;
-    }
-
-    // A tile page's grid (Page.Cols wide): down onto a shorter last row lands on its last tile.
-    static int PageGridMove(int sel, string a, int count, int cols) {
-        if (a == "left") return Math.Max(0, sel - 1);
-        if (a == "right") return Math.Min(count - 1, sel + 1);
-        if (a == "down") return sel / cols < (count - 1) / cols ? Math.Min(count - 1, sel + cols) : sel;
-        if (a == "up") return sel >= cols ? sel - cols : sel;
-        return sel;
-    }
-
-    // ---------- drawing ----------
-    // A dark console-launcher look (big hero card, tiles, button prompts) with the splash's skateboard as the mark.
-    static readonly Color Bg1 = Color.FromArgb(16, 18, 24), Bg2 = Color.FromArgb(7, 8, 11);
-    static readonly Color Panel = Color.FromArgb(24, 28, 37), PanelHi = Color.FromArgb(33, 39, 52), Stroke = Color.FromArgb(44, 51, 67);
-    static readonly Color Ink = Color.FromArgb(242, 244, 248), Dim = Color.FromArgb(138, 147, 166), Faint = Color.FromArgb(78, 85, 100);
-    static readonly Color Accent = Color.FromArgb(255, 196, 0), Cool = Color.FromArgb(86, 146, 214);
+    // ---------- drawing helpers ----------
     readonly Stopwatch clock = Stopwatch.StartNew();
     DateTime jobStart;
-
-    protected override void OnPaint(PaintEventArgs ev) {
-        int w = ClientSize.Width, h = ClientSize.Height;
-        float open = FoldOpen();
-        if (open >= 1) { Render(ev.Graphics, w, h); Outro(ev.Graphics, w, h); Viewfinder(ev.Graphics, w, h); return; }
-        if (foldShot == null || foldShot.Width != w || foldShot.Height != h) { if (foldShot != null) foldShot.Dispose(); foldShot = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb); }
-        using (var g = Graphics.FromImage(foldShot)) { Render(g, w, h); Outro(g, w, h); Viewfinder(g, w, h); }
-        ev.Graphics.Clear(Color.Black);
-        DrawFolded(ev.Graphics, foldShot, w, h, open);
-    }
-
-    // The camcorder's flip-out screen: the window swings open on a hinge at its left edge at start and shut before it
-    // closes (USER-ASKS 484). Off with the viewfinder.
-    const float FoldSecs = 0.6f;
-    Bitmap foldShot; float foldOpenAt = -1, foldShutAt = -1; bool foldDone;
-    float FoldOpen() {
-        if (!viewfinder) return 1;
-        float t = (float)clock.Elapsed.TotalSeconds;
-        if (foldShutAt >= 0) return 1 - Ease((t - foldShutAt) / FoldSecs);
-        if (foldOpenAt < 0) foldOpenAt = t;
-        return Ease((t - foldOpenAt) / FoldSecs);
-    }
-    bool Folding() {
-        if (!viewfinder) return false;
-        float t = (float)clock.Elapsed.TotalSeconds;
-        return foldShutAt >= 0 || foldOpenAt < 0 || t - foldOpenAt < FoldSecs + 0.05f;
-    }
-    // Vertical strips with perspective: the hinge edge stays full size, the free edge swings away and shrinks.
-    static void DrawFolded(Graphics g, Bitmap shot, int w, int h, float open) {
-        if (open <= 0.001f) return;
-        double a = (1 - open) * Math.PI / 2;
-        float cos = (float)Math.Cos(a), sin = (float)Math.Sin(a), dist = w * 1.4f, cy = h / 2f;
-        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
-        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
-        const int strips = 96;
-        float prevX = 0;
-        for (int i = 0; i < strips; i++) {
-            float u1 = (i + 1f) / strips, um = (i + 0.5f) / strips;
-            float s1 = dist / (dist + u1 * w * sin), sm = dist / (dist + um * w * sin);
-            float x1 = u1 * w * cos * s1;
-            int sx = i * w / strips, sw = (i + 1) * w / strips - sx;
-            var dest = new RectangleF(prevX, cy - cy * sm, Math.Max(1, x1 - prevX + 0.5f), h * sm);
-            g.DrawImage(shot, dest, new RectangleF(sx, 0, sw, h), GraphicsUnit.Pixel);
-            prevX = x1;
-        }
-        // Darker while it faces away, like a screen turned from the light.
-        int dark = (int)(200 * (1 - open));
-        if (dark > 0) {
-            float s = dist / (dist + w * sin);
-            var pts = new[] { new PointF(0, 0), new PointF(prevX, cy - cy * s), new PointF(prevX, cy + cy * s), new PointF(0, h) };
-            using (var b = new SolidBrush(Color.FromArgb(dark, 0, 0, 0))) g.FillPolygon(b, pts);
-        }
-    }
-    protected override void OnFormClosing(FormClosingEventArgs e) {
-        if (viewfinder && Visible && !foldDone && e.CloseReason == CloseReason.UserClosing) {
-            e.Cancel = true;
-            if (foldShutAt < 0) { foldShutAt = (float)clock.Elapsed.TotalSeconds; if (!tick.Enabled) tick.Start(); Invalidate(); }
-            return;
-        }
-        base.OnFormClosing(e);
-    }
-
-    // ---------- camcorder viewfinder (USER-ASKS 484) ----------
-    // A 2000s MiniDV viewfinder over every screen; layout and choices: docs/hails-additions/41-launcher-camcorder-viewfinder.md.
-    // viewfinder-off.txt in the state folder turns it off.
-    static readonly bool viewfinder = !File.Exists(Path.Combine(StateDir(), "viewfinder-off.txt"));
-    Bitmap vfLens, vfOsd; float vfRight = -1; int vfSecond = -1;
-    bool vfRec; DateTime vfRecSince; TimeSpan vfRecTotal;
-
-    // Vignette and scanlines, drawn once per window size.
-    Bitmap Lens(int w, int h) {
-        if (vfLens != null && vfLens.Width == w && vfLens.Height == h) return vfLens;
-        if (vfLens != null) vfLens.Dispose();
-        vfLens = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-        using (var g = Graphics.FromImage(vfLens)) {
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            var oval = new RectangleF(-w * 0.1f, -h * 0.16f, w * 1.2f, h * 1.32f);
-            using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
-                path.AddEllipse(oval);
-                using (var outside = new Region(new RectangleF(0, 0, w, h))) {
-                    outside.Exclude(path);
-                    using (var b = new SolidBrush(Color.FromArgb(120, 0, 0, 0))) g.FillRegion(b, outside);
-                }
-                using (var pg = new System.Drawing.Drawing2D.PathGradientBrush(path)) {
-                    pg.CenterColor = Color.FromArgb(0, 0, 0, 0); pg.SurroundColors = new[] { Color.FromArgb(120, 0, 0, 0) };
-                    pg.FocusScales = new PointF(0.62f, 0.55f);
-                    g.FillPath(pg, path);
-                }
-            }
-            int step = Math.Max(2, h / 360);
-            using (var b = new SolidBrush(Color.FromArgb(22, 0, 0, 0))) for (int y = 0; y < h; y += step) g.FillRectangle(b, 0, y, w, Math.Max(1, step / 2));
-        }
-        return vfLens;
-    }
-
-    // OSD text in the viewfinder's look: hard pixels, a black outline.
-    static void OsdText(Graphics g, string s, Font f, Color c, float x, float y) {
-        using (var black = new SolidBrush(Color.Black))
-            for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++) if (dx != 0 || dy != 0) g.DrawString(s, f, black, x + dx, y + dy);
-        using (var b = new SolidBrush(c)) g.DrawString(s, f, b, x, y);
-    }
-    static void OsdBox(Graphics g, Color c, float x, float y, float bw, float bh) {
-        using (var black = new SolidBrush(Color.Black)) g.FillRectangle(black, x - 1, y - 1, bw + 2, bh + 2);
-        using (var b = new SolidBrush(c)) g.FillRectangle(b, x, y, bw, bh);
-    }
-
-    void Viewfinder(Graphics g, int w, int h) {
-        if (!viewfinder || w < 64 || h < 64) return;
-        g.DrawImageUnscaled(Lens(w, h), 0, 0);
-        // The OSD is drawn at a third of 1080p (one OSD pixel = k screen pixels) and scaled up without smoothing.
-        int k = Math.Max(2, (int)Math.Round(h / 360f)), W = w / k, H = h / k;
-        if (vfOsd == null || vfOsd.Width != W || vfOsd.Height != H) { if (vfOsd != null) vfOsd.Dispose(); vfOsd = new Bitmap(W, H, System.Drawing.Imaging.PixelFormat.Format32bppPArgb); }
-        DateTime now = DateTime.Now;
-        bool rec = job != null;
-        if (rec && !vfRec) vfRecSince = now;
-        if (!rec && vfRec) vfRecTotal += now - vfRecSince;
-        vfRec = rec;
-        TimeSpan tape = vfRecTotal + (rec ? now - vfRecSince : TimeSpan.Zero);
-        using (var o = Graphics.FromImage(vfOsd))
-        using (var big = new Font("Tahoma", H / 31f, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (var small = new Font("Tahoma", H / 39f, FontStyle.Bold, GraphicsUnit.Pixel)) {
-            o.Clear(Color.Transparent);
-            o.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
-            o.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit;
-            var white = Color.FromArgb(240, 240, 232);
-            // Framing marks in the corners and a small centre cross.
-            float ix = W * 0.012f, iy = H * 0.018f, arm = H * 0.05f;
-            foreach (var c in new[] { new PointF(ix, iy), new PointF(W - ix, iy), new PointF(ix, H - iy), new PointF(W - ix, H - iy) }) {
-                float sx = c.X < W / 2 ? 1 : -1, sy = c.Y < H / 2 ? 1 : -1;
-                OsdBox(o, white, sx > 0 ? c.X : c.X - arm, sy > 0 ? c.Y : c.Y - 1, arm, 1);
-                OsdBox(o, white, sx > 0 ? c.X : c.X - 1, sy > 0 ? c.Y : c.Y - arm, 1, arm);
-            }
-            float cx = W / 2f, cy = H / 2f, ca = H * 0.014f;
-            OsdBox(o, Fade(white, 170), cx - ca, cy, 2 * ca + 1, 1); OsdBox(o, Fade(white, 170), cx, cy - ca, 1, 2 * ca + 1);
-            // Top right, left of the version chip: STBY / REC, SP, the tape counter, the battery.
-            float barH = H * 0.085f, right = (vfRight > 0 ? vfRight : w - w * 0.045f) / k - H * 0.03f;
-            string counter = string.Format("{0}:{1:00}:{2:00}:{3:00}", (int)tape.TotalHours, tape.Minutes, tape.Seconds, tape.Milliseconds * 30 / 1000);
-            float ty = (barH - big.Height) / 2f;
-            float bw = H * 0.05f, bh = big.Height * 0.62f, by = ty + (big.Height - bh) / 2f;
-            var mins = o.MeasureString("60min", small);
-            float x = right - mins.Width;
-            OsdText(o, "60min", small, white, x, ty + (big.Height - small.Height) / 2f);
-            x -= bw + 3;
-            OsdBox(o, white, x, by, bw, bh); OsdBox(o, white, x + bw, by + bh * 0.3f, 2, bh * 0.4f);
-            using (var bl = new SolidBrush(Color.Black)) o.FillRectangle(bl, x + 1, by + 1, bw - 2, bh - 2);
-            for (int i = 0; i < 4; i++) using (var seg = new SolidBrush(white)) o.FillRectangle(seg, x + 2 + i * (bw - 3) / 4f, by + 2, (bw - 3) / 4f - 1, bh - 4);
-            x -= o.MeasureString(counter, big).Width + H * 0.03f;
-            OsdText(o, counter, big, white, x, ty);
-            x -= o.MeasureString("SP", big).Width + H * 0.025f;
-            OsdText(o, "SP", big, white, x, ty);
-            string mode = rec ? "REC" : "STBY";
-            x -= o.MeasureString(mode, big).Width + H * 0.03f;
-            OsdText(o, mode, big, white, x, ty);
-            if (rec && now.Millisecond < 600) {
-                float d = big.Height * 0.5f;
-                using (var bl = new SolidBrush(Color.Black)) o.FillEllipse(bl, x - d - 4, ty + (big.Height - d) / 2f - 1, d + 2, d + 2);
-                using (var red = new SolidBrush(Color.FromArgb(232, 36, 30))) o.FillEllipse(red, x - d - 3, ty + (big.Height - d) / 2f, d, d);
-            }
-            // Bottom, left of the button prompts: the date and time stamp, stacked.
-            string date = now.ToString("MMM. d yyyy", System.Globalization.CultureInfo.InvariantCulture).ToUpperInvariant();
-            string clockS = now.ToString("h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
-            float footTop = H - barH, sx2 = (w - w * 0.045f - w * 0.2f) / k - H * 0.06f;
-            float lw = Math.Max(o.MeasureString(date, small).Width, o.MeasureString(clockS, small).Width);
-            float ly = footTop + (barH - small.Height * 2) / 2f;
-            OsdText(o, date, small, white, sx2 - lw, ly);
-            OsdText(o, clockS, small, white, sx2 - lw, ly + small.Height);
-        }
-        var st = g.Save();
-        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
-        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
-        g.DrawImage(vfOsd, new Rectangle(0, 0, W * k, H * k), 0, 0, W, H, GraphicsUnit.Pixel);
-        g.Restore(st);
-    }
-
-    // Screen and selection animations (seconds on `clock`): short and eased out, so input never waits on them.
-    string screenKey = ""; int screenDepth, screenDir = 1, selIndex = -1; float screenAt = -1, selAt = -1, selEase = 1;
     static float Ease(float x) { x = Math.Max(0, Math.Min(1, x)); float r = 1 - x; return 1 - r * r * r; }
-    bool Animating() { float t = (float)clock.Elapsed.TotalSeconds; return t - screenAt < 0.2f || t - selAt < 0.14f || splashShot != null || Folding(); }
-    // The incoming screen fades up from the backdrop (the top bar stays).
-    static void Veil(Graphics g, int w, int h, float barH, float ease) {
-        if (ease >= 1) return;
-        var r = new RectangleF(0, barH + 1, w, h - barH - 1);
-        int a = (int)(255 * (1 - ease));
-        using (var b = new System.Drawing.Drawing2D.LinearGradientBrush(new RectangleF(0, 0, w, h), Fade(Bg1, a), Fade(Bg2, a), 90f)) g.FillRectangle(b, r);
-    }
-
-    // The main page: item 0 is the hero's Play card, the rest tiles in rows of TileCols.
-    const int TileCols = 4;
     static bool IsMain(Page p) { return p.Title == "Skate launcher" && p.OnBack != null; }
     // Every list page (no body text, not the main screen) is a grid of buttons two wide with the detail panel beside it
     // (user 2026-10-21: the play screen's layout for the rest of the launcher).
@@ -1227,224 +1048,858 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         g.Restore(st);
     }
 
-    // Windows' own icon font (Segoe MDL2 Assets) per menu entry.
-    static string Glyph(string text) {
-        string t = text.ToLowerInvariant();
-        if (t.StartsWith("play")) return "";
-        if (t.StartsWith("versions")) return "";
-        if (t.StartsWith("what to test")) return "";
-        if (t.StartsWith("recomp")) return "";
-        if (t.StartsWith("rpcs3")) return "";
-        if (t.StartsWith("tools")) return "";
-        if (t.StartsWith("last session")) return "";
-        if (t.StartsWith("exit")) return "";
-        return "";
-    }
-
-    // A, B, X / Y badges like the controller's.
-    void Prompt(Graphics g, ref float x, float y, string key, Color c, string label) {
-        float d = smallFont.Height * 1.25f;
-        // Clickable for mouse users (user 2026-10-26): the badge and its label, a pill behind it on hover.
-        var area = new RectangleF(x - d * 0.3f, y - d * 0.2f, d * 1.35f + g.MeasureString(label, smallFont).Width + d * 0.6f, d * 1.4f);
-        promptHits.Add(new KeyValuePair<RectangleF, string>(area, key));
-        if (hoverPrompt == key) Card(g, area, area.Height / 2, Fade(PanelHi, 220), Fade(Panel, 220), Fade(c, 140), 1);
-        using (var b = new SolidBrush(c)) g.FillEllipse(b, x, y, d, d);
-        Write(g, key, smallBold, Color.FromArgb(16, 18, 24), new RectangleF(x, y, d, d), StringAlignment.Center, StringAlignment.Center, false);
-        x += d + d * 0.35f;
-        var size = g.MeasureString(label, smallFont);
-        Write(g, label, smallFont, Dim, new RectangleF(x, y, size.Width + 4, d), StringAlignment.Near, StringAlignment.Center, false);
-        x += size.Width + d;
-    }
-
     // Log lines as a TV can read them: no colour codes, only the text after the last carriage return.
     static readonly System.Text.RegularExpressions.Regex Ansi = new System.Text.RegularExpressions.Regex("\x1B\\[[0-9;?]*[A-Za-z]");
     static string Clean(string s) { s = Ansi.Replace(s ?? "", ""); int r = s.LastIndexOf('\r'); return (r >= 0 ? s.Substring(r + 1) : s).Trim(); }
 
-    void Render(Graphics g, int w, int h) {
-        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-        hits.Clear(); promptHits.Clear();
-        if (starting && job == null && pages.Count == 0) { RenderSplash(g, w, h); return; }
-        var all = new RectangleF(0, 0, w, h);
-        using (var b = new System.Drawing.Drawing2D.LinearGradientBrush(all, Bg1, Bg2, 90f)) g.FillRectangle(b, all);
-        // A soft glow behind the top left, like a lit backdrop.
-        using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
-            path.AddEllipse(-w * 0.25f, -h * 0.55f, w * 0.9f, h * 1.1f);
-            using (var pg = new System.Drawing.Drawing2D.PathGradientBrush(path)) {
-                pg.CenterColor = Color.FromArgb(40, Cool); pg.SurroundColors = new[] { Color.FromArgb(0, Cool) };
-                g.FillPath(pg, path);
-            }
-        }
-        float m = w * 0.045f, t = (float)clock.Elapsed.TotalSeconds;
-        float barH = h * 0.085f;
-        // Top bar: the board as the mark, the wordmark, the version chip.
-        Board(g, m, barH * 0.32f, barH * 1.3f);
-        float wx = m + barH * 1.45f;
-        var skate = g.MeasureString("SKATE", markFont);
-        Write(g, "SKATE", markFont, Ink, new RectangleF(wx, 0, skate.Width + 8, barH), StringAlignment.Near, StringAlignment.Center, false);
-        Write(g, "LAUNCHER", markLight, Dim, new RectangleF(wx + skate.Width * 0.92f, 0, w * 0.3f, barH), StringAlignment.Near, StringAlignment.Center, false);
-        // The launcher's own commit, and the fork's newer one when it did not update itself (USER-ASKS 116).
-        if (St("launcher") != "") {
-            float lx = wx + skate.Width * 0.92f + g.MeasureString("LAUNCHER", markLight).Width + smallFont.Height * 0.4f;
-            string lv = St("launcher") + (St("launcher_newer") != "" ? "   newer on the fork: " + St("launcher_newer") + " (Tools: Update the launcher)" : "");
-            Write(g, lv, smallFont, St("launcher_newer") != "" ? Accent : Faint, new RectangleF(lx, 0, w * 0.45f, barH), StringAlignment.Near, StringAlignment.Center, false);
-        }
-        string chip = St("version") == "" ? "" : St("version");
-        vfRight = w - m;
-        if (chip != "") {
-            var cs = g.MeasureString(chip, smallFont);
-            var cr = new RectangleF(w - m - cs.Width - smallFont.Height * 1.6f, barH * 0.28f, cs.Width + smallFont.Height * 1.6f, barH * 0.44f);
-            Card(g, cr, cr.Height / 2, PanelHi, Panel, Stroke, 1); vfRight = cr.X;
-            using (var dot = new SolidBrush(Accent)) g.FillEllipse(dot, cr.X + cr.Height * 0.35f, cr.Y + cr.Height * 0.38f, cr.Height * 0.24f, cr.Height * 0.24f);
-            Write(g, chip, smallFont, Ink, new RectangleF(cr.X + cr.Height * 0.7f, cr.Y, cr.Width - cr.Height * 0.7f, cr.Height), StringAlignment.Near, StringAlignment.Center, false);
-        }
-        float top = barH + h * 0.02f, bottom = h - h * 0.085f;
-        using (var pen = new Pen(Fade(Stroke, 160), 1)) g.DrawLine(pen, m, barH, w - m, barH);
+    // ---------- the camcorder (USER-ASKS 484, 486, 487) ----------
+    // The window is a 2000s MiniDV camcorder seen from its LCD side, standing on a ledge the board rolls along, drawn in
+    // a 1600 x 1000 unit space into a per-pixel-alpha (layered) window. Layout, keys, timings and the sticker:
+    // docs/hails-additions/41-launcher-camcorder-viewfinder.md.
+    const float DevW = 1600, DevH = 1000;
+    static readonly RectangleF BodyR = new RectangleF(150, 118, 1390, 754), PanelR = new RectangleF(232, 146, 1016, 660),
+        ScreenR = new RectangleF(292, 180, 896, 504), LedgeR = new RectangleF(24, 880, 1552, 108);
+    static readonly Color Plastic = Color.FromArgb(54, 56, 62), PlasticHi = Color.FromArgb(100, 103, 112), PlasticDark = Color.FromArgb(24, 25, 29),
+        Print = Color.FromArgb(200, 202, 208), RecRed = Color.FromArgb(230, 40, 32), OsdOrange = Color.FromArgb(255, 152, 24),
+        OsdNavy = Color.FromArgb(205, 14, 26, 74), OsdWhite = Color.FromArgb(242, 242, 234), OsdGrey = Color.FromArgb(132, 136, 146),
+        OsdGreen = Color.FromArgb(120, 224, 96), OsdRed = Color.FromArgb(255, 96, 84);
+    static readonly Font UTiny = new Font("Tahoma", 13, GraphicsUnit.Pixel), USmall = new Font("Tahoma", 17, FontStyle.Bold, GraphicsUnit.Pixel),
+        UKey = new Font("Tahoma", 21, FontStyle.Bold, GraphicsUnit.Pixel), UMark = new Font("Arial Black", 40, FontStyle.Italic, GraphicsUnit.Pixel),
+        UModel = new Font("Tahoma", 24, FontStyle.Bold, GraphicsUnit.Pixel), UTag = new Font("Segoe Script", 44, FontStyle.Bold, GraphicsUnit.Pixel), UCover = new Font("Arial Black", 120, FontStyle.Italic, GraphicsUnit.Pixel);
+    float devS = 1, devX, devY;   // units -> window pixels, from the last Render
+    RectangleF ToWin(RectangleF r) { return new RectangleF(devX + r.X * devS, devY + r.Y * devS, r.Width * devS, r.Height * devS); }
+    void Key(RectangleF unit, string key) { promptHits.Add(new KeyValuePair<RectangleF, string>(ToWin(unit), key)); }
+    static RectangleF Grow(RectangleF r, float d) { return new RectangleF(r.X - d, r.Y - d, r.Width + 2 * d, r.Height + 2 * d); }
+    static float Clamp01(float x) { return Math.Max(0, Math.Min(1, x)); }
 
-        // A screen change slides the new screen in a little and fades it up (user 2026-10-19: switching screens was
-        // "a little jarring"); a main-page refresh keeps its depth and title, so it does not animate.
-        string key = job != null ? "job" : pages.Count + "|" + (pages.Count > 0 ? pages.Peek().Title : "");
-        if (key != screenKey) {
-            int depth = job != null ? pages.Count + 1 : pages.Count;
-            screenDir = depth >= screenDepth ? 1 : -1;
-            screenKey = key; screenDepth = depth; screenAt = t;
-        }
-        float ease = Ease((t - screenAt) / 0.18f);
-        var content = g.Save();
-        g.TranslateTransform(screenDir * (1 - ease) * w * 0.03f, 0);
-        if (job != null) { RenderJob(g, w, h, m, top, bottom, t); g.Restore(content); Veil(g, w, h, barH, ease); return; }
-        if (pages.Count == 0) {
-            g.Restore(content); return;
-        }
-        var p = pages.Peek();
-        if (p.Sel != selIndex) { selIndex = p.Sel; selAt = t; }
-        selEase = Ease((t - selAt) / 0.12f);
-        if (IsMain(p)) RenderMain(g, p, w, h, m, top, bottom, t); else RenderPage(g, p, w, h, m, top, bottom);
-        g.Restore(content);
-        Veil(g, w, h, barH, ease);
-        // Footer: the selected entry's hint on the left, the button prompts on the right.
-        float fy = bottom + (h - bottom - smallFont.Height * 1.25f) / 2;
-        string hint = p.Items.Count > 0 ? p.Items[p.Sel].Hint : "";
-        if (closeAt >= 0) hint = "Closing in " + closeAt + " s (any button closes now)";
-        if (IsMain(p) || closeAt >= 0) Write(g, hint, smallFont, Dim, new RectangleF(m, fy, w * 0.55f, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Center, false);
-        float px = w - m - w * 0.2f;
-        if (p.Items.Count > 0) Prompt(g, ref px, fy, "A", Color.FromArgb(108, 196, 74), "Select");
-        Prompt(g, ref px, fy, "B", Color.FromArgb(228, 76, 70), "Back");
+    // Power: the whole camera unfolds at start, on one clock (Assembly, seconds 0..OnTotal): the ledge slides up, the
+    // body drops onto it, the lens runs out, the handle rises, the keys pop in, the LCD swings out and turns to face
+    // you, the screen comes on, the board rolls in. Closing plays it backwards, a little faster (OffSpeed).
+    const float OnTotal = 1.75f, OffSpeed = 1.3f, OffTime = OnTotal / OffSpeed + 0.05f;
+    float powerOnAt = -1, powerOffAt = -1, snapPanel = -1; bool poweredOff, snapshotMode; int snapSeed = 3;
+    float Assembly(float t) {
+        if (snapPanel >= 0) return snapPanel * OnTotal;
+        if (powerOffAt >= 0) return Math.Max(0, OnTotal - (t - powerOffAt) * OffSpeed);
+        return powerOnAt < 0 ? 0 : Math.Min(OnTotal, t - powerOnAt);
     }
-
-    void RenderMain(Graphics g, Page p, int w, int h, float m, float top, float bottom, float t) {
-        // Hero card: the selected version, the rolling board, the Play card.
-        var hero = new RectangleF(m, top, w - 2 * m, (bottom - top) * 0.47f);
-        Card(g, hero, h * 0.022f, Color.FromArgb(30, 38, 56), Color.FromArgb(17, 20, 28), Stroke, 1);
-        var clip = g.Save();
-        using (var path = Round(hero, h * 0.022f)) g.SetClip(path);
-        float boardLen = hero.Height * 0.95f, span = hero.Width + boardLen * 0.55f;
-        float bx = hero.X - boardLen + (hero.Width * 0.42f + t * hero.Width * 0.05f) % span;
-        using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
-            path.AddEllipse(hero.Right - hero.Width * 0.5f, hero.Y - hero.Height * 0.4f, hero.Width * 0.7f, hero.Height * 1.6f);
-            using (var pg = new System.Drawing.Drawing2D.PathGradientBrush(path)) {
-                pg.CenterColor = Color.FromArgb(34, Accent); pg.SurroundColors = new[] { Color.FromArgb(0, Accent) };
-                g.FillPath(pg, path);
-            }
-        }
-        // The ground line the board rolls on.
-        float ground = hero.Bottom - hero.Height * 0.1f;
-        using (var gp = new Pen(Color.FromArgb(40, 255, 255, 255), 1)) g.DrawLine(gp, hero.X, ground, hero.Right, ground);
-        // The wheels' bottom is 34 of the board's 180 units below its top.
-        Board(g, bx, ground - boardLen * 0.55f * 34f / 180f, boardLen * 0.55f);
-        g.Restore(clip);
-        float pad = hero.Height * 0.12f;
-        Write(g, "NOW SELECTED", smallBold, Accent, new RectangleF(hero.X + pad, hero.Y + pad, hero.Width * 0.6f, smallFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
-        // The version name shrinks (to 60 %) before it is cut, so a long name stays readable in the window.
-        var vr = new RectangleF(hero.X + pad, hero.Y + pad + smallFont.Height * 1.2f, hero.Width * 0.62f, heroFont.Height * 1.2f);
-        var vf = FitFont(g, St("version"), vr.Size, heroFont, 0.6f, false);
-        Write(g, St("version"), vf, Ink, new RectangleF(vr.X, vr.Y + (heroFont.Height - vf.Height) / 2, vr.Width, vr.Height), StringAlignment.Near, StringAlignment.Near, false);
-        float sy = hero.Y + pad + smallFont.Height * 1.3f + heroFont.Height * 1.15f;
-        Write(g, St("version_status"), itemFont, Dim, new RectangleF(hero.X + pad, sy, hero.Width * 0.6f, itemFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
-        string send = St("send");
-        Write(g, "Last session: " + St("last") + (send == "" || send == "off" ? "" : "     Send: " + send), smallFont, Faint, new RectangleF(hero.X + pad, sy + itemFont.Height * 1.3f, hero.Width * 0.6f, smallFont.Height * 2.4f), StringAlignment.Near, StringAlignment.Near, true);
-        // The Play card (item 0) on the right of the hero.
-        if (p.Items.Count > 0) {
-            bool sel = p.Sel == 0;
-            // Above the board's lane (ground line at 0.9 of the hero, the board about 0.1 of it tall), so the rolling
-            // board passes under the card instead of behind it (user 2026-10-18).
-            var pr = new RectangleF(hero.Right - pad - hero.Width * 0.26f, ground - hero.Height * 0.14f - hero.Height * 0.32f, hero.Width * 0.26f, hero.Height * 0.32f);
-            hits.Add(new KeyValuePair<RectangleF, int>(pr, 0));
-            if (sel) using (var glow = Round(new RectangleF(pr.X - 6, pr.Y - 6, pr.Width + 12, pr.Height + 12), pr.Height * 0.3f)) using (var gb = new SolidBrush(Fade(Accent, 60 + (int)(30 * Math.Sin(t * 3))))) g.FillPath(gb, glow);
-            Card(g, pr, pr.Height * 0.24f, sel ? Color.FromArgb(255, 210, 60) : Color.FromArgb(232, 178, 0), sel ? Accent : Color.FromArgb(200, 150, 0), Color.Empty, 0);
-            var ink = Color.FromArgb(20, 18, 10);
-            Write(g, "", iconFont, ink, new RectangleF(pr.X + pr.Height * 0.25f, pr.Y, pr.Height * 0.6f, pr.Height), StringAlignment.Near, StringAlignment.Center, false);
-            Write(g, "PLAY", playFont, ink, new RectangleF(pr.X + pr.Height * 0.85f, pr.Y, pr.Width - pr.Height, pr.Height), StringAlignment.Near, StringAlignment.Center, false);
-        }
-        // Tiles for everything else.
-        float gy = hero.Bottom + h * 0.03f, gap = w * 0.012f;
-        int n = p.Items.Count - 1, rows = Math.Max(1, (n + TileCols - 1) / TileCols);
-        float tw = (w - 2 * m - gap * (TileCols - 1)) / TileCols, th = Math.Min((bottom - gy - gap * (rows - 1)) / rows, h * 0.15f);
-        var hint = PageHintFont(g, p, 1, new RectangleF(0, 0, tw, th), true);
-        for (int i = 1; i < p.Items.Count; i++) {
-            var it = p.Items[i]; bool sel = i == p.Sel;
-            int k = i - 1; var r = new RectangleF(m + (k % TileCols) * (tw + gap), gy + (k / TileCols) * (th + gap), tw, th);
-            Tile(g, it, sel, r, true, hint);
-            hits.Add(new KeyValuePair<RectangleF, int>(r, i));
-        }
+    static float Stage(float a, float from, float to) { return Ease((a - from) / (to - from)); }
+    static float BackOut(float x, float k) { x = Clamp01(x) - 1; return 1 + (k + 1) * x * x * x + k * x * x; }
+    // Every power-on and power-off rolls its own timing, drop, bounce, tilt, overshoot and swing (Vary), so it never
+    // plays the same way twice; all of it still lands inside OnTotal. Snapshots use the plain values.
+    readonly float[] vary = { 0, 0, 1, 1, 1.4f, 0, 0, 0.8f, 0, 0, 0, 0, 0, 0, 1.6f, 0, 1, 150, 0, 6.5f };
+    void Vary(Random r) {
+        Func<double, double, float> u = delegate(double lo, double hi) { return (float)(lo + r.NextDouble() * (hi - lo)); };
+        vary[0] = u(0, 0.06); vary[1] = u(-0.04, 0.06); vary[2] = u(0.85, 1.15); vary[3] = u(0.75, 1.25); vary[4] = u(0.9, 2.2);
+        vary[5] = u(-4, 4); vary[6] = u(-0.05, 0.05); vary[7] = u(0, 1.6); vary[8] = u(-0.05, 0.05);
+        for (int i = 9; i <= 13; i++) vary[i] = u(-0.04, 0.04);
+        vary[14] = u(1, 2.6); vary[15] = u(-0.05, 0.05); vary[16] = u(0.85, 1.15); vary[17] = u(120, 190); vary[18] = u(0, 1552); vary[19] = u(5.5, 8);
     }
+    float PanelFrom { get { return 0.85f + vary[15]; } }
+    float PanelTo { get { return PanelFrom + 0.55f * vary[16]; } }
+    float PanelOpen(float t) { return Stage(Assembly(t), PanelFrom, PanelTo); }
+    float ScreenLevel(float t) { return Clamp01((Assembly(t) - PanelTo) / 0.25f); }
+    float WindowAlpha(float t) { return snapshotMode ? 1 : Clamp01(Assembly(t) / 0.12f); }
+    bool Animating() { float t = (float)clock.Elapsed.TotalSeconds; return powerOnAt < 0 || t - powerOnAt < OnTotal + 0.1f || powerOffAt >= 0; }
 
-    void Tile(Graphics g, Item it, bool sel, RectangleF r, bool icon, Font hint) {
-        float rad = r.Height * 0.16f;
-        // The selection ring grows out over a few frames instead of snapping on.
-        float ring = 1 + 2 * selEase;
-        if (sel) Card(g, new RectangleF(r.X - ring, r.Y - ring, r.Width + 2 * ring, r.Height + 2 * ring), rad + ring, it.On ? Accent : Faint, it.On ? Accent : Faint, Color.Empty, 0);
-        Card(g, r, rad, sel ? PanelHi : Panel, sel ? Panel : Color.FromArgb(20, 23, 31), sel ? Color.Empty : Stroke, sel ? 0 : 1);
-        var ink = it.On ? Ink : Faint;
-        float pad = r.Height * 0.2f, tx = r.X + pad;
-        if (icon) {
-            var ib = new RectangleF(r.X + pad, r.Y + (r.Height - r.Height * 0.5f) / 2, r.Height * 0.5f, r.Height * 0.5f);
-            Card(g, ib, ib.Height * 0.28f, Fade(it.On ? (sel ? Accent : Cool) : Faint, 50), Fade(it.On ? (sel ? Accent : Cool) : Faint, 25), Color.Empty, 0);
-            Write(g, Glyph(it.Icon ?? it.Text), iconSmall, it.On ? (sel ? Accent : Ink) : Faint, ib, StringAlignment.Center, StringAlignment.Center, false);
-            tx = ib.Right + pad * 0.8f;
-        }
-        float tw = r.Right - tx - pad;
-        string title = it.Text;
-        if (title.StartsWith("> ")) {
-            // The current choice (the version list marks it with "> "): an accent pill instead of the marker.
-            title = title.Substring(2);
-            var ps = g.MeasureString("CURRENT", smallBold);
-            var pill = new RectangleF(r.Right - pad - ps.Width - smallBold.Height * 0.9f, r.Y + r.Height * 0.16f + (itemBold.Height - smallBold.Height * 1.3f) / 2, ps.Width + smallBold.Height * 0.9f, smallBold.Height * 1.3f);
-            Card(g, pill, pill.Height / 2, Accent, Accent, Color.Empty, 0);
-            Write(g, "CURRENT", smallBold, Color.FromArgb(20, 18, 10), pill, StringAlignment.Center, StringAlignment.Center, false);
-            tw = pill.X - tx - pad * 0.5f;
-        }
-        float ty = r.Y + r.Height * 0.16f, hy = ty + itemBold.Height * 1.15f;
-        if (it.Hint == "") {
-            // No hint (the play screen's buttons; its panel has the text): the name wraps over two lines, centred.
-            Write(g, title, itemBold, ink, new RectangleF(tx, r.Y, tw, r.Height), StringAlignment.Near, StringAlignment.Center, true);
+    // The layered window: every frame is drawn into one bitmap and handed to Windows with its alpha (Native.Push).
+    protected override CreateParams CreateParams { get { var cp = base.CreateParams; cp.ExStyle |= 0x80000; return cp; } }
+    Bitmap frameBmp; bool needPresent = true;
+    protected override void OnInvalidated(InvalidateEventArgs e) { base.OnInvalidated(e); needPresent = true; }
+    protected override void OnPaint(PaintEventArgs e) { }
+    protected override void OnPaintBackground(PaintEventArgs e) { }
+    void Present() {
+        if (!IsHandleCreated || !Visible) return;
+        needPresent = false;
+        float t = (float)clock.Elapsed.TotalSeconds;
+        if (powerOnAt < 0) { powerOnAt = t; Vary(new Random()); }
+        int w = ClientSize.Width, h = ClientSize.Height;
+        if (frameBmp == null || frameBmp.Width != w || frameBmp.Height != h) { if (frameBmp != null) frameBmp.Dispose(); frameBmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb); }
+        using (var g = Graphics.FromImage(frameBmp)) { g.Clear(Color.Transparent); Render(g, w, h); }
+        Native.Push(Handle, frameBmp, Left, Top, (byte)(255 * WindowAlpha(t)));
+    }
+    protected override void OnFormClosing(FormClosingEventArgs e) {
+        if (Visible && !poweredOff && (e.CloseReason == CloseReason.UserClosing || e.CloseReason == CloseReason.None || e.CloseReason == CloseReason.TaskManagerClosing)) {
+            e.Cancel = true;
+            if (powerOffAt < 0) { powerOffAt = (float)clock.Elapsed.TotalSeconds; Vary(new Random()); if (!tick.Enabled) tick.Start(); Invalidate(); }
             return;
         }
-        Write(g, title, itemBold, ink, new RectangleF(tx, ty, tw, itemBold.Height * 1.15f), StringAlignment.Near, StringAlignment.Near, false);
-        // The hint in the space left under the title, in the page's hint font (PageHintFont).
-        Write(g, it.Hint, hint, it.On ? Dim : Faint, HintArea(r, icon), StringAlignment.Near, StringAlignment.Near, true);
+        base.OnFormClosing(e);
+    }
+    // Drag the camera by its body.
+    protected override void OnMouseDown(MouseEventArgs e) {
+        base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Left && PromptAt(e.Location) == null && HitAt(e.Location) < 0) { Native.ReleaseCapture(); Native.SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero); }
     }
 
-    // Where Tile draws the hint: under the title, right of the icon.
-    RectangleF HintArea(RectangleF r, bool icon) {
-        float pad = r.Height * 0.2f, tx = icon ? r.X + pad + r.Height * 0.5f + pad * 0.8f : r.X + pad;
-        float hy = r.Y + r.Height * 0.16f + itemBold.Height * 1.15f;
-        return new RectangleF(tx, hy, r.Right - tx - pad, r.Bottom - hy - pad * 0.3f);
-    }
-
-    // One hint font per page, small enough for its longest hint to show whole (user 2026-10-19: in the window the hints
-    // were cut after a few words). Items from `from` on are tiles of `tile`'s size.
-    Font PageHintFont(Graphics g, Page p, int from, RectangleF tile, bool icon) {
-        var area = HintArea(tile, icon).Size;
-        Font f = smallFont;
-        for (int i = from; i < p.Items.Count; i++) {
-            var x = HintFont(g, p.Items[i].Hint, area);
-            if (x.Size < f.Size) f = x;
+    void Render(Graphics g, int w, int h) {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        hits.Clear(); promptHits.Clear();
+        float t = (float)clock.Elapsed.TotalSeconds;
+        devS = Math.Min(w / DevW, h / DevH); devX = (w - DevW * devS) / 2; devY = (h - DevH * devS) / 2;
+        EnsureFlip(t);
+        var st = g.Save();
+        g.TranslateTransform(devX, devY); g.ScaleTransform(devS, devS);
+        float a = Assembly(t);
+        var part = g.Save();
+        g.TranslateTransform(0, (1 - Stage(a, vary[0], vary[0] + 0.35f)) * 160);
+        Ledge(g);
+        g.Restore(part);
+        float drop = Clamp01((a - 0.12f - vary[1]) / (0.38f * vary[2])), fall = drop >= 1 ? 0 : -(1 - BackOut(drop, vary[4])) * 340 * vary[3];
+        if (drop > 0) {
+            var cam = g.Save();
+            g.TranslateTransform(0, fall);
+            // A slight tilt while it drops, settling flat as it lands.
+            float tilt = vary[5] * (1 - Ease(drop));
+            if (tilt != 0) { g.TranslateTransform(845, 872); g.RotateTransform(tilt); g.TranslateTransform(-845, -872); }
+            float lens = Clamp01((a - 0.42f - vary[6]) / 0.3f);
+            part = g.Save(); g.TranslateTransform((1 - BackOut(lens, vary[7])) * 170, 0); ShellLens(g); g.Restore(part);
+            part = g.Save(); g.TranslateTransform(0, (1 - Stage(a, 0.48f + vary[8], 0.78f + vary[8])) * 120); ShellHandle(g); g.Restore(part);
+            ShellBody(g);
+            ShellControls(g, a);
+            float open = PanelOpen(t);
+            if (open >= 1) LcdPanel(g, ScreenLevel(t), t, true); else FlipPanel(g, open, t);
+            g.Restore(cam);
         }
-        return f;
+        if (a >= 1.3f) RollingBoard(g, t);
+        g.Restore(st);
     }
 
-    Font HintFont(Graphics g, string s, SizeF area) { return FitFont(g, s, area, smallFont, 0.7f, true); }
+    static void Cylinder(Graphics g, RectangleF r, float rad, bool upright) {
+        using (var path = Round(r, rad)) using (var b = new LinearGradientBrush(Grow(r, 1), PlasticDark, PlasticDark, upright ? 0f : 90f)) {
+            b.InterpolationColors = new ColorBlend { Colors = new[] { PlasticDark, PlasticHi, Plastic, PlasticDark }, Positions = new[] { 0f, 0.28f, 0.62f, 1f } };
+            g.FillPath(b, path);
+            using (var pen = new Pen(Color.FromArgb(160, 0, 0, 0), 2)) g.DrawPath(pen, path);
+        }
+    }
+    static void PrintAt(Graphics g, string s, Font f, Color c, float x, float y, float w, StringAlignment a) {
+        Write(g, s, f, c, new RectangleF(x, y, w, f.Height * 1.3f), a, StringAlignment.Near, false);
+    }
+    // A hardware key: lighter while the mouse is over it.
+    void HardKey(Graphics g, RectangleF r, string key, string label, float rad) {
+        bool over = hoverPrompt == key;
+        Card(g, r, rad, over ? Color.FromArgb(132, 136, 146) : Color.FromArgb(92, 95, 104), over ? Color.FromArgb(70, 72, 80) : Color.FromArgb(44, 46, 52), Color.FromArgb(170, 0, 0, 0), 2);
+        if (label != null) Write(g, label, UKey, Print, r, StringAlignment.Center, StringAlignment.Center, false);
+        Key(r, key);
+    }
+
+    // A key popping in (scale with a little overshoot), its own start on the assembly clock.
+    bool PopIn(Graphics g, float a, float start, float cx, float cy) {
+        float s = BackOut(Clamp01((a - start) / 0.22f), vary[14]);
+        if (s <= 0.01f) return false;
+        g.TranslateTransform(cx, cy); g.ScaleTransform(s, s); g.TranslateTransform(-cx, -cy);
+        return true;
+    }
+    // The lens: barrel with its focus ring, the hood, a sliver of the front glass (and the sticker when it is on it).
+    void ShellLens(Graphics g) {
+        Cylinder(g, new RectangleF(52, 262, 150, 356), 18, false);
+        using (var pen = new Pen(Color.FromArgb(80, 0, 0, 0), 3)) for (float x = 96; x < 176; x += 11) g.DrawLine(pen, x, 270, x, 610);
+        Cylinder(g, new RectangleF(16, 236, 64, 408), 14, false);
+        using (var b = new LinearGradientBrush(new RectangleF(8, 260, 12, 362), Color.FromArgb(50, 80, 140), Color.FromArgb(170, 210, 240), 90f)) g.FillRectangle(b, 9, 262, 9, 356);
+        PrintAt(g, "12x OPTICAL", UTiny, Print, 84, 590, 118, StringAlignment.Center);
+        var spec = StickerSpec();
+        if ((int)spec[1] == 1) PlaceSticker(g, spec);
+    }
+    // The carry handle with its microphone in front and the accessory shoe on top.
+    void ShellHandle(Graphics g) {
+        Cylinder(g, new RectangleF(300, 48, 150, 58), 26, false);
+        using (var b = new SolidBrush(Color.FromArgb(150, 0, 0, 0))) for (int r = 0; r < 3; r++) for (int c = 0; c < 9; c++) g.FillEllipse(b, 318 + c * 13 + (r % 2) * 6, 62 + r * 11, 5, 5);
+        Cylinder(g, new RectangleF(430, 40, 92, 96), 20, true);
+        Cylinder(g, new RectangleF(1272, 40, 100, 96), 20, true);
+        Cylinder(g, new RectangleF(420, 28, 962, 50), 24, false);
+        using (var pen = new Pen(Color.FromArgb(70, 0, 0, 0), 2)) for (float x = 560; x < 1250; x += 9) g.DrawLine(pen, x, 38, x, 68);
+        Card(g, new RectangleF(820, 18, 140, 12), 3, Color.FromArgb(170, 174, 180), Color.FromArgb(96, 100, 106), Color.Empty, 0);
+    }
+    // The body: shell, the recess the LCD folds into, the tally lamp, the model print (and the sticker on it).
+    void ShellBody(Graphics g) {
+        using (var b = new SolidBrush(Color.FromArgb(90, 0, 0, 0))) g.FillEllipse(b, 190, 864, 1330, 26);
+        using (var path = Round(BodyR, 64)) {
+            using (var b = new LinearGradientBrush(Grow(BodyR, 1), Plastic, Plastic, 90f)) {
+                b.InterpolationColors = new ColorBlend { Colors = new[] { PlasticHi, Plastic, Plastic, PlasticDark }, Positions = new[] { 0f, 0.18f, 0.7f, 1f } };
+                g.FillPath(b, path);
+            }
+            using (var pen = new Pen(Color.FromArgb(190, 0, 0, 0), 3)) g.DrawPath(pen, path);
+        }
+        using (var pen = new Pen(Color.FromArgb(60, 255, 255, 255), 2)) g.DrawLine(pen, 220, 128, 1470, 128);
+        // The recess the LCD folds into: jacks and their labels, seen while the panel moves.
+        using (var path = Round(Grow(PanelR, -6), 32)) using (var b = new SolidBrush(Color.FromArgb(20, 21, 24))) g.FillPath(b, path);
+        string[] jacks = { "DV IN/OUT", "A/V OUT", "S VIDEO", "LANC", "DC IN 8.4V" };
+        for (int i = 0; i < jacks.Length; i++) {
+            float jx = 330 + i * 170;
+            using (var b = new SolidBrush(Color.FromArgb(8, 8, 10))) g.FillEllipse(b, jx + 40, 420, 40, 40);
+            using (var pen = new Pen(Color.FromArgb(120, 130, 134, 140), 3)) g.DrawEllipse(pen, jx + 40, 420, 40, 40);
+            PrintAt(g, jacks[i], UTiny, Fade(Print, 160), jx, 470, 120, StringAlignment.Center);
+        }
+        // The tally lamp: lit while recording (a job runs).
+        bool rec = job != null;
+        if (rec) using (var b = new SolidBrush(Color.FromArgb(90, RecRed))) g.FillEllipse(b, 186, 136, 40, 40);
+        using (var b = new SolidBrush(rec ? RecRed : Color.FromArgb(76, 22, 22))) g.FillEllipse(b, 196, 146, 20, 20);
+        // Model print under the LCD.
+        Write(g, "SKATE", UMark, Print, new RectangleF(250, 812, 200, 56), StringAlignment.Near, StringAlignment.Center, false);
+        PrintAt(g, "SK8-1000", UModel, Print, 438, 826, 160, StringAlignment.Near);
+        PrintAt(g, "DIGITAL VIDEO CAMERA   120x DIGITAL ZOOM", USmall, Fade(Print, 200), 700, 830, 560, StringAlignment.Far);
+        var spec = StickerSpec();
+        if ((int)spec[1] == 2) PlaceSticker(g, spec);
+    }
+    // Controls on the back, each popping in on its own beat: POWER, MENU, the SEL / PUSH EXEC dial, the zoom rocker,
+    // START/STOP.
+    void ShellControls(Graphics g, float a) {
+        var st = g.Save();
+        if (PopIn(g, a, 0.6f + vary[9], 1395, 190)) {
+        PrintAt(g, "POWER", USmall, Print, 1300, 148, 190, StringAlignment.Near);
+        var track = new RectangleF(1300, 174, 190, 42);
+        Card(g, track, 21, Color.FromArgb(18, 19, 22), Color.FromArgb(36, 37, 42), Color.FromArgb(170, 0, 0, 0), 2);
+        Card(g, new RectangleF(1420, 178, 64, 34), 17, hoverPrompt == "POWER" ? Color.FromArgb(230, 232, 236) : Color.FromArgb(196, 199, 205), Color.FromArgb(110, 114, 120), Color.Empty, 0);
+        Key(track, "POWER");
+        PrintAt(g, "OFF", UTiny, Print, 1306, 220, 60, StringAlignment.Near);
+        PrintAt(g, "ON", UTiny, Print, 1430, 220, 60, StringAlignment.Near);
+        using (var b = new SolidBrush(Color.FromArgb(110, 230, 90))) g.FillEllipse(b, 1276, 188, 14, 14);
+        }
+        g.Restore(st); st = g.Save();
+        if (PopIn(g, a, 0.66f + vary[10], 1395, 289)) HardKey(g, new RectangleF(1325, 262, 140, 54), "MENU", "MENU", 27);
+        g.Restore(st); st = g.Save();
+        if (PopIn(g, a, 0.72f + vary[11], 1395, 420)) {
+        PrintAt(g, "SEL/PUSH EXEC", USmall, Print, 1300, 334, 190, StringAlignment.Center);
+        float jx0 = 1395, jy0 = 456;
+        using (var b = new SolidBrush(Color.FromArgb(28, 29, 33))) g.FillEllipse(b, jx0 - 96, jy0 - 96, 192, 192);
+        using (var pen = new Pen(Color.FromArgb(110, 120, 124, 132), 3))
+            for (int i = 0; i < 36; i++) { double ang = i * Math.PI / 18; g.DrawLine(pen, jx0 + (float)Math.Cos(ang) * 80, jy0 + (float)Math.Sin(ang) * 80, jx0 + (float)Math.Cos(ang) * 93, jy0 + (float)Math.Sin(ang) * 93); }
+        using (var b = new LinearGradientBrush(new RectangleF(jx0 - 72, jy0 - 72, 144, 144), Color.FromArgb(104, 107, 116), Color.FromArgb(40, 42, 48), 90f)) g.FillEllipse(b, jx0 - 72, jy0 - 72, 144, 144);
+        Key(new RectangleF(jx0 - 32, jy0 - 32, 64, 64), "A");
+        Key(new RectangleF(jx0 - 72, jy0 - 92, 144, 58), "U");
+        Key(new RectangleF(jx0 - 72, jy0 + 34, 144, 58), "D");
+        using (var b = new SolidBrush(hoverPrompt == "U" ? Color.White : Print)) g.FillPolygon(b, new[] { new PointF(jx0, jy0 - 62), new PointF(jx0 + 16, jy0 - 40), new PointF(jx0 - 16, jy0 - 40) });
+        using (var b = new SolidBrush(hoverPrompt == "D" ? Color.White : Print)) g.FillPolygon(b, new[] { new PointF(jx0, jy0 + 62), new PointF(jx0 + 16, jy0 + 40), new PointF(jx0 - 16, jy0 + 40) });
+        Card(g, new RectangleF(jx0 - 30, jy0 - 30, 60, 60), 30, hoverPrompt == "A" ? Color.FromArgb(150, 154, 162) : Color.FromArgb(86, 89, 98), Color.FromArgb(46, 48, 54), Color.FromArgb(170, 0, 0, 0), 2);
+        Write(g, "EXEC", UTiny, Print, new RectangleF(jx0 - 30, jy0 - 30, 60, 60), StringAlignment.Center, StringAlignment.Center, false);
+        }
+        g.Restore(st); st = g.Save();
+        if (PopIn(g, a, 0.78f + vary[12], 1395, 606)) {
+        PrintAt(g, "W        ZOOM        T", USmall, Print, 1300, 566, 190, StringAlignment.Center);
+        var rocker = new RectangleF(1300, 592, 190, 54);
+        Card(g, rocker, 27, Color.FromArgb(92, 95, 104), Color.FromArgb(44, 46, 52), Color.FromArgb(170, 0, 0, 0), 2);
+        var lh = new RectangleF(rocker.X, rocker.Y, rocker.Width / 2, rocker.Height); var rh = new RectangleF(rocker.X + rocker.Width / 2, rocker.Y, rocker.Width / 2, rocker.Height);
+        if (hoverPrompt == "L") Card(g, lh, 27, Color.FromArgb(70, 255, 255, 255), Color.FromArgb(30, 255, 255, 255), Color.Empty, 0);
+        if (hoverPrompt == "R") Card(g, rh, 27, Color.FromArgb(70, 255, 255, 255), Color.FromArgb(30, 255, 255, 255), Color.Empty, 0);
+        using (var pen = new Pen(Color.FromArgb(150, 0, 0, 0), 2)) g.DrawLine(pen, rocker.X + rocker.Width / 2, rocker.Y + 8, rocker.X + rocker.Width / 2, rocker.Bottom - 8);
+        Write(g, "W", UKey, Print, lh, StringAlignment.Center, StringAlignment.Center, false);
+        Write(g, "T", UKey, Print, rh, StringAlignment.Center, StringAlignment.Center, false);
+        Key(lh, "L"); Key(rh, "R");
+        }
+        g.Restore(st); st = g.Save();
+        if (PopIn(g, a, 0.84f + vary[13], 1395, 750)) {
+        PrintAt(g, "START/STOP", USmall, Print, 1300, 672, 190, StringAlignment.Center);
+        using (var b = new SolidBrush(Color.FromArgb(26, 27, 31))) g.FillEllipse(b, 1331, 700, 128, 128);
+        bool overPlay = hoverPrompt == "PLAY";
+        using (var b = new LinearGradientBrush(new RectangleF(1345, 714, 100, 100), overPlay ? Color.FromArgb(255, 120, 110) : Color.FromArgb(240, 70, 60), Color.FromArgb(150, 20, 16), 90f)) g.FillEllipse(b, 1345, 714, 100, 100);
+        using (var b = new SolidBrush(Color.FromArgb(70, 255, 255, 255))) g.FillEllipse(b, 1366, 726, 40, 22);
+        Key(new RectangleF(1331, 700, 128, 128), "PLAY");
+        }
+        g.Restore(st);
+    }
+
+    // The flip-out LCD, open and facing out: a moulded frame with a raised lip, the hinge, the thumb tab, the dark
+    // gasket round the glass, the screen, the bezel's speaker, print and keys, and its sticker when it is on the bezel.
+    void LcdPanel(Graphics g, float level, float t, bool live) {
+        using (var path = Round(PanelR, 36)) {
+            using (var b = new LinearGradientBrush(Grow(PanelR, 1), Color.FromArgb(74, 76, 84), Color.FromArgb(34, 35, 40), 90f)) g.FillPath(b, path);
+            using (var pen = new Pen(Color.FromArgb(200, 0, 0, 0), 3)) g.DrawPath(pen, path);
+        }
+        using (var path = Round(Grow(PanelR, -10), 28)) using (var pen = new Pen(Color.FromArgb(30, 255, 255, 255), 2)) g.DrawPath(pen, path);
+        Cylinder(g, new RectangleF(212, 300, 32, 350), 12, true);
+        using (var pen = new Pen(Color.FromArgb(110, 0, 0, 0), 2)) for (float y = 330; y < 640; y += 60) g.DrawLine(pen, 213, y, 243, y);
+        Card(g, new RectangleF(1236, 380, 18, 180), 6, Color.FromArgb(84, 86, 94), Color.FromArgb(40, 41, 46), Color.FromArgb(150, 0, 0, 0), 1);
+        using (var pen = new Pen(Color.FromArgb(120, 0, 0, 0), 2)) for (float y = 392; y < 552; y += 10) g.DrawLine(pen, 1239, y, 1251, y);
+        PrintAt(g, "OPEN", UTiny, Print, 1190, 356, 60, StringAlignment.Center);
+        using (var b = new SolidBrush(Color.FromArgb(14, 14, 16))) g.FillEllipse(b, 1196, 160, 12, 12);
+        using (var path = Round(Grow(ScreenR, 13), 10)) using (var b = new SolidBrush(Color.FromArgb(8, 8, 10))) g.FillPath(b, path);
+        if (level > 0) {
+            var lcd = LcdCanvas(t);
+            var st = g.Save();
+            g.InterpolationMode = InterpolationMode.NearestNeighbor; g.PixelOffsetMode = PixelOffsetMode.Half;
+            g.DrawImage(lcd, ScreenR, new RectangleF(0, 0, lcd.Width, lcd.Height), GraphicsUnit.Pixel);
+            g.Restore(st);
+            if (level < 1) using (var b = new SolidBrush(Color.FromArgb((int)(255 * (1 - level)), 6, 7, 9))) g.FillRectangle(b, ScreenR);
+        } else using (var b = new SolidBrush(Color.FromArgb(16, 17, 20))) g.FillRectangle(b, ScreenR);
+        using (var b = new SolidBrush(Color.FromArgb(14, 255, 255, 255))) g.FillPolygon(b, new[] { new PointF(ScreenR.X, ScreenR.Y), new PointF(ScreenR.X + ScreenR.Width * 0.42f, ScreenR.Y), new PointF(ScreenR.X, ScreenR.Y + ScreenR.Height * 0.55f) });
+        // Bezel bottom: speaker, print, DISPLAY and the tape keys (rewind, play, fast forward, stop).
+        using (var b = new SolidBrush(Color.FromArgb(150, 0, 0, 0))) for (int r = 0; r < 4; r++) for (int c = 0; c < 7; c++) g.FillEllipse(b, 304 + c * 12 + (r % 2) * 6, 716 + r * 12, 6, 6);
+        PrintAt(g, "16:9 WIDE LCD", UTiny, Print, 300, 770, 160, StringAlignment.Near);
+        HardKey(g, new RectangleF(800, 716, 84, 32), "DISPLAY", null, 8);
+        PrintAt(g, "DISPLAY", UTiny, Print, 800, 752, 84, StringAlignment.Center);
+        string[] keys = { "L", "A", "R", "MENU" }, names = { "REW", "PLAY", "FF", "STOP" };
+        for (int i = 0; i < 4; i++) {
+            var r = new RectangleF(912 + i * 66, 716, 56, 32);
+            HardKey(g, r, keys[i], null, 8);
+            TapeGlyph(g, i, r);
+            PrintAt(g, names[i], UTiny, Print, r.X - 6, 752, r.Width + 12, StringAlignment.Center);
+        }
+        if (!live) promptHits.Clear();
+        var spec = StickerSpec();
+        if ((int)spec[1] == 0) PlaceSticker(g, spec);
+    }
+    static void TapeGlyph(Graphics g, int kind, RectangleF r) {
+        float cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2, s = 8;
+        using (var b = new SolidBrush(Print)) {
+            if (kind == 0) { g.FillPolygon(b, new[] { new PointF(cx - 1, cy), new PointF(cx + 9, cy - s), new PointF(cx + 9, cy + s) }); g.FillPolygon(b, new[] { new PointF(cx - 11, cy), new PointF(cx - 1, cy - s), new PointF(cx - 1, cy + s) }); }
+            if (kind == 1) g.FillPolygon(b, new[] { new PointF(cx + 9, cy), new PointF(cx - 6, cy - s), new PointF(cx - 6, cy + s) });
+            if (kind == 2) { g.FillPolygon(b, new[] { new PointF(cx + 1, cy), new PointF(cx - 9, cy - s), new PointF(cx - 9, cy + s) }); g.FillPolygon(b, new[] { new PointF(cx + 11, cy), new PointF(cx + 1, cy - s), new PointF(cx + 1, cy + s) }); }
+            if (kind == 3) g.FillRectangle(b, cx - 7, cy - 7, 14, 14);
+        }
+    }
+    // The panel's closed back cover.
+    static void Cover(Graphics g) {
+        using (var path = Round(PanelR, 36)) {
+            using (var b = new LinearGradientBrush(Grow(PanelR, 1), Color.FromArgb(68, 70, 78), Color.FromArgb(30, 31, 36), 90f)) g.FillPath(b, path);
+            using (var pen = new Pen(Color.FromArgb(200, 0, 0, 0), 3)) g.DrawPath(pen, path);
+        }
+        Write(g, "SKATE", UCover, Color.FromArgb(40, 255, 255, 255), PanelR, StringAlignment.Center, StringAlignment.Center, false);
+        using (var pen = new Pen(Color.FromArgb(70, 0, 0, 0), 3)) for (float y = 640; y < 780; y += 16) g.DrawLine(pen, 1000, y, 1200, y);
+    }
+    // Mid-flip: the cover (first half) or the screen side (second half) drawn into a bitmap and swung on the hinge
+    // at the panel's left edge, in vertical strips with perspective, darker while edge-on.
+    Bitmap flipCover, flipScreen; Bitmap[] coverStrips, screenStrips; float flipScale = -1;
+    const int Strips = 48;
+    // A face cut into its vertical strips once, so each strip draws on its own (GDI+ prepares a whole image per call).
+    // Each strip carries one pixel of its neighbours on both sides, drawn over them, so the smoothing at its edges
+    // blends with real pixels and the strips meet without seams.
+    static Bitmap[] Slice(Bitmap shot, out RectangleF[] inner) {
+        var parts = new Bitmap[Strips]; inner = new RectangleF[Strips];
+        for (int i = 0; i < Strips; i++) {
+            int sx = i * shot.Width / Strips, sw = (i + 1) * shot.Width / Strips - sx;
+            int x0 = Math.Max(0, sx - 1), x1 = Math.Min(shot.Width, sx + sw + 1);
+            parts[i] = shot.Clone(new Rectangle(x0, 0, x1 - x0, shot.Height), PixelFormat.Format32bppPArgb);
+            inner[i] = new RectangleF(sx - x0, 0, sw, shot.Height);
+        }
+        return parts;
+    }
+    RectangleF[] coverInner, screenInner;
+    Bitmap PanelShot(bool cover, float t) {
+        var shot = new Bitmap((int)Math.Ceiling(PanelR.Width * devS) + 2, (int)Math.Ceiling(PanelR.Height * devS) + 2, PixelFormat.Format32bppPArgb);
+        var keep = new List<KeyValuePair<RectangleF, string>>(promptHits);
+        using (var pg = Graphics.FromImage(shot)) {
+            pg.SmoothingMode = SmoothingMode.AntiAlias; pg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            pg.ScaleTransform(devS, devS); pg.TranslateTransform(-PanelR.X, -PanelR.Y);
+            if (cover) Cover(pg); else LcdPanel(pg, 0, t, false);
+        }
+        promptHits.Clear(); promptHits.AddRange(keep);
+        return shot;
+    }
+    // Both faces are drawn once per size, on the first (still invisible) frame: only the swing changes per frame.
+    void EnsureFlip(float t) {
+        if (flipScale == devS) return;
+        foreach (var old in new[] { flipCover, flipScreen }) if (old != null) old.Dispose();
+        foreach (var set in new[] { coverStrips, screenStrips }) if (set != null) foreach (var s in set) s.Dispose();
+        flipCover = PanelShot(true, t); flipScreen = PanelShot(false, t); flipScale = devS;
+        coverStrips = Slice(flipCover, out coverInner); screenStrips = Slice(flipScreen, out screenInner);
+    }
+    void FlipPanel(Graphics g, float open, float t) {
+        bool cover = open < 0.5f;
+        float f = cover ? 1 - open / 0.5f : (open - 0.5f) / 0.5f;
+        if (f <= 0.01f) return;
+        var shot = cover ? flipCover : flipScreen;
+        var keepInterp = g.InterpolationMode; var keepOffset = g.PixelOffsetMode;
+        if (f >= 0.999f) {
+            g.InterpolationMode = InterpolationMode.NearestNeighbor; g.PixelOffsetMode = PixelOffsetMode.Half;
+            g.DrawImage(shot, PanelR.X, PanelR.Y, shot.Width / devS, shot.Height / devS);
+            g.InterpolationMode = keepInterp; g.PixelOffsetMode = keepOffset;
+            return;
+        }
+        g.InterpolationMode = InterpolationMode.NearestNeighbor; g.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+        double a = (1 - f) * Math.PI / 2;
+        float cos = (float)Math.Cos(a), sin = (float)Math.Sin(a), W = PanelR.Width, cy = PanelR.Y + PanelR.Height / 2, dist = W * 2f;
+        var parts = cover ? coverStrips : screenStrips;
+        float prevX = PanelR.X, lastS = 1;
+        var keepMode = g.CompositingQuality;
+        g.CompositingQuality = CompositingQuality.HighSpeed;
+        var inner = cover ? coverInner : screenInner;
+        for (int i = 0; i < Strips; i++) {
+            float u1 = (i + 1f) / Strips, um = (i + 0.5f) / Strips;
+            float s1 = dist / (dist - 0.45f * u1 * W * sin), sm = dist / (dist - 0.45f * um * W * sin);
+            float x1 = PanelR.X + u1 * W * cos * s1, top = cy - PanelR.Height / 2 * sm;
+            float kx = (x1 - prevX) / inner[i].Width;
+            g.DrawImage(parts[i], new RectangleF(prevX - inner[i].X * kx, top, parts[i].Width * kx, PanelR.Height * sm));
+            prevX = x1; lastS = s1;
+        }
+        g.CompositingQuality = keepMode; g.InterpolationMode = keepInterp; g.PixelOffsetMode = keepOffset;
+        int dark = (int)(170 * (1 - f));
+        if (dark > 0) using (var b = new SolidBrush(Color.FromArgb(dark, 0, 0, 0)))
+            g.FillPolygon(b, new[] { new PointF(PanelR.X, PanelR.Y), new PointF(prevX, cy - PanelR.Height / 2 * lastS), new PointF(prevX, cy + PanelR.Height / 2 * lastS), new PointF(PanelR.X, PanelR.Bottom) });
+    }
+
+    // The ledge the camera stands on: worn concrete, angle-iron coping with grind scuffs and wax, a tag.
+    static void Ledge(Graphics g) {
+        var face = new RectangleF(LedgeR.X, LedgeR.Y + 20, LedgeR.Width, LedgeR.Height - 20);
+        using (var path = Round(face, 6)) using (var b = new LinearGradientBrush(Grow(face, 1), Color.FromArgb(160, 156, 148), Color.FromArgb(100, 97, 92), 90f)) g.FillPath(b, path);
+        var rnd = new Random(11);
+        using (var d1 = new SolidBrush(Color.FromArgb(60, 0, 0, 0))) using (var d2 = new SolidBrush(Color.FromArgb(50, 255, 255, 255)))
+            for (int i = 0; i < 260; i++) g.FillRectangle(i % 2 == 0 ? d1 : d2, face.X + (float)rnd.NextDouble() * face.Width, face.Y + 4 + (float)rnd.NextDouble() * (face.Height - 8), 2.2f, 2.2f);
+        Write(g, "skate everything", UTag, Color.FromArgb(150, 236, 72, 150), new RectangleF(1040, face.Y + 4, 520, 80), StringAlignment.Near, StringAlignment.Near, false);
+        using (var pen = new Pen(Color.FromArgb(110, 236, 72, 150), 2)) foreach (float dx in new float[] { 1080, 1150, 1290, 1400 }) g.DrawLine(pen, dx, face.Y + 58, dx, face.Y + 58 + (dx % 17) + 10);
+        var cop = new RectangleF(LedgeR.X - 4, LedgeR.Y, LedgeR.Width + 8, 22);
+        using (var b = new LinearGradientBrush(Grow(cop, 1), Color.FromArgb(228, 231, 235), Color.FromArgb(116, 120, 126), 90f)) g.FillRectangle(b, cop);
+        using (var pen = new Pen(Color.FromArgb(160, 255, 255, 255), 2)) g.DrawLine(pen, cop.X, cop.Y + 1, cop.Right, cop.Y + 1);
+        using (var pen = new Pen(Color.FromArgb(80, 30, 30, 34), 2)) for (int i = 0; i < 26; i++) { float x = cop.X + (float)rnd.NextDouble() * cop.Width; g.DrawLine(pen, x, cop.Y + 4, x + 30 + (float)rnd.NextDouble() * 60, cop.Y + 6 + (float)rnd.NextDouble() * 8); }
+        using (var b = new SolidBrush(Color.FromArgb(40, 255, 250, 220))) g.FillEllipse(b, 480, cop.Y + 2, 300, 16);
+    }
+    // The board rolls along the coping and pops an ollie every few seconds.
+    void RollingBoard(Graphics g, float t) {
+        const float len = 230;
+        float x = LedgeR.X - len + (t * vary[17] + vary[18]) % (LedgeR.Width + len);
+        float cycle = t % vary[19], jump = 0, tilt = 0;
+        if (cycle < 0.8f) { float q = cycle / 0.8f; jump = (float)Math.Sin(Math.PI * q) * 110; tilt = q < 0.25f ? -18 * q / 0.25f : -18 * (1 - (q - 0.25f) / 0.75f); }
+        float y = LedgeR.Y - len * 34f / 180f - jump;
+        int sa = (int)(90 * (1 - jump / 200));
+        using (var b = new SolidBrush(Color.FromArgb(Math.Max(0, sa), 0, 0, 0))) g.FillEllipse(b, x + len * 0.1f + jump * 0.2f, LedgeR.Y - 4, len * 0.8f - jump * 0.4f, 9);
+        var st = g.Save();
+        float px = x + len / 2, py = y + len * 17f / 180f;
+        g.TranslateTransform(px, py); g.RotateTransform(tilt); g.TranslateTransform(-px, -py);
+        Board(g, x, y, len);
+        g.Restore(st);
+    }
+
+    // ---------- the sticker (USER-ASKS 487) ----------
+    // One sticker slapped on the camera years ago, picked once per user at the first start and kept in
+    // camcorder-sticker.txt in the state folder: design, zone (0 bezel, 1 lens, 2 body print), place, angle, wear seed.
+    // Placeholders: PNGs in the state folder's stickers\ (the game's own stickers, once the asset export finds them:
+    // .claude/todo/living-world-stickers.md) replace the parody set below.
+    const int StickerCount = 5;
+    float[] sticker; Bitmap[] gameStickers;
+    float[] StickerSpec() {
+        if (sticker != null) return sticker;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        string f = Path.Combine(StateDir(), "camcorder-sticker.txt");
+        if (!snapshotMode) try {
+            if (File.Exists(f)) {
+                var parts = File.ReadAllText(f).Trim().Split(' ');
+                if (parts.Length == 6) return sticker = Array.ConvertAll(parts, x => float.Parse(x, inv));
+            }
+        } catch { }
+        var rnd = snapshotMode ? new Random(snapSeed) : new Random();
+        sticker = new float[] { rnd.Next(StickerCount), rnd.Next(3), (float)rnd.NextDouble(), (float)rnd.NextDouble(), (float)(rnd.NextDouble() * 40 - 20), rnd.Next(100000) };
+        if (!snapshotMode) try { Directory.CreateDirectory(StateDir()); File.WriteAllText(f, string.Join(" ", Array.ConvertAll(sticker, x => x.ToString(inv)))); } catch { }
+        return sticker;
+    }
+    Bitmap GameSticker(int pick) {
+        if (gameStickers == null) {
+            var list = new List<Bitmap>();
+            try { string dir = Path.Combine(StateDir(), "stickers"); if (Directory.Exists(dir)) foreach (var p in Directory.GetFiles(dir, "*.png")) try { list.Add(new Bitmap(p)); } catch { } } catch { }
+            gameStickers = list.ToArray();
+        }
+        return gameStickers.Length == 0 ? null : gameStickers[pick % gameStickers.Length];
+    }
+    void PlaceSticker(Graphics g, float[] s) {
+        int zone = (int)s[1];
+        float cx, cy, scale;
+        if (zone == 0) { cx = 480 + s[2] * 250; cy = 750 + s[3] * 14; scale = 0.86f; }
+        else if (zone == 1) { cx = 127; cy = 350 + s[3] * 170; scale = 0.8f; }
+        else { cx = 610 + s[2] * 150; cy = 836; scale = 0.62f; }
+        var st = g.Save();
+        g.TranslateTransform(cx, cy); g.RotateTransform(s[4]); g.ScaleTransform(scale, scale);
+        var game = GameSticker((int)s[5]);
+        if (game != null) {
+            float k = 160f / Math.Max(game.Width, game.Height);
+            g.DrawImage(game, -game.Width * k / 2, -game.Height * k / 2, game.Width * k, game.Height * k);
+        } else DrawSticker(g, (int)s[0], (int)s[5]);
+        g.Restore(st);
+    }
+    // A parody sticker around (0, 0), about 160 x 160 at most, aged: faded, scuffed, chipped, one edge peeling up.
+    static void DrawSticker(Graphics g, int design, int seed) {
+        var rnd = new Random(seed);
+        using (var shape = StickerShape(design)) {
+            // The peel: the part past a line near one edge has lifted and folded back over.
+            var bounds = shape.GetBounds();
+            double pa = rnd.NextDouble() * Math.PI * 2;
+            float nx = (float)Math.Cos(pa), ny = (float)Math.Sin(pa);
+            float reach = Math.Abs(nx) * bounds.Width / 2 + Math.Abs(ny) * bounds.Height / 2;
+            float dist = reach * (0.74f + 0.14f * (float)rnd.NextDouble());
+            var p = new PointF(nx * dist, ny * dist);
+            var dx = -ny; var dy = nx;
+            using (var half = new GraphicsPath()) {
+                half.AddPolygon(new[] { new PointF(p.X + dx * 400, p.Y + dy * 400), new PointF(p.X - dx * 400, p.Y - dy * 400), new PointF(p.X - dx * 400 + nx * 400, p.Y - dy * 400 + ny * 400), new PointF(p.X + dx * 400 + nx * 400, p.Y + dy * 400 + ny * 400) });
+                using (var kept = new Region(shape)) using (var lifted = new Region(shape)) {
+                    kept.Exclude(half); lifted.Intersect(half);
+                    var gs = g.Save();
+                    g.TranslateTransform(2, 3);
+                    using (var b = new SolidBrush(Color.FromArgb(70, 0, 0, 0))) g.FillRegion(b, kept);
+                    g.Restore(gs);
+                    gs = g.Save();
+                    g.SetClip(kept, CombineMode.Intersect);
+                    StickerArt(g, design, rnd);
+                    // Wear: scratches, grime, chipped bits along the edge.
+                    using (var pen = new Pen(Color.FromArgb(110, 255, 255, 250), 1.2f)) for (int i = 0; i < 16; i++) { float x0 = (float)(rnd.NextDouble() * 160 - 80), y0 = (float)(rnd.NextDouble() * 160 - 80); g.DrawLine(pen, x0, y0, x0 + (float)(rnd.NextDouble() * 40 - 20), y0 + (float)(rnd.NextDouble() * 12 - 6)); }
+                    using (var b = new SolidBrush(Color.FromArgb(60, 60, 50, 30))) for (int i = 0; i < 40; i++) g.FillEllipse(b, (float)(rnd.NextDouble() * 160 - 80), (float)(rnd.NextDouble() * 160 - 80), 2.5f, 2.5f);
+                    using (var b = new SolidBrush(Color.FromArgb(30, 120, 110, 80))) g.FillRectangle(b, -90, -90, 180, 180);
+                    g.Restore(gs);
+                    using (var pen = new Pen(Color.FromArgb(120, 40, 40, 44), 3)) {
+                        for (int i = 0; i < 4; i++) {
+                            double ca = rnd.NextDouble() * Math.PI * 2;
+                            float ex = (float)Math.Cos(ca) * bounds.Width * 0.47f, ey = (float)Math.Sin(ca) * bounds.Height * 0.47f;
+                            var cs = g.Save(); g.SetClip(kept, CombineMode.Intersect);
+                            using (var b = new SolidBrush(Color.FromArgb(120, 46, 47, 52))) g.FillPolygon(b, new[] { new PointF(ex - 6, ey - 3), new PointF(ex + 5, ey - 5), new PointF(ex + 7, ey + 4), new PointF(ex - 3, ey + 7) });
+                            g.Restore(cs);
+                        }
+                    }
+                    // Old glue where it lifted, then the flap folded back over the line.
+                    using (var b = new SolidBrush(Color.FromArgb(60, 210, 196, 150))) g.FillRegion(b, lifted);
+                    float c2 = dx * dx - dy * dy, s2 = 2 * dx * dy;
+                    var m = new Matrix(c2, s2, s2, -c2, p.X - (c2 * p.X + s2 * p.Y), p.Y - (s2 * p.X - c2 * p.Y));
+                    gs = g.Save();
+                    g.MultiplyTransform(m);
+                    g.TranslateTransform(-nx * 3, -ny * 3);
+                    using (var b = new SolidBrush(Color.FromArgb(80, 0, 0, 0))) g.FillRegion(b, lifted);
+                    g.TranslateTransform(nx * 3, ny * 3);
+                    using (var b = new LinearGradientBrush(new RectangleF(-90, -90, 180, 180), Color.FromArgb(238, 234, 222), Color.FromArgb(196, 190, 176), (float)(pa * 180 / Math.PI))) g.FillRegion(b, lifted);
+                    g.Restore(gs);
+                    gs = g.Save(); g.SetClip(shape, CombineMode.Intersect);
+                    using (var pen = new Pen(Color.FromArgb(90, 0, 0, 0), 1.2f)) g.DrawLine(pen, p.X + dx * 120, p.Y + dy * 120, p.X - dx * 120, p.Y - dy * 120);
+                    g.Restore(gs);
+                }
+            }
+        }
+    }
+    static GraphicsPath StickerShape(int design) {
+        var path = new GraphicsPath();
+        if (design == 0) { path.AddClosedCurve(new[] { new PointF(-6, -80), new PointF(22, -64), new PointF(40, -10), new PointF(30, 54), new PointF(34, 80), new PointF(-30, 82), new PointF(-30, 30), new PointF(-42, -24), new PointF(-30, -62) }, 0.5f); return path; }
+        if (design == 1) { path.AddArc(-80, -56, 160, 70, 180, 180); path.AddLine(80, -21, 80, 40); path.AddLine(80, 40, -80, 40); path.CloseFigure(); return path; }
+        if (design == 2) { path.AddEllipse(-72, -72, 144, 144); return path; }
+        if (design == 3) { path.AddRectangle(new RectangleF(-80, -30, 160, 60)); return path; }
+        path.AddEllipse(-70, -70, 140, 140); return path;
+    }
+    // A wobbly hand-drawn line (the riso character sticker's look).
+    static void Wobble(Graphics g, Pen pen, Random rnd, params PointF[] pts) {
+        var w = new PointF[pts.Length];
+        for (int i = 0; i < pts.Length; i++) w[i] = new PointF(pts[i].X + (float)(rnd.NextDouble() * 2.4 - 1.2), pts[i].Y + (float)(rnd.NextDouble() * 2.4 - 1.2));
+        g.DrawCurve(pen, w, 0.5f);
+    }
+    static void FitText(Graphics g, string s, string family, FontStyle style, Color c, RectangleF r) {
+        float size = r.Height;
+        using (var probe = new Font(family, 100, style, GraphicsUnit.Pixel)) { var m = g.MeasureString(s, probe); size = Math.Min(r.Height * 100 / m.Height * 1.15f, r.Width * 100 / m.Width); }
+        using (var f = new Font(family, Math.Max(4, size), style, GraphicsUnit.Pixel)) Write(g, s, f, c, new RectangleF(r.X - 20, r.Y - size * 0.1f, r.Width + 40, r.Height + size * 0.3f), StringAlignment.Center, StringAlignment.Center, false);
+    }
+    static void StickerArt(Graphics g, int design, Random rnd) {
+        if (design == 0) {
+            // "The filmer": an original character on clear vinyl, purple hand-drawn lines, flat fills printed off the lines.
+            using (var b = new SolidBrush(Color.FromArgb(70, 255, 255, 255))) g.FillRectangle(b, -90, -90, 180, 180);
+            var line = Color.FromArgb(84, 58, 160);
+            Action<Color, PointF[]> fill = delegate(Color c, PointF[] pts) {
+                var off = new PointF[pts.Length]; for (int i = 0; i < pts.Length; i++) off[i] = new PointF(pts[i].X + 2.5f, pts[i].Y + 1.5f);
+                using (var b = new SolidBrush(c)) g.FillClosedCurve(b, off, FillMode.Alternate, 0.4f);
+            };
+            var head = new[] { new PointF(-14, -56), new PointF(-2, -66), new PointF(12, -58), new PointF(12, -40), new PointF(0, -32), new PointF(-12, -38) };
+            var hoodie = new[] { new PointF(-22, -30), new PointF(18, -32), new PointF(26, 10), new PointF(20, 16), new PointF(-22, 16), new PointF(-28, 6) };
+            var pants = new[] { new PointF(-22, 14), new PointF(20, 14), new PointF(24, 64), new PointF(4, 66), new PointF(0, 30), new PointF(-6, 66), new PointF(-26, 64) };
+            var arm = new[] { new PointF(12, -26), new PointF(24, -40), new PointF(30, -56), new PointF(22, -60), new PointF(14, -46), new PointF(6, -30) };
+            fill(Color.FromArgb(232, 196, 64), hoodie);
+            fill(Color.FromArgb(150, 178, 214), pants);
+            fill(Color.FromArgb(250, 240, 222), head);
+            fill(Color.FromArgb(232, 196, 64), arm);
+            using (var b = new SolidBrush(Color.FromArgb(170, 120, 170))) g.FillRectangle(b, -20, 6, 30, 12);
+            using (var b = new SolidBrush(Color.FromArgb(150, 196, 80))) { g.FillEllipse(b, -30, 62, 26, 12); g.FillEllipse(b, 2, 62, 26, 12); }
+            using (var b = new SolidBrush(Color.FromArgb(58, 58, 66))) g.FillRectangle(b, 14, -70, 30, 18);
+            using (var b = new SolidBrush(Color.FromArgb(120, 150, 200))) g.FillEllipse(b, 38, -67, 10, 12);
+            using (var pen = new Pen(line, 2.4f)) {
+                pen.LineJoin = LineJoin.Round;
+                Wobble(g, pen, rnd, head[0], head[1], head[2], head[3], head[4], head[5], head[0]);
+                Wobble(g, pen, rnd, new PointF(-14, -56), new PointF(-4, -68), new PointF(10, -62), new PointF(16, -58));
+                Wobble(g, pen, rnd, hoodie[0], hoodie[5], hoodie[4], hoodie[3], hoodie[2], hoodie[1]);
+                Wobble(g, pen, rnd, pants[0], pants[6], pants[5], pants[4], pants[3], pants[2], pants[1]);
+                Wobble(g, pen, rnd, arm[0], arm[1], arm[2], arm[3], arm[4], arm[5]);
+                g.DrawRectangle(pen, 14, -70, 30, 18);
+                Wobble(g, pen, rnd, new PointF(-2, -48), new PointF(2, -46), new PointF(4, -42));
+                Wobble(g, pen, rnd, new PointF(-6, -30), new PointF(-4, 0), new PointF(-2, 12));
+                g.DrawEllipse(pen, -30, 62, 26, 12); g.DrawEllipse(pen, 2, 62, 26, 12);
+            }
+            using (var pen = new Pen(Color.FromArgb(130, 255, 255, 255), 1.5f)) g.DrawPath(pen, StickerShape(0));
+            return;
+        }
+        var cream = Color.FromArgb(240, 234, 218);
+        using (var b = new SolidBrush(cream)) g.FillRectangle(b, -90, -90, 180, 180);
+        if (design == 1) {
+            // "BLICKEY": a workwear-tag parody, an arch-topped badge.
+            using (var inner = new GraphicsPath()) {
+                inner.AddArc(-72, -50, 144, 60, 180, 180); inner.AddLine(72, -20, 72, 33); inner.AddLine(72, 33, -72, 33); inner.CloseFigure();
+                using (var b = new SolidBrush(Color.FromArgb(150, 132, 88))) g.FillPath(b, inner);
+            }
+            FitText(g, "BLICKEY", "Arial Black", FontStyle.Regular, cream, new RectangleF(-64, -20, 128, 30));
+            FitText(g, "SINCE 1922 (PROBABLY)", "Tahoma", FontStyle.Bold, cream, new RectangleF(-56, 14, 112, 12));
+        } else if (design == 2) {
+            // "SPITBALL WHEELS": a round flame-head wheel badge parody.
+            using (var b = new SolidBrush(Color.FromArgb(214, 52, 38))) g.FillEllipse(b, -64, -64, 128, 128);
+            using (var b = new SolidBrush(Color.FromArgb(252, 196, 60)))
+                for (int i = 0; i < 9; i++) { double a = -Math.PI / 2 + (i - 4) * 0.28; g.FillPolygon(b, new[] { new PointF((float)Math.Cos(a - 0.12) * 26, (float)Math.Sin(a - 0.12) * 26 - 6), new PointF((float)Math.Cos(a) * 54, (float)Math.Sin(a) * 54 - 6), new PointF((float)Math.Cos(a + 0.12) * 26, (float)Math.Sin(a + 0.12) * 26 - 6) }); }
+            using (var b = new SolidBrush(cream)) g.FillEllipse(b, -24, -28, 48, 48);
+            using (var pen = new Pen(Color.FromArgb(40, 30, 30), 3)) { g.DrawEllipse(pen, -24, -28, 48, 48); g.DrawArc(pen, -10, -6, 20, 14, 10, 160); }
+            using (var b = new SolidBrush(Color.FromArgb(40, 30, 30))) { g.FillEllipse(b, -11, -14, 6, 8); g.FillEllipse(b, 5, -14, 6, 8); }
+            FitText(g, "SPITBALL WHEELS", "Arial Black", FontStyle.Regular, cream, new RectangleF(-54, 28, 108, 22));
+        } else if (design == 3) {
+            // "SUPREMELY MID": the box-logo parody.
+            using (var b = new SolidBrush(Color.FromArgb(222, 30, 36))) g.FillRectangle(b, -74, -24, 148, 48);
+            FitText(g, "Supremely Mid", "Arial", FontStyle.Bold | FontStyle.Italic, Color.White, new RectangleF(-68, -18, 136, 36));
+        } else {
+            // "THRASHED": the flame-lettering magazine parody on a black disc.
+            using (var b = new SolidBrush(Color.FromArgb(20, 20, 22))) g.FillEllipse(b, -62, -62, 124, 124);
+            using (var b = new SolidBrush(Color.FromArgb(240, 110, 30)))
+                for (int i = 0; i < 7; i++) { float x = -48 + i * 16; g.FillPolygon(b, new[] { new PointF(x - 7, 10), new PointF(x + 2, -30 - (i % 3) * 8), new PointF(x + 9, 10) }); }
+            FitText(g, "THRASHED", "Impact", FontStyle.Regular, Color.FromArgb(255, 226, 120), new RectangleF(-54, -12, 108, 30));
+            FitText(g, "SKATE AND REST", "Tahoma", FontStyle.Bold, cream, new RectangleF(-40, 22, 80, 12));
+        }
+    }
+
+    // ---------- the LCD (drawn low-res, scaled up with hard pixels) ----------
+    Bitmap lcdBmp, sceneBmp; Font osdBig, osdRow, osdSmall, osdLogo; int osdFontH;
+    bool recOn; DateTime recSince; TimeSpan recTotal;
+    int lcdW, lcdH;
+    void LoHit(RectangleF lo, int index) {
+        var u = new RectangleF(ScreenR.X + lo.X * ScreenR.Width / lcdW, ScreenR.Y + lo.Y * ScreenR.Height / lcdH, lo.Width * ScreenR.Width / lcdW, lo.Height * ScreenR.Height / lcdH);
+        hits.Add(new KeyValuePair<RectangleF, int>(ToWin(u), index));
+    }
+    Bitmap LcdCanvas(float t) {
+        int k = Math.Max(2, (int)Math.Round(ScreenR.Height * devS / 190f));
+        int W = Math.Max(200, (int)(ScreenR.Width * devS / k)), H = Math.Max(112, (int)(ScreenR.Height * devS / k));
+        if (lcdBmp == null || lcdBmp.Width != W || lcdBmp.Height != H) { if (lcdBmp != null) lcdBmp.Dispose(); lcdBmp = new Bitmap(W, H, PixelFormat.Format32bppPArgb); }
+        if (osdFontH != H) {
+            osdFontH = H;
+            osdBig = new Font("Tahoma", H / 14f, FontStyle.Bold, GraphicsUnit.Pixel);
+            osdRow = new Font("Tahoma", H / 16.5f, FontStyle.Bold, GraphicsUnit.Pixel);
+            osdSmall = new Font("Tahoma", H / 20f, GraphicsUnit.Pixel);
+            osdLogo = new Font("Arial Black", H / 5.5f, FontStyle.Italic, GraphicsUnit.Pixel);
+        }
+        lcdW = W; lcdH = H;
+        DateTime now = DateTime.Now;
+        bool rec = job != null;
+        if (rec && !recOn) recSince = now;
+        if (!rec && recOn) recTotal += now - recSince;
+        recOn = rec;
+        using (var o = Graphics.FromImage(lcdBmp)) {
+            o.SmoothingMode = SmoothingMode.None;
+            o.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit;
+            bool splash = starting && job == null && pages.Count == 0;
+            if (splash) { o.Clear(Color.FromArgb(4, 4, 8)); LcdSplash(o, W, H, t); }
+            else {
+                o.DrawImageUnscaled(Scene(W, H), 0, 0);
+                float lh = osdSmall.Height, top = osdRow.Height + 5, bottom = H - lh * 2 - 4;
+                LcdStatus(o, W, H, now);
+                if (job != null) LcdJob(o, W, top, bottom, t);
+                else if (pages.Count > 0) LcdPage(o, pages.Peek(), W, top, bottom, t);
+            }
+            LcdFoot(o, W, H, now, splash);
+        }
+        return lcdBmp;
+    }
+    // What the camera is pointed at: a skate spot at dusk (stairs, a handrail, a ledge), dimmed under the menus.
+    Bitmap Scene(int W, int H) {
+        if (sceneBmp != null && sceneBmp.Width == W && sceneBmp.Height == H) return sceneBmp;
+        if (sceneBmp != null) sceneBmp.Dispose();
+        sceneBmp = new Bitmap(W, H, PixelFormat.Format32bppPArgb);
+        using (var g = Graphics.FromImage(sceneBmp)) {
+            float hz = H * 0.62f;
+            using (var b = new LinearGradientBrush(new RectangleF(0, -1, W, hz + 2), Color.FromArgb(34, 44, 96), Color.FromArgb(214, 122, 74), 90f)) g.FillRectangle(b, 0, 0, W, hz);
+            using (var b = new SolidBrush(Color.FromArgb(200, 252, 206, 128))) g.FillEllipse(b, W * 0.68f, hz - H * 0.17f, H * 0.16f, H * 0.16f);
+            var rnd = new Random(5);
+            using (var b = new SolidBrush(Color.FromArgb(44, 34, 54))) for (float x = 0; x < W; ) { float bw = 8 + (float)rnd.NextDouble() * 16, bh = H * (0.05f + (float)rnd.NextDouble() * 0.18f); g.FillRectangle(b, x, hz - bh, bw, bh); x += bw + 1; }
+            using (var b = new LinearGradientBrush(new RectangleF(0, hz - 1, W, H - hz + 2), Color.FromArgb(78, 64, 66), Color.FromArgb(30, 26, 30), 90f)) g.FillRectangle(b, 0, hz, W, H - hz);
+            // A set of stairs going down to the right with a handrail, and a ledge on the left.
+            float sx0 = W * 0.6f, sy0 = H * 0.7f, stepW = W * 0.08f, stepH = H * 0.06f;
+            var stairs = new List<PointF> { new PointF(sx0, H), new PointF(sx0, sy0) };
+            for (int i = 0; i < 5; i++) { stairs.Add(new PointF(sx0 + (i + 1) * stepW, sy0 + i * stepH)); stairs.Add(new PointF(sx0 + (i + 1) * stepW, sy0 + (i + 1) * stepH)); }
+            stairs.Add(new PointF(W, sy0 + 5 * stepH)); stairs.Add(new PointF(W, H));
+            using (var b = new SolidBrush(Color.FromArgb(52, 46, 52))) g.FillPolygon(b, stairs.ToArray());
+            using (var pen = new Pen(Color.FromArgb(120, 214, 150, 110), 1)) for (int i = 0; i < 5; i++) g.DrawLine(pen, sx0 + i * stepW, sy0 + i * stepH, sx0 + (i + 1) * stepW, sy0 + i * stepH);
+            using (var b = new SolidBrush(Color.FromArgb(70, 64, 66))) g.FillRectangle(b, W * 0.05f, H * 0.74f, W * 0.3f, H * 0.07f);
+            using (var pen = new Pen(Color.FromArgb(150, 214, 150, 110), 1)) g.DrawLine(pen, W * 0.05f, H * 0.74f, W * 0.35f, H * 0.74f);
+            using (var pen = new Pen(Color.FromArgb(170, 170, 172, 182), 1)) { g.DrawLine(pen, sx0 + stepW * 0.5f, sy0 - H * 0.09f, W, sy0 - H * 0.09f + (W - sx0 - stepW * 0.5f) * stepH / stepW); for (int i = 0; i < 4; i++) { float px = sx0 + stepW * (0.5f + i * 1.2f); g.DrawLine(pen, px, sy0 - H * 0.09f + (px - sx0 - stepW * 0.5f) * stepH / stepW, px, sy0 + i * 1.2f * stepH); } }
+            using (var b = new SolidBrush(Color.FromArgb(96, 0, 0, 0))) g.FillRectangle(b, 0, 0, W, H);
+            using (var b = new SolidBrush(Color.FromArgb(26, 0, 0, 0))) for (int y = 0; y < H; y += 2) g.FillRectangle(b, 0, y, W, 1);
+        }
+        return sceneBmp;
+    }
+    static void OsdText(Graphics g, string s, Font f, Color c, float x, float y) {
+        using (var black = new SolidBrush(Color.Black))
+            for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++) if (dx != 0 || dy != 0) g.DrawString(s, f, black, x + dx, y + dy);
+        using (var b = new SolidBrush(c)) g.DrawString(s, f, b, x, y);
+    }
+    static void OsdPanel(Graphics g, RectangleF r) {
+        using (var b = new SolidBrush(OsdNavy)) g.FillRectangle(b, r);
+        using (var pen = new Pen(Color.FromArgb(170, 200, 210, 240), 1)) g.DrawRectangle(pen, r.X, r.Y, r.Width - 1, r.Height - 1);
+    }
+    // Top row: STBY / REC with its blinking dot, SP, the tape counter (runs only while recording), the battery.
+    void LcdStatus(Graphics o, int W, int H, DateTime now) {
+        TimeSpan tape = recTotal + (recOn ? now - recSince : TimeSpan.Zero);
+        float x = 4, y = 2;
+        if (recOn) {
+            if (now.Millisecond < 600) using (var b = new SolidBrush(RecRed)) o.FillEllipse(b, x, y + osdRow.Height * 0.25f, osdRow.Height * 0.5f, osdRow.Height * 0.5f);
+            x += osdRow.Height * 0.6f;
+        }
+        string mode = recOn ? "REC" : "STBY";
+        OsdText(o, mode, osdRow, OsdWhite, x, y); x += o.MeasureString(mode, osdRow).Width + 4;
+        OsdText(o, "SP", osdRow, OsdWhite, x, y); x += o.MeasureString("SP", osdRow).Width + 4;
+        OsdText(o, string.Format("{0}:{1:00}:{2:00}:{3:00}", (int)tape.TotalHours, tape.Minutes, tape.Seconds, tape.Milliseconds * 30 / 1000), osdRow, OsdWhite, x, y);
+        var mins = o.MeasureString("60min", osdSmall);
+        float bx = W - 4 - mins.Width - 18, bh = osdRow.Height * 0.55f, by = y + (osdRow.Height - bh) / 2;
+        OsdText(o, "60min", osdSmall, OsdWhite, W - 4 - mins.Width, y + 1);
+        using (var bl = new SolidBrush(Color.Black)) o.FillRectangle(bl, bx - 1, by - 1, 16, bh + 2);
+        using (var wb = new SolidBrush(OsdWhite)) { o.FillRectangle(wb, bx, by, 14, bh); o.FillRectangle(wb, bx + 14, by + bh * 0.3f, 2, bh * 0.4f); }
+        using (var bl = new SolidBrush(Color.Black)) o.FillRectangle(bl, bx + 1, by + 1, 12, bh - 2);
+        using (var wb = new SolidBrush(OsdWhite)) for (int i = 0; i < 4; i++) o.FillRectangle(wb, bx + 2 + i * 3, by + 2, 2, bh - 4);
+    }
+    // Bottom: what the keys do now on the left, the date and time stamp on the right.
+    void LcdFoot(Graphics o, int W, int H, DateTime now, bool splash) {
+        float lh = osdSmall.Height;
+        string hint;
+        if (closeAt >= 0) hint = "CLOSING IN " + closeAt + " s";
+        else if (job != null) hint = ((build.Waiting != null && !build.Ended) || build.FetchWaiting()) ? (cancelArmed ? "[B] AGAIN TO CANCEL" : "[B] CANCEL") : "";
+        else if (splash) hint = CanSkip() ? (skipArmed ? "[B] AGAIN TO SKIP" : "[B] SKIP THE CHECK") : "";
+        else if (pages.Count > 0 && IsMain(pages.Peek())) hint = "[A] EXEC   START/STOP: PLAY";
+        else hint = "[A] EXEC   [B] RET.";
+        if (hint != "") OsdText(o, hint, osdSmall, OsdWhite, 4, H - lh - 2);
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        string date = now.ToString("MMM. d yyyy", inv).ToUpperInvariant(), time = now.ToString("h:mm:ss tt", inv);
+        float dw = Math.Max(o.MeasureString(date, osdSmall).Width, o.MeasureString(time, osdSmall).Width);
+        OsdText(o, date, osdSmall, OsdWhite, W - 4 - dw, H - lh * 2 - 3);
+        OsdText(o, time, osdSmall, OsdWhite, W - 4 - dw, H - lh - 2);
+    }
+    // A menu screen: the title tab, the list with the orange selection bar, the selected row's info beside it; a text
+    // page shows its text in a box (and a build's first error under it).
+    void LcdPage(Graphics o, Page p, int W, float top, float bottom, float t) {
+        const float m = 4;
+        string title = IsMain(p) ? "MENU" : p.Title.TrimEnd(':', ' ').ToUpperInvariant();
+        var tab = new RectangleF(m, top, Math.Min(W - 2 * m, o.MeasureString(title, osdRow).Width + 6), osdRow.Height + 2);
+        OsdPanel(o, tab);
+        Write(o, title, osdRow, OsdWhite, new RectangleF(tab.X + 3, tab.Y + 1, tab.Width - 4, tab.Height), StringAlignment.Near, StringAlignment.Near, false);
+        float y = tab.Bottom + 2;
+        if (p.Body != null) {
+            var br = new RectangleF(m, y, W - 2 * m, p.Items.Count > 0 ? (bottom - y) * 0.6f : bottom - y);
+            OsdPanel(o, br);
+            float textH = br.Height - 6;
+            if (p.Mono != null) textH = Math.Min(textH, o.MeasureString(p.Body, osdSmall, (int)(br.Width - 8)).Height + 2);
+            Write(o, p.Body, osdSmall, OsdWhite, new RectangleF(br.X + 4, br.Y + 3, br.Width - 8, textH), StringAlignment.Near, StringAlignment.Near, true);
+            if (p.Mono != null) {
+                var eb = new RectangleF(br.X + 4, br.Y + 4 + textH, br.Width - 8, br.Bottom - 4 - (br.Y + 4 + textH));
+                if (eb.Height > osdSmall.Height) {
+                    using (var b = new SolidBrush(Color.FromArgb(200, 60, 12, 16))) o.FillRectangle(b, eb);
+                    using (var pen = new Pen(OsdRed, 1)) o.DrawRectangle(pen, eb.X, eb.Y, eb.Width - 1, eb.Height - 1);
+                    Write(o, p.Mono, osdSmall, OsdWhite, new RectangleF(eb.X + 3, eb.Y + 2, eb.Width - 6, eb.Height - 4), StringAlignment.Near, StringAlignment.Near, true);
+                }
+            }
+            y = br.Bottom + 3;
+        }
+        if (p.Items.Count == 0) return;
+        bool split = p.Body == null;
+        float listW = split ? (float)Math.Floor(W * 0.42f) : W - 2 * m, rowH = osdRow.Height + 3;
+        int fit = Math.Max(1, (int)((bottom - y - 4) / rowH));
+        int first = Math.Max(0, Math.Min(p.Sel - fit / 2, p.Items.Count - fit)), shown = Math.Min(fit, p.Items.Count - first);
+        var box = new RectangleF(m, y, listW, shown * rowH + 4);
+        OsdPanel(o, box);
+        for (int i = first; i < first + shown; i++) {
+            var it = p.Items[i]; bool sel = i == p.Sel;
+            var r = new RectangleF(box.X + 2, box.Y + 2 + (i - first) * rowH, box.Width - 4, rowH);
+            if (sel) using (var b = new SolidBrush(OsdOrange)) o.FillRectangle(b, r);
+            string text = split ? ShortName(it.Text) : it.Text;
+            bool cur = text.StartsWith("> ");
+            if (cur) text = text.Substring(2);
+            Write(o, text, osdRow, sel ? Color.Black : it.On ? OsdWhite : OsdGrey, new RectangleF(r.X + 3, r.Y + 1, r.Width - (cur ? 12 : 5), r.Height), StringAlignment.Near, StringAlignment.Near, false);
+            if (cur) using (var b = new SolidBrush(sel ? Color.Black : OsdOrange)) o.FillRectangle(b, r.Right - 7, r.Y + rowH / 2 - 2, 4, 4);
+            LoHit(r, i);
+        }
+        using (var b = new SolidBrush(OsdWhite)) {
+            float ax = box.Right - 8;
+            if (first > 0) o.FillPolygon(b, new[] { new PointF(ax, box.Y - 1), new PointF(ax + 3, box.Y - 4), new PointF(ax + 6, box.Y - 1) });
+            if (first + shown < p.Items.Count) o.FillPolygon(b, new[] { new PointF(ax, box.Bottom + 1), new PointF(ax + 3, box.Bottom + 4), new PointF(ax + 6, box.Bottom + 1) });
+        }
+        if (split) LcdInfo(o, p, new RectangleF(box.Right + 3, y, W - m - box.Right - 3, bottom - y), t);
+    }
+    void LcdInfo(Graphics o, Page p, RectangleF r, float t) {
+        OsdPanel(o, r);
+        float x = r.X + 4, w = r.Width - 8, y = r.Y + 3, bottom = r.Bottom - 3, sh = osdSmall.Height;
+        var it = p.Items[p.Sel];
+        if (IsMain(p) && p.Sel == 0) {
+            Write(o, "NOW SELECTED", osdSmall, OsdOrange, new RectangleF(x, y, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); y += sh + 1;
+            float vh = Math.Min(o.MeasureString(St("version"), osdBig, (int)w).Height, osdBig.Height * 2.2f);
+            Write(o, St("version"), osdBig, OsdWhite, new RectangleF(x, y, w, vh), StringAlignment.Near, StringAlignment.Near, true); y += vh + 1;
+            Write(o, St("version_status"), osdSmall, OsdWhite, new RectangleF(x, y, w, sh * 2.2f), StringAlignment.Near, StringAlignment.Near, true); y += sh * 2.2f;
+            string send = St("send");
+            Write(o, "Last session: " + St("last") + (send == "" || send == "off" ? "" : "   Send: " + send), osdSmall, OsdGrey, new RectangleF(x, y, w, bottom - y - sh - 2), StringAlignment.Near, StringAlignment.Near, true);
+            if (t % 1.2f < 0.8f) Write(o, "PRESS START/STOP", osdRow, OsdOrange, new RectangleF(x, bottom - osdRow.Height - 1, w, osdRow.Height + 2), StringAlignment.Near, StringAlignment.Near, false);
+            return;
+        }
+        string name = it.Text.StartsWith("> ") ? it.Text.Substring(2) : it.Text;
+        float nh = Math.Min(o.MeasureString(name, osdRow, (int)w).Height, osdRow.Height * 2.2f);
+        Write(o, name, osdRow, OsdWhite, new RectangleF(x, y, w, nh), StringAlignment.Near, StringAlignment.Near, true); y += nh + 1;
+        Write(o, it.On ? "READY" : "NOT AVAILABLE", osdSmall, it.On ? OsdGreen : OsdRed, new RectangleF(x, y, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); y += sh + 2;
+        string info = it.Info != "" ? it.Info : it.Hint;
+        if (info != "") {
+            float ih = Math.Min(o.MeasureString(info, osdSmall, (int)w).Height, bottom - y);
+            Write(o, info, osdSmall, OsdWhite, new RectangleF(x, y, w, ih), StringAlignment.Near, StringAlignment.Near, true); y += ih + 2;
+        }
+        float nameW = w * 0.38f;
+        foreach (var rec in it.Records) {
+            if (y + sh > bottom) { Write(o, "...", osdSmall, OsdGrey, new RectangleF(x, y - 2, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); break; }
+            int cut = rec.IndexOf(": ");
+            string a = cut > 0 ? rec.Substring(0, cut) : rec, b = cut > 0 ? rec.Substring(cut + 2) : "";
+            if (a.StartsWith("#")) { Write(o, a.Substring(1).ToUpperInvariant() + (b != "" ? "  " + b : ""), osdSmall, OsdOrange, new RectangleF(x, y, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); y += sh + 1; continue; }
+            float rh = Math.Min(Math.Max(o.MeasureString(a, osdSmall, (int)nameW).Height, o.MeasureString(b, osdSmall, (int)(w - nameW - 3)).Height), Math.Max(sh, bottom - y));
+            Write(o, a, osdSmall, OsdWhite, new RectangleF(x, y, nameW, rh), StringAlignment.Near, StringAlignment.Near, true);
+            Write(o, b, osdSmall, OsdGrey, new RectangleF(x + nameW + 3, y, w - nameW - 3, rh), StringAlignment.Near, StringAlignment.Near, true);
+            y += rh + 1;
+        }
+    }
+    // A job (fetch, build): its name, the time, a segmented tape bar for cargo's step count, the counts, then the first
+    // error or the newest log lines.
+    void LcdJob(Graphics o, int W, float top, float bottom, float t) {
+        const float m = 4;
+        var card = new RectangleF(m, top, W - 2 * m, bottom - top);
+        OsdPanel(o, card);
+        float x = card.X + 4, w = card.Width - 8, y = card.Y + 3, sh = osdSmall.Height;
+        bool isBuild = build.Active || build.Ended, failed = build.Ended && !build.Ok, fetchWait = build.FetchWaiting();
+        float k = isBuild && build.Total > 0 ? Math.Min(1f, build.Done / (float)build.Total) : -1;
+        var el = DateTime.Now - (isBuild ? build.Start : fetchWait ? build.PreWaitSince : jobStart);
+        Write(o, isBuild ? build.Name : jobTitle, osdBig, OsdWhite, new RectangleF(x, y, w * 0.78f, osdBig.Height + 2), StringAlignment.Near, StringAlignment.Near, false);
+        Write(o, BuildView.Clock(el), osdRow, OsdWhite, new RectangleF(x, y, w, osdBig.Height + 2), StringAlignment.Far, StringAlignment.Near, false);
+        y += osdBig.Height + 1;
+        if (isBuild) { Write(o, "at " + build.Commit, osdSmall, OsdGrey, new RectangleF(x, y, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); y += sh + 2; }
+        const int segs = 30;
+        var bar = new RectangleF(x, y, w, 7);
+        using (var pen = new Pen(OsdWhite, 1)) o.DrawRectangle(pen, bar.X, bar.Y, bar.Width - 1, bar.Height - 1);
+        float segW = (bar.Width - 2) / segs;
+        int on = k >= 0 ? (int)Math.Round(k * segs) : -1, run = (int)(t * 10) % (segs + 5) - 5;
+        using (var b = new SolidBrush(failed ? OsdRed : OsdOrange))
+            for (int i = 0; i < segs; i++) if (on >= 0 ? i < on : (i >= run && i < run + 5)) o.FillRectangle(b, bar.X + 1 + i * segW + 0.5f, bar.Y + 1, segW - 1, bar.Height - 2);
+        y += 10;
+        if (isBuild) {
+            string count = build.Total > 0 ? build.Done + " / " + build.Total + " build steps" : build.Compiled + " crates compiled";
+            if (!build.Ended && build.Waiting != null) count = "Waiting " + BuildView.Clock(DateTime.Now - build.WaitSince) + ": " + build.Waiting;
+            else if (!build.Ended && build.Total == 0 && build.Compiled == 0 && build.StageText != null) count = build.StageText;
+            if (build.Ended) count = build.Ok ? "Built in " + BuildView.Clock(build.End - build.Start) : "Build failed";
+            Write(o, count, osdRow, failed ? OsdRed : OsdWhite, new RectangleF(x, y, w * 0.7f, osdRow.Height + 2), StringAlignment.Near, StringAlignment.Near, false);
+            if (build.Warnings > 0) Write(o, build.Warnings + (build.Warnings == 1 ? " warning" : " warnings"), osdSmall, OsdOrange, new RectangleF(x, y, w, osdRow.Height + 2), StringAlignment.Far, StringAlignment.Near, false);
+            y += osdRow.Height + 2;
+            string line = !build.Ended && build.Waiting != null ? (build.WaitWho ?? "Cargo does not say who; it continues by itself once that build ends.") : (build.Now != "" && !build.Ended ? "Now: " + build.Now : "");
+            if (line != "") { Write(o, line, osdSmall, OsdGrey, new RectangleF(x, y, w, sh * 2.2f), StringAlignment.Near, StringAlignment.Near, true); y += sh * 2.2f; }
+            if (build.Error.Count > 0) {
+                var eb = new RectangleF(x, y, w, card.Bottom - 3 - y);
+                using (var b = new SolidBrush(Color.FromArgb(200, 60, 12, 16))) o.FillRectangle(b, eb);
+                using (var pen = new Pen(OsdRed, 1)) o.DrawRectangle(pen, eb.X, eb.Y, eb.Width - 1, eb.Height - 1);
+                Write(o, "First error\n" + string.Join("\n", build.Error), osdSmall, OsdWhite, new RectangleF(eb.X + 3, eb.Y + 2, eb.Width - 6, eb.Height - 4), StringAlignment.Near, StringAlignment.Near, true);
+            }
+            return;
+        }
+        var lines = new List<string>();
+        for (int i = log.Count - 1; i >= 0 && lines.Count < 12; i--) { string c = Clean(log[i]); if (c != "") lines.Add(c); }
+        string status = fetchWait ? "Waiting " + BuildView.Clock(el) + ": " + build.PreWait : lines.Count > 0 ? lines[0] : "Starting...";
+        Write(o, status, osdRow, OsdWhite, new RectangleF(x, y, w, osdRow.Height + 2), StringAlignment.Near, StringAlignment.Near, false); y += osdRow.Height + 2;
+        if (fetchWait) { Write(o, "git stops by itself if nothing arrives for 30 s; cancelling keeps the last fetched version.", osdSmall, OsdGrey, new RectangleF(x, y, w, sh * 2.2f), StringAlignment.Near, StringAlignment.Near, true); y += sh * 2.2f; }
+        for (int i = 1; i < lines.Count && y + sh <= card.Bottom - 2; i++) { Write(o, lines[i], osdSmall, OsdGrey, new RectangleF(x, y, w, sh + 1), StringAlignment.Near, StringAlignment.Near, false); y += sh; }
+    }
+    // Power-on screen: the logo, the model, then the start check's step.
+    void LcdSplash(Graphics o, int W, int H, float t) {
+        float since = (float)(DateTime.Now - startSince).TotalSeconds;
+        Write(o, "SKATE", osdLogo, OsdWhite, new RectangleF(0, H * 0.18f, W, osdLogo.Height * 1.2f), StringAlignment.Center, StringAlignment.Near, false);
+        Write(o, "SK8-1000   DIGITAL VIDEO CAMERA", osdSmall, OsdGrey, new RectangleF(0, H * 0.18f + osdLogo.Height * 1.1f, W, osdSmall.Height + 2), StringAlignment.Center, StringAlignment.Near, false);
+        string stage = skipped ? "Finishing the start" : (startStage ?? "Checking for a newer launcher");
+        Write(o, stage + new string('.', 1 + (int)(t * 2) % 3), osdRow, OsdWhite, new RectangleF(0, H * 0.64f, W, osdRow.Height + 2), StringAlignment.Center, StringAlignment.Near, false);
+        if (since >= 3) OsdText(o, BuildView.Clock(DateTime.Now - startSince), osdSmall, OsdGrey, 4, 3);
+    }
 
     // The largest font from `max` down to `minScale` of it (same family and style) that shows all of `s` in `area`
     // (whole lines when wrapping, one line otherwise); cached per family and size.
@@ -1462,64 +1917,6 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             }
         }
         return f;
-    }
-
-    void RenderPage(Graphics g, Page p, int w, int h, float m, float top, float bottom) {
-        Write(g, p.Title, titleFont, Ink, new RectangleF(m, top, w - 2 * m, titleFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
-        float y = top + titleFont.Height * 1.5f;
-        if (p.Body != null) {
-            float bodyH = p.Items.Count > 0 ? (bottom - y) * 0.45f : bottom - y - h * 0.01f;
-            var br = new RectangleF(m, y, w - 2 * m, bodyH);
-            Card(g, br, h * 0.016f, Panel, Color.FromArgb(19, 22, 30), Stroke, 1);
-            float pad = h * 0.025f;
-            float bodyText = br.Height - 2 * pad;
-            if (p.Mono != null) bodyText = Math.Min(bodyText, g.MeasureString(p.Body, smallFont, (int)(br.Width - 2 * pad)).Height + smallFont.Height * 0.5f);
-            Write(g, p.Body, smallFont, Color.FromArgb(214, 218, 226), new RectangleF(br.X + pad, br.Y + pad, br.Width - 2 * pad, bodyText), StringAlignment.Near, StringAlignment.Near, true);
-            if (p.Mono != null) {
-                // A failed build's first error, fixed width so the ^^^ marks stay under the code.
-                var eb = new RectangleF(br.X + pad, br.Y + pad + bodyText, br.Width - 2 * pad, br.Height - 2 * pad - bodyText);
-                Card(g, eb, h * 0.01f, Color.FromArgb(40, 20, 22), Color.FromArgb(26, 14, 16), Color.FromArgb(120, 228, 76, 70), 1);
-                Write(g, p.Mono, monoFont, Color.FromArgb(236, 226, 226), new RectangleF(eb.X + pad * 0.6f, eb.Y + pad * 0.6f, eb.Width - 1.2f * pad, eb.Height - 1.2f * pad), StringAlignment.Near, StringAlignment.Near, true);
-            }
-            y = br.Bottom + h * 0.025f;
-        }
-        if (p.Items.Count == 0) return;
-        int cols = GridCols(p);
-        if (cols > 0) {
-            // Buttons like the main screen's tiles, cols wide and as many rows as needed (rows scroll to keep the selected
-            // one), on the left; a large panel on the right shows the selected option: what it does and, for the play
-            // options, what it records (user 2026-10-21).
-            float tgap = w * 0.012f, gridW = (w - 2 * m) * 0.48f;
-            float tw = (gridW - tgap * (cols - 1)) / cols, th = h * 0.105f;
-            RenderDetail(g, p.Items[p.Sel], new RectangleF(m + gridW + tgap * 2, y, w - 2 * m - gridW - tgap * 2, bottom - y), h);
-            int rows = (p.Items.Count + cols - 1) / cols;
-            int fitRows = Math.Max(1, (int)((bottom - y + tgap) / (th + tgap)));
-            int firstRow = Math.Max(0, Math.Min(p.Sel / cols - fitRows / 2, rows - fitRows));
-            var thint = PageHintFont(g, p, 0, new RectangleF(0, 0, tw, th), true);
-            for (int i = firstRow * cols; i < p.Items.Count && i < (firstRow + fitRows) * cols; i++) {
-                int k = i - firstRow * cols;
-                var r = new RectangleF(m + (k % cols) * (tw + tgap), y + (k / cols) * (th + tgap), tw, th);
-                var shown = new Item(ShortName(p.Items[i].Text), "", p.Items[i].On, null) { Icon = p.Items[i].Text };
-                Tile(g, shown, i == p.Sel, r, true, thint);
-                hits.Add(new KeyValuePair<RectangleF, int>(r, i));
-            }
-            if (rows > fitRows)
-                Write(g, (p.Sel + 1) + " / " + p.Items.Count, smallFont, Faint, new RectangleF(m, top, w - 2 * m, titleFont.Height * 1.3f), StringAlignment.Far, StringAlignment.Center, false);
-            return;
-        }
-        // A scrolling list of cards: the selected one stays in view.
-        float ch = h * 0.095f, gap = h * 0.014f;
-        int fit = Math.Max(1, (int)((bottom - y + gap) / (ch + gap)));
-        int first = Math.Max(0, Math.Min(p.Sel - fit / 2, p.Items.Count - fit));
-        var hint = PageHintFont(g, p, 0, new RectangleF(0, 0, w - 2 * m, ch), false);
-        for (int i = first; i < p.Items.Count && i < first + fit; i++) {
-            var r = new RectangleF(m, y, w - 2 * m, ch);
-            Tile(g, p.Items[i], i == p.Sel, r, false, hint);
-            hits.Add(new KeyValuePair<RectangleF, int>(r, i));
-            y += ch + gap;
-        }
-        if (first > 0 || first + fit < p.Items.Count)
-            Write(g, (p.Sel + 1) + " / " + p.Items.Count, smallFont, Faint, new RectangleF(m, top, w - 2 * m, titleFont.Height * 1.3f), StringAlignment.Far, StringAlignment.Center, false);
     }
 
     // A play option's button label: the panel shows the full name, so the button drops the "Play + " / "Play with the "
@@ -1544,251 +1941,6 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         return current + name;
     }
 
-    // The play screen's detail panel: the selected option's name with a status pill, what it does, and what it records.
-    // Records come from launcher.ps1 as rows "name: what it is"; "#TITLE: folder" rows start a section.
-    void RenderDetail(Graphics g, Item it, RectangleF r, int h) {
-        Card(g, r, h * 0.02f, Color.FromArgb(26, 31, 43), Color.FromArgb(18, 21, 29), Stroke, 1);
-        float pad = h * 0.04f, x = r.X + pad, cw = r.Width - 2 * pad, y = r.Y + pad * 0.9f;
-        string name = it.Text.StartsWith("> ") ? it.Text.Substring(2) : it.Text;
-        float nh = Math.Min(g.MeasureString(name, titleFont, (int)cw).Height, titleFont.Height * 2.5f);
-        Write(g, name, titleFont, Ink, new RectangleF(x, y, cw, nh), StringAlignment.Near, StringAlignment.Near, true);
-        y += nh + titleFont.Height * 0.25f;
-        // Status pill: READY, or NOT AVAILABLE with the reason beside it.
-        string pill = it.On ? "READY" : "NOT AVAILABLE";
-        var ps = g.MeasureString(pill, smallBold);
-        var pr = new RectangleF(x, y, ps.Width + smallBold.Height * 0.9f, smallBold.Height * 1.4f);
-        Color pc = it.On ? Color.FromArgb(108, 196, 74) : Color.FromArgb(228, 76, 70);
-        Card(g, pr, pr.Height / 2, Fade(pc, 40), Fade(pc, 40), Fade(pc, 140), 1);
-        Write(g, pill, smallBold, pc, pr, StringAlignment.Center, StringAlignment.Center, false);
-        if (!it.On) Write(g, it.Hint, smallFont, Dim, new RectangleF(pr.Right + pad * 0.4f, y, x + cw - pr.Right - pad * 0.4f, pr.Height), StringAlignment.Near, StringAlignment.Center, false);
-        y += pr.Height + h * 0.028f;
-        string info = it.Info != "" ? it.Info : it.Hint;
-        if (info != "") {
-            float ih = Math.Min(g.MeasureString(info, bodyFont, (int)cw).Height, r.Bottom - pad - y);
-            Write(g, info, bodyFont, Color.FromArgb(200, 205, 215), new RectangleF(x, y, cw, ih), StringAlignment.Near, StringAlignment.Near, true);
-            y += ih + h * 0.03f;
-        }
-        // Sections of "name  what it is" rows with hairlines between them.
-        float nameW = cw * 0.36f, dx = x + nameW + pad * 0.5f, dw = x + cw - dx, rowGap = h * 0.008f;
-        using (var line = new Pen(Color.FromArgb(38, 255, 255, 255), 1)) {
-            foreach (var rec in it.Records) {
-                int cut = rec.IndexOf(": ");
-                string a = cut > 0 ? rec.Substring(0, cut) : rec, b = cut > 0 ? rec.Substring(cut + 2) : "";
-                if (a.StartsWith("#")) {
-                    // Section header: TITLE in accent caps, its folder after it.
-                    if (y + smallBold.Height * 2.4f > r.Bottom - pad) return;
-                    y += h * 0.008f;
-                    string head = a.Substring(1).ToUpperInvariant();
-                    var hs = g.MeasureString(head, smallBold);
-                    Write(g, head, smallBold, Accent, new RectangleF(x, y, hs.Width + 4, smallBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
-                    if (b != "") Write(g, b, monoFont, Faint, new RectangleF(x + hs.Width + pad * 0.3f, y, cw - hs.Width - pad * 0.3f, smallBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Center, false);
-                    y += smallBold.Height * 1.5f;
-                    continue;
-                }
-                float rh = Math.Max(g.MeasureString(a, monoFont, (int)nameW).Height, g.MeasureString(b, smallFont, (int)dw).Height);
-                if (y + rh + rowGap > r.Bottom - pad) { Write(g, "...", smallFont, Faint, new RectangleF(x, y, cw, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false); return; }
-                g.DrawLine(line, x, y, x + cw, y);
-                y += rowGap;
-                Write(g, a, monoFont, Ink, new RectangleF(x, y, nameW, rh), StringAlignment.Near, StringAlignment.Near, true);
-                Write(g, b, smallFont, Dim, new RectangleF(dx, y, dw, rh), StringAlignment.Near, StringAlignment.Near, true);
-                y += rh + rowGap;
-            }
-        }
-    }
-
-    // A build: the version and commit, cargo's own step count as a progress bar with the board riding its head, the
-    // crate being built, the warning count and, as soon as it appears, the first error.
-    void RenderBuild(Graphics g, int w, int h, RectangleF card, float pad, float t) {
-        Write(g, build.Waiting != null && !build.Ended ? "WAITING" : "BUILDING", smallBold, Accent, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
-        Write(g, BuildView.Clock(DateTime.Now - build.Start), smallBold, Dim, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Far, StringAlignment.Near, false);
-        float y = card.Y + pad + smallFont.Height * 1.3f;
-        Write(g, build.Name, heroFont, Ink, new RectangleF(card.X + pad, y, card.Width - 2 * pad, heroFont.Height * 1.25f), StringAlignment.Near, StringAlignment.Near, false);
-        y += heroFont.Height * 1.2f;
-        Write(g, "at " + build.Commit, itemFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, itemFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
-        y += itemFont.Height * 2.2f;
-        float boardLen = card.Width * 0.12f;
-        var track = new RectangleF(card.X + pad, y + boardLen * 0.26f, card.Width - 2 * pad, h * 0.01f);
-        Card(g, track, track.Height / 2, Stroke, Stroke, Color.Empty, 0);
-        float head;
-        if (build.Total > 0) {
-            float k = Math.Min(1f, build.Done / (float)build.Total);
-            var fill = new RectangleF(track.X, track.Y, Math.Max(track.Height, track.Width * k), track.Height);
-            Card(g, fill, track.Height / 2, build.Ended && !build.Ok ? Color.FromArgb(228, 76, 70) : Accent, build.Ended && !build.Ok ? Color.FromArgb(228, 76, 70) : Accent, Color.Empty, 0);
-            head = fill.Right;
-        } else {
-            // No count yet (cargo prints its bar once the build plan is known): a sweeping segment.
-            float run = (t * 0.35f) % 1f, sx = track.X + run * track.Width * 1.3f - track.Width * 0.3f;
-            var seg = RectangleF.Intersect(track, new RectangleF(sx, track.Y, track.Width * 0.3f, track.Height));
-            if (seg.Width > 0) Card(g, seg, track.Height / 2, Accent, Accent, Color.Empty, 0);
-            head = seg.Width > 0 ? seg.Right : track.X;
-        }
-        var clip = g.Save(); g.SetClip(card);
-        Board(g, Rolling(track, boardLen, t), track.Y - boardLen * 0.21f, boardLen);
-        g.Restore(clip);
-        y = track.Bottom + h * 0.03f;
-        string count = build.Total > 0 ? build.Done + " / " + build.Total + " build steps" : build.Compiled + " crates compiled";
-        if (!build.Ended && build.Waiting != null) count = "Waiting " + BuildView.Clock(DateTime.Now - build.WaitSince) + ": " + build.Waiting;
-        else if (!build.Ended && build.Total == 0 && build.Compiled == 0 && build.StageText != null) count = build.StageText;
-        if (build.Ended) count = build.Ok ? "Built in " + BuildView.Clock(build.End - build.Start) : "Build failed";
-        Write(g, count, itemBold, build.Ended && !build.Ok ? Color.FromArgb(255, 120, 110) : Ink, new RectangleF(card.X + pad, y, build.Warnings > 0 ? card.Width * 0.5f : card.Width - 2 * pad, itemBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
-        if (build.Warnings > 0) {
-            string wtext = build.Warnings + (build.Warnings == 1 ? " warning" : " warnings");
-            var ws = g.MeasureString(wtext, smallBold);
-            var pill = new RectangleF(card.Right - pad - ws.Width - smallBold.Height, y + (itemBold.Height - smallBold.Height * 1.4f) / 2, ws.Width + smallBold.Height, smallBold.Height * 1.4f);
-            Card(g, pill, pill.Height / 2, Fade(Accent, 40), Fade(Accent, 40), Fade(Accent, 120), 1);
-            Write(g, wtext, smallBold, Accent, pill, StringAlignment.Center, StringAlignment.Center, false);
-        }
-        y += itemBold.Height * 1.4f;
-        if (!build.Ended && build.Waiting != null) {
-            // Who holds the folder (when launcher.ps1 knew) and how to stop waiting.
-            string why = build.WaitWho ?? "Cargo does not say who; it continues by itself once that build ends.";
-            Write(g, why, smallFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
-            float bx = card.X + pad + smallFont.Height * 0.4f;
-            Prompt(g, ref bx, y + smallFont.Height * 1.5f, "B", Color.FromArgb(228, 76, 70), cancelArmed ? "Press again to cancel this build" : "Cancel");
-            y += smallFont.Height * 1.2f;
-        }
-        else if (build.Now != "" && !build.Ended) Write(g, "Now: " + build.Now, smallFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
-        y += smallFont.Height * 2f;
-        if (build.Error.Count > 0) {
-            var eb = new RectangleF(card.X + pad, y, card.Width - 2 * pad, card.Bottom - pad - y);
-            Card(g, eb, h * 0.012f, Color.FromArgb(40, 20, 22), Color.FromArgb(26, 14, 16), Color.FromArgb(120, 228, 76, 70), 1);
-            float ep = h * 0.016f;
-            Write(g, "First error", smallBold, Color.FromArgb(255, 120, 110), new RectangleF(eb.X + ep, eb.Y + ep, eb.Width - 2 * ep, smallBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
-            Write(g, string.Join("\n", build.Error), monoFont, Color.FromArgb(236, 226, 226), new RectangleF(eb.X + ep, eb.Y + ep + smallBold.Height * 1.5f, eb.Width - 2 * ep, eb.Height - 2 * ep - smallBold.Height * 1.5f), StringAlignment.Near, StringAlignment.Near, true);
-        }
-    }
-
-    // The start splash while the start check runs (self update, links, last session): wordmark, the board rolling on a
-    // lit line and the current step, fading in, so a slow fetch never looks frozen (user 2026-10-26, USER-ASKS 366).
-    void RenderSplash(Graphics g, int w, int h) {
-        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-        float t = (float)clock.Elapsed.TotalSeconds, since = (float)(DateTime.Now - startSince).TotalSeconds;
-        var all = new RectangleF(0, 0, w, h);
-        using (var b = new System.Drawing.Drawing2D.LinearGradientBrush(all, Bg1, Bg2, 90f)) g.FillRectangle(b, all);
-        float cx = w / 2f, cy = h * 0.46f;
-        // A slow breathing glow behind the mark.
-        float breathe = 0.5f + 0.5f * (float)Math.Sin(t * 1.6);
-        using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
-            path.AddEllipse(cx - w * 0.42f, cy - h * 0.5f, w * 0.84f, h * 0.95f);
-            using (var pg = new System.Drawing.Drawing2D.PathGradientBrush(path)) {
-                pg.CenterColor = Color.FromArgb((int)(34 + 18 * breathe), Cool); pg.SurroundColors = new[] { Color.FromArgb(0, Cool) };
-                g.FillPath(pg, path);
-            }
-        }
-        // Wordmark, centred; it rises a little as it fades in.
-        float rise = (1 - Ease(since / 0.6f)) * h * 0.02f;
-        var skate = g.MeasureString("SKATE", splashMark); var launcher = g.MeasureString("LAUNCHER", splashLight);
-        float markW = skate.Width * 0.94f + launcher.Width, mx = cx - markW / 2, my = cy - skate.Height * 0.95f + rise;
-        Write(g, "SKATE", splashMark, Ink, new RectangleF(mx, my, skate.Width + 8, skate.Height), StringAlignment.Near, StringAlignment.Near, false);
-        Write(g, "LAUNCHER", splashLight, Dim, new RectangleF(mx + skate.Width * 0.94f, my, launcher.Width + 8, skate.Height), StringAlignment.Near, StringAlignment.Near, false);
-        // The board rolls along a thin line under the mark; both ends fade into the backdrop.
-        float trackW = markW * 1.05f, boardLen = trackW * 0.2f;
-        var track = new RectangleF(cx - trackW / 2, cy + h * 0.075f + rise, trackW, Math.Max(2f, h * 0.004f));
-        using (var tb = new System.Drawing.Drawing2D.LinearGradientBrush(new RectangleF(track.X - 1, track.Y, track.Width + 2, track.Height), Stroke, Stroke, 0f)) {
-            tb.InterpolationColors = new System.Drawing.Drawing2D.ColorBlend { Colors = new[] { Fade(Stroke, 0), Stroke, Stroke, Fade(Stroke, 0) }, Positions = new[] { 0f, 0.2f, 0.8f, 1f } };
-            g.FillRectangle(tb, track);
-        }
-        float run = (t * 0.45f) % 1f, sx = track.X + run * track.Width * 1.4f - track.Width * 0.4f;
-        var seg = RectangleF.Intersect(track, new RectangleF(sx, track.Y, track.Width * 0.4f, track.Height));
-        if (seg.Width > 0) using (var lb = new System.Drawing.Drawing2D.LinearGradientBrush(new RectangleF(sx - 1, track.Y, track.Width * 0.4f + 2, track.Height), Fade(Accent, 0), Accent, 0f)) g.FillRectangle(lb, seg);
-        // The board fades in at the left end of the line and out at the right.
-        // Starting partway along, so the board is on screen from the first frame.
-        float bx = Rolling(track, boardLen, t + 1.6f), mid = bx + boardLen / 2, edge = trackW * 0.2f;
-        float alpha = Math.Max(0, Math.Min(1, Math.Min(mid - track.X, track.Right - mid) / edge));
-        if (alpha > 0) {
-            var bmp = BoardImage(boardLen);
-            using (var ia = new System.Drawing.Imaging.ImageAttributes()) {
-                ia.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = alpha });
-                g.DrawImage(bmp, new Rectangle((int)bx - 1, (int)(track.Y - boardLen * 0.19f), bmp.Width, bmp.Height), 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, ia);
-            }
-        }
-        // The current step, cross-fading when it changes.
-        string stage = skipped ? "Finishing the start" : (startStage ?? "Checking for a newer launcher");
-        if (stage != stageShown) { stagePrev = stageShown; stageShown = stage; stageAt = t; }
-        float k = Ease((t - stageAt) / 0.35f), sy = track.Bottom + h * 0.045f;
-        var line = new RectangleF(0, sy, w, itemFont.Height * 1.4f);
-        if (stagePrev != null && k < 1) Write(g, stagePrev, itemFont, Fade(Dim, (int)(255 * (1 - k))), new RectangleF(0, sy - k * h * 0.012f, w, line.Height), StringAlignment.Center, StringAlignment.Near, false);
-        Write(g, stageShown, itemFont, Fade(Dim, (int)(255 * k)), new RectangleF(0, sy + (1 - k) * h * 0.012f, w, line.Height), StringAlignment.Center, StringAlignment.Near, false);
-        // Quiet corners: how long it has run (from 3 s), and the skip prompt during a slow fetch.
-        float fy = h - h * 0.07f;
-        if (since >= 3) Write(g, BuildView.Clock(DateTime.Now - startSince), smallFont, Faint, new RectangleF(0, fy, w - w * 0.045f, smallFont.Height * 1.4f), StringAlignment.Far, StringAlignment.Near, false);
-        if (CanSkip()) {
-            string skip = skipArmed ? "Press again to skip the update check" : "Skip the update check";
-            float d = smallFont.Height * 1.25f, px = cx - (d * 1.35f + g.MeasureString(skip, smallFont).Width) / 2;
-            Prompt(g, ref px, fy, "B", Color.FromArgb(228, 76, 70), skip);
-        }
-        // Fade in from black.
-        float fade = Ease(since / 0.45f);
-        if (fade < 1) using (var veil = new SolidBrush(Color.FromArgb((int)(255 * (1 - fade)), Bg2))) g.FillRectangle(veil, all);
-    }
-    // The splash board drawn once per size, so it can fade as a whole.
-    Bitmap boardImage; int boardImageLen;
-    Bitmap BoardImage(float len) {
-        int l = (int)len;
-        if (boardImage == null || boardImageLen != l) {
-            if (boardImage != null) boardImage.Dispose();
-            boardImage = new Bitmap(l + 2, (int)(len * 0.23f) + 2); boardImageLen = l;
-            using (var g = Graphics.FromImage(boardImage)) { g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias; Board(g, 1, 0, len); }
-        }
-        return boardImage;
-    }
-
-    // The last splash frame dissolving over the menu, easing a little larger as it goes.
-    void Outro(Graphics g, int w, int h) {
-        if (splashShot == null) return;
-        float k = Ease(((float)clock.Elapsed.TotalSeconds - outroAt) / 0.6f);
-        if (k >= 1) { splashShot.Dispose(); splashShot = null; return; }
-        float s = 1 + 0.05f * k;
-        var dest = new RectangleF(w / 2f - w * s / 2, h / 2f - h * s / 2, w * s, h * s);
-        using (var ia = new System.Drawing.Imaging.ImageAttributes()) {
-            ia.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = 1 - k });
-            g.DrawImage(splashShot, Rectangle.Round(dest), 0, 0, splashShot.Width, splashShot.Height, GraphicsUnit.Pixel, ia);
-        }
-    }
-
-    void RenderJob(Graphics g, int w, int h, float m, float top, float bottom, float t) {        var card = new RectangleF(w * 0.12f, top + (bottom - top) * 0.03f, w * 0.76f, (bottom - top) * 0.94f);
-        Card(g, card, h * 0.022f, Color.FromArgb(28, 34, 48), Color.FromArgb(16, 19, 26), Stroke, 1);
-        float pad = card.Height * 0.07f;
-        if (build.Active || build.Ended) { RenderBuild(g, w, h, card, pad, t); return; }
-        bool fetchWait = build.FetchWaiting();
-        Write(g, fetchWait ? "WAITING" : "RUNNING", smallBold, Accent, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
-        var el = DateTime.Now - (fetchWait ? build.PreWaitSince : jobStart);
-        Write(g, ((int)el.TotalMinutes) + ":" + el.Seconds.ToString("00"), smallBold, Dim, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Far, StringAlignment.Near, false);
-        Write(g, jobTitle, heroFont, Ink, new RectangleF(card.X + pad, card.Y + pad + smallFont.Height * 1.3f, card.Width - 2 * pad, heroFont.Height * 1.25f), StringAlignment.Near, StringAlignment.Near, false);
-        // The board rolling along the progress track.
-        float ty = card.Y + pad + smallFont.Height * 1.4f + heroFont.Height * 1.5f, boardLen = card.Width * 0.16f;
-        var track = new RectangleF(card.X + pad, ty + boardLen * 0.26f, card.Width - 2 * pad, h * 0.008f);
-        Card(g, track, track.Height / 2, Stroke, Stroke, Color.Empty, 0);
-        float run = (t * 0.35f) % 1f;
-        float sx = track.X + run * (track.Width + track.Width * 0.3f) - track.Width * 0.3f;
-        var seg = RectangleF.Intersect(track, new RectangleF(sx, track.Y, track.Width * 0.3f, track.Height));
-        if (seg.Width > 0) Card(g, seg, track.Height / 2, Accent, Accent, Color.Empty, 0);
-        var clip = g.Save(); g.SetClip(card);
-        Board(g, Rolling(track, boardLen, t), track.Y - boardLen * 0.21f, boardLen);
-        g.Restore(clip);
-        // The last line as the status, a few earlier ones below it.
-        var lines = new List<string>();
-        for (int i = log.Count - 1; i >= 0 && lines.Count < 9; i--) { string c = Clean(log[i]); if (c != "") lines.Add(c); }
-        float ly = track.Bottom + boardLen * 0.45f;
-        string status = fetchWait ? "Waiting " + BuildView.Clock(el) + ": " + build.PreWait : lines.Count > 0 ? lines[0] : "Starting...";
-        Write(g, status, itemFont, Ink, new RectangleF(card.X + pad, ly, card.Width - 2 * pad, itemFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
-        ly += itemFont.Height * 1.6f;
-        if (fetchWait) {
-            string why = "git stops by itself if nothing arrives for 30 s; cancelling keeps the last fetched version.";
-            Write(g, why, smallFont, Dim, new RectangleF(card.X + pad, ly, card.Width - 2 * pad, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
-            float bx = card.X + pad + smallFont.Height * 0.4f;
-            Prompt(g, ref bx, ly + smallFont.Height * 1.5f, "B", Color.FromArgb(228, 76, 70), cancelArmed ? "Press again to cancel" : "Cancel");
-            ly += smallFont.Height * 3.2f;
-        }
-        var logBox = new RectangleF(card.X + pad, ly, card.Width - 2 * pad, card.Bottom - pad - ly);
-        Card(g, logBox, h * 0.012f, Color.FromArgb(12, 14, 19), Color.FromArgb(12, 14, 19), Fade(Stroke, 140), 1);
-        float lh = smallFont.Height * 1.15f, lp = h * 0.015f, yy = logBox.Bottom - lp - lh;
-        for (int i = 1; i < lines.Count && yy >= logBox.Y + lp; i++) {
-            Write(g, lines[i], smallFont, Fade(Dim, Math.Max(70, 255 - i * 22)), new RectangleF(logBox.X + lp, yy, logBox.Width - 2 * lp, lh), StringAlignment.Near, StringAlignment.Near, false);
-            yy -= lh;
-        }
-    }
 }
 
 static class SkateLauncher {
@@ -1805,6 +1957,15 @@ static class SkateLauncher {
         Application.EnableVisualStyles();
         // SkateLauncher.exe --snapshot <out.png> [main|versions|tools|job|build|failed|waiting|fetching|checking] [<width>x<height>]: draws one screen (default
         // 1920x1080; the window's own size to check the windowed layout) and exits (checking the look without the window).
+        // SkateLauncher.exe --bench <out.txt> [<width>x<height>]: times Render across the power-on and settled frames
+        // (ms per frame, plus the hand-over to the layered window) into out.txt.
+        if (argv.Length >= 2 && argv[0] == "--bench") {
+            var form = new LauncherForm(new string[0]);
+            int bw = 1243, bh = 777;
+            if (argv.Length > 2) { var wh = argv[2].Split('x'); bw = int.Parse(wh[0]); bh = int.Parse(wh[1]); }
+            File.WriteAllText(argv[1], form.Bench(bw, bh));
+            return;
+        }
         if (argv.Length >= 2 && argv[0] == "--snapshot") {
             var form = new LauncherForm(new string[0]);
             int sw = 1920, sh = 1080;
