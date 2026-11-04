@@ -6,11 +6,12 @@ controller, and see after each session whether it went fine. Built for testing f
 back to back, try a PR exactly as it was pushed, record a recomp trace session, without touching a keyboard.
 
 What it does:
-- **A real window, shaped like a camcorder:** `SkateLauncher.exe` is a 2000s MiniDV camcorder on your desktop (a
-  borderless see-through window, drag it by its body) with a menu for the controller (XInput), the keyboard, Steam's
-  desktop layout (arrows, Enter, Esc / Space) and the mouse: the camera's keys work too (MENU = back, the SEL / PUSH
-  EXEC dial and the zoom rocker move and select, START/STOP plays, POWER closes). It unfolds when it starts and folds
-  away when it closes. It hides while a game runs, so the game gets the front and Steam's gamepad layout, and comes
+- **A real window, shaped like a camcorder's LCD panel:** `SkateLauncher.exe` is the flip-out screen of a mid-2000s
+  HD camcorder on your desktop (a borderless see-through window, drag it by its bezel) with a menu for the controller
+  (XInput), the keyboard, Steam's desktop layout (arrows, Enter, Esc / Space) and the mouse: the bezel's keys work too
+  (HOME = back, the T / W rocker moves, SET selects, START/STOP plays, POWER closes). It swings open from its hinge when
+  it starts and shut when it closes, and wears fresh skate-session scrawl and scuffs every start
+  (`SkateLauncher.exe --wear-test <out.txt> <out.png>` checks one start's wear stays off the UI). It hides while a game runs, so the game gets the front and Steam's gamepad layout, and comes
   back with the session's result when the game closes. Every screen is the camera's own LCD menu: a list with the
   selected option's info beside it (its full name, READY or why it is not available, what it does and, for the play
   options, what it records: FILES / GAME LOG rows from launcher.ps1 `entries` columns 8 and 9). A worn skate sticker,

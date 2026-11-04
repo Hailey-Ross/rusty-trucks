@@ -195,14 +195,15 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         sameMonitorFlag = Array.IndexOf(argv, "--same-monitor") >= 0;
         direct = Array.FindAll(argv, a => a != "--after-update" && a != "--same-monitor");
         Text = "Skate launcher";
-        // The camcorder as its own window (no frame, its outline is the drawing's alpha): 72 % of the work area's height
-        // at the camera's 16:10, centred. On the main monitor, or with --same-monitor / the Tools setting on the monitor
+        // The LCD panel as its own window (no frame, its outline is the drawing's alpha): 62 % of the work area's height
+        // at the panel's shape, centred. On the main monitor, or with --same-monitor / the Tools setting on the monitor
         // of the window it was started from.
         var area = StartScreen().WorkingArea;
-        int h = Math.Min(area.Height * 72 / 100, area.Width * 72 / 100 * 10 / 16);
+        int h = Math.Min(area.Height * 62 / 100, area.Width * 62 / 100 * 760 / 1240);
         FormBorderStyle = FormBorderStyle.None;
-        StartPosition = FormStartPosition.Manual; ClientSize = new Size(h * 16 / 10, h);
+        StartPosition = FormStartPosition.Manual; ClientSize = new Size(h * 1240 / 760, h);
         Location = new Point(area.Left + (area.Width - Width) / 2, area.Top + (area.Height - Height) / 2);
+        RollMarks(new Random());
         BackColor = Color.FromArgb(18, 20, 24); ForeColor = Color.White;
         DoubleBuffered = true; KeyPreview = true;
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
@@ -218,8 +219,6 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     void MakeFonts() { MakeFonts(ClientSize.Height); }
     void MakeFonts(int height) {
         float h = Math.Max(480, height);
-        foreach (var f in hintFonts.Values) f.Dispose();
-        hintFonts.Clear();
         titleFont = new Font("Segoe UI Semibold", h / 24f, GraphicsUnit.Pixel);
         heroFont = new Font("Segoe UI Semibold", h / 17f, GraphicsUnit.Pixel);
         itemFont = new Font("Segoe UI", h / 34f, GraphicsUnit.Pixel);
@@ -235,6 +234,63 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         playFont = new Font("Segoe UI Black", h / 26f, GraphicsUnit.Pixel);
         iconFont = new Font("Segoe MDL2 Assets", h / 26f, GraphicsUnit.Pixel);
         iconSmall = new Font("Segoe MDL2 Assets", h / 40f, GraphicsUnit.Pixel);
+    }
+
+    public string WearTest(string png) {
+        snapshotMode = true; snapPanel = 1; fixedT = 5; RefreshStatus(); pages.Push(MainPage());
+        int w = 1243, h = 699;
+        Func<Bitmap> frame = delegate {
+            var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
+            using (var g = Graphics.FromImage(bmp)) { g.Clear(Color.Transparent); flipScale = -1; Render(g, w, h); }
+            return bmp;
+        };
+        var keep = new List<Mark>(marks);
+        frame().Dispose();   // the first frame builds the caches (fonts, scene, flip faces); compare later ones only
+        int jitter = 0;
+        string jitterAt = "";
+        using (var x1 = frame()) using (var x2 = frame()) { int[] p1 = Pixels(x1), p2 = Pixels(x2); for (int i = 0; i < p1.Length; i++) if (p1[i] != p2[i]) { if (jitter < 3) jitterAt += string.Format(" ({0},{1}) {2:X8}/{3:X8}", i % w, i / w, p1[i], p2[i]); jitter++; } }
+        using (var with = frame()) {
+            marks.Clear(); var without = frame(); marks.AddRange(keep);
+            marksUnclipped = true; var loose = frame(); marksUnclipped = false;
+            using (var mask = new Bitmap(w, h, PixelFormat.Format32bppPArgb)) {
+                using (var g = Graphics.FromImage(mask)) {
+                    g.TranslateTransform(devX, devY); g.ScaleTransform(devS, devS);
+                    using (var b = new SolidBrush(Color.White)) using (var o = WearMap()) g.FillRegion(b, o);
+                }
+                int[] a = Pixels(with), n = Pixels(without), l = Pixels(loose), mk = Pixels(mask);
+                int changed = 0, stray = 0, spill = 0;
+                var where = RectangleF.Empty;
+                for (int i = 0; i < a.Length; i++) {
+                    bool bad = false;
+                    if (a[i] != n[i]) { changed++; if ((mk[i] & 0xFFFFFF) != 0xFFFFFF) { stray++; bad = true; } }
+                    if (l[i] != a[i]) { spill++; bad = true; }
+                    if (bad) { var px = new RectangleF(i % w, i / w, 1, 1); where = where.IsEmpty ? px : RectangleF.Union(where, px); }
+                }
+                if (!where.IsEmpty) {
+                    // Where it went wrong: red = a mark off the camera or on the glass, yellow = a tag or doodle over its edge.
+                    var bad = new int[a.Length];
+                    for (int i = 0; i < a.Length; i++) bad[i] = l[i] != a[i] ? unchecked((int)0xFFFFD000) : (a[i] != n[i] && (mk[i] & 0xFFFFFF) != 0xFFFFFF) ? unchecked((int)0xFFFF2020) : unchecked((int)0x30000000);
+                    using (var bb = new Bitmap(w, h, PixelFormat.Format32bppPArgb)) {
+                        var d = bb.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
+                        System.Runtime.InteropServices.Marshal.Copy(bad, 0, d.Scan0, bad.Length); bb.UnlockBits(d);
+                        bb.Save(Path.ChangeExtension(png, ".bad.png"), ImageFormat.Png);
+                    }
+                }
+                without.Dispose(); loose.Dispose();
+                with.Save(png, ImageFormat.Png);
+                var kinds = new int[5]; foreach (var m in keep) kinds[m.Kind]++;
+                string tags = string.Join(", ", keep.FindAll(m => m.Kind == 0).ConvertAll(m => "\"" + m.Text + "\" on " + new[] { "bottom bezel", "left strip" }[m.Spot]).ToArray());
+                return (jitter > 0 ? "UNSTABLE (the same frame twice differs by " + jitter + " px:" + jitterAt + ")  " : "") + string.Format("{0}  changed {1} px, off the wear map (camera UI, glass, outside) {2} px, tags / doodles spilling over {3} px  ({4} tags, {5} doodles, {6} scratches, {7} worn edges, {8} tape)  {9}",
+                    stray == 0 && spill == 0 && changed > 0 && jitter == 0 ? "PASS" : "FAIL", changed, stray, spill, kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], tags) + (where.IsEmpty ? "" : "  bad pixels in " + where);
+            }
+        }
+    }
+    static int[] Pixels(Bitmap b) {
+        var data = b.LockBits(new Rectangle(0, 0, b.Width, b.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
+        var px = new int[b.Width * b.Height];
+        System.Runtime.InteropServices.Marshal.Copy(data.Scan0, px, 0, px.Length);
+        b.UnlockBits(data);
+        return px;
     }
 
     public string Bench(int w, int h) {
@@ -260,6 +316,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         snapshotMode = true; snapPanel = 1;
         int hash = screen.IndexOf('#');
         if (hash > 0) { int.TryParse(screen.Substring(hash + 1), out snapSeed); screen = screen.Substring(0, hash); }
+        RollMarks(new Random(snapSeed));
         int at = screen.IndexOf('@');
         if (at > 0) { float.TryParse(screen.Substring(at + 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out snapPanel); screen = screen.Substring(0, at); }
         MakeFonts(h);
@@ -1052,53 +1109,50 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     static readonly System.Text.RegularExpressions.Regex Ansi = new System.Text.RegularExpressions.Regex("\x1B\\[[0-9;?]*[A-Za-z]");
     static string Clean(string s) { s = Ansi.Replace(s ?? "", ""); int r = s.LastIndexOf('\r'); return (r >= 0 ? s.Substring(r + 1) : s).Trim(); }
 
-    // ---------- the camcorder (USER-ASKS 484, 486, 487) ----------
-    // The window is a 2000s MiniDV camcorder seen from its LCD side, standing on a ledge the board rolls along, drawn in
-    // a 1600 x 1000 unit space into a per-pixel-alpha (layered) window. Layout, keys, timings and the sticker:
-    // docs/hails-additions/41-launcher-camcorder-viewfinder.md.
-    const float DevW = 1600, DevH = 1000;
-    static readonly RectangleF BodyR = new RectangleF(150, 118, 1390, 754), PanelR = new RectangleF(232, 146, 1016, 660),
-        ScreenR = new RectangleF(292, 180, 896, 504), LedgeR = new RectangleF(24, 880, 1552, 108);
+    // ---------- the camcorder's LCD panel (USER-ASKS 484, 486, 487, 490) ----------
+    // The window is only the flip-out LCD panel of a mid-2000s HD camcorder, seen first-person: the screen, its full
+    // bezel carrying the panel's own keys, and the hinge on the right edge where the camera body is. It swings open from
+    // edge-on at the start and shut at the close. Drawn in a 1240 x 760 unit space into a per-pixel-alpha (layered)
+    // window. Layout, keys, timings and the sticker: docs/hails-additions/41-launcher-camcorder-viewfinder.md.
+    const float DevW = 1240, DevH = 760;
+    static readonly RectangleF PanelR = new RectangleF(20, 20, 1172, 720), ScreenR = new RectangleF(172, 52, 990, 557);
     static readonly Color Plastic = Color.FromArgb(54, 56, 62), PlasticHi = Color.FromArgb(100, 103, 112), PlasticDark = Color.FromArgb(24, 25, 29),
-        Print = Color.FromArgb(200, 202, 208), RecRed = Color.FromArgb(230, 40, 32), OsdOrange = Color.FromArgb(255, 152, 24),
-        OsdNavy = Color.FromArgb(205, 14, 26, 74), OsdWhite = Color.FromArgb(242, 242, 234), OsdGrey = Color.FromArgb(132, 136, 146),
-        OsdGreen = Color.FromArgb(120, 224, 96), OsdRed = Color.FromArgb(255, 96, 84);
-    static readonly Font UTiny = new Font("Tahoma", 13, GraphicsUnit.Pixel), USmall = new Font("Tahoma", 17, FontStyle.Bold, GraphicsUnit.Pixel),
-        UKey = new Font("Tahoma", 21, FontStyle.Bold, GraphicsUnit.Pixel), UMark = new Font("Arial Black", 40, FontStyle.Italic, GraphicsUnit.Pixel),
-        UModel = new Font("Tahoma", 24, FontStyle.Bold, GraphicsUnit.Pixel), UTag = new Font("Segoe Script", 44, FontStyle.Bold, GraphicsUnit.Pixel), UCover = new Font("Arial Black", 120, FontStyle.Italic, GraphicsUnit.Pixel);
+        Print = Color.FromArgb(200, 202, 208), RecRed = Color.FromArgb(230, 40, 32);
+    static readonly Font UTiny = new Font("Tahoma", 13, GraphicsUnit.Pixel), USmall = new Font("Tahoma", 16, FontStyle.Bold, GraphicsUnit.Pixel),
+        UKey = new Font("Tahoma", 19, FontStyle.Bold, GraphicsUnit.Pixel), UModel = new Font("Tahoma", 18, FontStyle.Bold, GraphicsUnit.Pixel);
     float devS = 1, devX, devY;   // units -> window pixels, from the last Render
     RectangleF ToWin(RectangleF r) { return new RectangleF(devX + r.X * devS, devY + r.Y * devS, r.Width * devS, r.Height * devS); }
     void Key(RectangleF unit, string key) { promptHits.Add(new KeyValuePair<RectangleF, string>(ToWin(unit), key)); }
     static RectangleF Grow(RectangleF r, float d) { return new RectangleF(r.X - d, r.Y - d, r.Width + 2 * d, r.Height + 2 * d); }
     static float Clamp01(float x) { return Math.Max(0, Math.Min(1, x)); }
 
-    // Power: the whole camera unfolds at start, on one clock (Assembly, seconds 0..OnTotal): the ledge slides up, the
-    // body drops onto it, the lens runs out, the handle rises, the keys pop in, the LCD swings out and turns to face
-    // you, the screen comes on, the board rolls in. Closing plays it backwards, a little faster (OffSpeed).
-    const float OnTotal = 1.75f, OffSpeed = 1.3f, OffTime = OnTotal / OffSpeed + 0.05f;
+    // Power, on one clock (Assembly, seconds 0..OnTotal): the panel swings out from edge-on and settles facing you with
+    // a little wobble, then the backlight comes on (sometimes with a flicker or two). Closing plays it backwards, a
+    // little faster. Every open and close rolls its own swing time, wobble, delay and flicker (Vary); snapshots use the
+    // plain values.
+    const float OnTotal = 1.2f, OffSpeed = 1.3f, OffTime = OnTotal / OffSpeed + 0.05f;
     float powerOnAt = -1, powerOffAt = -1, snapPanel = -1; bool poweredOff, snapshotMode; int snapSeed = 3;
     float Assembly(float t) {
         if (snapPanel >= 0) return snapPanel * OnTotal;
         if (powerOffAt >= 0) return Math.Max(0, OnTotal - (t - powerOffAt) * OffSpeed);
         return powerOnAt < 0 ? 0 : Math.Min(OnTotal, t - powerOnAt);
     }
-    static float Stage(float a, float from, float to) { return Ease((a - from) / (to - from)); }
     static float BackOut(float x, float k) { x = Clamp01(x) - 1; return 1 + (k + 1) * x * x * x + k * x * x; }
-    // Every power-on and power-off rolls its own timing, drop, bounce, tilt, overshoot and swing (Vary), so it never
-    // plays the same way twice; all of it still lands inside OnTotal. Snapshots use the plain values.
-    readonly float[] vary = { 0, 0, 1, 1, 1.4f, 0, 0, 0.8f, 0, 0, 0, 0, 0, 0, 1.6f, 0, 1, 150, 0, 6.5f };
+    readonly float[] vary = { 1, 0.6f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 150, 0, 6.5f };
     void Vary(Random r) {
         Func<double, double, float> u = delegate(double lo, double hi) { return (float)(lo + r.NextDouble() * (hi - lo)); };
-        vary[0] = u(0, 0.06); vary[1] = u(-0.04, 0.06); vary[2] = u(0.85, 1.15); vary[3] = u(0.75, 1.25); vary[4] = u(0.9, 2.2);
-        vary[5] = u(-4, 4); vary[6] = u(-0.05, 0.05); vary[7] = u(0, 1.6); vary[8] = u(-0.05, 0.05);
-        for (int i = 9; i <= 13; i++) vary[i] = u(-0.04, 0.04);
-        vary[14] = u(1, 2.6); vary[15] = u(-0.05, 0.05); vary[16] = u(0.85, 1.15); vary[17] = u(120, 190); vary[18] = u(0, 1552); vary[19] = u(5.5, 8);
+        vary[0] = u(0.85, 1.15); vary[1] = u(0.2, 1.2); vary[2] = u(-0.04, 0.06); vary[3] = r.Next(3); vary[4] = u(0, 1);
+        vary[17] = u(120, 190); vary[18] = u(0, 400); vary[19] = u(5.5, 8);
     }
-    float PanelFrom { get { return 0.85f + vary[15]; } }
-    float PanelTo { get { return PanelFrom + 0.55f * vary[16]; } }
-    float PanelOpen(float t) { return Stage(Assembly(t), PanelFrom, PanelTo); }
-    float ScreenLevel(float t) { return Clamp01((Assembly(t) - PanelTo) / 0.25f); }
-    float WindowAlpha(float t) { return snapshotMode ? 1 : Clamp01(Assembly(t) / 0.12f); }
+    float SwingTo { get { return 0.08f + 0.6f * vary[0]; } }
+    // 0 = edge-on at the hinge, 1 = facing you (the wobble overshoots a little past flat, then settles).
+    float PanelOpen(float t) { return BackOut(Clamp01((Assembly(t) - 0.08f) / (SwingTo - 0.08f)), vary[1]); }
+    float ScreenLevel(float t) {
+        float level = Clamp01((Assembly(t) - SwingTo - 0.1f - vary[2]) / 0.25f);
+        if (vary[3] >= 1 && level > 0 && level < 1) { int q = (int)(level * 6 + vary[4]); if (q % 3 == 1 && q < 3 * (int)vary[3] + 1) level *= 0.25f; }
+        return level;
+    }
+    float WindowAlpha(float t) { return snapshotMode ? 1 : Clamp01(Assembly(t) / 0.06f); }
     bool Animating() { float t = (float)clock.Elapsed.TotalSeconds; return powerOnAt < 0 || t - powerOnAt < OnTotal + 0.1f || powerOffAt >= 0; }
 
     // The layered window: every frame is drawn into one bitmap and handed to Windows with its alpha (Native.Push).
@@ -1125,43 +1179,25 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         base.OnFormClosing(e);
     }
-    // Drag the camera by its body.
+    // Drag the panel by its bezel.
     protected override void OnMouseDown(MouseEventArgs e) {
         base.OnMouseDown(e);
         if (e.Button == MouseButtons.Left && PromptAt(e.Location) == null && HitAt(e.Location) < 0) { Native.ReleaseCapture(); Native.SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero); }
     }
 
+    float fixedT = -1;   // --wear-test: every frame at the same moment, so only the marks differ
     void Render(Graphics g, int w, int h) {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         hits.Clear(); promptHits.Clear();
-        float t = (float)clock.Elapsed.TotalSeconds;
+        float t = fixedT >= 0 ? fixedT : (float)clock.Elapsed.TotalSeconds;
         devS = Math.Min(w / DevW, h / DevH); devX = (w - DevW * devS) / 2; devY = (h - DevH * devS) / 2;
         EnsureFlip(t);
         var st = g.Save();
         g.TranslateTransform(devX, devY); g.ScaleTransform(devS, devS);
-        float a = Assembly(t);
-        var part = g.Save();
-        g.TranslateTransform(0, (1 - Stage(a, vary[0], vary[0] + 0.35f)) * 160);
-        Ledge(g);
-        g.Restore(part);
-        float drop = Clamp01((a - 0.12f - vary[1]) / (0.38f * vary[2])), fall = drop >= 1 ? 0 : -(1 - BackOut(drop, vary[4])) * 340 * vary[3];
-        if (drop > 0) {
-            var cam = g.Save();
-            g.TranslateTransform(0, fall);
-            // A slight tilt while it drops, settling flat as it lands.
-            float tilt = vary[5] * (1 - Ease(drop));
-            if (tilt != 0) { g.TranslateTransform(845, 872); g.RotateTransform(tilt); g.TranslateTransform(-845, -872); }
-            float lens = Clamp01((a - 0.42f - vary[6]) / 0.3f);
-            part = g.Save(); g.TranslateTransform((1 - BackOut(lens, vary[7])) * 170, 0); ShellLens(g); g.Restore(part);
-            part = g.Save(); g.TranslateTransform(0, (1 - Stage(a, 0.48f + vary[8], 0.78f + vary[8])) * 120); ShellHandle(g); g.Restore(part);
-            ShellBody(g);
-            ShellControls(g, a);
-            float open = PanelOpen(t);
-            if (open >= 1) LcdPanel(g, ScreenLevel(t), t, true); else FlipPanel(g, open, t);
-            g.Restore(cam);
-        }
-        if (a >= 1.3f) RollingBoard(g, t);
+        float open = PanelOpen(t);
+        if (open > 0.01f) Hinge(g);
+        if (Math.Abs(open - 1) < 0.002f) LcdPanel(g, ScreenLevel(t), t, true); else FlipPanel(g, open, t);
         g.Restore(st);
     }
 
@@ -1175,168 +1211,79 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     static void PrintAt(Graphics g, string s, Font f, Color c, float x, float y, float w, StringAlignment a) {
         Write(g, s, f, c, new RectangleF(x, y, w, f.Height * 1.3f), a, StringAlignment.Near, false);
     }
-    // A hardware key: lighter while the mouse is over it.
+    // A key on the bezel: lighter while the mouse is over it.
     void HardKey(Graphics g, RectangleF r, string key, string label, float rad) {
         bool over = hoverPrompt == key;
         Card(g, r, rad, over ? Color.FromArgb(132, 136, 146) : Color.FromArgb(92, 95, 104), over ? Color.FromArgb(70, 72, 80) : Color.FromArgb(44, 46, 52), Color.FromArgb(170, 0, 0, 0), 2);
         if (label != null) Write(g, label, UKey, Print, r, StringAlignment.Center, StringAlignment.Center, false);
         Key(r, key);
     }
-
-    // A key popping in (scale with a little overshoot), its own start on the assembly clock.
-    bool PopIn(Graphics g, float a, float start, float cx, float cy) {
-        float s = BackOut(Clamp01((a - start) / 0.22f), vary[14]);
-        if (s <= 0.01f) return false;
-        g.TranslateTransform(cx, cy); g.ScaleTransform(s, s); g.TranslateTransform(-cx, -cy);
-        return true;
-    }
-    // The lens: barrel with its focus ring, the hood, a sliver of the front glass (and the sticker when it is on it).
-    void ShellLens(Graphics g) {
-        Cylinder(g, new RectangleF(52, 262, 150, 356), 18, false);
-        using (var pen = new Pen(Color.FromArgb(80, 0, 0, 0), 3)) for (float x = 96; x < 176; x += 11) g.DrawLine(pen, x, 270, x, 610);
-        Cylinder(g, new RectangleF(16, 236, 64, 408), 14, false);
-        using (var b = new LinearGradientBrush(new RectangleF(8, 260, 12, 362), Color.FromArgb(50, 80, 140), Color.FromArgb(170, 210, 240), 90f)) g.FillRectangle(b, 9, 262, 9, 356);
-        PrintAt(g, "12x OPTICAL", UTiny, Print, 84, 590, 118, StringAlignment.Center);
-        var spec = StickerSpec();
-        if ((int)spec[1] == 1) PlaceSticker(g, spec);
-    }
-    // The carry handle with its microphone in front and the accessory shoe on top.
-    void ShellHandle(Graphics g) {
-        Cylinder(g, new RectangleF(300, 48, 150, 58), 26, false);
-        using (var b = new SolidBrush(Color.FromArgb(150, 0, 0, 0))) for (int r = 0; r < 3; r++) for (int c = 0; c < 9; c++) g.FillEllipse(b, 318 + c * 13 + (r % 2) * 6, 62 + r * 11, 5, 5);
-        Cylinder(g, new RectangleF(430, 40, 92, 96), 20, true);
-        Cylinder(g, new RectangleF(1272, 40, 100, 96), 20, true);
-        Cylinder(g, new RectangleF(420, 28, 962, 50), 24, false);
-        using (var pen = new Pen(Color.FromArgb(70, 0, 0, 0), 2)) for (float x = 560; x < 1250; x += 9) g.DrawLine(pen, x, 38, x, 68);
-        Card(g, new RectangleF(820, 18, 140, 12), 3, Color.FromArgb(170, 174, 180), Color.FromArgb(96, 100, 106), Color.Empty, 0);
-    }
-    // The body: shell, the recess the LCD folds into, the tally lamp, the model print (and the sticker on it).
-    void ShellBody(Graphics g) {
-        using (var b = new SolidBrush(Color.FromArgb(90, 0, 0, 0))) g.FillEllipse(b, 190, 864, 1330, 26);
-        using (var path = Round(BodyR, 64)) {
-            using (var b = new LinearGradientBrush(Grow(BodyR, 1), Plastic, Plastic, 90f)) {
-                b.InterpolationColors = new ColorBlend { Colors = new[] { PlasticHi, Plastic, Plastic, PlasticDark }, Positions = new[] { 0f, 0.18f, 0.7f, 1f } };
-                g.FillPath(b, path);
-            }
-            using (var pen = new Pen(Color.FromArgb(190, 0, 0, 0), 3)) g.DrawPath(pen, path);
-        }
-        using (var pen = new Pen(Color.FromArgb(60, 255, 255, 255), 2)) g.DrawLine(pen, 220, 128, 1470, 128);
-        // The recess the LCD folds into: jacks and their labels, seen while the panel moves.
-        using (var path = Round(Grow(PanelR, -6), 32)) using (var b = new SolidBrush(Color.FromArgb(20, 21, 24))) g.FillPath(b, path);
-        string[] jacks = { "DV IN/OUT", "A/V OUT", "S VIDEO", "LANC", "DC IN 8.4V" };
-        for (int i = 0; i < jacks.Length; i++) {
-            float jx = 330 + i * 170;
-            using (var b = new SolidBrush(Color.FromArgb(8, 8, 10))) g.FillEllipse(b, jx + 40, 420, 40, 40);
-            using (var pen = new Pen(Color.FromArgb(120, 130, 134, 140), 3)) g.DrawEllipse(pen, jx + 40, 420, 40, 40);
-            PrintAt(g, jacks[i], UTiny, Fade(Print, 160), jx, 470, 120, StringAlignment.Center);
-        }
-        // The tally lamp: lit while recording (a job runs).
-        bool rec = job != null;
-        if (rec) using (var b = new SolidBrush(Color.FromArgb(90, RecRed))) g.FillEllipse(b, 186, 136, 40, 40);
-        using (var b = new SolidBrush(rec ? RecRed : Color.FromArgb(76, 22, 22))) g.FillEllipse(b, 196, 146, 20, 20);
-        // Model print under the LCD.
-        Write(g, "SKATE", UMark, Print, new RectangleF(250, 812, 200, 56), StringAlignment.Near, StringAlignment.Center, false);
-        PrintAt(g, "SK8-1000", UModel, Print, 438, 826, 160, StringAlignment.Near);
-        PrintAt(g, "DIGITAL VIDEO CAMERA   120x DIGITAL ZOOM", USmall, Fade(Print, 200), 700, 830, 560, StringAlignment.Far);
-        var spec = StickerSpec();
-        if ((int)spec[1] == 2) PlaceSticker(g, spec);
-    }
-    // Controls on the back, each popping in on its own beat: POWER, MENU, the SEL / PUSH EXEC dial, the zoom rocker,
-    // START/STOP.
-    void ShellControls(Graphics g, float a) {
-        var st = g.Save();
-        if (PopIn(g, a, 0.6f + vary[9], 1395, 190)) {
-        PrintAt(g, "POWER", USmall, Print, 1300, 148, 190, StringAlignment.Near);
-        var track = new RectangleF(1300, 174, 190, 42);
-        Card(g, track, 21, Color.FromArgb(18, 19, 22), Color.FromArgb(36, 37, 42), Color.FromArgb(170, 0, 0, 0), 2);
-        Card(g, new RectangleF(1420, 178, 64, 34), 17, hoverPrompt == "POWER" ? Color.FromArgb(230, 232, 236) : Color.FromArgb(196, 199, 205), Color.FromArgb(110, 114, 120), Color.Empty, 0);
-        Key(track, "POWER");
-        PrintAt(g, "OFF", UTiny, Print, 1306, 220, 60, StringAlignment.Near);
-        PrintAt(g, "ON", UTiny, Print, 1430, 220, 60, StringAlignment.Near);
-        using (var b = new SolidBrush(Color.FromArgb(110, 230, 90))) g.FillEllipse(b, 1276, 188, 14, 14);
-        }
-        g.Restore(st); st = g.Save();
-        if (PopIn(g, a, 0.66f + vary[10], 1395, 289)) HardKey(g, new RectangleF(1325, 262, 140, 54), "MENU", "MENU", 27);
-        g.Restore(st); st = g.Save();
-        if (PopIn(g, a, 0.72f + vary[11], 1395, 420)) {
-        PrintAt(g, "SEL/PUSH EXEC", USmall, Print, 1300, 334, 190, StringAlignment.Center);
-        float jx0 = 1395, jy0 = 456;
-        using (var b = new SolidBrush(Color.FromArgb(28, 29, 33))) g.FillEllipse(b, jx0 - 96, jy0 - 96, 192, 192);
-        using (var pen = new Pen(Color.FromArgb(110, 120, 124, 132), 3))
-            for (int i = 0; i < 36; i++) { double ang = i * Math.PI / 18; g.DrawLine(pen, jx0 + (float)Math.Cos(ang) * 80, jy0 + (float)Math.Sin(ang) * 80, jx0 + (float)Math.Cos(ang) * 93, jy0 + (float)Math.Sin(ang) * 93); }
-        using (var b = new LinearGradientBrush(new RectangleF(jx0 - 72, jy0 - 72, 144, 144), Color.FromArgb(104, 107, 116), Color.FromArgb(40, 42, 48), 90f)) g.FillEllipse(b, jx0 - 72, jy0 - 72, 144, 144);
-        Key(new RectangleF(jx0 - 32, jy0 - 32, 64, 64), "A");
-        Key(new RectangleF(jx0 - 72, jy0 - 92, 144, 58), "U");
-        Key(new RectangleF(jx0 - 72, jy0 + 34, 144, 58), "D");
-        using (var b = new SolidBrush(hoverPrompt == "U" ? Color.White : Print)) g.FillPolygon(b, new[] { new PointF(jx0, jy0 - 62), new PointF(jx0 + 16, jy0 - 40), new PointF(jx0 - 16, jy0 - 40) });
-        using (var b = new SolidBrush(hoverPrompt == "D" ? Color.White : Print)) g.FillPolygon(b, new[] { new PointF(jx0, jy0 + 62), new PointF(jx0 + 16, jy0 + 40), new PointF(jx0 - 16, jy0 + 40) });
-        Card(g, new RectangleF(jx0 - 30, jy0 - 30, 60, 60), 30, hoverPrompt == "A" ? Color.FromArgb(150, 154, 162) : Color.FromArgb(86, 89, 98), Color.FromArgb(46, 48, 54), Color.FromArgb(170, 0, 0, 0), 2);
-        Write(g, "EXEC", UTiny, Print, new RectangleF(jx0 - 30, jy0 - 30, 60, 60), StringAlignment.Center, StringAlignment.Center, false);
-        }
-        g.Restore(st); st = g.Save();
-        if (PopIn(g, a, 0.78f + vary[12], 1395, 606)) {
-        PrintAt(g, "W        ZOOM        T", USmall, Print, 1300, 566, 190, StringAlignment.Center);
-        var rocker = new RectangleF(1300, 592, 190, 54);
-        Card(g, rocker, 27, Color.FromArgb(92, 95, 104), Color.FromArgb(44, 46, 52), Color.FromArgb(170, 0, 0, 0), 2);
-        var lh = new RectangleF(rocker.X, rocker.Y, rocker.Width / 2, rocker.Height); var rh = new RectangleF(rocker.X + rocker.Width / 2, rocker.Y, rocker.Width / 2, rocker.Height);
-        if (hoverPrompt == "L") Card(g, lh, 27, Color.FromArgb(70, 255, 255, 255), Color.FromArgb(30, 255, 255, 255), Color.Empty, 0);
-        if (hoverPrompt == "R") Card(g, rh, 27, Color.FromArgb(70, 255, 255, 255), Color.FromArgb(30, 255, 255, 255), Color.Empty, 0);
-        using (var pen = new Pen(Color.FromArgb(150, 0, 0, 0), 2)) g.DrawLine(pen, rocker.X + rocker.Width / 2, rocker.Y + 8, rocker.X + rocker.Width / 2, rocker.Bottom - 8);
-        Write(g, "W", UKey, Print, lh, StringAlignment.Center, StringAlignment.Center, false);
-        Write(g, "T", UKey, Print, rh, StringAlignment.Center, StringAlignment.Center, false);
-        Key(lh, "L"); Key(rh, "R");
-        }
-        g.Restore(st); st = g.Save();
-        if (PopIn(g, a, 0.84f + vary[13], 1395, 750)) {
-        PrintAt(g, "START/STOP", USmall, Print, 1300, 672, 190, StringAlignment.Center);
-        using (var b = new SolidBrush(Color.FromArgb(26, 27, 31))) g.FillEllipse(b, 1331, 700, 128, 128);
-        bool overPlay = hoverPrompt == "PLAY";
-        using (var b = new LinearGradientBrush(new RectangleF(1345, 714, 100, 100), overPlay ? Color.FromArgb(255, 120, 110) : Color.FromArgb(240, 70, 60), Color.FromArgb(150, 20, 16), 90f)) g.FillEllipse(b, 1345, 714, 100, 100);
-        using (var b = new SolidBrush(Color.FromArgb(70, 255, 255, 255))) g.FillEllipse(b, 1366, 726, 40, 22);
-        Key(new RectangleF(1331, 700, 128, 128), "PLAY");
-        }
-        g.Restore(st);
+    // The hinge barrel on the right edge: where the panel meets the camera body (out of view).
+    static void Hinge(Graphics g) {
+        Cylinder(g, new RectangleF(1186, 150, 38, 460), 16, true);
+        using (var pen = new Pen(Color.FromArgb(110, 0, 0, 0), 2)) for (float y = 200; y < 600; y += 70) g.DrawLine(pen, 1188, y, 1222, y);
     }
 
-    // The flip-out LCD, open and facing out: a moulded frame with a raised lip, the hinge, the thumb tab, the dark
-    // gasket round the glass, the screen, the bezel's speaker, print and keys, and its sticker when it is on the bezel.
+    // The panel facing you: the moulded frame with a raised lip, the dark gasket round the glass, the screen, and the
+    // bezel: the backlight sensor on top, HOME, the T / W zoom rocker, SET, START/STOP and POWER down the
+    // left, the speaker grille, print, DISPLAY, the tape keys and the model print along the bottom; then its wear and\n    // its sticker.
     void LcdPanel(Graphics g, float level, float t, bool live) {
-        using (var path = Round(PanelR, 36)) {
-            using (var b = new LinearGradientBrush(Grow(PanelR, 1), Color.FromArgb(74, 76, 84), Color.FromArgb(34, 35, 40), 90f)) g.FillPath(b, path);
-            using (var pen = new Pen(Color.FromArgb(200, 0, 0, 0), 3)) g.DrawPath(pen, path);
+        using (var path = Round(PanelR, 34)) {
+            using (var b = new LinearGradientBrush(Grow(PanelR, 1), Color.FromArgb(76, 78, 86), Color.FromArgb(32, 33, 38), 90f)) g.FillPath(b, path);
+            using (var pen = new Pen(Color.FromArgb(210, 0, 0, 0), 3)) g.DrawPath(pen, path);
         }
-        using (var path = Round(Grow(PanelR, -10), 28)) using (var pen = new Pen(Color.FromArgb(30, 255, 255, 255), 2)) g.DrawPath(pen, path);
-        Cylinder(g, new RectangleF(212, 300, 32, 350), 12, true);
-        using (var pen = new Pen(Color.FromArgb(110, 0, 0, 0), 2)) for (float y = 330; y < 640; y += 60) g.DrawLine(pen, 213, y, 243, y);
-        Card(g, new RectangleF(1236, 380, 18, 180), 6, Color.FromArgb(84, 86, 94), Color.FromArgb(40, 41, 46), Color.FromArgb(150, 0, 0, 0), 1);
-        using (var pen = new Pen(Color.FromArgb(120, 0, 0, 0), 2)) for (float y = 392; y < 552; y += 10) g.DrawLine(pen, 1239, y, 1251, y);
-        PrintAt(g, "OPEN", UTiny, Print, 1190, 356, 60, StringAlignment.Center);
-        using (var b = new SolidBrush(Color.FromArgb(14, 14, 16))) g.FillEllipse(b, 1196, 160, 12, 12);
+        using (var path = Round(Grow(PanelR, -10), 26)) using (var pen = new Pen(Color.FromArgb(30, 255, 255, 255), 2)) g.DrawPath(pen, path);
+        PrintAt(g, "SK8-1000  HD", UModel, Print, 822, 700, 272, StringAlignment.Far);
+        using (var b = new SolidBrush(Color.FromArgb(14, 14, 16))) g.FillEllipse(b, 1144, 30, 12, 12);
         using (var path = Round(Grow(ScreenR, 13), 10)) using (var b = new SolidBrush(Color.FromArgb(8, 8, 10))) g.FillPath(b, path);
         if (level > 0) {
+            // The canvas is the screen's own pixels: copied 1:1 at whole-pixel coordinates (a half-pixel offset read a row
+            // and column from outside it, a flickering edge).
             var lcd = LcdCanvas(t);
             var st = g.Save();
-            g.InterpolationMode = InterpolationMode.NearestNeighbor; g.PixelOffsetMode = PixelOffsetMode.Half;
-            g.DrawImage(lcd, ScreenR, new RectangleF(0, 0, lcd.Width, lcd.Height), GraphicsUnit.Pixel);
+            var at = new PointF[] { new PointF(ScreenR.X, ScreenR.Y) };
+            g.TransformPoints(CoordinateSpace.Device, CoordinateSpace.World, at);
+            g.ResetTransform();
+            g.DrawImageUnscaled(lcd, (int)Math.Round(at[0].X), (int)Math.Round(at[0].Y));
             g.Restore(st);
             if (level < 1) using (var b = new SolidBrush(Color.FromArgb((int)(255 * (1 - level)), 6, 7, 9))) g.FillRectangle(b, ScreenR);
         } else using (var b = new SolidBrush(Color.FromArgb(16, 17, 20))) g.FillRectangle(b, ScreenR);
         using (var b = new SolidBrush(Color.FromArgb(14, 255, 255, 255))) g.FillPolygon(b, new[] { new PointF(ScreenR.X, ScreenR.Y), new PointF(ScreenR.X + ScreenR.Width * 0.42f, ScreenR.Y), new PointF(ScreenR.X, ScreenR.Y + ScreenR.Height * 0.55f) });
-        // Bezel bottom: speaker, print, DISPLAY and the tape keys (rewind, play, fast forward, stop).
-        using (var b = new SolidBrush(Color.FromArgb(150, 0, 0, 0))) for (int r = 0; r < 4; r++) for (int c = 0; c < 7; c++) g.FillEllipse(b, 304 + c * 12 + (r % 2) * 6, 716 + r * 12, 6, 6);
-        PrintAt(g, "16:9 WIDE LCD", UTiny, Print, 300, 770, 160, StringAlignment.Near);
-        HardKey(g, new RectangleF(800, 716, 84, 32), "DISPLAY", null, 8);
-        PrintAt(g, "DISPLAY", UTiny, Print, 800, 752, 84, StringAlignment.Center);
+        // Left strip: HOME (back), the zoom rocker (T up, W down), SET (select), START/STOP (play), POWER (close).
+        HardKey(g, new RectangleF(40, 70, 110, 48), "MENU", "HOME", 12);
+        PrintAt(g, "ZOOM", UTiny, Print, 30, 146, 130, StringAlignment.Center);
+        var rocker = new RectangleF(66, 168, 58, 172);
+        Card(g, rocker, 29, Color.FromArgb(92, 95, 104), Color.FromArgb(44, 46, 52), Color.FromArgb(170, 0, 0, 0), 2);
+        var tHalf = new RectangleF(rocker.X, rocker.Y, rocker.Width, rocker.Height / 2); var wHalf = new RectangleF(rocker.X, rocker.Y + rocker.Height / 2, rocker.Width, rocker.Height / 2);
+        if (hoverPrompt == "U") Card(g, tHalf, 29, Color.FromArgb(70, 255, 255, 255), Color.FromArgb(30, 255, 255, 255), Color.Empty, 0);
+        if (hoverPrompt == "D") Card(g, wHalf, 29, Color.FromArgb(70, 255, 255, 255), Color.FromArgb(30, 255, 255, 255), Color.Empty, 0);
+        using (var pen = new Pen(Color.FromArgb(150, 0, 0, 0), 2)) g.DrawLine(pen, rocker.X + 8, rocker.Y + rocker.Height / 2, rocker.Right - 8, rocker.Y + rocker.Height / 2);
+        Write(g, "T", UKey, Print, tHalf, StringAlignment.Center, StringAlignment.Center, false);
+        Write(g, "W", UKey, Print, wHalf, StringAlignment.Center, StringAlignment.Center, false);
+        Key(tHalf, "U"); Key(wHalf, "D");
+        HardKey(g, new RectangleF(40, 372, 110, 48), "A", "SET", 12);
+        PrintAt(g, "START/STOP", UTiny, Print, 30, 436, 130, StringAlignment.Center);
+        using (var b = new SolidBrush(Color.FromArgb(26, 27, 31))) g.FillEllipse(b, 39, 456, 112, 112);
+        bool overPlay = hoverPrompt == "PLAY";
+        using (var b = new LinearGradientBrush(new RectangleF(51, 468, 88, 88), overPlay ? Color.FromArgb(255, 120, 110) : Color.FromArgb(240, 70, 60), Color.FromArgb(150, 20, 16), 90f)) g.FillEllipse(b, 51, 468, 88, 88);
+        using (var b = new SolidBrush(Color.FromArgb(70, 255, 255, 255))) g.FillEllipse(b, 70, 478, 36, 20);
+        Key(new RectangleF(39, 456, 112, 112), "PLAY");
+        HardKey(g, new RectangleF(48, 588, 94, 36), "POWER", null, 10);
+        Write(g, "POWER", UTiny, Print, new RectangleF(48, 588, 94, 36), StringAlignment.Center, StringAlignment.Center, false);
+        // Bottom strip: speaker grille, print, DISPLAY and the tape keys (rewind, play, fast forward, stop).
+        using (var b = new SolidBrush(Color.FromArgb(150, 0, 0, 0))) for (int r = 0; r < 4; r++) for (int c = 0; c < 7; c++) g.FillEllipse(b, 188 + c * 12 + (r % 2) * 6, 642 + r * 12, 6, 6);
+        PrintAt(g, "16:9 WIDE LCD", UTiny, Print, 180, 700, 160, StringAlignment.Near);
+        HardKey(g, new RectangleF(716, 640, 84, 32), "DISPLAY", null, 8);
+        PrintAt(g, "DISPLAY", UTiny, Print, 716, 676, 84, StringAlignment.Center);
         string[] keys = { "L", "A", "R", "MENU" }, names = { "REW", "PLAY", "FF", "STOP" };
         for (int i = 0; i < 4; i++) {
-            var r = new RectangleF(912 + i * 66, 716, 56, 32);
+            var r = new RectangleF(826 + i * 66, 640, 56, 32);
             HardKey(g, r, keys[i], null, 8);
             TapeGlyph(g, i, r);
-            PrintAt(g, names[i], UTiny, Print, r.X - 6, 752, r.Width + 12, StringAlignment.Center);
+            PrintAt(g, names[i], UTiny, Print, r.X - 6, 676, r.Width + 12, StringAlignment.Center);
         }
-        if (!live) promptHits.Clear();
-        var spec = StickerSpec();
-        if ((int)spec[1] == 0) PlaceSticker(g, spec);
+        DrawMarks(g);
+        PlaceSticker(g, StickerSpec());
     }
     static void TapeGlyph(Graphics g, int kind, RectangleF r) {
         float cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2, s = 8;
@@ -1347,19 +1294,22 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             if (kind == 3) g.FillRectangle(b, cx - 7, cy - 7, 14, 14);
         }
     }
-    // The panel's closed back cover.
-    static void Cover(Graphics g) {
-        using (var path = Round(PanelR, 36)) {
-            using (var b = new LinearGradientBrush(Grow(PanelR, 1), Color.FromArgb(68, 70, 78), Color.FromArgb(30, 31, 36), 90f)) g.FillPath(b, path);
-            using (var pen = new Pen(Color.FromArgb(200, 0, 0, 0), 3)) g.DrawPath(pen, path);
-        }
-        Write(g, "SKATE", UCover, Color.FromArgb(40, 255, 255, 255), PanelR, StringAlignment.Center, StringAlignment.Center, false);
-        using (var pen = new Pen(Color.FromArgb(70, 0, 0, 0), 3)) for (float y = 640; y < 780; y += 16) g.DrawLine(pen, 1000, y, 1200, y);
-    }
-    // Mid-flip: the cover (first half) or the screen side (second half) drawn into a bitmap and swung on the hinge
-    // at the panel's left edge, in vertical strips with perspective, darker while edge-on.
-    Bitmap flipCover, flipScreen; Bitmap[] coverStrips, screenStrips; float flipScale = -1;
+    // Mid-swing: the panel (screen still dark) drawn into a bitmap once and swung on the hinge at its right edge, in
+    // vertical strips with perspective: the free edge recedes while it is edge-on, and comes a touch closer during the
+    // wobble past flat; darker while it is turned away.
+    Bitmap flipScreen; Bitmap[] screenStrips; RectangleF[] screenInner; float flipScale = -1;
     const int Strips = 48;
+    Bitmap PanelShot(float t) {
+        var shot = new Bitmap((int)Math.Ceiling(PanelR.Width * devS) + 2, (int)Math.Ceiling(PanelR.Height * devS) + 2, PixelFormat.Format32bppPArgb);
+        var keep = new List<KeyValuePair<RectangleF, string>>(promptHits);
+        using (var pg = Graphics.FromImage(shot)) {
+            pg.SmoothingMode = SmoothingMode.AntiAlias; pg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            pg.ScaleTransform(devS, devS); pg.TranslateTransform(-PanelR.X, -PanelR.Y);
+            LcdPanel(pg, 0, t, false);
+        }
+        promptHits.Clear(); promptHits.AddRange(keep);
+        return shot;
+    }
     // A face cut into its vertical strips once, so each strip draws on its own (GDI+ prepares a whole image per call).
     // Each strip carries one pixel of its neighbours on both sides, drawn over them, so the smoothing at its edges
     // blends with real pixels and the strips meet without seams.
@@ -1373,89 +1323,202 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         return parts;
     }
-    RectangleF[] coverInner, screenInner;
-    Bitmap PanelShot(bool cover, float t) {
-        var shot = new Bitmap((int)Math.Ceiling(PanelR.Width * devS) + 2, (int)Math.Ceiling(PanelR.Height * devS) + 2, PixelFormat.Format32bppPArgb);
-        var keep = new List<KeyValuePair<RectangleF, string>>(promptHits);
-        using (var pg = Graphics.FromImage(shot)) {
-            pg.SmoothingMode = SmoothingMode.AntiAlias; pg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-            pg.ScaleTransform(devS, devS); pg.TranslateTransform(-PanelR.X, -PanelR.Y);
-            if (cover) Cover(pg); else LcdPanel(pg, 0, t, false);
-        }
-        promptHits.Clear(); promptHits.AddRange(keep);
-        return shot;
-    }
-    // Both faces are drawn once per size, on the first (still invisible) frame: only the swing changes per frame.
+    // The panel's face is drawn once per size, on the first (still invisible) frame: only the swing changes per frame.
     void EnsureFlip(float t) {
         if (flipScale == devS) return;
-        foreach (var old in new[] { flipCover, flipScreen }) if (old != null) old.Dispose();
-        foreach (var set in new[] { coverStrips, screenStrips }) if (set != null) foreach (var s in set) s.Dispose();
-        flipCover = PanelShot(true, t); flipScreen = PanelShot(false, t); flipScale = devS;
-        coverStrips = Slice(flipCover, out coverInner); screenStrips = Slice(flipScreen, out screenInner);
+        if (flipScreen != null) flipScreen.Dispose();
+        if (screenStrips != null) foreach (var s in screenStrips) s.Dispose();
+        flipScreen = PanelShot(t); flipScale = devS;
+        screenStrips = Slice(flipScreen, out screenInner);
     }
     void FlipPanel(Graphics g, float open, float t) {
-        bool cover = open < 0.5f;
-        float f = cover ? 1 - open / 0.5f : (open - 0.5f) / 0.5f;
-        if (f <= 0.01f) return;
-        var shot = cover ? flipCover : flipScreen;
-        var keepInterp = g.InterpolationMode; var keepOffset = g.PixelOffsetMode;
-        if (f >= 0.999f) {
-            g.InterpolationMode = InterpolationMode.NearestNeighbor; g.PixelOffsetMode = PixelOffsetMode.Half;
-            g.DrawImage(shot, PanelR.X, PanelR.Y, shot.Width / devS, shot.Height / devS);
-            g.InterpolationMode = keepInterp; g.PixelOffsetMode = keepOffset;
-            return;
-        }
-        g.InterpolationMode = InterpolationMode.NearestNeighbor; g.PixelOffsetMode = PixelOffsetMode.HighSpeed;
-        double a = (1 - f) * Math.PI / 2;
-        float cos = (float)Math.Cos(a), sin = (float)Math.Sin(a), W = PanelR.Width, cy = PanelR.Y + PanelR.Height / 2, dist = W * 2f;
-        var parts = cover ? coverStrips : screenStrips;
-        float prevX = PanelR.X, lastS = 1;
-        var keepMode = g.CompositingQuality;
-        g.CompositingQuality = CompositingQuality.HighSpeed;
-        var inner = cover ? coverInner : screenInner;
+        if (open <= 0.01f) return;
+        double a = (1 - open) * Math.PI / 2;
+        float cos = (float)Math.Cos(a), sin = (float)Math.Sin(a), W = PanelR.Width, H = PanelR.Height, cy = PanelR.Y + H / 2, hx = PanelR.Right, dist = W * 2f;
+        Func<float, float> scale = delegate(float u) { return dist / (dist + 0.6f * u * W * sin); };
+        Func<float, float> xAt = delegate(float u) { return hx - u * W * cos * scale(u); };
+        var keepInterp = g.InterpolationMode; var keepOffset = g.PixelOffsetMode; var keepMode = g.CompositingQuality;
+        g.InterpolationMode = InterpolationMode.NearestNeighbor; g.PixelOffsetMode = PixelOffsetMode.HighSpeed; g.CompositingQuality = CompositingQuality.HighSpeed;
         for (int i = 0; i < Strips; i++) {
-            float u1 = (i + 1f) / Strips, um = (i + 0.5f) / Strips;
-            float s1 = dist / (dist - 0.45f * u1 * W * sin), sm = dist / (dist - 0.45f * um * W * sin);
-            float x1 = PanelR.X + u1 * W * cos * s1, top = cy - PanelR.Height / 2 * sm;
-            float kx = (x1 - prevX) / inner[i].Width;
-            g.DrawImage(parts[i], new RectangleF(prevX - inner[i].X * kx, top, parts[i].Width * kx, PanelR.Height * sm));
-            prevX = x1; lastS = s1;
+            float uL = 1 - (float)i / Strips, uR = 1 - (i + 1f) / Strips, sm = scale((uL + uR) / 2);
+            float xl = xAt(uL), xr = xAt(uR), top = cy - H / 2 * sm;
+            if (xr - xl < 0.05f) continue;
+            float kx = (xr - xl) / screenInner[i].Width;
+            g.DrawImage(screenStrips[i], new RectangleF(xl - screenInner[i].X * kx, top, screenStrips[i].Width * kx, H * sm));
         }
-        g.CompositingQuality = keepMode; g.InterpolationMode = keepInterp; g.PixelOffsetMode = keepOffset;
-        int dark = (int)(170 * (1 - f));
-        if (dark > 0) using (var b = new SolidBrush(Color.FromArgb(dark, 0, 0, 0)))
-            g.FillPolygon(b, new[] { new PointF(PanelR.X, PanelR.Y), new PointF(prevX, cy - PanelR.Height / 2 * lastS), new PointF(prevX, cy + PanelR.Height / 2 * lastS), new PointF(PanelR.X, PanelR.Bottom) });
+        g.InterpolationMode = keepInterp; g.PixelOffsetMode = keepOffset; g.CompositingQuality = keepMode;
+        int dark = (int)(170 * Math.Max(0, sin));
+        if (dark > 0) using (var b = new SolidBrush(Color.FromArgb(dark, 0, 0, 0))) {
+            float s1 = scale(1), x1 = xAt(1);
+            g.FillPolygon(b, new[] { new PointF(x1, cy - H / 2 * s1), new PointF(hx, PanelR.Y), new PointF(hx, PanelR.Bottom), new PointF(x1, cy + H / 2 * s1) });
+        }
     }
 
-    // The ledge the camera stands on: worn concrete, angle-iron coping with grind scuffs and wax, a tag.
-    static void Ledge(Graphics g) {
-        var face = new RectangleF(LedgeR.X, LedgeR.Y + 20, LedgeR.Width, LedgeR.Height - 20);
-        using (var path = Round(face, 6)) using (var b = new LinearGradientBrush(Grow(face, 1), Color.FromArgb(160, 156, 148), Color.FromArgb(100, 97, 92), 90f)) g.FillPath(b, path);
-        var rnd = new Random(11);
-        using (var d1 = new SolidBrush(Color.FromArgb(60, 0, 0, 0))) using (var d2 = new SolidBrush(Color.FromArgb(50, 255, 255, 255)))
-            for (int i = 0; i < 260; i++) g.FillRectangle(i % 2 == 0 ? d1 : d2, face.X + (float)rnd.NextDouble() * face.Width, face.Y + 4 + (float)rnd.NextDouble() * (face.Height - 8), 2.2f, 2.2f);
-        Write(g, "skate everything", UTag, Color.FromArgb(150, 236, 72, 150), new RectangleF(1040, face.Y + 4, 520, 80), StringAlignment.Near, StringAlignment.Near, false);
-        using (var pen = new Pen(Color.FromArgb(110, 236, 72, 150), 2)) foreach (float dx in new float[] { 1080, 1150, 1290, 1400 }) g.DrawLine(pen, dx, face.Y + 58, dx, face.Y + 58 + (dx % 17) + 10);
-        var cop = new RectangleF(LedgeR.X - 4, LedgeR.Y, LedgeR.Width + 8, 22);
-        using (var b = new LinearGradientBrush(Grow(cop, 1), Color.FromArgb(228, 231, 235), Color.FromArgb(116, 120, 126), 90f)) g.FillRectangle(b, cop);
-        using (var pen = new Pen(Color.FromArgb(160, 255, 255, 255), 2)) g.DrawLine(pen, cop.X, cop.Y + 1, cop.Right, cop.Y + 1);
-        using (var pen = new Pen(Color.FromArgb(80, 30, 30, 34), 2)) for (int i = 0; i < 26; i++) { float x = cop.X + (float)rnd.NextDouble() * cop.Width; g.DrawLine(pen, x, cop.Y + 4, x + 30 + (float)rnd.NextDouble() * 60, cop.Y + 6 + (float)rnd.NextDouble() * 8); }
-        using (var b = new SolidBrush(Color.FromArgb(40, 255, 250, 220))) g.FillEllipse(b, 480, cop.Y + 2, 300, 16);
+    // ---------- the panel's wear (USER-ASKS 489) ----------
+    // Rolled fresh at every start: paint-marker scrawl in skate-session words, doodles, scratch clusters, paint rubbed
+    // off along the edges, now and then gaff tape across a bottom corner. All of it stays on the wear map: the bezel
+    // minus keep-out zones over every UI element on it (glass, keys, labels, print, grille, sensor), so wear never
+    // covers the panel's UI. Tags and doodles shrink until their whole outline fits the map.
+    class Mark { public int Spot, Kind, Seed; public float X, Y, Angle, Size; public string Text; public Color Ink; }
+    readonly List<Mark> marks = new List<Mark>();
+    static readonly string[] Scrawl = { "ONE MORE TRY", "LAST TRY", "FILM IT", "SEND IT", "SESH", "BAIL CREW", "DIY OR DIE", "SKATE & ANNOY", "NO COMPLY", "KICKFLIP?", "SECURITY!!", "SK8", "LINE!!", "HOMIES", "RAD", "BUST", "FILMER", "1 MORE", "SLAMS", "GNAR", "POP!", "SK8!" };
+    static readonly Color[] Markers = { Color.FromArgb(232, 246, 246, 240), Color.FromArgb(220, 204, 208, 214), Color.FromArgb(225, 236, 64, 54), Color.FromArgb(225, 250, 214, 60), Color.FromArgb(225, 250, 112, 172), Color.FromArgb(225, 96, 212, 232) };
+    // Spots for tags and doodles: the bottom strip between the print and DISPLAY, the left strip under POWER (the top
+    // strip between the frame and the glass is too thin for a word).
+    static readonly RectangleF[] TagAreas = { new RectangleF(352, 630, 348, 104), new RectangleF(36, 640, 120, 90) };
+    static readonly int[] TagChars = { 12, 4 };
+    static readonly float[] TagTilt = { 5, 8 };
+    static readonly RectangleF[] KeepOut = {
+        Grow(ScreenR, 15), new RectangleF(950, 696, 150, 30), new RectangleF(1136, 22, 30, 28),
+        new RectangleF(34, 64, 122, 60), new RectangleF(30, 140, 130, 210), new RectangleF(34, 366, 122, 60),
+        new RectangleF(30, 430, 130, 144), new RectangleF(42, 582, 106, 48), new RectangleF(180, 634, 104, 64),
+        new RectangleF(176, 696, 170, 28), new RectangleF(710, 634, 96, 64), new RectangleF(820, 634, 272, 64),
+    };
+    static readonly FontFamily Hand = HandFamily();
+    static FontFamily HandFamily() {
+        foreach (var name in new[] { "Ink Free", "Segoe Print", "Comic Sans MS" }) foreach (var fam in FontFamily.Families) if (fam.Name == name) return fam;
+        return FontFamily.GenericSansSerif;
     }
-    // The board rolls along the coping and pops an ollie every few seconds.
-    void RollingBoard(Graphics g, float t) {
-        const float len = 230;
-        float x = LedgeR.X - len + (t * vary[17] + vary[18]) % (LedgeR.Width + len);
-        float cycle = t % vary[19], jump = 0, tilt = 0;
-        if (cycle < 0.8f) { float q = cycle / 0.8f; jump = (float)Math.Sin(Math.PI * q) * 110; tilt = q < 0.25f ? -18 * q / 0.25f : -18 * (1 - (q - 0.25f) / 0.75f); }
-        float y = LedgeR.Y - len * 34f / 180f - jump;
-        int sa = (int)(90 * (1 - jump / 200));
-        using (var b = new SolidBrush(Color.FromArgb(Math.Max(0, sa), 0, 0, 0))) g.FillEllipse(b, x + len * 0.1f + jump * 0.2f, LedgeR.Y - 4, len * 0.8f - jump * 0.4f, 9);
-        var st = g.Save();
-        float px = x + len / 2, py = y + len * 17f / 180f;
-        g.TranslateTransform(px, py); g.RotateTransform(tilt); g.TranslateTransform(-px, -py);
-        Board(g, x, y, len);
-        g.Restore(st);
+    static string PickWord(Random r, int max) {
+        var fit = Array.FindAll(Scrawl, w => w.Length <= max);
+        return fit[r.Next(fit.Length)];
+    }
+    void RollMarks(Random r) {
+        marks.Clear();
+        Func<double, double, float> u = delegate(double lo, double hi) { return (float)(lo + r.NextDouble() * (hi - lo)); };
+        var free = new List<int> { 0, 1 };
+        int tags = 1 + r.Next(2);
+        for (int i = 0; i < tags; i++) {
+            int spot = free[r.Next(free.Count)]; free.Remove(spot);
+            var a = TagAreas[spot];
+            marks.Add(new Mark { Spot = spot, Kind = 0, X = a.X + a.Width * u(0.35, 0.65), Y = a.Y + a.Height * u(0.4, 0.6), Angle = TagTilt[spot] * u(-1, 1), Text = PickWord(r, TagChars[spot]), Ink = Markers[r.Next(Markers.Length)], Seed = r.Next() });
+        }
+        int doodles = 1 + r.Next(2);
+        for (int i = 0; i < doodles; i++) {
+            int spot = r.Next(2);
+            var a = TagAreas[spot];
+            marks.Add(new Mark { Spot = spot, Kind = 1, X = a.X + a.Width * u(0.1, 0.9), Y = a.Y + a.Height * u(0.3, 0.7), Angle = u(-20, 20), Size = Math.Min(a.Height * 0.7f, 46) * u(0.7, 1), Ink = Markers[r.Next(Markers.Length)], Seed = r.Next(5) });
+        }
+        int scratches = 3 + r.Next(4);
+        for (int i = 0; i < scratches; i++)
+            marks.Add(new Mark { Kind = 2, X = u(PanelR.X + 30, PanelR.Right - 40), Y = r.Next(2) == 0 ? u(PanelR.Y + 6, ScreenR.Y - 14) : u(ScreenR.Bottom + 16, PanelR.Bottom - 10), Angle = u(-30, 30), Size = u(30, 90), Seed = r.Next() });
+        int edges = 1 + r.Next(2);
+        for (int i = 0; i < edges; i++) {
+            int side = r.Next(3);
+            marks.Add(new Mark { Kind = 3, X = side == 2 ? PanelR.X + 3 : u(PanelR.X + 60, PanelR.Right - 340), Y = side == 0 ? PanelR.Y + 3 : side == 1 ? PanelR.Bottom - 3 : u(PanelR.Y + 60, PanelR.Bottom - 340), Angle = side == 2 ? 90 : 0, Size = u(120, 300), Seed = r.Next() });
+        }
+        if (r.Next(2) == 0) {
+            bool left = r.Next(2) == 0;
+            marks.Add(new Mark { Kind = 4, X = left ? PanelR.X + 26 : PanelR.Right - 26, Y = PanelR.Bottom - 26, Angle = (left ? 45 : -45) + u(-8, 8), Size = u(80, 110), Seed = r.Next() });
+        }
+    }
+    // The panel's outline, and the wear map: the outline minus every keep-out zone.
+    static GraphicsPath PartOutline() { return Round(PanelR, 34); }
+    static Region WearMap() {
+        var r = new Region(PartOutline());
+        foreach (var k in KeepOut) r.Exclude(k);
+        return r;
+    }
+    bool marksUnclipped;   // --wear-test: tags, doodles and tape drawn without the keep-outs, to find any that would cover UI
+    void DrawMarks(Graphics g) {
+        foreach (var mk in marks) {
+            var rnd = new Random(mk.Seed);
+            var ms = g.Save();
+            if (!marksUnclipped || mk.Kind == 2 || mk.Kind == 3) using (var clip = WearMap()) g.SetClip(clip, CombineMode.Intersect);
+            else using (var clip = PartOutline()) g.SetClip(clip, CombineMode.Intersect);
+            g.TranslateTransform(mk.X, mk.Y); g.RotateTransform(mk.Angle);
+            if (mk.Kind == 0) MarkerTag(g, mk, rnd);
+            else if (mk.Kind == 1) Doodle(g, mk, rnd);
+            else if (mk.Kind == 2) using (var lite = new Pen(Color.FromArgb(70, 210, 214, 220), 1.1f)) using (var dark = new Pen(Color.FromArgb(50, 0, 0, 0), 1.1f)) {
+                int n = 5 + rnd.Next(8);
+                for (int i = 0; i < n; i++) {
+                    float x0 = (float)(rnd.NextDouble() * mk.Size - mk.Size / 2), y0 = (float)(rnd.NextDouble() * 18 - 9), len = (float)(rnd.NextDouble() * mk.Size * 0.6 + 8), dy = (float)(rnd.NextDouble() * 6 - 3);
+                    g.DrawLine(dark, x0, y0 + 1, x0 + len, y0 + dy + 1); g.DrawLine(lite, x0, y0, x0 + len, y0 + dy);
+                }
+            }
+            else if (mk.Kind == 3) using (var rub = new Pen(Color.FromArgb(120, 128, 131, 140), 3)) {
+                for (int i = 0; i < 26; i++) { float x0 = (float)(rnd.NextDouble() * mk.Size), len = (float)(rnd.NextDouble() * 26 + 4), off = (float)(rnd.NextDouble() * 6 - 3); rub.Width = (float)(rnd.NextDouble() * 3 + 1); g.DrawLine(rub, x0, off, x0 + len, off + (float)(rnd.NextDouble() * 2 - 1)); }
+            }
+            else if (mk.Kind == 4) GaffTape(g, mk, rnd);
+            g.Restore(ms);
+        }
+    }
+    // Whether a mark's outline, widened by its pen and smoothing, lies wholly on the wear map.
+    static bool Inside(Region map, GraphicsPath local, Mark mk) {
+        using (var test = (GraphicsPath)local.Clone()) using (var m = new Matrix()) using (var pen = new Pen(Color.Black, 5)) {
+            m.Translate(mk.X, mk.Y); m.Rotate(mk.Angle); test.Transform(m); test.Widen(pen); test.Flatten();
+            foreach (var pt in test.PathPoints) if (!map.IsVisible(pt)) return false;
+        }
+        return true;
+    }
+    // Paint-marker scrawl: the word in a hand font, sized to its spot (and shrunk until it fits the wear map), with the
+    // paint worn through in places.
+    void MarkerTag(Graphics g, Mark mk, Random rnd) {
+        var area = TagAreas[mk.Spot];
+        using (var path = new GraphicsPath()) {
+            path.AddString(mk.Text, Hand, (int)FontStyle.Bold, area.Height * 0.7f, PointF.Empty, StringFormat.GenericTypographic);
+            var b = path.GetBounds();
+            float k = Math.Min(1, area.Width * 0.85f / Math.Max(1, b.Width));
+            using (var m = new Matrix()) { m.Scale(k, k); m.Translate(-b.X - b.Width / 2, -b.Y - b.Height / 2); path.Transform(m); }
+            using (var map = WearMap())
+                for (int tries = 0; tries < 12 && !Inside(map, path, mk); tries++) using (var m = new Matrix()) { m.Scale(0.9f, 0.9f); path.Transform(m); }
+            using (var br = new SolidBrush(mk.Ink)) g.FillPath(br, path);
+            using (var pen = new Pen(Fade(mk.Ink, 120), 1.2f)) g.DrawPath(pen, path);
+            var kept = g.Save();
+            g.SetClip(path, CombineMode.Intersect);
+            var nb = path.GetBounds();
+            using (var wear = new SolidBrush(Color.FromArgb(170, 50, 52, 58)))
+                for (int i = 0; i < 60; i++) g.FillEllipse(wear, nb.X + (float)rnd.NextDouble() * nb.Width, nb.Y + (float)rnd.NextDouble() * nb.Height, 1.5f + (float)rnd.NextDouble() * 3, 1 + (float)rnd.NextDouble() * 2);
+            using (var streak = new Pen(Color.FromArgb(90, 50, 52, 58), 1.6f))
+                for (int i = 0; i < 5; i++) { float y = nb.Y + (float)rnd.NextDouble() * nb.Height; g.DrawLine(streak, nb.X, y, nb.Right, y + (float)(rnd.NextDouble() * 4 - 2)); }
+            g.Restore(kept);
+        }
+    }
+    // A quick marker doodle: crown, star, arrow, X or smiley (shrunk until it fits the wear map, pen width included).
+    static void Doodle(Graphics g, Mark mk, Random rnd) {
+        float s = mk.Size / 2;
+        using (var map = WearMap())
+            for (int tries = 0; tries < 12; tries++) {
+                using (var ring = new GraphicsPath()) { float rr = s * 1.15f + 3; ring.AddEllipse(-rr, -rr, 2 * rr, 2 * rr); if (Inside(map, ring, mk)) break; }
+                s *= 0.88f;
+            }
+        using (var pen = new Pen(mk.Ink, Math.Max(2.4f, s * 0.12f))) {
+            pen.LineJoin = LineJoin.Round; pen.StartCap = LineCap.Round; pen.EndCap = LineCap.Round;
+            if (mk.Seed == 0) Wobble(g, pen, rnd, new PointF(-s, s * 0.6f), new PointF(-s, -s * 0.5f), new PointF(-s * 0.5f, s * 0.05f), new PointF(0, -s * 0.8f), new PointF(s * 0.5f, s * 0.05f), new PointF(s, -s * 0.5f), new PointF(s, s * 0.6f), new PointF(-s, s * 0.6f));
+            else if (mk.Seed == 1) { var pts = new PointF[11]; for (int i = 0; i <= 10; i++) { double a = -Math.PI / 2 + i * Math.PI / 5; float rr = i % 2 == 0 ? s : s * 0.42f; pts[i] = new PointF((float)Math.Cos(a) * rr, (float)Math.Sin(a) * rr); } Wobble(g, pen, rnd, pts); }
+            else if (mk.Seed == 2) { Wobble(g, pen, rnd, new PointF(-s, s * 0.2f), new PointF(-s * 0.2f, -s * 0.1f), new PointF(s, 0)); Wobble(g, pen, rnd, new PointF(s * 0.55f, -s * 0.45f), new PointF(s, 0), new PointF(s * 0.5f, s * 0.4f)); }
+            else if (mk.Seed == 3) { Wobble(g, pen, rnd, new PointF(-s * 0.7f, -s * 0.7f), new PointF(0, 0), new PointF(s * 0.7f, s * 0.7f)); Wobble(g, pen, rnd, new PointF(s * 0.7f, -s * 0.7f), new PointF(0, 0), new PointF(-s * 0.7f, s * 0.7f)); }
+            else { g.DrawEllipse(pen, -s, -s, 2 * s, 2 * s); g.DrawArc(pen, -s * 0.55f, -s * 0.3f, s * 1.1f, s * 0.95f, 20, 140); g.DrawLine(pen, -s * 0.35f, -s * 0.35f, -s * 0.35f, -s * 0.15f); g.DrawLine(pen, s * 0.35f, -s * 0.35f, s * 0.35f, -s * 0.15f); }
+        }
+    }
+    // A strip of matte gaff tape across a corner, torn at both ends, a little wrinkled (it wraps round the panel's edge).
+    static void GaffTape(Graphics g, Mark mk, Random rnd) {
+        float w = mk.Size, h = 46;
+        var pts = new List<PointF>();
+        for (int i = 0; i <= 8; i++) pts.Add(new PointF(-w / 2 + (float)(rnd.NextDouble() * 5 - 2.5), -h / 2 + i * h / 8));
+        for (int i = 8; i >= 0; i--) pts.Add(new PointF(w / 2 + (float)(rnd.NextDouble() * 5 - 2.5), -h / 2 + i * h / 8));
+        using (var b = new SolidBrush(Color.FromArgb(90, 0, 0, 0))) { var sh = pts.ConvertAll(p => new PointF(p.X + 2, p.Y + 2)); g.FillPolygon(b, sh.ToArray()); }
+        using (var b = new LinearGradientBrush(new RectangleF(-w / 2 - 4, -h / 2 - 1, w + 8, h + 2), Color.FromArgb(78, 78, 82), Color.FromArgb(34, 34, 38), 90f)) g.FillPolygon(b, pts.ToArray());
+        using (var pen = new Pen(Color.FromArgb(50, 255, 255, 255), 1)) for (int i = 0; i < 4; i++) { float x = (float)(rnd.NextDouble() * w - w / 2); g.DrawLine(pen, x, -h / 2 + 4, x + (float)(rnd.NextDouble() * 10 - 5), h / 2 - 4); }
+        using (var pen = new Pen(Color.FromArgb(40, 255, 255, 255), 2)) g.DrawLine(pen, -w / 2 + 4, -h / 2 + 8, w / 2 - 4, -h / 2 + 8);
+    }
+    // The ridges and edges under the sticker (the gasket edge and the bezel's inner lip), so it shows creases where it
+    // was pressed over them.
+    static List<PointF[]> Ridges() {
+        return new List<PointF[]> {
+            new[] { new PointF(PanelR.X, ScreenR.Bottom + 13), new PointF(PanelR.Right, ScreenR.Bottom + 13) },
+            new[] { new PointF(PanelR.X, PanelR.Bottom - 10), new PointF(PanelR.Right, PanelR.Bottom - 10) },
+        };
+    }
+    static void Creases(Graphics g, List<PointF[]> ridges) {
+        using (var dark = new Pen(Color.FromArgb(100, 0, 0, 0), 2.4f)) using (var lite = new Pen(Color.FromArgb(90, 255, 255, 255), 1.5f))
+            foreach (var seg in ridges) {
+                float ex = seg[1].X - seg[0].X, ey = seg[1].Y - seg[0].Y, el = (float)Math.Sqrt(ex * ex + ey * ey);
+                if (el < 1) continue;
+                float ox = -ey / el * 1.8f, oy = ex / el * 1.8f;
+                g.DrawLine(dark, seg[0], seg[1]);
+                g.DrawLine(lite, seg[0].X + ox, seg[0].Y + oy, seg[1].X + ox, seg[1].Y + oy);
+            }
     }
 
     // ---------- the sticker (USER-ASKS 487) ----------
@@ -1488,23 +1551,25 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         return gameStickers.Length == 0 ? null : gameStickers[pick % gameStickers.Length];
     }
+    // On the bezel's bottom strip, between the print and DISPLAY.
     void PlaceSticker(Graphics g, float[] s) {
-        int zone = (int)s[1];
-        float cx, cy, scale;
-        if (zone == 0) { cx = 480 + s[2] * 250; cy = 750 + s[3] * 14; scale = 0.86f; }
-        else if (zone == 1) { cx = 127; cy = 350 + s[3] * 170; scale = 0.8f; }
-        else { cx = 610 + s[2] * 150; cy = 836; scale = 0.62f; }
+        float cx = 420 + s[2] * 200, cy = 682 + s[3] * 4, scale = 0.68f;
+        // The surface's ridges in the sticker's own space (the inverse of its placement).
+        double ra = -s[4] * Math.PI / 180; float rc = (float)Math.Cos(ra), rs = (float)Math.Sin(ra);
+        var local = Ridges().ConvertAll(seg => Array.ConvertAll(seg, q => { float dx = q.X - cx, dy = q.Y - cy; return new PointF((dx * rc - dy * rs) / scale, (dx * rs + dy * rc) / scale); }));
         var st = g.Save();
         g.TranslateTransform(cx, cy); g.RotateTransform(s[4]); g.ScaleTransform(scale, scale);
         var game = GameSticker((int)s[5]);
         if (game != null) {
             float k = 160f / Math.Max(game.Width, game.Height);
-            g.DrawImage(game, -game.Width * k / 2, -game.Height * k / 2, game.Width * k, game.Height * k);
-        } else DrawSticker(g, (int)s[0], (int)s[5]);
+            var rect = new RectangleF(-game.Width * k / 2, -game.Height * k / 2, game.Width * k, game.Height * k);
+            g.DrawImage(game, rect);
+            var cs = g.Save(); g.SetClip(rect, CombineMode.Intersect); Creases(g, local); g.Restore(cs);
+        } else DrawSticker(g, (int)s[0], (int)s[5], local);
         g.Restore(st);
     }
     // A parody sticker around (0, 0), about 160 x 160 at most, aged: faded, scuffed, chipped, one edge peeling up.
-    static void DrawSticker(Graphics g, int design, int seed) {
+    static void DrawSticker(Graphics g, int design, int seed, List<PointF[]> ridges) {
         var rnd = new Random(seed);
         using (var shape = StickerShape(design)) {
             // The peel: the part past a line near one edge has lifted and folded back over.
@@ -1530,6 +1595,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
                     using (var pen = new Pen(Color.FromArgb(110, 255, 255, 250), 1.2f)) for (int i = 0; i < 16; i++) { float x0 = (float)(rnd.NextDouble() * 160 - 80), y0 = (float)(rnd.NextDouble() * 160 - 80); g.DrawLine(pen, x0, y0, x0 + (float)(rnd.NextDouble() * 40 - 20), y0 + (float)(rnd.NextDouble() * 12 - 6)); }
                     using (var b = new SolidBrush(Color.FromArgb(60, 60, 50, 30))) for (int i = 0; i < 40; i++) g.FillEllipse(b, (float)(rnd.NextDouble() * 160 - 80), (float)(rnd.NextDouble() * 160 - 80), 2.5f, 2.5f);
                     using (var b = new SolidBrush(Color.FromArgb(30, 120, 110, 80))) g.FillRectangle(b, -90, -90, 180, 180);
+                    Creases(g, ridges);
                     g.Restore(gs);
                     using (var pen = new Pen(Color.FromArgb(120, 40, 40, 44), 3)) {
                         for (int i = 0; i < 4; i++) {
@@ -1646,277 +1712,341 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
     }
 
-    // ---------- the LCD (drawn low-res, scaled up with hard pixels) ----------
-    Bitmap lcdBmp, sceneBmp; Font osdBig, osdRow, osdSmall, osdLogo; int osdFontH;
+    // ---------- the LCD ----------
+    // The screen of a mid-2000s HD camcorder (USER-ASKS 488): smooth type, glossy translucent rounded panels, an amber
+    // selection bar with a sheen, the status row with its HDV badge, the board's lane and the date stamp. Drawn at the
+    // screen's own pixels in a 340-wide layout space (lcdW x lcdH) over the cached skate-spot scene.
+    Bitmap lcdBmp, sceneBmp; Font osdBig, osdRow, osdSmall, osdTiny, osdLogo; int osdFontH = -1;
     bool recOn; DateTime recSince; TimeSpan recTotal;
-    int lcdW, lcdH;
+    int lcdW = 340, lcdH = 191;
+    static readonly Color LcdInk = Color.FromArgb(244, 246, 250), LcdDim = Color.FromArgb(168, 178, 196), LcdAmberHi = Color.FromArgb(255, 198, 88),
+        LcdAmberLo = Color.FromArgb(238, 124, 12), LcdAmber = Color.FromArgb(255, 172, 44), LcdGreen = Color.FromArgb(124, 220, 96), LcdRed = Color.FromArgb(255, 98, 86);
     void LoHit(RectangleF lo, int index) {
         var u = new RectangleF(ScreenR.X + lo.X * ScreenR.Width / lcdW, ScreenR.Y + lo.Y * ScreenR.Height / lcdH, lo.Width * ScreenR.Width / lcdW, lo.Height * ScreenR.Height / lcdH);
         hits.Add(new KeyValuePair<RectangleF, int>(ToWin(u), index));
     }
     Bitmap LcdCanvas(float t) {
-        int k = Math.Max(2, (int)Math.Round(ScreenR.Height * devS / 190f));
-        int W = Math.Max(200, (int)(ScreenR.Width * devS / k)), H = Math.Max(112, (int)(ScreenR.Height * devS / k));
-        if (lcdBmp == null || lcdBmp.Width != W || lcdBmp.Height != H) { if (lcdBmp != null) lcdBmp.Dispose(); lcdBmp = new Bitmap(W, H, PixelFormat.Format32bppPArgb); }
+        int Wp = Math.Max(200, (int)Math.Round(ScreenR.Width * devS)), Hp = Math.Max(112, (int)Math.Round(ScreenR.Height * devS));
+        if (lcdBmp == null || lcdBmp.Width != Wp || lcdBmp.Height != Hp) { if (lcdBmp != null) lcdBmp.Dispose(); lcdBmp = new Bitmap(Wp, Hp, PixelFormat.Format32bppPArgb); }
+        lcdW = 340; lcdH = (int)Math.Round(340f * Hp / Wp);
+        int W = lcdW, H = lcdH;
         if (osdFontH != H) {
             osdFontH = H;
-            osdBig = new Font("Tahoma", H / 14f, FontStyle.Bold, GraphicsUnit.Pixel);
-            osdRow = new Font("Tahoma", H / 16.5f, FontStyle.Bold, GraphicsUnit.Pixel);
-            osdSmall = new Font("Tahoma", H / 20f, GraphicsUnit.Pixel);
-            osdLogo = new Font("Arial Black", H / 5.5f, FontStyle.Italic, GraphicsUnit.Pixel);
+            osdBig = new Font("Segoe UI Semibold", H / 13.5f, GraphicsUnit.Pixel);
+            osdRow = new Font("Segoe UI Semibold", H / 17.5f, GraphicsUnit.Pixel);
+            osdSmall = new Font("Segoe UI", H / 21f, GraphicsUnit.Pixel);
+            osdTiny = new Font("Segoe UI Semibold", H / 29f, GraphicsUnit.Pixel);
+            osdLogo = new Font("Segoe UI Light", H / 5.2f, GraphicsUnit.Pixel);
         }
-        lcdW = W; lcdH = H;
         DateTime now = DateTime.Now;
         bool rec = job != null;
         if (rec && !recOn) recSince = now;
         if (!rec && recOn) recTotal += now - recSince;
         recOn = rec;
         using (var o = Graphics.FromImage(lcdBmp)) {
-            o.SmoothingMode = SmoothingMode.None;
-            o.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit;
             bool splash = starting && job == null && pages.Count == 0;
-            if (splash) { o.Clear(Color.FromArgb(4, 4, 8)); LcdSplash(o, W, H, t); }
+            // Cleared first: the scene's edge pixels are not fully opaque, so the last frame showed through and built up.
+            o.Clear(Color.FromArgb(6, 8, 14));
+            if (!splash) o.DrawImageUnscaled(Scene(Wp, Hp), 0, 0);
+            o.ScaleTransform(Wp / (float)W, Hp / (float)H);
+            o.SmoothingMode = SmoothingMode.AntiAlias;
+            o.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            float foot = osdSmall.Height + 4, lane = 15, top = osdRow.Height + 7, bottom = H - foot - lane - 2;
+            if (splash) LcdSplash(o, W, H, t);
             else {
-                o.DrawImageUnscaled(Scene(W, H), 0, 0);
-                float lh = osdSmall.Height, top = osdRow.Height + 5, bottom = H - lh * 2 - 4;
-                LcdStatus(o, W, H, now);
+                LcdStatus(o, W, now);
                 if (job != null) LcdJob(o, W, top, bottom, t);
                 else if (pages.Count > 0) LcdPage(o, pages.Peek(), W, top, bottom, t);
             }
+            LcdBoard(o, t, H - foot - 2, W);
             LcdFoot(o, W, H, now, splash);
         }
         return lcdBmp;
     }
-    // What the camera is pointed at: a skate spot at dusk (stairs, a handrail, a ledge), dimmed under the menus.
+    // What the camera is pointed at: a skate spot at dusk (stairs with a handrail, a ledge), dimmed under the menus.
     Bitmap Scene(int W, int H) {
         if (sceneBmp != null && sceneBmp.Width == W && sceneBmp.Height == H) return sceneBmp;
         if (sceneBmp != null) sceneBmp.Dispose();
         sceneBmp = new Bitmap(W, H, PixelFormat.Format32bppPArgb);
         using (var g = Graphics.FromImage(sceneBmp)) {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
             float hz = H * 0.62f;
-            using (var b = new LinearGradientBrush(new RectangleF(0, -1, W, hz + 2), Color.FromArgb(34, 44, 96), Color.FromArgb(214, 122, 74), 90f)) g.FillRectangle(b, 0, 0, W, hz);
-            using (var b = new SolidBrush(Color.FromArgb(200, 252, 206, 128))) g.FillEllipse(b, W * 0.68f, hz - H * 0.17f, H * 0.16f, H * 0.16f);
+            using (var b = new LinearGradientBrush(new RectangleF(0, -1, W, hz + 2), Color.FromArgb(34, 46, 104), Color.FromArgb(222, 128, 78), 90f)) g.FillRectangle(b, 0, 0, W, hz);
+            using (var b = new SolidBrush(Color.FromArgb(200, 252, 210, 136))) g.FillEllipse(b, W * 0.68f, hz - H * 0.17f, H * 0.16f, H * 0.16f);
             var rnd = new Random(5);
-            using (var b = new SolidBrush(Color.FromArgb(44, 34, 54))) for (float x = 0; x < W; ) { float bw = 8 + (float)rnd.NextDouble() * 16, bh = H * (0.05f + (float)rnd.NextDouble() * 0.18f); g.FillRectangle(b, x, hz - bh, bw, bh); x += bw + 1; }
-            using (var b = new LinearGradientBrush(new RectangleF(0, hz - 1, W, H - hz + 2), Color.FromArgb(78, 64, 66), Color.FromArgb(30, 26, 30), 90f)) g.FillRectangle(b, 0, hz, W, H - hz);
-            // A set of stairs going down to the right with a handrail, and a ledge on the left.
+            using (var b = new SolidBrush(Color.FromArgb(44, 34, 56))) for (float x = 0; x < W; ) { float bw = W * (0.024f + (float)rnd.NextDouble() * 0.045f), bh = H * (0.05f + (float)rnd.NextDouble() * 0.18f); g.FillRectangle(b, x, hz - bh, bw, bh); x += bw + 1; }
+            using (var b = new LinearGradientBrush(new RectangleF(0, hz - 1, W, H - hz + 2), Color.FromArgb(82, 68, 70), Color.FromArgb(30, 26, 30), 90f)) g.FillRectangle(b, 0, hz, W, H - hz);
             float sx0 = W * 0.6f, sy0 = H * 0.7f, stepW = W * 0.08f, stepH = H * 0.06f;
             var stairs = new List<PointF> { new PointF(sx0, H), new PointF(sx0, sy0) };
             for (int i = 0; i < 5; i++) { stairs.Add(new PointF(sx0 + (i + 1) * stepW, sy0 + i * stepH)); stairs.Add(new PointF(sx0 + (i + 1) * stepW, sy0 + (i + 1) * stepH)); }
             stairs.Add(new PointF(W, sy0 + 5 * stepH)); stairs.Add(new PointF(W, H));
-            using (var b = new SolidBrush(Color.FromArgb(52, 46, 52))) g.FillPolygon(b, stairs.ToArray());
-            using (var pen = new Pen(Color.FromArgb(120, 214, 150, 110), 1)) for (int i = 0; i < 5; i++) g.DrawLine(pen, sx0 + i * stepW, sy0 + i * stepH, sx0 + (i + 1) * stepW, sy0 + i * stepH);
-            using (var b = new SolidBrush(Color.FromArgb(70, 64, 66))) g.FillRectangle(b, W * 0.05f, H * 0.74f, W * 0.3f, H * 0.07f);
-            using (var pen = new Pen(Color.FromArgb(150, 214, 150, 110), 1)) g.DrawLine(pen, W * 0.05f, H * 0.74f, W * 0.35f, H * 0.74f);
-            using (var pen = new Pen(Color.FromArgb(170, 170, 172, 182), 1)) { g.DrawLine(pen, sx0 + stepW * 0.5f, sy0 - H * 0.09f, W, sy0 - H * 0.09f + (W - sx0 - stepW * 0.5f) * stepH / stepW); for (int i = 0; i < 4; i++) { float px = sx0 + stepW * (0.5f + i * 1.2f); g.DrawLine(pen, px, sy0 - H * 0.09f + (px - sx0 - stepW * 0.5f) * stepH / stepW, px, sy0 + i * 1.2f * stepH); } }
-            using (var b = new SolidBrush(Color.FromArgb(96, 0, 0, 0))) g.FillRectangle(b, 0, 0, W, H);
-            using (var b = new SolidBrush(Color.FromArgb(26, 0, 0, 0))) for (int y = 0; y < H; y += 2) g.FillRectangle(b, 0, y, W, 1);
+            using (var b = new SolidBrush(Color.FromArgb(54, 48, 54))) g.FillPolygon(b, stairs.ToArray());
+            float lw = Math.Max(1, H / 190f);
+            using (var pen = new Pen(Color.FromArgb(130, 222, 156, 112), lw)) for (int i = 0; i < 5; i++) g.DrawLine(pen, sx0 + i * stepW, sy0 + i * stepH, sx0 + (i + 1) * stepW, sy0 + i * stepH);
+            using (var b = new SolidBrush(Color.FromArgb(74, 68, 70))) g.FillRectangle(b, W * 0.05f, H * 0.74f, W * 0.3f, H * 0.07f);
+            using (var pen = new Pen(Color.FromArgb(150, 222, 156, 112), lw)) g.DrawLine(pen, W * 0.05f, H * 0.74f, W * 0.35f, H * 0.74f);
+            using (var pen = new Pen(Color.FromArgb(170, 176, 178, 190), lw * 1.4f)) { g.DrawLine(pen, sx0 + stepW * 0.5f, sy0 - H * 0.09f, W, sy0 - H * 0.09f + (W - sx0 - stepW * 0.5f) * stepH / stepW); for (int i = 0; i < 4; i++) { float px = sx0 + stepW * (0.5f + i * 1.2f); g.DrawLine(pen, px, sy0 - H * 0.09f + (px - sx0 - stepW * 0.5f) * stepH / stepW, px, sy0 + i * 1.2f * stepH); } }
+            using (var b = new SolidBrush(Color.FromArgb(86, 0, 0, 0))) g.FillRectangle(b, 0, 0, W, H);
+            using (var path = new GraphicsPath()) {
+                path.AddEllipse(-W * 0.2f, -H * 0.25f, W * 1.4f, H * 1.5f);
+                using (var outside = new Region(new RectangleF(0, 0, W, H))) { outside.Exclude(path); using (var b = new SolidBrush(Color.FromArgb(70, 0, 0, 0))) g.FillRegion(b, outside); }
+            }
         }
         return sceneBmp;
     }
-    static void OsdText(Graphics g, string s, Font f, Color c, float x, float y) {
-        using (var black = new SolidBrush(Color.Black))
-            for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++) if (dx != 0 || dy != 0) g.DrawString(s, f, black, x + dx, y + dy);
+    static void ShadowText(Graphics g, string s, Font f, Color c, float x, float y) {
+        using (var sh = new SolidBrush(Color.FromArgb(170, 0, 0, 0))) g.DrawString(s, f, sh, x + 0.6f, y + 0.7f);
         using (var b = new SolidBrush(c)) g.DrawString(s, f, b, x, y);
     }
-    static void OsdPanel(Graphics g, RectangleF r) {
-        using (var b = new SolidBrush(OsdNavy)) g.FillRectangle(b, r);
-        using (var pen = new Pen(Color.FromArgb(170, 200, 210, 240), 1)) g.DrawRectangle(pen, r.X, r.Y, r.Width - 1, r.Height - 1);
+    // A translucent glass panel with a fine light edge.
+    static void Glass(Graphics g, RectangleF r, float rad) {
+        using (var path = Round(r, rad)) {
+            using (var b = new LinearGradientBrush(Grow(r, 1), Color.FromArgb(196, 44, 54, 80), Color.FromArgb(222, 10, 13, 22), 90f)) g.FillPath(b, path);
+            using (var pen = new Pen(Color.FromArgb(76, 255, 255, 255), 0.6f)) g.DrawPath(pen, path);
+        }
+        using (var pen = new Pen(Color.FromArgb(46, 255, 255, 255), 0.6f)) g.DrawLine(pen, r.X + rad, r.Y + 1, r.Right - rad, r.Y + 1);
     }
-    // Top row: STBY / REC with its blinking dot, SP, the tape counter (runs only while recording), the battery.
-    void LcdStatus(Graphics o, int W, int H, DateTime now) {
+    // A glossy bar: its gradient and a sheen over the top half.
+    static void Gloss(Graphics g, RectangleF r, float rad, Color top, Color bottom) {
+        using (var path = Round(r, rad)) using (var b = new LinearGradientBrush(Grow(r, 0.5f), top, bottom, 90f)) g.FillPath(b, path);
+        var sheen = new RectangleF(r.X + 0.8f, r.Y + 0.5f, r.Width - 1.6f, r.Height * 0.48f);
+        if (sheen.Width > 1 && sheen.Height > 0.5f)
+            using (var path = Round(sheen, rad * 0.8f)) using (var b = new LinearGradientBrush(Grow(sheen, 0.5f), Color.FromArgb(120, 255, 255, 255), Color.FromArgb(18, 255, 255, 255), 90f)) g.FillPath(b, path);
+    }
+    void Pill(Graphics g, string s, Color c, float x, float y) {
+        var size = g.MeasureString(s, osdTiny);
+        var r = new RectangleF(x, y, size.Width + 3, osdTiny.Height + 2);
+        using (var path = Round(r, r.Height / 2)) {
+            using (var b = new SolidBrush(Fade(c, 46))) g.FillPath(b, path);
+            using (var pen = new Pen(Fade(c, 200), 0.7f)) g.DrawPath(pen, path);
+        }
+        Write(g, s, osdTiny, c, r, StringAlignment.Center, StringAlignment.Center, false);
+    }
+    // Top row: STBY / REC with its glowing dot, the HDV badge, the tape counter (runs only while recording), the battery.
+    void LcdStatus(Graphics o, int W, DateTime now) {
         TimeSpan tape = recTotal + (recOn ? now - recSince : TimeSpan.Zero);
-        float x = 4, y = 2;
+        float x = 5, y = 3, fh = osdRow.Height;
         if (recOn) {
-            if (now.Millisecond < 600) using (var b = new SolidBrush(RecRed)) o.FillEllipse(b, x, y + osdRow.Height * 0.25f, osdRow.Height * 0.5f, osdRow.Height * 0.5f);
-            x += osdRow.Height * 0.6f;
+            float d = fh * 0.46f, dy = y + (fh - d) / 2;
+            if (now.Millisecond < 650) {
+                using (var b = new SolidBrush(Color.FromArgb(80, RecRed))) o.FillEllipse(b, x - d * 0.35f, dy - d * 0.35f, d * 1.7f, d * 1.7f);
+                using (var b = new SolidBrush(RecRed)) o.FillEllipse(b, x, dy, d, d);
+            }
+            x += d + 3;
         }
         string mode = recOn ? "REC" : "STBY";
-        OsdText(o, mode, osdRow, OsdWhite, x, y); x += o.MeasureString(mode, osdRow).Width + 4;
-        OsdText(o, "SP", osdRow, OsdWhite, x, y); x += o.MeasureString("SP", osdRow).Width + 4;
-        OsdText(o, string.Format("{0}:{1:00}:{2:00}:{3:00}", (int)tape.TotalHours, tape.Minutes, tape.Seconds, tape.Milliseconds * 30 / 1000), osdRow, OsdWhite, x, y);
-        var mins = o.MeasureString("60min", osdSmall);
-        float bx = W - 4 - mins.Width - 18, bh = osdRow.Height * 0.55f, by = y + (osdRow.Height - bh) / 2;
-        OsdText(o, "60min", osdSmall, OsdWhite, W - 4 - mins.Width, y + 1);
-        using (var bl = new SolidBrush(Color.Black)) o.FillRectangle(bl, bx - 1, by - 1, 16, bh + 2);
-        using (var wb = new SolidBrush(OsdWhite)) { o.FillRectangle(wb, bx, by, 14, bh); o.FillRectangle(wb, bx + 14, by + bh * 0.3f, 2, bh * 0.4f); }
-        using (var bl = new SolidBrush(Color.Black)) o.FillRectangle(bl, bx + 1, by + 1, 12, bh - 2);
-        using (var wb = new SolidBrush(OsdWhite)) for (int i = 0; i < 4; i++) o.FillRectangle(wb, bx + 2 + i * 3, by + 2, 2, bh - 4);
+        ShadowText(o, mode, osdRow, recOn ? LcdRed : LcdInk, x, y); x += o.MeasureString(mode, osdRow).Width + 3;
+        var hs = o.MeasureString("HDV 1080i", osdTiny);
+        var hb = new RectangleF(x, y + (fh - osdTiny.Height - 1) / 2, hs.Width + 2, osdTiny.Height + 1);
+        using (var path = Round(hb, 1.5f)) { using (var b = new SolidBrush(Color.FromArgb(70, 0, 0, 0))) o.FillPath(b, path); using (var pen = new Pen(Color.FromArgb(210, 255, 255, 255), 0.7f)) o.DrawPath(pen, path); }
+        Write(o, "HDV 1080i", osdTiny, LcdInk, hb, StringAlignment.Center, StringAlignment.Center, false);
+        x += hb.Width + 6;
+        ShadowText(o, string.Format("{0}:{1:00}:{2:00}:{3:00}", (int)tape.TotalHours, tape.Minutes, tape.Seconds, tape.Milliseconds * 30 / 1000), osdRow, LcdInk, x, y);
+        string mins = "120 min";
+        var ms = o.MeasureString(mins, osdSmall);
+        float bw = fh * 1.2f, bh = fh * 0.52f, bx = W - 5 - ms.Width - bw - 3, by = y + (fh - bh) / 2;
+        var body = new RectangleF(bx, by, bw, bh);
+        using (var path = Round(body, 1.5f)) { using (var b = new SolidBrush(Color.FromArgb(90, 0, 0, 0))) o.FillPath(b, path); using (var pen = new Pen(Color.FromArgb(220, 255, 255, 255), 0.8f)) o.DrawPath(pen, path); }
+        using (var b = new SolidBrush(Color.FromArgb(220, 255, 255, 255))) o.FillRectangle(b, bx + bw, by + bh * 0.3f, 1.4f, bh * 0.4f);
+        float seg = (bw - 2.4f) / 4;
+        for (int i = 0; i < 4; i++) Gloss(o, new RectangleF(bx + 1.2f + i * seg + 0.3f, by + 1.2f, seg - 0.6f, bh - 2.4f), 0.6f, Color.FromArgb(170, 240, 110), Color.FromArgb(66, 168, 40));
+        ShadowText(o, mins, osdSmall, LcdInk, W - 5 - ms.Width, y + (fh - osdSmall.Height) / 2);
     }
+    // A controller key badge and its label, for the hint row.
+    void Badge(Graphics o, ref float x, float y, string key, Color c, string label) {
+        float d = osdSmall.Height * 0.9f;
+        var r = key.Length == 1 ? new RectangleF(x, y + (osdSmall.Height - d) / 2, d, d) : new RectangleF(x, y + (osdSmall.Height - d) / 2, o.MeasureString(key, osdTiny).Width + 3, d);
+        Gloss(o, r, d / 2, Mix(c, Color.White, 0.25f), Mix(c, Color.Black, 0.2f));
+        Write(o, key, osdTiny, Color.White, r, StringAlignment.Center, StringAlignment.Center, false);
+        x = r.Right + 2;
+        ShadowText(o, label, osdSmall, LcdInk, x, y);
+        x += o.MeasureString(label, osdSmall).Width + 5;
+    }
+    static Color Mix(Color a, Color b, float k) { return Color.FromArgb(a.A, (int)(a.R + (b.R - a.R) * k), (int)(a.G + (b.G - a.G) * k), (int)(a.B + (b.B - a.B) * k)); }
     // Bottom: what the keys do now on the left, the date and time stamp on the right.
     void LcdFoot(Graphics o, int W, int H, DateTime now, bool splash) {
-        float lh = osdSmall.Height;
-        string hint;
-        if (closeAt >= 0) hint = "CLOSING IN " + closeAt + " s";
-        else if (job != null) hint = ((build.Waiting != null && !build.Ended) || build.FetchWaiting()) ? (cancelArmed ? "[B] AGAIN TO CANCEL" : "[B] CANCEL") : "";
-        else if (splash) hint = CanSkip() ? (skipArmed ? "[B] AGAIN TO SKIP" : "[B] SKIP THE CHECK") : "";
-        else if (pages.Count > 0 && IsMain(pages.Peek())) hint = "[A] EXEC   START/STOP: PLAY";
-        else hint = "[A] EXEC   [B] RET.";
-        if (hint != "") OsdText(o, hint, osdSmall, OsdWhite, 4, H - lh - 2);
-        var inv = System.Globalization.CultureInfo.InvariantCulture;
-        string date = now.ToString("MMM. d yyyy", inv).ToUpperInvariant(), time = now.ToString("h:mm:ss tt", inv);
-        float dw = Math.Max(o.MeasureString(date, osdSmall).Width, o.MeasureString(time, osdSmall).Width);
-        OsdText(o, date, osdSmall, OsdWhite, W - 4 - dw, H - lh * 2 - 3);
-        OsdText(o, time, osdSmall, OsdWhite, W - 4 - dw, H - lh - 2);
+        float y = H - osdSmall.Height - 3, x = 5;
+        Color a = Color.FromArgb(92, 186, 72), b = Color.FromArgb(220, 70, 60);
+        bool cancel = job != null && ((build.Waiting != null && !build.Ended) || build.FetchWaiting());
+        if (closeAt >= 0) ShadowText(o, "Closing in " + closeAt + " s", osdSmall, LcdInk, x, y);
+        else if (cancel) Badge(o, ref x, y, "B", b, cancelArmed ? "Again to cancel" : "Cancel");
+        else if (splash) { if (CanSkip()) Badge(o, ref x, y, "B", b, skipArmed ? "Again to skip" : "Skip the check"); }
+        else if (job == null) {
+            Badge(o, ref x, y, "A", a, "Select");
+            if (pages.Count > 0 && IsMain(pages.Peek())) Badge(o, ref x, y, "START/STOP", RecRed, "Play");
+            else Badge(o, ref x, y, "B", b, "Back");
+        }
+        string stamp = now.ToString("MMM d yyyy   h:mm tt", System.Globalization.CultureInfo.InvariantCulture).ToUpperInvariant();
+        ShadowText(o, stamp, osdSmall, LcdInk, W - 5 - o.MeasureString(stamp, osdSmall).Width, y);
     }
-    // A menu screen: the title tab, the list with the orange selection bar, the selected row's info beside it; a text
-    // page shows its text in a box (and a build's first error under it).
+    // The board rides a lane along the bottom of the screen and pops an ollie now and then (USER-ASKS 488).
+    void LcdBoard(Graphics o, float t, float ground, int W) {
+        const float len = 44;
+        float x = -len + (t * vary[17] * 0.25f + vary[18]) % (W + len);
+        float cycle = t % vary[19], jump = 0, tilt = 0;
+        if (cycle < 0.8f) { float q = cycle / 0.8f; jump = (float)Math.Sin(Math.PI * q) * 15; tilt = q < 0.25f ? -18 * q / 0.25f : -18 * (1 - (q - 0.25f) / 0.75f); }
+        using (var pen = new Pen(Color.FromArgb(46, 255, 255, 255), 0.6f)) o.DrawLine(pen, 5, ground + 0.5f, W - 5, ground + 0.5f);
+        using (var b = new SolidBrush(Color.FromArgb(Math.Max(0, (int)(110 * (1 - jump / 24))), 0, 0, 0))) o.FillEllipse(b, x + len * 0.1f + jump * 0.3f, ground - 1.2f, len * 0.8f - jump * 0.6f, 2.6f);
+        float y = ground - len * 34f / 180f - jump;
+        var st = o.Save();
+        float px = x + len / 2, py = y + len * 17f / 180f;
+        o.TranslateTransform(px, py); o.RotateTransform(tilt); o.TranslateTransform(-px, -py);
+        Board(o, x, y, len);
+        o.Restore(st);
+    }
+    // A menu screen: the title tab, the list with the amber selection bar, the selected row's info beside it; a text
+    // page shows its text in a glass box (and a build's first error under it).
     void LcdPage(Graphics o, Page p, int W, float top, float bottom, float t) {
-        const float m = 4;
-        string title = IsMain(p) ? "MENU" : p.Title.TrimEnd(':', ' ').ToUpperInvariant();
-        var tab = new RectangleF(m, top, Math.Min(W - 2 * m, o.MeasureString(title, osdRow).Width + 6), osdRow.Height + 2);
-        OsdPanel(o, tab);
-        Write(o, title, osdRow, OsdWhite, new RectangleF(tab.X + 3, tab.Y + 1, tab.Width - 4, tab.Height), StringAlignment.Near, StringAlignment.Near, false);
-        float y = tab.Bottom + 2;
+        const float m = 5;
+        string title = IsMain(p) ? "HOME" : p.Title.TrimEnd(':', ' ');
+        var tab = new RectangleF(m, top, Math.Min(W - 2 * m, o.MeasureString(title, osdRow).Width + 10), osdRow.Height + 3);
+        Gloss(o, tab, tab.Height / 2, Color.FromArgb(240, 88, 152, 242), Color.FromArgb(240, 26, 74, 168));
+        Write(o, title, osdRow, Color.White, tab, StringAlignment.Center, StringAlignment.Center, false);
+        float y = tab.Bottom + 3;
         if (p.Body != null) {
             var br = new RectangleF(m, y, W - 2 * m, p.Items.Count > 0 ? (bottom - y) * 0.6f : bottom - y);
-            OsdPanel(o, br);
+            Glass(o, br, 5);
             float textH = br.Height - 6;
-            if (p.Mono != null) textH = Math.Min(textH, o.MeasureString(p.Body, osdSmall, (int)(br.Width - 8)).Height + 2);
-            Write(o, p.Body, osdSmall, OsdWhite, new RectangleF(br.X + 4, br.Y + 3, br.Width - 8, textH), StringAlignment.Near, StringAlignment.Near, true);
+            if (p.Mono != null) textH = Math.Min(textH, o.MeasureString(p.Body, osdSmall, (int)(br.Width - 10)).Height + 2);
+            Write(o, p.Body, osdSmall, LcdInk, new RectangleF(br.X + 5, br.Y + 3, br.Width - 10, textH), StringAlignment.Near, StringAlignment.Near, true);
             if (p.Mono != null) {
                 var eb = new RectangleF(br.X + 4, br.Y + 4 + textH, br.Width - 8, br.Bottom - 4 - (br.Y + 4 + textH));
                 if (eb.Height > osdSmall.Height) {
-                    using (var b = new SolidBrush(Color.FromArgb(200, 60, 12, 16))) o.FillRectangle(b, eb);
-                    using (var pen = new Pen(OsdRed, 1)) o.DrawRectangle(pen, eb.X, eb.Y, eb.Width - 1, eb.Height - 1);
-                    Write(o, p.Mono, osdSmall, OsdWhite, new RectangleF(eb.X + 3, eb.Y + 2, eb.Width - 6, eb.Height - 4), StringAlignment.Near, StringAlignment.Near, true);
+                    using (var path = Round(eb, 3)) { using (var b = new SolidBrush(Color.FromArgb(190, 70, 14, 18))) o.FillPath(b, path); using (var pen = new Pen(Fade(LcdRed, 200), 0.7f)) o.DrawPath(pen, path); }
+                    Write(o, p.Mono, osdSmall, LcdInk, new RectangleF(eb.X + 4, eb.Y + 2, eb.Width - 8, eb.Height - 4), StringAlignment.Near, StringAlignment.Near, true);
                 }
             }
             y = br.Bottom + 3;
         }
         if (p.Items.Count == 0) return;
         bool split = p.Body == null;
-        float listW = split ? (float)Math.Floor(W * 0.42f) : W - 2 * m, rowH = osdRow.Height + 3;
-        int fit = Math.Max(1, (int)((bottom - y - 4) / rowH));
+        float listW = split ? (float)Math.Floor(W * 0.42f) : W - 2 * m, rowH = osdRow.Height + 4;
+        int fit = Math.Max(1, (int)((bottom - y - 5) / rowH));
         int first = Math.Max(0, Math.Min(p.Sel - fit / 2, p.Items.Count - fit)), shown = Math.Min(fit, p.Items.Count - first);
-        var box = new RectangleF(m, y, listW, shown * rowH + 4);
-        OsdPanel(o, box);
+        var box = new RectangleF(m, y, listW, shown * rowH + 5);
+        Glass(o, box, 5);
         for (int i = first; i < first + shown; i++) {
             var it = p.Items[i]; bool sel = i == p.Sel;
-            var r = new RectangleF(box.X + 2, box.Y + 2 + (i - first) * rowH, box.Width - 4, rowH);
-            if (sel) using (var b = new SolidBrush(OsdOrange)) o.FillRectangle(b, r);
+            var r = new RectangleF(box.X + 2.5f, box.Y + 2.5f + (i - first) * rowH, box.Width - 5, rowH);
+            if (sel) Gloss(o, r, 3, LcdAmberHi, LcdAmberLo);
             string text = split ? ShortName(it.Text) : it.Text;
             bool cur = text.StartsWith("> ");
             if (cur) text = text.Substring(2);
-            Write(o, text, osdRow, sel ? Color.Black : it.On ? OsdWhite : OsdGrey, new RectangleF(r.X + 3, r.Y + 1, r.Width - (cur ? 12 : 5), r.Height), StringAlignment.Near, StringAlignment.Near, false);
-            if (cur) using (var b = new SolidBrush(sel ? Color.Black : OsdOrange)) o.FillRectangle(b, r.Right - 7, r.Y + rowH / 2 - 2, 4, 4);
+            Write(o, text, osdRow, sel ? Color.FromArgb(36, 22, 6) : it.On ? LcdInk : Color.FromArgb(120, 128, 144), new RectangleF(r.X + 5, r.Y, r.Width - (cur ? 14 : 7), r.Height), StringAlignment.Near, StringAlignment.Center, false);
+            if (cur) using (var b = new SolidBrush(sel ? Color.FromArgb(36, 22, 6) : LcdAmber)) o.FillEllipse(b, r.Right - 8, r.Y + rowH / 2 - 2, 4, 4);
             LoHit(r, i);
         }
-        using (var b = new SolidBrush(OsdWhite)) {
-            float ax = box.Right - 8;
-            if (first > 0) o.FillPolygon(b, new[] { new PointF(ax, box.Y - 1), new PointF(ax + 3, box.Y - 4), new PointF(ax + 6, box.Y - 1) });
-            if (first + shown < p.Items.Count) o.FillPolygon(b, new[] { new PointF(ax, box.Bottom + 1), new PointF(ax + 3, box.Bottom + 4), new PointF(ax + 6, box.Bottom + 1) });
+        using (var pen = new Pen(Color.FromArgb(200, 255, 255, 255), 1f)) {
+            float ax = box.Right - 9;
+            if (first > 0) o.DrawLines(pen, new[] { new PointF(ax, box.Y + 3), new PointF(ax + 3, box.Y + 0.5f), new PointF(ax + 6, box.Y + 3) });
+            if (first + shown < p.Items.Count) o.DrawLines(pen, new[] { new PointF(ax, box.Bottom - 3), new PointF(ax + 3, box.Bottom - 0.5f), new PointF(ax + 6, box.Bottom - 3) });
         }
-        if (split) LcdInfo(o, p, new RectangleF(box.Right + 3, y, W - m - box.Right - 3, bottom - y), t);
+        if (split) LcdInfo(o, p, new RectangleF(box.Right + 4, y, W - m - box.Right - 4, bottom - y), t);
     }
     void LcdInfo(Graphics o, Page p, RectangleF r, float t) {
-        OsdPanel(o, r);
-        float x = r.X + 4, w = r.Width - 8, y = r.Y + 3, bottom = r.Bottom - 3, sh = osdSmall.Height;
+        Glass(o, r, 5);
+        float x = r.X + 6, w = r.Width - 12, y = r.Y + 4, bottom = r.Bottom - 4, sh = osdSmall.Height;
         var it = p.Items[p.Sel];
         if (IsMain(p) && p.Sel == 0) {
-            Write(o, "NOW SELECTED", osdSmall, OsdOrange, new RectangleF(x, y, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); y += sh + 1;
+            Write(o, "NOW SELECTED", osdTiny, LcdAmber, new RectangleF(x, y, w, osdTiny.Height + 2), StringAlignment.Near, StringAlignment.Near, false); y += osdTiny.Height + 1;
             float vh = Math.Min(o.MeasureString(St("version"), osdBig, (int)w).Height, osdBig.Height * 2.2f);
-            Write(o, St("version"), osdBig, OsdWhite, new RectangleF(x, y, w, vh), StringAlignment.Near, StringAlignment.Near, true); y += vh + 1;
-            Write(o, St("version_status"), osdSmall, OsdWhite, new RectangleF(x, y, w, sh * 2.2f), StringAlignment.Near, StringAlignment.Near, true); y += sh * 2.2f;
+            Write(o, St("version"), osdBig, LcdInk, new RectangleF(x, y, w, vh), StringAlignment.Near, StringAlignment.Near, true); y += vh + 1;
+            Write(o, St("version_status"), osdSmall, LcdInk, new RectangleF(x, y, w, sh * 2.2f), StringAlignment.Near, StringAlignment.Near, true); y += sh * 2.2f;
             string send = St("send");
-            Write(o, "Last session: " + St("last") + (send == "" || send == "off" ? "" : "   Send: " + send), osdSmall, OsdGrey, new RectangleF(x, y, w, bottom - y - sh - 2), StringAlignment.Near, StringAlignment.Near, true);
-            if (t % 1.2f < 0.8f) Write(o, "PRESS START/STOP", osdRow, OsdOrange, new RectangleF(x, bottom - osdRow.Height - 1, w, osdRow.Height + 2), StringAlignment.Near, StringAlignment.Near, false);
+            Write(o, "Last session: " + St("last") + (send == "" || send == "off" ? "" : "   Send: " + send), osdSmall, LcdDim, new RectangleF(x, y, w, bottom - y - osdRow.Height - 6), StringAlignment.Near, StringAlignment.Near, true);
+            float pulse = 0.55f + 0.45f * (float)Math.Sin(t * 3.2);
+            var play = new RectangleF(x, bottom - osdRow.Height - 4, w, osdRow.Height + 4);
+            Gloss(o, play, play.Height / 2, Fade(Color.FromArgb(242, 74, 62), (int)(150 + 90 * pulse)), Fade(Color.FromArgb(160, 24, 18), (int)(150 + 90 * pulse)));
+            Write(o, "Press START/STOP to play", osdRow, Color.White, play, StringAlignment.Center, StringAlignment.Center, false);
             return;
         }
         string name = it.Text.StartsWith("> ") ? it.Text.Substring(2) : it.Text;
         float nh = Math.Min(o.MeasureString(name, osdRow, (int)w).Height, osdRow.Height * 2.2f);
-        Write(o, name, osdRow, OsdWhite, new RectangleF(x, y, w, nh), StringAlignment.Near, StringAlignment.Near, true); y += nh + 1;
-        Write(o, it.On ? "READY" : "NOT AVAILABLE", osdSmall, it.On ? OsdGreen : OsdRed, new RectangleF(x, y, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); y += sh + 2;
+        Write(o, name, osdRow, LcdInk, new RectangleF(x, y, w, nh), StringAlignment.Near, StringAlignment.Near, true); y += nh + 2;
+        Pill(o, it.On ? "READY" : "NOT AVAILABLE", it.On ? LcdGreen : LcdRed, x, y); y += osdTiny.Height + 5;
         string info = it.Info != "" ? it.Info : it.Hint;
         if (info != "") {
             float ih = Math.Min(o.MeasureString(info, osdSmall, (int)w).Height, bottom - y);
-            Write(o, info, osdSmall, OsdWhite, new RectangleF(x, y, w, ih), StringAlignment.Near, StringAlignment.Near, true); y += ih + 2;
+            Write(o, info, osdSmall, LcdInk, new RectangleF(x, y, w, ih), StringAlignment.Near, StringAlignment.Near, true); y += ih + 2;
         }
         float nameW = w * 0.38f;
+        using (var line = new Pen(Color.FromArgb(40, 255, 255, 255), 0.5f))
         foreach (var rec in it.Records) {
-            if (y + sh > bottom) { Write(o, "...", osdSmall, OsdGrey, new RectangleF(x, y - 2, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); break; }
+            if (y + sh > bottom) { Write(o, "...", osdSmall, LcdDim, new RectangleF(x, y - 2, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); break; }
             int cut = rec.IndexOf(": ");
             string a = cut > 0 ? rec.Substring(0, cut) : rec, b = cut > 0 ? rec.Substring(cut + 2) : "";
-            if (a.StartsWith("#")) { Write(o, a.Substring(1).ToUpperInvariant() + (b != "" ? "  " + b : ""), osdSmall, OsdOrange, new RectangleF(x, y, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); y += sh + 1; continue; }
+            if (a.StartsWith("#")) { Write(o, a.Substring(1).ToUpperInvariant() + (b != "" ? "  " + b : ""), osdTiny, LcdAmber, new RectangleF(x, y + 1, w, osdTiny.Height + 2), StringAlignment.Near, StringAlignment.Near, false); y += osdTiny.Height + 3; continue; }
             float rh = Math.Min(Math.Max(o.MeasureString(a, osdSmall, (int)nameW).Height, o.MeasureString(b, osdSmall, (int)(w - nameW - 3)).Height), Math.Max(sh, bottom - y));
-            Write(o, a, osdSmall, OsdWhite, new RectangleF(x, y, nameW, rh), StringAlignment.Near, StringAlignment.Near, true);
-            Write(o, b, osdSmall, OsdGrey, new RectangleF(x + nameW + 3, y, w - nameW - 3, rh), StringAlignment.Near, StringAlignment.Near, true);
+            o.DrawLine(line, x, y, x + w, y);
+            Write(o, a, osdSmall, LcdInk, new RectangleF(x, y, nameW, rh), StringAlignment.Near, StringAlignment.Near, true);
+            Write(o, b, osdSmall, LcdDim, new RectangleF(x + nameW + 3, y, w - nameW - 3, rh), StringAlignment.Near, StringAlignment.Near, true);
             y += rh + 1;
         }
     }
-    // A job (fetch, build): its name, the time, a segmented tape bar for cargo's step count, the counts, then the first
+    // A job (fetch, build): its name, the time, a glossy progress bar for cargo's step count, the counts, then the first
     // error or the newest log lines.
     void LcdJob(Graphics o, int W, float top, float bottom, float t) {
-        const float m = 4;
+        const float m = 5;
         var card = new RectangleF(m, top, W - 2 * m, bottom - top);
-        OsdPanel(o, card);
-        float x = card.X + 4, w = card.Width - 8, y = card.Y + 3, sh = osdSmall.Height;
+        Glass(o, card, 6);
+        float x = card.X + 6, w = card.Width - 12, y = card.Y + 4, sh = osdSmall.Height;
         bool isBuild = build.Active || build.Ended, failed = build.Ended && !build.Ok, fetchWait = build.FetchWaiting();
         float k = isBuild && build.Total > 0 ? Math.Min(1f, build.Done / (float)build.Total) : -1;
         var el = DateTime.Now - (isBuild ? build.Start : fetchWait ? build.PreWaitSince : jobStart);
-        Write(o, isBuild ? build.Name : jobTitle, osdBig, OsdWhite, new RectangleF(x, y, w * 0.78f, osdBig.Height + 2), StringAlignment.Near, StringAlignment.Near, false);
-        Write(o, BuildView.Clock(el), osdRow, OsdWhite, new RectangleF(x, y, w, osdBig.Height + 2), StringAlignment.Far, StringAlignment.Near, false);
+        Write(o, isBuild ? build.Name : jobTitle, osdBig, LcdInk, new RectangleF(x, y, w * 0.78f, osdBig.Height + 2), StringAlignment.Near, StringAlignment.Near, false);
+        Write(o, BuildView.Clock(el), osdRow, LcdDim, new RectangleF(x, y + 1, w, osdBig.Height + 2), StringAlignment.Far, StringAlignment.Near, false);
         y += osdBig.Height + 1;
-        if (isBuild) { Write(o, "at " + build.Commit, osdSmall, OsdGrey, new RectangleF(x, y, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); y += sh + 2; }
-        const int segs = 30;
-        var bar = new RectangleF(x, y, w, 7);
-        using (var pen = new Pen(OsdWhite, 1)) o.DrawRectangle(pen, bar.X, bar.Y, bar.Width - 1, bar.Height - 1);
-        float segW = (bar.Width - 2) / segs;
-        int on = k >= 0 ? (int)Math.Round(k * segs) : -1, run = (int)(t * 10) % (segs + 5) - 5;
-        using (var b = new SolidBrush(failed ? OsdRed : OsdOrange))
-            for (int i = 0; i < segs; i++) if (on >= 0 ? i < on : (i >= run && i < run + 5)) o.FillRectangle(b, bar.X + 1 + i * segW + 0.5f, bar.Y + 1, segW - 1, bar.Height - 2);
+        if (isBuild) { Write(o, "at " + build.Commit, osdSmall, LcdDim, new RectangleF(x, y, w, sh + 2), StringAlignment.Near, StringAlignment.Near, false); y += sh + 2; }
+        var bar = new RectangleF(x, y, w, 6);
+        using (var path = Round(bar, 3)) { using (var b = new SolidBrush(Color.FromArgb(150, 0, 0, 0))) o.FillPath(b, path); using (var pen = new Pen(Color.FromArgb(60, 255, 255, 255), 0.6f)) o.DrawPath(pen, path); }
+        Color hi = failed ? Color.FromArgb(255, 130, 120) : LcdAmberHi, lo = failed ? Color.FromArgb(200, 40, 30) : LcdAmberLo;
+        if (k >= 0) { if (k > 0) Gloss(o, new RectangleF(bar.X, bar.Y, Math.Max(bar.Height, bar.Width * k), bar.Height), 3, hi, lo); }
+        else {
+            float run = (t * 0.45f) % 1f, segX = bar.X + run * bar.Width * 1.3f - bar.Width * 0.3f;
+            var seg = RectangleF.Intersect(bar, new RectangleF(segX, bar.Y, bar.Width * 0.3f, bar.Height));
+            if (seg.Width > 1) Gloss(o, seg, 3, hi, lo);
+        }
         y += 10;
         if (isBuild) {
             string count = build.Total > 0 ? build.Done + " / " + build.Total + " build steps" : build.Compiled + " crates compiled";
             if (!build.Ended && build.Waiting != null) count = "Waiting " + BuildView.Clock(DateTime.Now - build.WaitSince) + ": " + build.Waiting;
             else if (!build.Ended && build.Total == 0 && build.Compiled == 0 && build.StageText != null) count = build.StageText;
             if (build.Ended) count = build.Ok ? "Built in " + BuildView.Clock(build.End - build.Start) : "Build failed";
-            Write(o, count, osdRow, failed ? OsdRed : OsdWhite, new RectangleF(x, y, w * 0.7f, osdRow.Height + 2), StringAlignment.Near, StringAlignment.Near, false);
-            if (build.Warnings > 0) Write(o, build.Warnings + (build.Warnings == 1 ? " warning" : " warnings"), osdSmall, OsdOrange, new RectangleF(x, y, w, osdRow.Height + 2), StringAlignment.Far, StringAlignment.Near, false);
+            Write(o, count, osdRow, failed ? LcdRed : LcdInk, new RectangleF(x, y, w * 0.7f, osdRow.Height + 2), StringAlignment.Near, StringAlignment.Near, false);
+            if (build.Warnings > 0) { string wt = build.Warnings + (build.Warnings == 1 ? " warning" : " warnings"); Pill(o, wt, LcdAmber, x + w - o.MeasureString(wt, osdTiny).Width - 3, y + 1); }
             y += osdRow.Height + 2;
             string line = !build.Ended && build.Waiting != null ? (build.WaitWho ?? "Cargo does not say who; it continues by itself once that build ends.") : (build.Now != "" && !build.Ended ? "Now: " + build.Now : "");
-            if (line != "") { Write(o, line, osdSmall, OsdGrey, new RectangleF(x, y, w, sh * 2.2f), StringAlignment.Near, StringAlignment.Near, true); y += sh * 2.2f; }
+            if (line != "") { Write(o, line, osdSmall, LcdDim, new RectangleF(x, y, w, sh * 2.2f), StringAlignment.Near, StringAlignment.Near, true); y += sh * 2.2f; }
             if (build.Error.Count > 0) {
-                var eb = new RectangleF(x, y, w, card.Bottom - 3 - y);
-                using (var b = new SolidBrush(Color.FromArgb(200, 60, 12, 16))) o.FillRectangle(b, eb);
-                using (var pen = new Pen(OsdRed, 1)) o.DrawRectangle(pen, eb.X, eb.Y, eb.Width - 1, eb.Height - 1);
-                Write(o, "First error\n" + string.Join("\n", build.Error), osdSmall, OsdWhite, new RectangleF(eb.X + 3, eb.Y + 2, eb.Width - 6, eb.Height - 4), StringAlignment.Near, StringAlignment.Near, true);
+                var eb = new RectangleF(x, y, w, card.Bottom - 4 - y);
+                using (var path = Round(eb, 3)) { using (var b = new SolidBrush(Color.FromArgb(190, 70, 14, 18))) o.FillPath(b, path); using (var pen = new Pen(Fade(LcdRed, 200), 0.7f)) o.DrawPath(pen, path); }
+                Write(o, "First error\n" + string.Join("\n", build.Error), osdSmall, LcdInk, new RectangleF(eb.X + 4, eb.Y + 2, eb.Width - 8, eb.Height - 4), StringAlignment.Near, StringAlignment.Near, true);
             }
             return;
         }
         var lines = new List<string>();
         for (int i = log.Count - 1; i >= 0 && lines.Count < 12; i--) { string c = Clean(log[i]); if (c != "") lines.Add(c); }
         string status = fetchWait ? "Waiting " + BuildView.Clock(el) + ": " + build.PreWait : lines.Count > 0 ? lines[0] : "Starting...";
-        Write(o, status, osdRow, OsdWhite, new RectangleF(x, y, w, osdRow.Height + 2), StringAlignment.Near, StringAlignment.Near, false); y += osdRow.Height + 2;
-        if (fetchWait) { Write(o, "git stops by itself if nothing arrives for 30 s; cancelling keeps the last fetched version.", osdSmall, OsdGrey, new RectangleF(x, y, w, sh * 2.2f), StringAlignment.Near, StringAlignment.Near, true); y += sh * 2.2f; }
-        for (int i = 1; i < lines.Count && y + sh <= card.Bottom - 2; i++) { Write(o, lines[i], osdSmall, OsdGrey, new RectangleF(x, y, w, sh + 1), StringAlignment.Near, StringAlignment.Near, false); y += sh; }
+        Write(o, status, osdRow, LcdInk, new RectangleF(x, y, w, osdRow.Height + 2), StringAlignment.Near, StringAlignment.Near, false); y += osdRow.Height + 2;
+        if (fetchWait) { Write(o, "git stops by itself if nothing arrives for 30 s; cancelling keeps the last fetched version.", osdSmall, LcdDim, new RectangleF(x, y, w, sh * 2.2f), StringAlignment.Near, StringAlignment.Near, true); y += sh * 2.2f; }
+        for (int i = 1; i < lines.Count && y + sh <= card.Bottom - 3; i++) { Write(o, lines[i], osdSmall, Fade(LcdDim, Math.Max(90, 255 - i * 22)), new RectangleF(x, y, w, sh + 1), StringAlignment.Near, StringAlignment.Near, false); y += sh; }
     }
-    // Power-on screen: the logo, the model, then the start check's step.
+    // Power-on screen: the logo, the model, then the start check's step with three pulsing dots.
     void LcdSplash(Graphics o, int W, int H, float t) {
         float since = (float)(DateTime.Now - startSince).TotalSeconds;
-        Write(o, "SKATE", osdLogo, OsdWhite, new RectangleF(0, H * 0.18f, W, osdLogo.Height * 1.2f), StringAlignment.Center, StringAlignment.Near, false);
-        Write(o, "SK8-1000   DIGITAL VIDEO CAMERA", osdSmall, OsdGrey, new RectangleF(0, H * 0.18f + osdLogo.Height * 1.1f, W, osdSmall.Height + 2), StringAlignment.Center, StringAlignment.Near, false);
+        var ls = o.MeasureString("SKATE", osdLogo);
+        float lx = (W - ls.Width) / 2, ly = H * 0.16f;
+        Write(o, "SKATE", osdLogo, LcdInk, new RectangleF(lx, ly, ls.Width + 4, ls.Height), StringAlignment.Near, StringAlignment.Near, false);
+        Gloss(o, new RectangleF(lx + ls.Width - 2, ly + ls.Height * 0.22f, osdRow.Height * 1.4f, osdRow.Height), 3, Color.FromArgb(88, 152, 242), Color.FromArgb(26, 74, 168));
+        Write(o, "HD", osdRow, Color.White, new RectangleF(lx + ls.Width - 2, ly + ls.Height * 0.22f, osdRow.Height * 1.4f, osdRow.Height), StringAlignment.Center, StringAlignment.Center, false);
+        Write(o, "SK8-1000  HIGH DEFINITION", osdTiny, LcdDim, new RectangleF(0, ly + ls.Height * 0.95f, W, osdTiny.Height + 2), StringAlignment.Center, StringAlignment.Near, false);
         string stage = skipped ? "Finishing the start" : (startStage ?? "Checking for a newer launcher");
-        Write(o, stage + new string('.', 1 + (int)(t * 2) % 3), osdRow, OsdWhite, new RectangleF(0, H * 0.64f, W, osdRow.Height + 2), StringAlignment.Center, StringAlignment.Near, false);
-        if (since >= 3) OsdText(o, BuildView.Clock(DateTime.Now - startSince), osdSmall, OsdGrey, 4, 3);
-    }
-
-    // The largest font from `max` down to `minScale` of it (same family and style) that shows all of `s` in `area`
-    // (whole lines when wrapping, one line otherwise); cached per family and size.
-    readonly Dictionary<string, Font> hintFonts = new Dictionary<string, Font>();
-    Font FitFont(Graphics g, string s, SizeF area, Font max, float minScale, bool wrap) {
-        if (string.IsNullOrEmpty(s)) return max;
-        Font f = max;
-        using (var sf = new StringFormat { FormatFlags = wrap ? StringFormatFlags.LineLimit : StringFormatFlags.NoWrap, Trimming = StringTrimming.EllipsisCharacter }) {
-            for (int tenths = (int)(max.Size * 10); tenths >= (int)(max.Size * 10 * minScale); tenths -= 5) {
-                string key = max.Name + "|" + max.Style + "|" + tenths;
-                if (!hintFonts.TryGetValue(key, out f)) hintFonts[key] = f = new Font(max.FontFamily, tenths / 10f, max.Style, GraphicsUnit.Pixel);
-                int chars, lines;
-                g.MeasureString(s, f, area, sf, out chars, out lines);
-                if (chars >= s.Length) break;
-            }
+        Write(o, stage, osdRow, LcdInk, new RectangleF(0, H * 0.6f, W, osdRow.Height + 2), StringAlignment.Center, StringAlignment.Near, false);
+        for (int i = 0; i < 3; i++) {
+            float a = 0.35f + 0.65f * Math.Max(0, (float)Math.Sin(t * 4 - i * 0.7));
+            using (var b = new SolidBrush(Fade(LcdAmber, (int)(255 * a)))) o.FillEllipse(b, W / 2f - 8 + i * 7, H * 0.6f + osdRow.Height + 5, 3.4f, 3.4f);
         }
-        return f;
+        if (since >= 3) ShadowText(o, BuildView.Clock(DateTime.Now - startSince), osdSmall, LcdDim, 5, 4);
     }
 
     // A play option's button label: the panel shows the full name, so the button drops the "Play + " / "Play with the "
@@ -1959,6 +2089,14 @@ static class SkateLauncher {
         // 1920x1080; the window's own size to check the windowed layout) and exits (checking the look without the window).
         // SkateLauncher.exe --bench <out.txt> [<width>x<height>]: times Render across the power-on and settled frames
         // (ms per frame, plus the hand-over to the layered window) into out.txt.
+        // SkateLauncher.exe --wear-test <out.txt> <out.png>: one start's wear roll (as a real start rolls it), checked:
+        // every pixel the marks change lies on the camera's parts (never the LCD glass or off the camera), and no tag or
+        // doodle spills over its part. Appends PASS / FAIL with the counts to out.txt, saves the frame to out.png.
+        if (argv.Length >= 3 && argv[0] == "--wear-test") {
+            var form = new LauncherForm(new string[0]);
+            File.AppendAllText(argv[1], form.WearTest(argv[2]) + Environment.NewLine);
+            return;
+        }
         if (argv.Length >= 2 && argv[0] == "--bench") {
             var form = new LauncherForm(new string[0]);
             int bw = 1243, bh = 777;
