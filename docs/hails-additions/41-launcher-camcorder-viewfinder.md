@@ -1,6 +1,6 @@
 # 41. Launcher: the camcorder's LCD panel
 
-Status: on `hails-additions` (launcher only, `tools/steam-launcher/SkateLauncher.cs`). Not for upstream.
+Status: in #52 with the rest of the fork launcher (`tools/steam-launcher`, `world/replay`).
 
 ## Problem
 
