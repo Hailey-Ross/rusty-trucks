@@ -16,7 +16,7 @@ Includes skating, tricks, grinds, offboard movement, difficulty settings and
 
 The couch launcher ([`tools/steam-launcher`](tools/steam-launcher/README.md)) starts any version, the recomp
 with a trace option or retail Skate 3 in RPCS3 from Steam with a controller. It looks like the flip-out LCD
-panel of a mid-2000s skate camcorder ([details](docs/hails-additions/41-launcher-camcorder-viewfinder.md#change)).
+panel of a mid-2000s camcorder ([details](docs/hails-additions/41-launcher-camcorder-viewfinder.md#change)).
 
 ## History
 

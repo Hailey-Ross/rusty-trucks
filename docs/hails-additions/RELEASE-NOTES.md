@@ -2,7 +2,7 @@
 
 <p align="center"><img src="https://raw.githubusercontent.com/Hailey-Ross/rusty-trucks/pr-assets/launcher/01-camcorder-lcd-panel.gif" alt="The Skate launcher: a camcorder's LCD panel swings open, shows the HOME menu and folds shut" width="640"></p>
 
-The Skate launcher: the flip-out LCD panel of a mid-2000s skate camcorder. It swings open, shows its menu and folds shut with POWER.
+The Skate launcher: the flip-out LCD panel of a mid-2000s camcorder. It swings open, shows its menu and folds shut with POWER.
 
 ## Setup (with the Skate launcher, recommended)
 
