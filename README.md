@@ -54,7 +54,7 @@ Everything here is in the `hails-additions` build, and the [release notes](https
 
 ## What I'm working on
 
-- **Career mode and challenges** (upstream draft [#68](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/68), behind the Challenges opt-in): you can already play the own the spot challenges, and the career core and all 12 Skate 101 tutorials run from your disc. Next up are the reward screens and the end-of-challenge screens, then more challenge types (races, films, Hall of Meat, contests).
+- **Career mode and challenges** (upstream draft [#68](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/68), behind the Career and Challenges opt-in): you can already play the own the spot challenges, and the career core and all 12 Skate 101 tutorials run from your disc. Next up are the reward screens and the end-of-challenge screens, then more challenge types (races, films, Hall of Meat, contests).
 - **The retail startup:** the boot movies, Press Start and the new career welcome (difficulty, camera, team name, Coach Frank), plus a cross-platform player for Skate 3's movies so it works beyond Windows too.
 - **NPC skaters:** finishing their landings, spins and grab releases.
 - **Further out:** the pros at their challenge spots, the Object Dropper, pedestrians watching you skate, and multiplayer.
@@ -72,7 +72,7 @@ This is where you can help the most. A few things I'd love a second pair of eyes
 - Pedestrians and NPC skaters: anyone floating, getting stuck or riding backwards?
 - Carrying and pushing props (hold RB next to a bench or bin). Does it feel like Skate 3?
 - Skate 3's menus (press Start).
-- **New:** turn on **Challenges** in the Opt-Ins, ride up to an own the spot and press D-pad Up, and give the Skate 101 tutorials a go. How close does it feel to the real thing?
+- **New:** turn on **Career and Challenges** in the Opt-Ins, ride up to an own the spot and press D-pad Up, and give the Skate 101 tutorials a go. How close does it feel to the real thing?
 
 **Found something?** Every game the launcher starts saves a session log (without the launcher, use `PLAY-WITH-LOG.bat`). Tell me which opt-ins were on and roughly when and where it happened, attach the log (and a short video if you can) to a [test report](https://github.com/Hailey-Ross/rusty-trucks/issues/new?title=Test%20report%3A%20), and I'll dig in. One problem per session makes it much easier to track down.
 
