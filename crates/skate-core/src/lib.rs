@@ -22,6 +22,8 @@ pub mod fe_popup;
 pub mod fe_stack;
 pub mod menus;
 pub mod challenge_map;
+pub mod career;
+pub mod challenges;
 pub mod cheats;
 pub mod credits;
 pub mod extras;

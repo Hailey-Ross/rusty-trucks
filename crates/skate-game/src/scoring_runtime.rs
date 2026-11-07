@@ -62,6 +62,15 @@ pub(crate) enum StatEvent {
     /// The air ended landed with this many body flips (82773C00, |P+0x2674|).
     BodyFlips(u32),
 }
+/// One banked sequence: its score and whether it ended in a bail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BankedSequence {
+    pub score: i32,
+    pub wiped_out: bool,
+}
+
+const BANKED_CAP: usize = 16;
+
 pub(crate) struct Runtime {
     pub data: ScoringData,
     pub(crate) stat_events: Vec<StatEvent>,
@@ -95,6 +104,12 @@ pub(crate) struct Runtime {
     revert_id: Option<usize>,
     sequence_active: bool,
     sequence_score: f32,
+    banked: Vec<BankedSequence>,
+    /// Keys (hash of the scoring_trick row) of the tricks announced since the last take (retail's trick-done message
+    /// 0x92CC9BBD, research b865; the challenge objectives read them). Capped so nothing grows without a reader.
+    announced: Vec<u64>,
+    /// The manual held now: (tail, seconds held).
+    manual: Option<(bool, f32)>,
     trick_name: String,
     display_base: String,
     display_spin_degrees: i32,
@@ -150,6 +165,9 @@ impl Runtime {
             revert_id: None,
             sequence_active: false,
             sequence_score: 0.,
+            banked: Vec::new(),
+            announced: Vec::new(),
+            manual: None,
             trick_name: String::new(),
             display_base: String::new(), display_spin_degrees: 0,
             trick_seq: 0,
@@ -176,6 +194,16 @@ impl Runtime {
     }
     pub(crate) fn sequence_score(&self) -> f32 {
         self.sequence_score
+    }
+    /// The sequences banked since the last call (retail cMsgSequenceComplete, research b841; challenges.rs).
+    pub(crate) fn take_banked(&mut self) -> Vec<BankedSequence> {
+        std::mem::take(&mut self.banked)
+    }
+    pub(crate) fn manual(&self) -> Option<(bool, f32)> {
+        self.manual
+    }
+    pub(crate) fn take_announced(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.announced)
     }
     pub(crate) fn sequence_active(&self) -> bool {
         self.sequence_active
@@ -363,6 +391,9 @@ impl Runtime {
                     .ok_or("Missing announced scorable")?;
                 self.trick_name = d.label.clone();
                 self.display_id = Some(c.scorable.id);
+                if self.announced.len() < 64 {
+                    self.announced.push(skate_data::attrib_hash::hash(d.identifier));
+                }
                 if self.collector == Collector::Air {
                     self.air_display_started = true;
                 }
@@ -440,6 +471,9 @@ impl Runtime {
             self.bail_seq = self.bail_seq.saturating_add(1);
         }
         self.was_bailing = bailing;
+        // The manual being held (catalog 2 nose / 3 tail) and for how long: the objective Manual.* reads.
+        self.manual = self.carriers.iter().flatten().find(|c| matches!(c.scorable.id, 2 | 3))
+            .map(|c| (c.scorable.id == 3, f.tick.saturating_sub(c.start_tick) as f32 / 60.0));
         self.new_trick = false;
         self.modified_trick = false;
         self.close_tricks = false;
@@ -780,6 +814,9 @@ impl Runtime {
             self.sequence_score =
                 self.session
                     .publish_sequence(&self.data.session_rules(), 1., bailout, true);
+            if self.banked.len() < BANKED_CAP {
+                self.banked.push(BankedSequence { score: self.sequence_score as i32, wiped_out: bailout });
+            }
             bevy::log::info!(target: "scoring", "SCORING_BANK tick={} state={} raw={} applied_multiplier={} reward={} next_multiplier={} line={} line_expired={} bail={} teleport={}", f.tick, f.state, raw_reward, applied_multiplier, self.sequence_score, self.session.combo.multiplier, self.session.holder.snapshot.line, self.session.line.expired, bailout, f.teleported);
             if !bailout
                 && !f.teleported
