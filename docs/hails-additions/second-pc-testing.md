@@ -578,6 +578,22 @@ max 109.4 / 110.4 / 112.5. Within noise (the 4.22 run is the outlier); every swi
 been running since 13:35, so through all of that afternoon's setup benches; it was ended before these runs. The first
 `keep-awake.ps1` used `mouse_event`, which did not reset the laptop's idle timer; it now uses SendInput.
 
+## Unattended test runs: keep the player still (2026-11-08)
+
+On the board an idle player rolls away from the spawn, which changes which NPCs and lines are near and what loads.
+Set these for every unattended run that assumes the player stands still:
+
+- `SKATE_PLAYER_ON_FOOT=1`: the player stands off the board at the map spawn (one off-board press at tick 30) and after
+  every teleport (race start slot, teleporters, challenges, menus, mods). The log shows `SKATE_TEST_STEP_OFF tick 30`
+  when the spawn press ran; the player's position is in the `LIVING_WORLD ... player=Some([x, y, z])` lines.
+- `SKATE_TEST_STEP_OFF=<tick>`: the older single off-board press at that tick (overrides the tick 30 above).
+- `SKATE3_MODS=<repo>\mods SKATE3_MODS_ENABLE=dev-npc-watch-spot` teleports the player on foot about 10 m from the
+  DownTown skater spawn spot [-313.1, 40.3, 13.9] 3 s after the start, facing it; F8 repeats, Shift+F8 turns round.
+  New skaters still spawn 60+ m from the player (three runs on 2026-11-08, nearest 61.9 m), so this shows riders passing,
+  not spawns. For a fade up close use a called skater (`SKATE_CALL_SKATER=<key>[,<key>]`) or a bail (a bailing
+  simulated skater fades out over the 5 s before its respawn).
+- Mods: `sdk.player.teleport{position = {...}, on_board = false}` lands the skater standing off the board.
+
 ## Moving the ISO
 
 A FAT32 flash drive cannot hold a file over 4 GB, whatever its free space. Format it as exFAT (Explorer: right-click
