@@ -359,9 +359,18 @@ living-world work and `wt-hails` (the launcher, these scripts, release notes).
 
 `-Source` takes one or more worktrees (default `.local\wt-living`). Each one's local work is taken against its pushed
 branch through a temporary index (its own files and index are not touched) and applied to `origin/hails-additions` in
-a throwaway worktree first, so a conflict stops here (merge `hails-additions` into the branch, then run it again). The
+a temporary index first (no checkout), so a conflict stops here (merge `hails-additions` into the branch, then run it again). The
 share then holds `hails-local.patch`, `files.txt`, `patch.txt` (base commit, time, file count, SHA-256, notes, sources)
 and `tools\` (a copy of the second PC's script until it is on `hails-additions`).
+
+Compile gate (2026-11-07, after a patch that did not compile reached the laptop): before anything is written to the
+share, the patch is applied to the base in a reused check worktree (`.local\wt-patchcheck`: base plus only the patch
+files) and `cargo check` runs for skate-core and skate-data (lib and tests) and the `skate3rust` binary (plain and
+`--profile test`), at Idle priority with 4 jobs, into `K:\VS-Code Output\skate3rust\patchcheck` (`-CheckTarget`). A
+failure stops the send and prints the errors; a pass writes `checked=cargo check ok <time> ...` into `patch.txt`, which
+the second PC can look for. `-SkipCheck` sends without it (`checked=SKIPPED`), only when asked. The launcher's
+`tool-build` and `tool-refresh` exit with code 1 when the build or the refresh fails, so a script stops there instead
+of carrying on with a stale build or export.
 
 ### Second PC
 
