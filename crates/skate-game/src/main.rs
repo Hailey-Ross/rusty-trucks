@@ -16,6 +16,7 @@ macro_rules! test_skip {
         return;
     }};
 }
+mod autopilot;
 mod frame_timing;
 mod system_timing;
 mod animation;
