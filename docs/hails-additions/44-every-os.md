@@ -90,6 +90,47 @@ Windows, then Linux and macOS runs, then the Steam shortcuts move over.
   PowerShell helpers run through `pwsh` when installed, the performance trace is greyed out. New dependencies:
   `sha2 =0.10.9`; `zip` and `sysinfo` reuse the locked versions. `config.json` keeps its key order (own ordered JSON
   value, `ojson.rs`). Still open: `pending` and `launcher-exe`, then the window (step 4).
+- 2026-11-10, rest of the backend: `pending` (the start check: self-update, assets links, the session that closed
+  before its check; sandbox: exit 10 with "(checked at next start)", then 0), `launcher-exe`, `clear-cache` /
+  `clear-build`, `room`, `send`, `fixed-executor-single` / `-multi`.
+- 2026-11-10, the window, functional pass: `skate-launcher` with no arguments opens it (eframe =0.33.3 on the
+  workspace's wgpu 27.0.1 and winit; gamepads through gilrs =0.11.2, keyboard and mouse). Pages as in doc 44a 2: Main,
+  Play / Recomp / RPCS3 with the info panel (READY / NOT AVAILABLE, info, records), Tools, Opt-ins and Settings,
+  Versions, Label, Clear builds with a confirmation, Share sessions, First-time setup, Set up the launcher (native
+  pickers on every OS: Windows Forms, osascript, zenity / kdialog), the job screen (cargo progress, crate, compiled
+  and warning counts, the waiting card, two B presses cancel, the first error), the finished page ("Finished, check
+  this" on a bad result), the previous session at start; the window minimises while a game runs and comes back with
+  the result. `--window <entry> [label] [@version]` is the launch-option mode. Desktop check: the window opens with
+  the real state (main menu, the selected version READY, the launcher commit). Next: the camcorder look (doc 41).
+- 2026-11-10, the camcorder look, first pass (`camcorder.rs`, the 1240 x 760 unit space of doc 44a 6): a borderless
+  see-through window dragged by its bezel; the panel body with its gradient and rim, the hinge barrel, the HOME /
+  SET / POWER keys (back / select / close, clickable), the gasket and glass; on the LCD a dusk gradient, the STBY /
+  REC status row with the tape counter and battery, the blue title tab, the amber selection bar and current-version
+  dot, the info panel with the READY / NOT AVAILABLE pill and records, the job card (progress bar, counts, waiting
+  card, the build output) and the footer with the button badges and the date; the power-on swing with overshoot
+  and the screen coming on. `--snapshot <out.png>` renders one frame of the window into a PNG and exits (checked on
+  the desktop). Still to come for the look: the wear marks and the sticker, the rolling board on the LCD, the
+  standby fold around a game, the two-column tiles, the splash.
+- 2026-11-10, the camcorder redone as a faithful port of the C# drawing code (`camcorder.rs`: LcdPanel / LcdCanvas,
+  .NET `System.Random` ported so seeded layouts match; GDI text padding and font sizes), checked side by side with the
+  C# `--snapshot` at seeds 1, 7, 42 and 2026.
+- 2026-11-10, wear and sticker (`wear.rs`, port of RollMarks / DrawMarks / MarkerTag / Doodle / GaffTape / the
+  sticker code, tiny-skia masks for GDI regions, ttf-parser glyph outlines). The wear rolls a new seed every launch;
+  the sticker is fixed per install (`camcorder-sticker.txt`). New past the C# window, so the wear sits in the plastic:
+  marker ink that streaks and shows pores, the panel's top-down light on the marks and the sticker, grain, dirt along
+  the lip and the gasket, a faint sheen; scratches as tapered gouges with hairlines; rubbed edges as bare plastic;
+  stickers with paper grain, print rubbed thin in patches and dirt at the edge.
+- 2026-11-10, stickers: 30 original skate-culture parody designs (`wear/stickers.rs`) with 4 colour / text
+  variations each, and 100 sticker wear patterns (peel side, scuffs, chips, rubbed print) rolled per install
+  independently of the design. About half the designs lean on looks and jokes many women skaters pick (a woman
+  skater in the filmer's riso style, cherries, band-aid heart, Y2K sparkle, butterfly bearings, evil eye...); a new
+  install rolls that set or the rest 50/50. No gender-label stickers. `camcorder-sticker.txt` gains a 7th field (the
+  variation); six-field files still load. `--sticker-sheet <png> [design]` renders the designs as clean previews
+  (no peel or wear), as the coming Tools sticker picker will.
+- 2026-11-10, window: fixed 1240 x 760 (not resizable, no maximise), centred; snapshots print their image, window
+  and scale sizes (`SNAPSHOT_SIZE`). One earlier snapshot came out 1440 x 789 while the window was resizable.
+- Next: wear that builds with use (clean at first, more scuffs and graffiti over time), the sticker picker in Tools,
+  more character stickers.
 
 ### Spec of the current launcher
 

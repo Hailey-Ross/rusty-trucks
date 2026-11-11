@@ -3,16 +3,20 @@
 //!
 //! `skate-launcher <command or entry> [label] [-Version <id>] [-Path <file or folder>]`
 mod builds;
+mod camcorder;
 mod cli;
 mod dlc;
 mod ensure;
 mod entries;
 mod ojson;
+mod pick;
 mod play;
 mod selfupdate;
 mod settings;
 mod state;
 mod status;
+mod ui;
+mod wear;
 
 use std::process::{Command, ExitCode};
 
@@ -32,12 +36,26 @@ fn exit(code: i32) -> ExitCode {
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = Vec::new();
-    let (mut version, mut path) = (String::new(), String::new());
+    let (mut version, mut path, mut snapshot, mut snapshot_page, mut snapshot_seed) = (String::new(), String::new(), None, None, None);
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.to_ascii_lowercase().as_str() {
             "-version" | "--version" => version = it.next().unwrap_or_default(),
             "-path" | "--path" => path = it.next().unwrap_or_default(),
+            "--snapshot" => snapshot = it.next().map(std::path::PathBuf::from),
+            "--snapshot-page" => snapshot_page = it.next(),
+            "--snapshot-seed" => snapshot_seed = it.next().and_then(|s| s.parse().ok()),
+            "--sticker-sheet" => {
+                let out = it.next().unwrap_or_else(|| "stickers.png".into());
+                let only = it.next().and_then(|d| d.parse().ok());
+                return match wear::sticker_sheet(std::path::Path::new(&out), only) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
             _ => args.push(a),
         }
     }
@@ -90,6 +108,36 @@ fn main() -> ExitCode {
         }
         "list" => entries::entries(&launcher).iter().map(|e| format!("{:<20} {}", e.id, e.name)).collect(),
         "setup-check" => return setup_check(&launcher),
+        "clear-cache" | "clear-build" => match builds::clear(&launcher, arg(0) == "clear-build", arg(1)) {
+            Ok(line) => vec![line],
+            Err(e) => {
+                println!("{e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        "room" => {
+            let id = if arg(1).is_empty() { version.as_str() } else { arg(1) };
+            let v = if id.is_empty() { launcher.selected() } else { launcher.versions.iter().find(|x| state::text(x, "id") == id).unwrap_or(&launcher.versions[0]) };
+            ensure::make_room(&launcher, v);
+            Vec::new()
+        }
+        "send" => {
+            let r = play::send_sessions(&launcher, &[]);
+            vec![if r.is_empty() { "Send: no after_session in config.json.".into() } else { r }]
+        }
+        "fixed-executor-single" | "fixed-executor-multi" => {
+            let _ = settings::set_physics_threads(&launcher, arg(0) == "fixed-executor-multi");
+            Vec::new()
+        }
+        "pending" => return if play::pending(&launcher) { ExitCode::from(10) } else { ExitCode::SUCCESS },
+        "launcher-exe" => {
+            if selfupdate::rebuild_launcher_exe(&launcher) {
+                println!("ok");
+                return ExitCode::SUCCESS;
+            }
+            println!("failed");
+            return ExitCode::FAILURE;
+        }
         "share-on" | "share-off" => {
             let flag = if arg(0) == "share-on" { "-Consent" } else { "-Revoke" };
             let root = launcher.version_dir(launcher.selected());
@@ -101,9 +149,15 @@ fn main() -> ExitCode {
                 None => vec!["share: not available in this launcher".into()],
             }
         }
-        "" => {
-            eprintln!("The launcher window is not ported yet; the commands and entries work (see `list`).");
-            return ExitCode::from(2);
+        "" | "--window" => {
+            let direct: Vec<String> = args.iter().skip(1).cloned().collect();
+            return match ui::run(launcher.state_dir.clone(), direct, snapshot, snapshot_page, snapshot_seed) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("The launcher window could not open: {e}");
+                    ExitCode::FAILURE
+                }
+            };
         }
         key => {
             if entries::entries(&launcher).iter().any(|e| e.id == key) || key.starts_with("rust-") || key.starts_with("tool-") {
