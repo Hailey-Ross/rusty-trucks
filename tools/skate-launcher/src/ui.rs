@@ -153,7 +153,14 @@ pub struct App {
     /// The updated launcher started by restart_if_updated: this window waits hidden until it ends.
     restarted: Option<std::process::Child>,
     started: bool,
+    cache: Cache,
+    relist_pending: bool,
     snapshot_screen: String,
+    snapshot_tries: u32,
+    wear_ms: f32,
+    wear_rx: Option<std::sync::mpsc::Receiver<(tiny_skia::Pixmap, f32)>>,
+    /// `--bench <out.txt>`: the render's CPU time at five points of the power-on, 20 frames each (SkateLauncher.cs Bench).
+    pub bench: Option<(PathBuf, usize, Vec<f32>, String)>,
     last_act: (u8, bool, Instant),
     powered_off: bool,
     /// A game's window took over: the panel is folding shut, then the window minimises.
@@ -176,7 +183,7 @@ struct StartCheck {
 const SPLASH_MIN: Duration = Duration::from_millis(1100);
 
 impl StartCheck {
-    fn spawn(exe: PathBuf) -> StartCheck {
+    fn spawn(exe: PathBuf, cache: Option<Cache>) -> StartCheck {
         use std::sync::atomic::{AtomicBool, Ordering};
         let s = StartCheck {
             since: Instant::now(), stage: Arc::new(Mutex::new(String::new())), fetching: Arc::new(AtomicBool::new(false)),
@@ -206,6 +213,11 @@ impl StartCheck {
             let mut code = run(false);
             // Skipped during the fetch: run again without the self-update so the rest of the check still happens.
             if skipped.load(Ordering::SeqCst) { code = run(true); }
+            // The menu's lists load behind the splash (not in direct mode or when an updated launcher takes over).
+            if let Some(cache) = cache {
+                if let Ok(mut g) = stage.lock() { *g = "Loading the menu".into(); }
+                prefetch_into(&exe, &cache, true);
+            }
             if let Some(left) = SPLASH_MIN.checked_sub(since.elapsed()) { std::thread::sleep(left); }
             if let Ok(mut g) = result.lock() { *g = Some(code); }
         });
@@ -242,6 +254,22 @@ impl StartCheck {
         if self.skipped.load(std::sync::atomic::Ordering::SeqCst) { return "Finishing the start".into(); }
         self.stage.lock().ok().map(|s| s.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| "Checking for a newer launcher".into())
     }
+}
+
+/// The lists the window shows, read from the backend in the background so pages open at once (SkateLauncher.cs
+/// Prefetched / Listed: `entries` and `status` take most of a second each).
+const PREFETCHED: [&str; 4] = ["entries", "versions", "notes", "status"];
+type Cache = Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>;
+
+fn prefetch_into(exe: &PathBuf, cache: &Cache, wait: bool) {
+    let handles: Vec<_> = PREFETCHED.iter().map(|name| {
+        let (exe, cache, name) = (exe.clone(), cache.clone(), (*name).to_owned());
+        std::thread::spawn(move || {
+            let lines = query(&exe, &[&name]);
+            if let Ok(mut c) = cache.lock() { c.insert(name, lines); }
+        })
+    }).collect();
+    if wait { for h in handles { let _ = h.join(); } }
 }
 
 /// Runs a backend command and returns its lines (short query commands).
@@ -359,7 +387,7 @@ impl App {
     pub fn new(exe: PathBuf, state_dir: PathBuf, direct: Vec<String>) -> App {
         let mut app = App {
             exe, state_dir, pages: Vec::new(), job: None, status: Vec::new(), gilrs: gilrs::Gilrs::new().ok(),
-            last_nav: Instant::now(), hidden: false, wizard: Vec::new(), wizard_start: Vec::new(), direct_close: None, opened: Instant::now(), snapshot: None, snapshot_asked: false, hover: None, wear: None, snapshot_seed: 3, fit_pending: false, raise_checked: Instant::now(), anim: crate::camcorder::Anim::new(crate::wear::launch_seed()), powered_off: false, folding: false, waiting_for: None, games_checked: Instant::now(), games_running: false, pad_prev: 0, pad_since: Instant::now(), start: None, direct: Vec::new(), after_update: false, same_monitor: false, restarted: None, started: false, snapshot_screen: String::new(), last_act: (0, false, Instant::now()),
+            last_nav: Instant::now(), hidden: false, wizard: Vec::new(), wizard_start: Vec::new(), direct_close: None, opened: Instant::now(), snapshot: None, snapshot_asked: false, hover: None, wear: None, snapshot_seed: 3, fit_pending: false, raise_checked: Instant::now(), anim: crate::camcorder::Anim::new(crate::wear::launch_seed()), powered_off: false, folding: false, waiting_for: None, games_checked: Instant::now(), games_running: false, pad_prev: 0, pad_since: Instant::now(), start: None, direct: Vec::new(), after_update: false, same_monitor: false, restarted: None, started: false, cache: Arc::new(Mutex::new(std::collections::HashMap::new())), relist_pending: false, snapshot_screen: String::new(), snapshot_tries: 0, wear_ms: 0.0, wear_rx: None, bench: None, last_act: (0, false, Instant::now()),
         };
         app.direct = direct;
         app
@@ -367,11 +395,14 @@ impl App {
 
     /// The window shows first; the start check runs behind the splash (snapshots skip it and show the menu at once).
     fn begin_start(&mut self) {
-        if self.snapshot.is_some() {
+        if self.bench.is_some() {
+            self.finish_start(0);
+        } else if self.snapshot.is_some() {
             self.finish_start(0);
             self.snapshot_screen_setup();
         } else {
-            self.start = Some(StartCheck::spawn(self.exe.clone()));
+            let cache = (self.direct.is_empty() && !self.state_dir.join("restart.txt").exists()).then(|| self.cache.clone());
+            self.start = Some(StartCheck::spawn(self.exe.clone(), cache));
         }
     }
 
@@ -458,6 +489,32 @@ impl App {
         self.snapshot_screen = screen;
     }
 
+    fn bench_frame(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        const AT: [f32; 5] = [0.3, 0.5, 0.65, 0.9, 1.0];
+        let Some((out, step, times, text)) = self.bench.as_mut() else { return };
+        if *step < AT.len() {
+            self.anim.snap = Some(AT[*step]);
+            // The first frames of each step settle; the CPU time of the next 20 counts.
+            if let Some(cpu) = frame.info().cpu_usage { times.push(cpu * 1000.0); }
+            if times.len() >= 24 {
+                let ms: f32 = times[4..].iter().sum::<f32>() / 20.0;
+                text.push_str(&format!("assembly {:.2}: render {ms:.1} ms\n", AT[*step]));
+                times.clear();
+                *step += 1;
+            }
+            ctx.request_repaint();
+        } else if self.wear.is_some() {
+            text.push_str(&format!("wear texture: {:.1} ms (built off the window's thread)\n", self.wear_ms));
+            let _ = std::fs::write(&*out, text.as_bytes());
+            print!("{text}");
+            self.bench = None;
+            self.powered_off = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else {
+            ctx.request_repaint();
+        }
+    }
+
     /// Sets up the snapshot's screen once the main page is there.
     fn snapshot_screen_setup(&mut self) {
         let screen = std::mem::take(&mut self.snapshot_screen);
@@ -511,7 +568,23 @@ impl App {
     }
 
     fn refresh_status(&mut self) {
-        self.status = query(&self.exe, &["status"]).iter().filter_map(|l| l.split_once('\t').map(|(k, v)| (k.to_owned(), v.to_owned()))).collect();
+        self.status = self.listed("status").iter().filter_map(|l| l.split_once('\t').map(|(k, v)| (k.to_owned(), v.to_owned()))).collect();
+    }
+
+    /// A list from the cache, else read now (and kept).
+    fn listed(&self, name: &str) -> Vec<String> {
+        if let Some(l) = self.cache.lock().ok().and_then(|c| c.get(name).cloned()) { return l; }
+        let lines = query(&self.exe, &[name]);
+        if let Ok(mut c) = self.cache.lock() { c.insert(name.to_owned(), lines.clone()); }
+        lines
+    }
+
+    /// `RebuildMain`: a version change or a finished job can change every list: read them again in the background and
+    /// rebuild the menu when they are in.
+    fn relist(&mut self) {
+        if let Ok(mut c) = self.cache.lock() { for n in PREFETCHED { c.remove(n); } }
+        prefetch_into(&self.exe, &self.cache, false);
+        self.relist_pending = true;
     }
 
     fn status_of(&self, k: &str) -> Option<&str> {
@@ -524,7 +597,7 @@ impl App {
     }
 
     fn entries(&self) -> Vec<Vec<String>> {
-        query(&self.exe, &["entries"]).iter().map(|l| split(l)).filter(|f| f.len() >= 9).collect()
+        self.listed("entries").iter().map(|l| split(l)).filter(|f| f.len() >= 9).collect()
     }
 
     fn main_page(&self) -> Page {
@@ -595,7 +668,7 @@ impl App {
     }
 
     fn versions_page(&self) -> Page {
-        let rows: Vec<Vec<String>> = query(&self.exe, &["versions"]).iter().map(|l| split(l)).filter(|f| f.len() >= 4).collect();
+        let rows: Vec<Vec<String>> = self.listed("versions").iter().map(|l| split(l)).filter(|f| f.len() >= 4).collect();
         let sel = rows.iter().position(|f| f[3] == "*").unwrap_or(0);
         let items = rows.into_iter().map(|f| Item {
             text: format!("{}{}", if f[3] == "*" { "> " } else { "" }, f[1]), hint: f[2].clone(), on: true, action: Action::SetVersion(f[0].clone()), ..Default::default()
@@ -898,18 +971,17 @@ impl App {
                 self.begin(&entry, &label);
             }
             Action::Job(args) => {
-                let lines = query(&self.exe, &args.iter().map(String::as_str).collect::<Vec<_>>());
+                let lines = if args.len() == 1 && args[0] == "notes" { self.listed("notes") } else { query(&self.exe, &args.iter().map(String::as_str).collect::<Vec<_>>()) };
                 if args[0].starts_with("share-") {
-                    self.refresh_status();
+                    self.relist();
                     self.pages.pop();
                 }
                 self.pages.push(text_page(&item.text, lines, None));
             }
             Action::SetVersion(id) => {
                 let _ = query(&self.exe, &["version-set", &id]);
-                self.refresh_status();
                 self.pages.pop();
-                self.rebuild_main();
+                self.relist();
             }
             Action::Setting(key) => {
                 let out = query(&self.exe, &["game-setting", &key]);
@@ -1090,8 +1162,7 @@ impl App {
             let bad = mono.is_some() || text.iter().any(|l| ["MALFORMED", "No new", "Not started", "panic(s)", "failed", "Still missing"].iter().any(|w| l.contains(w)));
             self.pages.push(text_page(if bad { "Finished, check this" } else { "Finished" }, text, mono));
             self.job = None;
-            self.refresh_status();
-            self.rebuild_main();
+            self.relist();
             if let Some(after) = close {
                 self.direct_close = Some(Instant::now() + after);
             }
@@ -1161,7 +1232,8 @@ fn kill_tree(pid: u32) {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.bench_frame(ctx, frame);
         ctx.request_repaint_after(Duration::from_millis(100));
         if !self.started {
             self.started = true;
@@ -1223,6 +1295,11 @@ impl eframe::App for App {
                 }
             }
         }
+        if self.relist_pending && self.cache.lock().is_ok_and(|c| PREFETCHED.iter().all(|n| c.contains_key(*n))) {
+            self.relist_pending = false;
+            self.refresh_status();
+            self.rebuild_main();
+        }
         if self.fit_pending {
             if let (Some(m), Some(r)) = ctx.input(|i| (i.viewport().monitor_size, i.viewport().outer_rect)) {
                 self.fit_pending = false;
@@ -1265,7 +1342,8 @@ impl eframe::App for App {
         }
         let t = self.opened.elapsed().as_secs_f32();
         if let Some(out) = self.snapshot.clone() {
-            if t > 2.0 && !self.snapshot_asked {
+            // After the wear texture is in (it builds off the window thread).
+            if t > 2.0 && !self.snapshot_asked && self.wear.is_some() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
                 self.snapshot_asked = true;
             }
@@ -1273,24 +1351,54 @@ impl eframe::App for App {
             if let Some(img) = shot {
                 let (screen, ppp, inner) = ctx.input(|i| (i.content_rect(), i.pixels_per_point(), i.viewport().inner_rect));
                 println!("SNAPSHOT_SIZE image {}x{} screen {:?} ppp {ppp} inner {inner:?}", img.size[0], img.size[1], screen.size());
-                let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
-                let _ = image::save_buffer(&out, &rgba, img.size[0] as u32, img.size[1] as u32, image::ColorType::Rgba8);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                // The window's surface can lag its layout for a few frames (seen at 150 % scale and once at 100 %): take
+                // the shot again until it has the layout's size, then crop or pad to it as a last resort.
+                let want = [(screen.width() * ppp).round() as usize, (screen.height() * ppp).round() as usize];
+                if img.size != want && self.snapshot_tries < 20 {
+                    self.snapshot_tries += 1;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                } else {
+                    let mut rgba = vec![0u8; want[0] * want[1] * 4];
+                    for y in 0..want[1].min(img.size[1]) {
+                        for x in 0..want[0].min(img.size[0]) {
+                            let c = img.pixels[y * img.size[0] + x].to_array();
+                            rgba[(y * want[0] + x) * 4..][..4].copy_from_slice(&c);
+                        }
+                    }
+                    if img.size != want { println!("SNAPSHOT_FIT {}x{} -> {}x{}", img.size[0], img.size[1], want[0], want[1]); }
+                    let _ = image::save_buffer(&out, &rgba, want[0] as u32, want[1] as u32, image::ColorType::Rgba8);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
             ctx.request_repaint();
         }
         if t < 1.5 {
             ctx.request_repaint();
         }
-        if self.wear.is_none() {
+        if self.wear.is_none() && self.wear_rx.is_none() {
             // The sticker stays the same per install; the wear rolls a new seed every launch (user 2026-11-10). A
-            // snapshot uses its seed for both.
+            // snapshot uses its seed for both. Built off the window's thread (about 0.4 s): the window shows at once and
+            // the wear is in by the time the panel has swung open.
             let snap = self.snapshot.is_some().then_some(self.snapshot_seed);
-            let spec = crate::wear::sticker_spec(&self.state_dir, snap);
-            let marks_seed = snap.unwrap_or_else(crate::wear::launch_seed);
-            let px = crate::wear::render(&spec, marks_seed);
+            let state_dir = self.state_dir.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let spec = crate::wear::sticker_spec(&state_dir, snap);
+                let marks_seed = snap.unwrap_or_else(crate::wear::launch_seed);
+                let built = Instant::now();
+                let px = crate::wear::render(&spec, marks_seed, Some(&state_dir.join("stickers")));
+                let _ = tx.send((px, built.elapsed().as_secs_f32() * 1000.0));
+            });
+            self.wear_rx = Some(rx);
+        }
+        if let Some((px, ms)) = self.wear_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.wear_rx = None;
+            self.wear_ms = ms;
             let img = egui::ColorImage::from_rgba_premultiplied([px.width() as usize, px.height() as usize], px.data());
             self.wear = Some(ctx.load_texture("wear", img, egui::TextureOptions::LINEAR));
+        }
+        if self.wear_rx.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(30));
         }
         let wear_id = self.wear.as_ref().map(|t| t.id());
         let mut hits = crate::camcorder::Hits::default();
@@ -1346,12 +1454,9 @@ impl eframe::App for App {
             (Some(Key::Up | Key::Left), false) => self.nav(-1),
             (Some(Key::Down | Key::Right), false) => self.nav(1),
             (Some(Key::A), false) => self.activate(ctx),
-            (Some(Key::Play), false) => {
-                if self.pages.last().is_some_and(|p| p.kind == PageKind::Main) {
-                    self.begin("rust-play", "");
-                } else {
-                    self.activate(ctx);
-                }
+            (Some(Key::Play), false) if self.start.is_none() => {
+                if let Some(p) = self.pages.last_mut().filter(|p| p.kind == PageKind::Main) { p.sel = 0; }
+                self.activate(ctx);
             }
             _ => {}
         }
@@ -1371,7 +1476,8 @@ impl eframe::App for App {
 
 /// Opens the window. `direct`: launch options (`entry [label] [@version]`) that run at once and close afterwards.
 #[allow(clippy::too_many_arguments)]
-pub fn run(state_dir: PathBuf, direct: Vec<String>, snapshot: Option<PathBuf>, snapshot_page: Option<String>, snapshot_seed: Option<i32>, same_monitor: bool, after_update: bool, snapshot_size: Option<(f32, f32)>) -> Result<(), String> {
+pub fn run(state_dir: PathBuf, direct: Vec<String>, snapshot: Option<PathBuf>, snapshot_page: Option<String>, snapshot_seed: Option<i32>, same_monitor: bool, after_update: bool, snapshot_size: Option<(f32, f32)>, bench: Option<PathBuf>) -> Result<(), String> {
+    let snapshot = snapshot.or_else(|| bench.is_some().then(PathBuf::new)).filter(|_| true);
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     // Snapshots render at the panel's own 1240 x 760; a real start sizes from the monitor (window.rs).
     let area = if snapshot.is_some() { None } else { crate::window::start_area(same_monitor) };
@@ -1383,7 +1489,7 @@ pub fn run(state_dir: PathBuf, direct: Vec<String>, snapshot: Option<PathBuf>, s
     }
     let fit_on_first_frame = snapshot.is_none() && area.is_none();
     let options = eframe::NativeOptions { viewport, centered: area.is_none(), ..Default::default() };
-    eframe::run_native("Skate launcher", options, Box::new(move |cc| { crate::camcorder::install_fonts(&cc.egui_ctx); let mut app = App::new(exe, state_dir, direct); app.snapshot = snapshot; app.snapshot_seed = snapshot_seed.unwrap_or_else(crate::wear::launch_seed); if app.snapshot.is_some() { println!("SNAPSHOT_SEED {}", app.snapshot_seed); } app.snapshot_page(snapshot_page.as_deref()); app.fit_pending = fit_on_first_frame; app.same_monitor = same_monitor; app.after_update = after_update; Ok(Box::new(app)) })).map_err(|e| e.to_string())
+    eframe::run_native("Skate launcher", options, Box::new(move |cc| { crate::camcorder::install_fonts(&cc.egui_ctx); let mut app = App::new(exe, state_dir, direct); app.snapshot = snapshot; app.snapshot_seed = snapshot_seed.unwrap_or_else(crate::wear::launch_seed); app.snapshot_page(snapshot_page.as_deref()); if app.snapshot.is_some() { println!("SNAPSHOT_SEED {}", app.snapshot_seed); } app.fit_pending = fit_on_first_frame; app.same_monitor = same_monitor; app.after_update = after_update; if let Some(b) = bench { app.bench = Some((b, 0, Vec::new(), String::new())); app.snapshot = None; } Ok(Box::new(app)) })).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
