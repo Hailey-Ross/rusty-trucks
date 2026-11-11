@@ -4,6 +4,12 @@
   <img src="docs/images/rusty-trucks-board.svg" alt="The Rusty Trucks skateboard" width="560">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Hailey-Ross/rusty-trucks/actions/workflows/rusty-trucks-win.yml"><img src="https://github.com/Hailey-Ross/rusty-trucks/actions/workflows/rusty-trucks-win.yml/badge.svg" alt="Rusty Trucks Windows build"></a>
+  <a href="https://github.com/Hailey-Ross/rusty-trucks/actions/workflows/rusty-trucks-linux.yml"><img src="https://github.com/Hailey-Ross/rusty-trucks/actions/workflows/rusty-trucks-linux.yml/badge.svg" alt="Rusty Trucks Linux build"></a>
+  <a href="https://github.com/Hailey-Ross/rusty-trucks/actions/workflows/rusty-trucks-macos.yml"><img src="https://github.com/Hailey-Ross/rusty-trucks/actions/workflows/rusty-trucks-macos.yml/badge.svg" alt="Rusty Trucks macOS build"></a>
+</p>
+
 Rusty Trucks is a custom flavour of the [Skate 3 Rust Engine](https://github.com/SK8-ENGINE/skate-3-rust-engine), the Rust and Bevy rewrite of Skate 3. It's where I build and try out new things before they head upstream: a living city to skate through, Skate 3's own menus, the instant replay, your DLC, and now career mode and challenges. The `hails-additions` branch is the rolling build, so whatever I'm working on lands here first.
 
 Why the name? It's written in Rust, and trucks are the bits that hold your wheels on. It felt right.
