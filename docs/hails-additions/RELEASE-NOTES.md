@@ -17,6 +17,22 @@ The Skate launcher keeps you on the newest build: every start checks the fork, d
 
 **Without the launcher:** download `skate3rust-windows-x64.zip` instead, extract it to a folder of its own and start `PLAY-WITH-LOG.bat` inside it; on the first start, pick your ISO or `default.xex`. Updates: Esc > **EXTRAS** > **Updates**, Branch `hails-additions`. Developers clone the repository.
 
+### Linux and macOS (new, early)
+
+The game now builds for Linux (64-bit) and macOS (Apple Silicon) too. Nobody has played these packages yet: please tell us how they go. The Skate launcher is Windows-only for now, so these steps use a terminal.
+
+1. **You need** a Skate 3 Xbox 360 disc image (`.iso`) or an extracted game folder with `default.xex`, a controller, about 15 GB free, and Python 3 with numpy and Pillow:
+   - Ubuntu, Debian, Mint: `sudo apt install python3-numpy python3-pil`
+   - Fedora: `sudo dnf install python3-numpy python3-pillow`
+   - Arch, SteamOS desktop mode: `sudo pacman -S python-numpy python-pillow`
+   - macOS (with Homebrew): `brew install numpy pillow`
+2. **Download** `skate3rust-linux-x64.tar.gz` or `skate3rust-macos-arm64.tar.gz` below and extract it to a folder of its own (double-click it in your file manager or Finder).
+3. **Open a terminal in that folder** (right-click inside the folder > Open in Terminal; on macOS, right-click the folder > New Terminal at Folder). On macOS, first run `xattr -dr com.apple.quarantine .` once so the system lets the game start.
+4. **Convert your game files** once: type `./SETUP.sh ` (with the space), drag your `.iso` or `default.xex` into the terminal window and press Enter.
+5. **Play:** `./PLAY.sh`. Each session writes its log to the `logs` folder; please attach it to reports.
+
+`tools/steam-launcher/setup.sh` checks what your computer is missing (and `--install` installs it); you only need it to build the game yourself.
+
 **Refreshing game files.** When a build needs newer converted files, the Guide / F1 / Esc menu says **GAME FILES OUT OF DATE**: open **Extras > Refresh Game Files** and the game restarts into setup, converts only what changed and starts again. An install from before the skater select background is now caught too, and the launcher's Refresh game files rebuilds whatever changed since setup.
 
 **Early features** are in the Guide / F1 / Esc menu under **OPT-INS**: Zombie Mode, More Audible World and Visualize Grabs are off by default; NPC Skater Physics and Ped Speech (needs a refresh to decode the speech) are on and can be switched off. Please say which were on when you report a problem.
@@ -53,6 +69,8 @@ Everything below is ported from Skate 3's own code. Items marked "not play-teste
 - **Career mode and challenges** (upstream draft #68, still being built, behind the Career and Challenges opt-in): own the spot challenges with Skate 3's D-pad Up sign-up, their HUD and saved records; the career core with unlocks, milestones, team and the Skate Profile page; all 12 Skate 101 tutorials run their objectives from your disc (their intro and end screens are not Skate 3's yet). Riding into an own the spot now discovers it and adds it to your career, as in Skate 3. Your DLC packs' career chains are read too (for example the Maloof Money Cup street contest, its photos and its lots): run Refresh Game Files once. The tutorials also show Skate 3's failure and hint lines and own the spot timers end on Skate 3's update (Refresh Game Files again for the new lines). Mods reach them through `sdk.challenges` and `sdk.career`.
 - **Opt-ins:** every feature that is off by default or not retail is in one place, the Opt-Ins section of the Guide / F1 overlay (NPC draw distance, Better Water, More Audible World, ped speech, Extended Replays, Better Object Mover, Debug Menus, Fly Cam, Physics Step Threads, Zombie Mode, NPC Skater Physics, Visualize Grabs, Ped Vehicle Flee: peds run from a car within 10 m driving toward or away from them, still in test, Career and Challenges: career mode, the tutorials and own the spot, still being built). Fly Cam (a developer tool, off by default) makes D-pad Right + R3 switch to a free camera. The launcher's Tools > Opt-ins and settings page changes the same ones (Fly Cam only in the overlay), plus resolution, render scale, framerate cap, FPS counter, volumes and difficulty.
 - **Launcher and setup:** a startup screen while the launcher checks for updates, clickable A / B prompts for players without a keyboard, a proper launcher window, builds with progress, "play + trace all", a launcher-only download, and no more freezing at the end of an update and build or right after its update check; setup installs its own Python packages; the game is silent while its splash screen shows, and the setup window is simpler. Setup is much faster with the same converted files (a full conversion took 228 s and now about 75 s on the main test PC): it runs its stages side by side and uses up to 75% of your CPU cores, less when other programs are busy as it starts, leaving the rest for you (`SKATE_SETUP_CORES=<n>` sets the number). Refresh Game Files only redoes what changed.
+- **Linux and macOS:** the game, its setup and its tests now build on Linux and macOS (packages on this page, see **Linux and macOS** above). This brings in upstream #7 by dylan-gluck and stev0760's Linux support, with fixes so they work next to the Windows setup.
+- **Custom Music** (mod in the repository's `mods/custom-music` for now): play your own music in the game, mixed with the soundtrack or instead of it; `ADD-MY-MUSIC.bat` packs a music folder for it.
 - **Mods:** every new system has a Lua entry point (`sdk.world`, `sdk.menus`, `sdk.replay`, `sdk.loading`, `sdk.triggers.teleporter` and more).
 - **Changes for everyone:** the Skyline example mod starts switched off (turn it on in the mod menu). Refresh Game Files once for the prop sounds (it redoes the audio step). Refresh Game Files once for the Stats panel (it redoes the environment step). Peds now use Skate 3's own ped material (a smooth, flat shadow side instead of dark patches): Refresh Game Files once for it (it redoes the living world step). NPC skaters turn in the air with their recorded line like in Skate 3, so they no longer land 180s and quarter pipe airs backwards and bail soon after. Walking off a drop-in no longer ends the game (two Skate 3 animation conditions were missing). Riding into a heavy prop (like the quarter pipe in Black Box park) no longer slides it away: the skater's contact is solved together with the prop's grip on the ground, as in Skate 3; light props still move.
 
@@ -64,8 +82,9 @@ Already in upstream `main` (from this fork): the retail audio engine and audio m
 - **Pedestrians:** a chaser can sometimes stand still on its way to you.
 - **Cars** pop in and out instead of fading with distance.
 - **Carrying props:** stepping up curbs while dragging is not Skate 3's yet.
+- **Linux and macOS:** not play-tested yet; the Skate launcher and the setup window are Windows-only for now.
 - **Not ported yet:** the Challenge Map's challenge rows (and the minimap's challenge icons), the pros at their spots, the Object Dropper editor, peds watching you, multiplayer.
 
 ## Credits
 
-Built on SK8-ENGINE/skate-3-rust-engine and its contributors. Research used the skate3recomp static recompilation (rexglue, Xenia) as reference only; no game code or data is included.
+Built on SK8-ENGINE/skate-3-rust-engine and its contributors. Linux and macOS support builds on upstream #7 by dylan-gluck and stev0760's linux-support work. Research used the skate3recomp static recompilation (rexglue, Xenia) as reference only; no game code or data is included.
