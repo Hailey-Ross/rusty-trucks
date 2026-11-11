@@ -120,3 +120,6 @@ mods/world-audio-test/logs/
 /shared-sessions.txt
 /PLAY-AND-SEND.bat
 /play-and-send.ps1
+
+# Built by mods/music-sdk-test/make_bank.py (self-made tones; build output)
+mods/music-sdk-test/music/
