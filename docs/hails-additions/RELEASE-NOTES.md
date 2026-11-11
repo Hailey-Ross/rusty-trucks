@@ -8,18 +8,18 @@ The Skate launcher: the flip-out LCD panel of a mid-2000s camcorder. It swings o
 
 The Skate launcher keeps you on the newest build: every start checks the fork, downloads the new build when there is one and keeps a session log of every game, so reports always have one.
 
-1. **You need** Windows 10 or 11 (64-bit), a Skate 3 Xbox 360 disc image (`.iso`) or an extracted game folder with `default.xex`, a controller, and about 15 GB free (the build and the converted game files).
-2. **Download** `skate-launcher-windows.zip` below and extract it to a folder of its own (for example `C:\Games\SkateLauncher`, not inside Program Files).
-3. **Double-click** `build.bat` once. It downloads `SkateLauncher.exe` and starts it.
+1. **You need** Windows 10 or 11 (64-bit), Linux (64-bit) or macOS (Apple Silicon), a Skate 3 Xbox 360 disc image (`.iso`) or an extracted game folder with `default.xex`, a controller, and about 15 GB free (the build and the converted game files).
+2. **Download** `skate-launcher.zip` below and extract it to a folder of its own (for example `C:\Games\SkateLauncher`, not inside Program Files).
+3. **Install:** on Windows double-click `INSTALL.bat`; on macOS double-click `INSTALL.command`; on Linux open a terminal in the folder and type `sh install.sh`. It downloads the Skate launcher for your computer, installs what is missing (it asks once for permission) and starts the launcher. Run it again any time to repair the launcher.
 4. **Set up:** the first start opens **Set up the launcher**: pick the game folder (where versions and builds go), the space builds may use, your Skate 3 ISO or `default.xex`, and, if you have them, Skate 3 Recompiled and RPCS3 for comparing. If Git is missing, **Install what is missing** installs it (Windows asks once).
 5. **Play.** The first play downloads the newest `hails-additions` build and converts the game files from your disc once (Skate 3's setup window shows the progress); later starts download a new build only when there is one.
-6. **Optional:** add `SkateLauncher.exe` to Steam as a non-Steam game to start it from the couch with the controller. Everything set up in step 4 can be changed later in **Tools > Set up the launcher**.
+6. **Optional:** add `SkateLauncher.exe` (Linux and macOS: `skate-launcher`) to Steam as a non-Steam game to start it from the couch with the controller. Everything set up in step 4 can be changed later in **Tools > Set up the launcher**.
 
 **Without the launcher:** download `skate3rust-windows-x64.zip` instead, extract it to a folder of its own and start `PLAY-WITH-LOG.bat` inside it; on the first start, pick your ISO or `default.xex`. Updates: Esc > **EXTRAS** > **Updates**, Branch `hails-additions`. Developers clone the repository.
 
 ### Linux and macOS (new, early)
 
-The game now builds for Linux (64-bit) and macOS (Apple Silicon) too. Nobody has played these packages yet: please tell us how they go. The Skate launcher is Windows-only for now, so these steps use a terminal.
+The game now builds for Linux (64-bit) and macOS (Apple Silicon) too. Nobody has played these packages yet: please tell us how they go. The Skate launcher above works there too (new, not play-tested yet); without it, these steps use a terminal.
 
 1. **You need** a Skate 3 Xbox 360 disc image (`.iso`) or an extracted game folder with `default.xex`, a controller, about 15 GB free, and Python 3 with numpy and Pillow:
    - Ubuntu, Debian, Mint: `sudo apt install python3-numpy python3-pil`
@@ -82,7 +82,7 @@ Already in upstream `main` (from this fork): the retail audio engine and audio m
 - **Pedestrians:** a chaser can sometimes stand still on its way to you.
 - **Cars** pop in and out instead of fading with distance.
 - **Carrying props:** stepping up curbs while dragging is not Skate 3's yet.
-- **Linux and macOS:** not play-tested yet; the Skate launcher and the setup window are Windows-only for now.
+- **Linux and macOS:** not play-tested yet, the Skate launcher on them included; the setup window is Windows-only for now.
 - **Not ported yet:** the Challenge Map's challenge rows (and the minimap's challenge icons), the pros at their spots, the Object Dropper editor, peds watching you, multiplayer.
 
 ## Credits

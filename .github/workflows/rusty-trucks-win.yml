@@ -119,19 +119,24 @@ jobs:
           set -e
           d=launcher-out/skate-launcher
           mkdir -p "$d"
-          (cd tools/steam-launcher && cp SkateLauncher.cs build.bat launcher.bat launcher.ps1 setup.ps1 README.md config.example.json versions.example.json "../../$d/")
+          (cd tools/steam-launcher && cp SkateLauncher.cs build.bat launcher.bat launcher.ps1 setup.ps1 README.md config.example.json versions.example.json setup.sh "../../$d/")
+          # Every OS: INSTALL.bat / install.ps1 (Windows), install.sh / INSTALL.command (Linux, macOS) download this
+          # OS's Skate launcher from the release, run the first-time setup and start it.
+          cp tools/steam-launcher/standalone/* "$d/"
           cp tools/second-pc/share-session-issue.ps1 "$d/"
           printf 'Standalone launcher: its config, state and versions stay in this folder (README.md).\n' > "$d/STANDALONE.txt"
           printf 'build %s\ncommit %s\n' "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" > "$d/LAUNCHER-VERSION.txt"
-          for f in "$d"/*; do sed -i 's/\r$//; s/$/\r/' "$f"; done
-          (cd launcher-out && zip -qr skate-launcher-windows.zip skate-launcher && sha256sum skate-launcher-windows.zip > skate-launcher-windows.zip.sha256)
+          # Windows files get CRLF; the shell scripts stay LF (a CR breaks sh).
+          for f in "$d"/*; do case "$f" in *.sh|*.command) sed -i 's/\r$//' "$f";; *) sed -i 's/\r$//; s/$/\r/' "$f";; esac; done
+          chmod +x "$d/install.sh" "$d/INSTALL.command" "$d/setup.sh"
+          (cd launcher-out && zip -qr skate-launcher.zip skate-launcher && sha256sum skate-launcher.zip > skate-launcher.zip.sha256)
       - name: Publish rolling hails-additions prerelease
         if: github.event_name != 'release' && inputs.release_tag == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python tools/publish_branch.py --directory target --branch hails-additions --notes-file docs/hails-additions/RELEASE-NOTES.md
-          gh release upload hails-additions launcher-out/skate-launcher-windows.zip launcher-out/skate-launcher-windows.zip.sha256 --clobber
+          gh release upload hails-additions launcher-out/skate-launcher.zip launcher-out/skate-launcher.zip.sha256 --clobber
           gh release upload hails-additions target/SkateLauncher.exe target/SkateLauncher.exe.source-sha256 --clobber
           gh release upload hails-additions target/skate-launcher-windows-x64.exe target/skate-launcher-windows-x64.exe.sha256 --clobber
       - name: Attach release package
@@ -139,4 +144,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
-        run: gh release upload "$RELEASE_TAG" target/skate3rust-windows-x64.zip target/skate3rust-windows-x64.zip.sha256 target/release.json launcher-out/skate-launcher-windows.zip launcher-out/skate-launcher-windows.zip.sha256 --clobber
+        run: gh release upload "$RELEASE_TAG" target/skate3rust-windows-x64.zip target/skate3rust-windows-x64.zip.sha256 target/release.json launcher-out/skate-launcher.zip launcher-out/skate-launcher.zip.sha256 --clobber
