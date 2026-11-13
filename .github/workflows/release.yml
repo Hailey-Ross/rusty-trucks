@@ -36,8 +36,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-release
-          # the game compiles in D:\t (see Build Windows package); cache that folder
-          workspaces: ". -> ../../../t"
           cache-on-failure: true
       # Cargo's dependency cache excludes our vendored Bevy crates. Cache their
       # compiler outputs by content as well, independent of checkout timestamps.
@@ -54,11 +52,10 @@ jobs:
         shell: pwsh
         env:
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || 'experimental' }}
-          RUSTC_WRAPPER: sccache
-        # A short build folder: every -L / --extern path rustc gets repeats it, and under the checkout's
-        # target\x86_64-pc-windows-msvc\release the command line sccache starts went past Windows' 32767
-        # characters (os error 206, bevy_render).
-        run: ./scripts/Build-Release.ps1 -TargetDirectory D:\t
+          # No sccache here: bevy_internal's rustc command line (312 -L entries, about 42,000 characters) is past
+          # Windows' 32,767 limit. Cargo then passes the arguments in an @argfile, but sccache expands it again and
+          # fails (os error 206). rust-cache still restores the target folder between runs.
+        run: ./scripts/Build-Release.ps1
       - name: Report compiler cache hits
         if: always()
         shell: pwsh
