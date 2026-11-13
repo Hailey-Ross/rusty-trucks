@@ -81,11 +81,36 @@ jobs:
           cp target/release/skate-launcher "$d/tools/steam-launcher/skate-launcher"
           chmod +x "$d/bin/skate3rust" "$d/SETUP.sh" "$d/PLAY.sh" "$d/tools/steam-launcher/setup.sh" "$d/tools/steam-launcher/skate-launcher"
           printf 'build %s\ncommit %s\n' "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" > "$d/BUILD.txt"
+          # release.json: what the launcher compares, checks and patches against (doc 44a "Patch updates")
+          tag=${{ github.event_name == 'release' && github.event.release.tag_name || 'hails-additions' }}
+          target/release/skate-launcher write-manifest "$d" --target ${{ inputs.target }} --build "$GITHUB_RUN_NUMBER" --revision "$GITHUB_SHA" --tag "$tag"
+          cp "$d/release.json" "out/$name.release.json"
           tar -C out -czf "out/$name.tar.gz" "$name"
           (cd out && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
           # The launcher on its own, for its self-update (selfupdate.rs update_rust_binary).
           cp target/release/skate-launcher "out/skate-launcher-${{ inputs.target }}"
           (cd out && shasum -a 256 "skate-launcher-${{ inputs.target }}" > "skate-launcher-${{ inputs.target }}.sha256")
+      # Patch updates: the patch from the rolling package on the release now to this one, and the index of the links
+      # an install can chain. Any failure leaves no patch: launchers take the full download.
+      - name: Patch from the previous rolling build
+        if: github.event_name != 'release' && github.ref == 'refs/heads/hails-additions'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name=skate3rust-${{ inputs.target }}
+          mkdir -p out/prev out/patches
+          if ! gh release download hails-additions --repo "$GITHUB_REPOSITORY" -p "$name.tar.gz" -D out/prev; then
+            echo 'No previous rolling package: no patch.'; exit 0
+          fi
+          gh release download hails-additions --repo "$GITHUB_REPOSITORY" -p "$name.patches.json" -D out/prev || true
+          set -- make-patch --old "out/prev/$name.tar.gz" --new "out/$name.tar.gz" --out out/patches --keep 5 \
+            --package-size "$(wc -c < "out/$name.tar.gz" | tr -d ' ')"
+          [ -f "out/prev/$name.patches.json" ] && set -- "$@" --index "out/prev/$name.patches.json"
+          if ! target/release/skate-launcher "$@"; then
+            echo '::warning::No patch for this build (make-patch failed); launchers take the full download.'
+            rm -f out/patches/*
+          fi
+          rm -rf out/prev
       - name: Report compiler cache hits
         if: always()
         run: sccache --show-stats
@@ -96,8 +121,10 @@ jobs:
           path: |
             out/skate3rust-${{ inputs.target }}.tar.gz
             out/skate3rust-${{ inputs.target }}.tar.gz.sha256
+            out/skate3rust-${{ inputs.target }}.release.json
             out/skate-launcher-${{ inputs.target }}
             out/skate-launcher-${{ inputs.target }}.sha256
+            out/patches/
   publish:
     needs: build
     if: github.event_name == 'release' || github.ref == 'refs/heads/hails-additions'
@@ -110,4 +137,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || 'hails-additions' }}
-        run: gh release upload "$TAG" skate3rust-${{ inputs.target }}.tar.gz skate3rust-${{ inputs.target }}.tar.gz.sha256 skate-launcher-${{ inputs.target }} skate-launcher-${{ inputs.target }}.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          name=skate3rust-${{ inputs.target }}
+          index="patches/$name.patches.json"
+          # the patch and its index go up before the package, so a launcher that sees the new release.json finds them
+          if [ "$TAG" = hails-additions ] && [ -f "$index" ]; then gh release upload "$TAG" patches/* --clobber --repo "$GITHUB_REPOSITORY"; fi
+          gh release upload "$TAG" "$name.tar.gz" "$name.tar.gz.sha256" skate-launcher-${{ inputs.target }} skate-launcher-${{ inputs.target }}.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+          # the release.json last: a launcher that sees it finds the package it describes
+          gh release upload "$TAG" "$name.release.json" --clobber --repo "$GITHUB_REPOSITORY"
+          # links that fell out of the index (more than 5 builds old) are removed
+          if [ "$TAG" = hails-additions ] && [ -f "$index" ]; then
+            keep=$(jq -r '.links[].file' "$index")
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -E "^$name\..+\.patch\$" | while read -r a; do
+              grep -qxF "$a" <<< "$keep" || gh release delete-asset "$TAG" "$a" --yes --repo "$GITHUB_REPOSITORY"
+            done
+          fi

@@ -78,7 +78,8 @@ def publish(directory, branch, notes_file=None):
              f"[Download Windows ZIP](https://github.com/{REPO}/releases/download/{branch}/{PACKAGE})"
              f" · [Linux (x64)](https://github.com/{REPO}/releases/download/{branch}/skate3rust-linux-x64.tar.gz)"
              f" · [macOS (Apple Silicon)](https://github.com/{REPO}/releases/download/{branch}/skate3rust-macos-arm64.tar.gz)\n\n"
-             f"Choose **Branch** in the in-game Updates window and enter `{branch}`.\n\n"
+             f"The Skate launcher installs and updates this build (a version with release `{branch}`); "
+             "it downloads only a small patch when your install is a recent build of it.\n\n"
              # Branch notes kept in the repository (setup, testing, known issues), so every
              # rolling build keeps them instead of only the commit list.
              + (Path(notes_file).read_text(encoding='utf-8').strip() + '\n\n' if notes_file else '')

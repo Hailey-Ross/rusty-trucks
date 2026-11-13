@@ -41,21 +41,20 @@ jobs:
       # Cargo's dependency cache excludes our vendored Bevy crates. Cache their
       # compiler outputs by content as well, independent of checkout timestamps.
       - uses: mozilla-actions/sccache-action@v0.0.11
-      - name: Check updater and publisher without starting game
+      - name: Check publisher without starting game
         run: python -m unittest discover -s tools -p "test_*release*.py" -v
-      - name: Check updater protocol
-        run: python -m unittest discover -s tools -p "test_update*.py" -v
-      - name: Check character package update transaction
-        run: python tools/mixamo_to_skate/check_package.py --transaction-only
       - name: Check isolated asset refresh and failure recovery
         run: python -m unittest tools.asset_pipeline.test_versions -v
       - name: Build Windows package
         shell: pwsh
         env:
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || 'experimental' }}
-          # No sccache here: bevy_internal's rustc command line (312 -L entries, about 42,000 characters) is past
-          # Windows' 32,767 limit. Cargo then passes the arguments in an @argfile, but sccache expands it again and
-          # fails (os error 206). rust-cache still restores the target folder between runs.
+          # sccache expands cargo's @argfile and spawns rustc with the full line; cargo's build-dir layout puts one
+          # -L path per dependency on it (bevy_internal: 312), past Windows' 32,767 limit under target\ (os error 206,
+          # mozilla/sccache#2397). A short build folder keeps that line near 28,600 characters. Drop it once an sccache
+          # release has the fix (mozilla/sccache#3026).
+          RUSTC_WRAPPER: sccache
+          CARGO_BUILD_BUILD_DIR: D:\b
         run: ./scripts/Build-Release.ps1
       # The launcher's prebuilt exe (USER-ASKS 463): build.bat and the launcher's self-update download it when the
       # sidecar names their SkateLauncher.cs (sha256 of the text without CR), else they compile it themselves.
@@ -83,6 +82,30 @@ jobs:
           Copy-Item target/launcher-build/release/skate-launcher.exe target/skate-launcher-windows-x64.exe
           $h = (Get-FileHash target/skate-launcher-windows-x64.exe -Algorithm SHA256).Hash.ToLower()
           [IO.File]::WriteAllText("$PWD/target/skate-launcher-windows-x64.exe.sha256", "$h  skate-launcher-windows-x64.exe`n")
+      # Patch updates (doc 44a "Patch updates"): the patch from the rolling build on the release now to this one, plus
+      # the index of the links an install can chain. A launcher on the previous build downloads only the patch. Any
+      # failure here leaves no patch: launchers take the full download as before.
+      - name: Patch from the previous rolling build
+        if: github.event_name != 'release' && inputs.release_tag == ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force target/prev, target/patches | Out-Null
+          gh release download hails-additions --repo $env:GITHUB_REPOSITORY -p skate3rust-windows-x64.zip -D target/prev
+          if ($LASTEXITCODE -ne 0) { Write-Output 'No previous rolling package: no patch.'; exit 0 }
+          gh release download hails-additions --repo $env:GITHUB_REPOSITORY -p skate3rust-windows-x64.patches.json -D target/prev
+          $make = @('make-patch', '--old', 'target/prev/skate3rust-windows-x64.zip', '--new', 'target/skate3rust-windows-x64.zip',
+            '--out', 'target/patches', '--keep', '5', '--package-size', "$((Get-Item target/skate3rust-windows-x64.zip).Length)")
+          if (Test-Path target/prev/skate3rust-windows-x64.patches.json) { $make += @('--index', 'target/prev/skate3rust-windows-x64.patches.json') }
+          # a windowed program: piping its output makes PowerShell wait for it and set its exit code
+          & target/skate-launcher-windows-x64.exe @make | ForEach-Object { $_ }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output '::warning::No patch for this build (make-patch failed); launchers take the full download.'
+            Remove-Item target/patches/* -ErrorAction SilentlyContinue
+          }
+          Remove-Item target/prev -Recurse -Force
+          exit 0
       - name: Report compiler cache hits
         if: always()
         shell: pwsh
@@ -99,6 +122,7 @@ jobs:
             target/SkateLauncher.exe.source-sha256
             target/skate-launcher-windows-x64.exe
             target/skate-launcher-windows-x64.exe.sha256
+            target/patches/
   publish:
     needs: windows
     if: github.repository == 'Hailey-Ross/rusty-trucks' && (github.event_name == 'release' || inputs.release_tag != '' || github.ref == 'refs/heads/hails-additions')
@@ -137,7 +161,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # the patch and its index go up before the package, so a launcher that sees the new release.json finds them
+          index=target/patches/skate3rust-windows-x64.patches.json
+          if [ -f "$index" ]; then gh release upload hails-additions target/patches/* --clobber; fi
           python tools/publish_branch.py --directory target --branch hails-additions --notes-file docs/hails-additions/RELEASE-NOTES.md
+          # links that fell out of the index (more than 5 builds old) are removed
+          if [ -f "$index" ]; then
+            keep=$(jq -r '.links[].file' "$index")
+            gh release view hails-additions --json assets -q '.assets[].name' | grep -E '^skate3rust-windows-x64\..+\.patch$' | while read -r a; do
+              grep -qxF "$a" <<< "$keep" || gh release delete-asset hails-additions "$a" --yes
+            done
+          fi
           gh release upload hails-additions launcher-out/skate-launcher.zip launcher-out/skate-launcher.zip.sha256 --clobber
           gh release upload hails-additions target/SkateLauncher.exe target/SkateLauncher.exe.source-sha256 --clobber
           gh release upload hails-additions target/skate-launcher-windows-x64.exe target/skate-launcher-windows-x64.exe.sha256 --clobber

@@ -52,9 +52,9 @@ jobs:
         shell: pwsh
         env:
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || 'experimental' }}
-          # No sccache here: bevy_internal's rustc command line (312 -L entries, about 42,000 characters) is past
-          # Windows' 32,767 limit. Cargo then passes the arguments in an @argfile, but sccache expands it again and
-          # fails (os error 206). rust-cache still restores the target folder between runs.
+          # Short build folder so sccache's expanded rustc line fits Windows' limit (see rusty-trucks-win.yml).
+          RUSTC_WRAPPER: sccache
+          CARGO_BUILD_BUILD_DIR: D:\b
         run: ./scripts/Build-Release.ps1
       - name: Report compiler cache hits
         if: always()
