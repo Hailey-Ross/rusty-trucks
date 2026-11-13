@@ -102,7 +102,7 @@ try {
     New-Item -ItemType Directory -Path "$stage/docs/images" -Force | Out-Null
     Copy-IfExists @(
         'docs/installation.md', 'docs/retail-renderer.md', 'docs/crash-reports.md',
-        'docs/performance-tracing.md', 'docs/updates.md', 'docs/custom-models.md',
+        'docs/performance-tracing.md', 'docs/custom-models.md',
         'docs/mixamo-to-skate.md', 'docs/character-customisation.md'
     ) "$stage/docs"
     Copy-IfExists @('docs/images/skating-crab.png') "$stage/docs/images"
@@ -132,7 +132,7 @@ try {
     } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$stage/release.json" -Encoding utf8
     Copy-Item -LiteralPath "$stage/release.json" -Destination (Join-Path $ProjectRoot 'target/release.json')
     # Seed fresh downloads with Skyline only. Mods stay outside release.json:
-    # the updater deliberately never owns or overwrites a user's mod packages.
+    # launcher updates (full or patch) never own or overwrite a user's mod packages.
     $bundledModFiles = @(& git ls-files -- 'mods/Skyline_Drive_Mod/')
     if ($LASTEXITCODE -ne 0 -or $bundledModFiles.Count -eq 0) { throw 'Tracked Skyline package missing' }
     foreach ($relative in $bundledModFiles) {

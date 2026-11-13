@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import zipfile
 
-from updater import REPO, PACKAGE, PREFIX, identity, program_metadata
+from release_meta import REPO, PACKAGE, PREFIX, identity, program_metadata
 
 BRANCH_RE = re.compile(r'[A-Za-z0-9._/-]{1,120}')
 
