@@ -86,7 +86,7 @@ Already in upstream `main` (from this fork): the retail audio engine and audio m
 - **Carrying props:** stepping up curbs while dragging is not Skate 3's yet.
 - **Linux and macOS:** not play-tested yet, the Skate launcher on them included; the setup window is Windows-only for now.
 - **Contests:** the warning after three wrong-type lines shows its text but not Skate 3's exact wording or voice line yet.
-- **Not ported yet:** film, hall of meat and follow the leader challenges, Skate 3's startup and new career flow, the Challenge Map's challenge rows (and the minimap's challenge icons), the pros at their spots, the Object Dropper editor, peds watching you, multiplayer.
+- **Not ported yet:** film and hall of meat challenges, follow the leader from the map (it runs only from a test switch so far), Skate 3's startup and new career flow, the Challenge Map's challenge rows (and the minimap's challenge icons), the pros at their spots, the Object Dropper editor, multiplayer.
 
 ## Credits
 

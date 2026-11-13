@@ -10,7 +10,7 @@
   <a href="https://github.com/Hailey-Ross/rusty-trucks/actions/workflows/rusty-trucks-macos.yml"><img src="https://github.com/Hailey-Ross/rusty-trucks/actions/workflows/rusty-trucks-macos.yml/badge.svg" alt="Rusty Trucks macOS build"></a>
 </p>
 
-Rusty Trucks is a custom flavour of the [Skate 3 Rust Engine](https://github.com/SK8-ENGINE/skate-3-rust-engine), the Rust and Bevy rewrite of Skate 3. It's where I build and try out new things before they head upstream: a living city to skate through, Skate 3's own menus, the instant replay, your DLC, and now career mode and challenges. The `hails-additions` branch is the rolling build, so whatever I'm working on lands here first.
+Rusty Trucks is a custom flavor of the [Skate 3 Rust Engine](https://github.com/SK8-ENGINE/skate-3-rust-engine), the Rust and Bevy rewrite of Skate 3. It's where I build and try out new things before they head upstream: a living city to skate through, Skate 3's own menus, the instant replay, your DLC, and now career mode and challenges. The `hails-additions` branch is the rolling build, so whatever I'm working on lands here first.
 
 Why the name? It's written in Rust, and trucks are the bits that hold your wheels on. It felt right.
 
@@ -32,22 +32,22 @@ The easiest way in is the Skate launcher:
   <img src="https://raw.githubusercontent.com/Hailey-Ross/rusty-trucks/pr-assets/launcher/01-camcorder-lcd-panel.gif" alt="The Skate launcher: a camcorder's LCD panel swings open, shows the HOME menu and folds shut" width="640">
 </p>
 
-1. Grab `skate-launcher-windows.zip` from the **[hails-additions release](https://github.com/Hailey-Ross/rusty-trucks/releases/tag/hails-additions)** and extract it into a folder of its own.
-2. Double-click `build.bat` once. It downloads `SkateLauncher.exe` and starts it.
+1. Grab `skate-launcher.zip` from the **[hails-additions release](https://github.com/Hailey-Ross/rusty-trucks/releases/tag/hails-additions)** and extract it into a folder of its own.
+2. Install it: on Windows double-click `INSTALL.bat`, on macOS `INSTALL.command`, and on Linux open a terminal in the folder and type `sh install.sh`. It downloads the Skate launcher for your computer and starts it.
 3. Pick a game folder and your Skate 3 ISO (or an extracted folder with `default.xex`). Your first play downloads the newest build and converts your disc once, so give it a little while.
 4. After that it keeps itself up to date and saves a session log for every game you play.
 
 The launcher ([`tools/steam-launcher`](tools/steam-launcher/README.md)) is styled after the flip-out screen of a mid-2000s camcorder ([how it's made](docs/hails-additions/41-launcher-camcorder-viewfinder.md#change)). Add it to Steam as a non-Steam game and you can start everything from the couch with a controller. It can also run upstream `main`, open pull requests, the recomp and retail Skate 3 in RPCS3 side by side, which is handy when you want to compare.
 
-Rather skip the launcher? Download `skate3rust-windows-x64.zip` from the same release, extract it and start `PLAY-WITH-LOG.bat`. The full setup guide is in the [release notes](https://github.com/Hailey-Ross/rusty-trucks/releases/tag/hails-additions).
+Rather skip the launcher? On Windows, download `skate3rust-windows-x64.zip` from the same release, extract it and start `PLAY-WITH-LOG.bat`; Linux and macOS have their own packages there. The full setup guide is in the [release notes](https://github.com/Hailey-Ross/rusty-trucks/releases/tag/hails-additions).
 
-You'll need Windows 10 or 11 (64-bit), a controller (Xbox, PlayStation, Switch or generic) and about 15 GB free.
+You'll need Windows 10 or 11 (64-bit), Linux (64-bit) or macOS (Apple Silicon), a controller (Xbox, PlayStation, Switch or generic) and about 15 GB free. Linux and macOS are new and nobody has played them yet, so I'd love to hear how they go.
 
 ## What's in so far
 
 Everything here is in the `hails-additions` build, and the [release notes](https://github.com/Hailey-Ross/rusty-trucks/releases/tag/hails-additions) go into detail on each one.
 
-- **A living world:** NPC skaters riding Skate 3's recorded lines, pedestrians going about their day (benches, phone calls, warnings, chases), traffic you can skitch, and props you can push, carry and grab.
+- **A living world:** NPC skaters riding Skate 3's recorded lines, pedestrians going about their day (benches, phone calls, warnings, chases) who stop to watch and cheer when you skate well, traffic you can skitch, and props you can push, carry and grab.
 - **Skate 3's own menus:** the pause menu, Game Settings, the Trick Guide with its 3D demo, Extras with cheat codes, Skate Profile and the Challenge Map.
 - **Free Play:** Spawn Skater (play as someone else, or call up to three skaters to ride with you), traffic and pedestrian density, and the HUD minimap.
 - **The loading screen:** Skate 3's tips screen, with Coach Frank and your career stats, while a map loads.
@@ -55,15 +55,18 @@ Everything here is in the `hails-additions` build, and the [release notes](https
 - **Your DLC:** the DLC maps, Challenge Map folders, skate.Park layouts and teleporters from the packs you own.
 - **World shading:** Skate 3's lightmaps and shaders for fences, signs, billboards, traffic lights and trees.
 - **Audio:** Skate 3's audio engine, ported natively, with audio modding.
+- **Music:** Skate 3's soundtrack from your disc, the Music Player (Playlist Mode or Interactive Mode with the map's music zones and race music), and Custom Music to play your own songs.
+- **Career mode and challenges** (still being built, behind the Career and Challenges opt-in): own the spot, races, contests and all 12 Skate 101 tutorials, with the career, your team and the Skate Profile page.
+- **Every OS:** the game builds for Windows, Linux and macOS, and the Skate launcher is now one app for all three.
 - **Opt-ins:** anything that's off by default or not quite Skate 3 lives in one place, the Opt-Ins section of the Guide / F1 / Esc menu.
 - **Already upstream:** the audio engine, water, retail map spawns, trigger volumes, camera angles, SDL3 gamepads, grind bails at rail bends, see-through fences and the retail menus foundation started here and are now in upstream `main`.
 
 ## What I'm working on
 
-- **Career mode and challenges** (upstream draft [#68](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/68), behind the Career and Challenges opt-in): you can already play the own the spot challenges, and the career core and all 12 Skate 101 tutorials run from your disc. Next up are the reward screens and the end-of-challenge screens, then more challenge types (races, films, Hall of Meat, contests).
+- **Career mode and challenges** (upstream draft [#68](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/68), behind the Career and Challenges opt-in): own the spot, races, contests and the Skate 101 tutorials already play. Follow the leader runs, with the trail behind the leader, but only from a test switch so far. Next up: signing up for it from the map and its speech, then films and Hall of Meat.
 - **The retail startup:** the boot movies, Press Start and the new career welcome (difficulty, camera, team name, Coach Frank), plus a cross-platform player for Skate 3's movies so it works beyond Windows too.
 - **NPC skaters:** finishing their landings, spins and grab releases.
-- **Further out:** the pros at their challenge spots, the Object Dropper, pedestrians watching you skate, and multiplayer.
+- **Further out:** the pros at their challenge spots, the Object Dropper, and multiplayer.
 
 Curious where things stand upstream? The living world, menus, replay and DLC are in [#52](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/52); career mode and challenges are in [#68](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/68).
 
@@ -78,7 +81,8 @@ This is where you can help the most. A few things I'd love a second pair of eyes
 - Pedestrians and NPC skaters: anyone floating, getting stuck or riding backwards?
 - Carrying and pushing props (hold RB next to a bench or bin). Does it feel like Skate 3?
 - Skate 3's menus (press Start).
-- **New:** turn on **Career and Challenges** in the Opt-Ins, ride up to an own the spot and press D-pad Up, and give the Skate 101 tutorials a go. How close does it feel to the real thing?
+- **New:** turn on **Career and Challenges** in the Opt-Ins, ride up to an own the spot and press D-pad Up, and give the Skate 101 tutorials, a race and a contest a go. How close does it feel to the real thing?
+- **New:** Options > Music Player, and the soundtrack in Interactive Mode. Does the music feel like Skate 3's?
 
 **Found something?** Every game the launcher starts saves a session log (without the launcher, use `PLAY-WITH-LOG.bat`). Tell me which opt-ins were on and roughly when and where it happened, attach the log (and a short video if you can) to a [test report](https://github.com/Hailey-Ross/rusty-trucks/issues/new?title=Test%20report%3A%20), and I'll dig in. One problem per session makes it much easier to track down.
 
