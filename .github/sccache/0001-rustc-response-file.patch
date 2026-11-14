@@ -1,0 +1,300 @@
+diff --git a/docs/ResponseFiles.md b/docs/ResponseFiles.md
+index d23d88a..6fb0a93 100644
+--- a/docs/ResponseFiles.md
++++ b/docs/ResponseFiles.md
+@@ -47,3 +47,5 @@ These options are:
+ - The file can use Unix or Windows style line endings
+ - Must be encoded as UTF-8
+ 
++sccache expands these files to parse the arguments. On Windows, when the expanded command line is longer than the 32,767 characters `CreateProcess` accepts, sccache writes the arguments into a new response file to run rustc with, and deletes it when rustc exits.
++
+diff --git a/src/compiler/cicc.rs b/src/compiler/cicc.rs
+index 7c714ad..4216f0a 100644
+--- a/src/compiler/cicc.rs
++++ b/src/compiler/cicc.rs
+@@ -322,6 +322,7 @@ pub fn generate_compile_commands(
+         env_vars: env_vars.to_owned(),
+         cwd: cwd.to_owned(),
+         share_jobserver: false,
++        rustc_response_file: false,
+     };
+ 
+     #[cfg(not(feature = "dist-client"))]
+diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
+index 0203948..b3ef092 100644
+--- a/src/compiler/compiler.rs
++++ b/src/compiler/compiler.rs
+@@ -178,6 +178,9 @@ pub struct SingleCompileCommand {
+     /// costs a `fork` per compile; in the `false` direction it costs `rustc`
+     /// its parallelism limit, which is what the jobserver exists to enforce.
+     pub share_jobserver: bool,
++    /// Whether arguments too long for the command line may be passed in a
++    /// rustc `@response` file.
++    pub rustc_response_file: bool,
+ }
+ 
+ #[async_trait]
+@@ -209,11 +212,18 @@ impl CompileCommandImpl for SingleCompileCommand {
+             env_vars,
+             cwd,
+             share_jobserver,
++            rustc_response_file,
+         } = self;
+         // Resolve compiler avoiding ccache wrappers to prevent double-caching.
+         let resolved_executable = resolve_compiler_avoiding_wrapper(executable, env_vars);
++        // Kept alive until the compiler has exited.
++        let (arguments, _response_file) = if *rustc_response_file {
++            super::rust::spawn_arguments(&resolved_executable, arguments.clone())?
++        } else {
++            (arguments.clone(), None)
++        };
+         let mut cmd = creator.clone().new_command_sync(&resolved_executable);
+-        cmd.args(arguments)
++        cmd.args(&arguments)
+             .env_clear()
+             .envs(env_vars.clone())
+             .current_dir(cwd);
+diff --git a/src/compiler/cudafe.rs b/src/compiler/cudafe.rs
+index d6440ac..8089c7d 100644
+--- a/src/compiler/cudafe.rs
++++ b/src/compiler/cudafe.rs
+@@ -155,6 +155,7 @@ pub fn generate_compile_commands(
+         env_vars: env_vars.to_owned(),
+         cwd: cwd.to_owned(),
+         share_jobserver: false,
++        rustc_response_file: false,
+     };
+ 
+     #[cfg(not(feature = "dist-client"))]
+diff --git a/src/compiler/diab.rs b/src/compiler/diab.rs
+index f49aec0..ea95871 100644
+--- a/src/compiler/diab.rs
++++ b/src/compiler/diab.rs
+@@ -381,6 +381,7 @@ pub fn generate_compile_commands(
+         env_vars: env_vars.to_owned(),
+         cwd: cwd.to_owned(),
+         share_jobserver: false,
++        rustc_response_file: false,
+     };
+ 
+     Ok((command, None, Cacheable::Yes))
+diff --git a/src/compiler/gcc.rs b/src/compiler/gcc.rs
+index d837c7a..7db7ccc 100644
+--- a/src/compiler/gcc.rs
++++ b/src/compiler/gcc.rs
+@@ -1092,6 +1092,7 @@ where
+         env_vars: env_vars.to_owned(),
+         cwd: cwd.to_owned(),
+         share_jobserver: false,
++        rustc_response_file: false,
+     };
+ 
+     #[cfg(not(feature = "dist-client"))]
+diff --git a/src/compiler/msvc.rs b/src/compiler/msvc.rs
+index bf29547..09431bc 100644
+--- a/src/compiler/msvc.rs
++++ b/src/compiler/msvc.rs
+@@ -1322,6 +1322,7 @@ fn generate_compile_commands(
+         env_vars: env_vars.clone(),
+         cwd: cwd.to_owned(),
+         share_jobserver: false,
++        rustc_response_file: false,
+     };
+ 
+     #[cfg(not(feature = "dist-client"))]
+diff --git a/src/compiler/rust.rs b/src/compiler/rust.rs
+index ba3d338..91cce3b 100644
+--- a/src/compiler/rust.rs
++++ b/src/compiler/rust.rs
+@@ -453,11 +453,17 @@ where
+         .tempdir()
+         .context("Failed to create temp dir")?;
+     let dep_file = temp_dir.path().join("deps.d");
++    let mut arguments = arguments.to_vec();
++    arguments.extend([
++        "--emit".into(),
++        "dep-info".into(),
++        "-o".into(),
++        dep_file.clone().into(),
++    ]);
++    // Kept alive until rustc has exited.
++    let (arguments, _response_file) = spawn_arguments(executable, arguments)?;
+     let mut cmd = creator.clone().new_command_sync(executable);
+-    cmd.args(arguments)
+-        .args(&["--emit", "dep-info"])
+-        .arg("-o")
+-        .arg(&dep_file)
++    cmd.args(&arguments)
+         .env_clear()
+         .envs(env_vars.to_vec())
+         .current_dir(cwd);
+@@ -626,9 +632,12 @@ where
+     T: Clone + CommandCreatorSync,
+ {
+     let start = time::Instant::now();
++    let mut arguments = arguments;
++    arguments.extend(["--print".into(), "file-names".into()]);
++    // Kept alive until rustc has exited.
++    let (arguments, _response_file) = spawn_arguments(executable, arguments)?;
+     let mut cmd = creator.clone().new_command_sync(executable);
+     cmd.args(&arguments)
+-        .args(&["--print", "file-names"])
+         .env_clear()
+         .envs(env_vars.to_vec())
+         .current_dir(cwd);
+@@ -1321,6 +1330,74 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
+     take_arg!("-o", PathBuf, CanBeSeparated, TooHardPath),
+ ]);
+ 
++/// `CreateProcessW`'s command line limit, in UTF-16 units.
++#[cfg(windows)]
++const MAX_COMMAND_LINE: usize = 32_767;
++
++/// The arguments to spawn rustc with. We expand `@response` files while
++/// parsing, so a command line cargo kept short with one can be too long to
++/// spawn on Windows (os error 206); such arguments go back into a response
++/// file. Keep the returned path alive until rustc exits.
++pub(crate) fn spawn_arguments(
++    executable: &Path,
++    arguments: Vec<OsString>,
++) -> Result<(Vec<OsString>, Option<tempfile::TempPath>)> {
++    #[cfg(windows)]
++    return pack_arguments(executable, arguments, MAX_COMMAND_LINE);
++    #[cfg(not(windows))]
++    {
++        let _ = executable;
++        Ok((arguments, None))
++    }
++}
++
++#[cfg_attr(not(windows), allow(dead_code))]
++fn pack_arguments(
++    executable: &Path,
++    arguments: Vec<OsString>,
++    limit: usize,
++) -> Result<(Vec<OsString>, Option<tempfile::TempPath>)> {
++    // Upper bound after quoting: two quotes and a space per argument, and an
++    // escape for every backslash or quote.
++    let quoted = |s: &std::ffi::OsStr| {
++        let s = s.to_string_lossy();
++        s.encode_utf16().count() + s.matches(['\\', '"']).count() + 3
++    };
++    let length =
++        quoted(executable.as_os_str()) + arguments.iter().map(|a| quoted(a)).sum::<usize>();
++    if length <= limit {
++        return Ok((arguments, None));
++    }
++    // rustc reads one UTF-8 argument per line and does not expand `@` inside
++    // the file, so anything else stays on the command line.
++    let lines: Option<Vec<&str>> = arguments
++        .iter()
++        .map(|a| a.to_str())
++        .map(|a| {
++            a.filter(|a| {
++                !a.is_empty() && a.trim() == *a && !a.contains(['\n', '\r']) && !a.starts_with('@')
++            })
++        })
++        .collect();
++    let Some(lines) = lines else {
++        debug!("command line of {length} units is too long, but cannot go into a response file");
++        return Ok((arguments, None));
++    };
++    let mut file = tempfile::Builder::new()
++        .prefix("sccache-rustc-")
++        .suffix(".args")
++        .tempfile()?;
++    std::io::Write::write_all(&mut file, lines.join("\n").as_bytes())?;
++    let path = file.into_temp_path();
++    let mut at = OsString::from("@");
++    at.push(path.as_os_str());
++    trace!(
++        "command line of {length} units passed in {}",
++        path.display()
++    );
++    Ok((vec![at], Some(path)))
++}
++
+ /// Split the contents of a rustc `@response` file into arguments.
+ ///
+ /// rustc reads response files by splitting on newlines, trimming whitespace,
+@@ -2093,6 +2170,7 @@ impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
+             // spawns as many threads as there are CPUs, which is the
+             // oversubscription sccache's own jobserver exists to prevent.
+             share_jobserver: true,
++            rustc_response_file: true,
+         };
+ 
+         #[cfg(not(feature = "dist-client"))]
+@@ -4552,6 +4630,47 @@ foo.rs:
+         assert_eq!(h.target_json, Some(PathBuf::from("/path/to/target.json")));
+     }
+ 
++    #[test]
++    fn test_pack_arguments_short_command_line_unchanged() {
++        let args = ovec!["--crate-name", "foo", "src/lib.rs"];
++        let (packed, file) = pack_arguments(Path::new("rustc"), args.clone(), 1000).unwrap();
++        assert_eq!(packed, args);
++        assert!(file.is_none());
++    }
++
++    #[test]
++    fn test_pack_arguments_long_command_line_uses_response_file() {
++        let args: Vec<OsString> = (0..400)
++            .map(|i| OsString::from(format!("-Ldependency=C:\\target\\build\\crate{i}\\out")))
++            .chain(ovec!["--crate-name", "foo", "src/lib.rs"])
++            .collect();
++        let (packed, file) = pack_arguments(Path::new("rustc"), args.clone(), 1000).unwrap();
++        let file = file.expect("a response file");
++        assert_eq!(packed.len(), 1);
++        assert_eq!(packed[0], OsString::from(format!("@{}", file.display())));
++        let contents = std::fs::read_to_string(&file).unwrap();
++        assert_eq!(split_rust_response_file_args(&contents), args);
++        assert_eq!(contents.lines().count(), args.len());
++        let path = file.to_path_buf();
++        drop(file);
++        assert!(!path.exists(), "the response file is removed once dropped");
++    }
++
++    #[test]
++    fn test_pack_arguments_keeps_arguments_a_response_file_cannot_hold() {
++        for odd in ["two\nlines", " padded", "", "@nested"] {
++            let mut args = ovec!["--crate-name", "foo"];
++            args.extend(std::iter::repeat_n(
++                OsString::from("-Lnative=C:\\some\\long\\path"),
++                100,
++            ));
++            args.push(OsString::from(odd));
++            let (packed, file) = pack_arguments(Path::new("rustc"), args.clone(), 1000).unwrap();
++            assert_eq!(packed, args, "{odd:?}");
++            assert!(file.is_none());
++        }
++    }
++
+     #[test]
+     fn test_split_rust_response_file_args() {
+         // Simple one arg per line.
+diff --git a/src/compiler/tasking_vx.rs b/src/compiler/tasking_vx.rs
+index 8b30120..250a891 100644
+--- a/src/compiler/tasking_vx.rs
++++ b/src/compiler/tasking_vx.rs
+@@ -394,6 +394,7 @@ fn generate_compile_commands(
+         env_vars: env_vars.to_owned(),
+         cwd: cwd.to_owned(),
+         share_jobserver: false,
++        rustc_response_file: false,
+     };
+ 
+     Ok((command, None, Cacheable::Yes))
+diff --git a/src/dist/mod.rs b/src/dist/mod.rs
+index cf7cbcd..407cb0c 100644
+--- a/src/dist/mod.rs
++++ b/src/dist/mod.rs
+@@ -328,6 +328,8 @@ pub fn try_compile_command_to_dist(
+         cwd,
+         // The jobserver is a local resource; a remote worker has its own.
+         share_jobserver: _,
++        // Response files are for the local Windows command line limit.
++        rustc_response_file: _,
+     } = command;
+     Some(CompileCommand {
+         executable: executable.into_os_string().into_string().ok()?,

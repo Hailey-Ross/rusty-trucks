@@ -40,6 +40,24 @@ jobs:
       # Cargo's dependency cache excludes our vendored Bevy crates. Cache their
       # compiler outputs by content as well, independent of checkout timestamps.
       - uses: mozilla-actions/sccache-action@v0.0.11
+      # sccache 0.19.0 with .github/sccache's patch (os error 206 on long rustc lines; see rusty-trucks-win.yml).
+      - id: sccache-patched
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sccache-patched
+          key: sccache-0.19.0-${{ hashFiles('.github/sccache/*.patch') }}
+      - name: Build patched sccache
+        if: steps.sccache-patched.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git -c core.autocrlf=false clone --quiet --depth 1 --branch v0.19.0 https://github.com/mozilla/sccache.git "$env:RUNNER_TEMP/sccache-src"
+          git -C "$env:RUNNER_TEMP/sccache-src" apply "$env:GITHUB_WORKSPACE/.github/sccache/0001-rustc-response-file.patch"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo install --locked --path "$env:RUNNER_TEMP/sccache-src" --root "$env:RUNNER_TEMP/sccache-patched" --no-default-features --features gha
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Use patched sccache
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH "$env:RUNNER_TEMP\sccache-patched\bin"
       - name: Check publisher without starting game
         run: python -m unittest discover -s tools -p "test_*release*.py" -v
       - name: Check isolated asset refresh and failure recovery
@@ -48,9 +66,7 @@ jobs:
         shell: pwsh
         env:
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || 'experimental' }}
-          # Short build folder so sccache's expanded rustc line fits Windows' limit (see rusty-trucks-win.yml).
           RUSTC_WRAPPER: sccache
-          CARGO_BUILD_BUILD_DIR: D:\b
         run: ./scripts/Build-Release.ps1
       - name: Report compiler cache hits
         if: always()
