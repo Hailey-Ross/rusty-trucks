@@ -252,6 +252,9 @@ pub(crate) struct FrameStateData {
     pub traffic_lights: [Vec4; 2],
     /// x: 1 while the videoscreen feed is live (`video_screens.rs`), else the static screen texture.
     pub video_feed: Vec4,
+    /// The props' world shadow term (`dynamicobject_defaultPS`, research b1022): x the floor (`g_CSMSelfBias.w`),
+    /// y the window around the camera in meters, w 1 when on (data present).
+    pub prop_world_shadow: Vec4,
 }
 
 impl Default for FrameStateData {
@@ -270,6 +273,7 @@ impl Default for FrameStateData {
             view_dot_light: RETAIL_VIEW_DOT_LIGHT,
             traffic_lights: [Vec4::ZERO; 2],
             video_feed: Vec4::ZERO,
+            prop_world_shadow: Vec4::ZERO,
         }
     }
 }
@@ -277,6 +281,53 @@ impl Default for FrameStateData {
 /// Retail `g_ViewDotLight` before the first camera frame: `.x` at a view
 /// perpendicular to the light (see `ViewDotLightParams`).
 const RETAIL_VIEW_DOT_LIGHT: Vec4 = Vec4::new(0.5, 0.02, 0.4, 0.);
+
+/// The props' world shadow (research b1022): retail's sun-aligned world shadow map around the camera, which
+/// `dynamicobject_defaultPS` reads as `max(world, g_CSMSelfBias.w)`. `retail` = the disc's `rendering/cascade_shadowmap`
+/// values (`render-parameters.json` `rendering.cascade_shadowmap`), `None` without them (the term stays lit, no invented
+/// constants); `floor` / `window` = those values or a mod's (`set_tuning('shadows', {prop_floor, prop_window})`).
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct PropWorldShadow {
+    pub retail: Option<(f32, f32)>,
+    pub floor: f32,
+    pub window: f32,
+}
+
+impl PropWorldShadow {
+    /// From the `rendering.cascade_shadowmap` rows: [self bias xyz, floor (w)], [window, 0, 0, 0].
+    fn from_rows(rows: &[[f32; 4]]) -> Option<Self> {
+        let [bias, extent] = rows else { return None };
+        let (floor, window) = (bias[3], extent[0]);
+        (floor.is_finite() && (0.0..=1.0).contains(&floor) && window.is_finite() && window > 0.0)
+            .then_some(Self { retail: Some((floor, window)), floor, window })
+    }
+
+    /// The frame row: x floor, y window, z 1 for the debug view (`SKATE_DEBUG_PROP_SHADOW=1`: props drawn green where
+    /// the world shadow term is lit, red where shaded), w 1 when on.
+    pub(crate) fn row(&self) -> Vec4 {
+        if self.retail.is_none() && self.window <= 0.0 {
+            return Vec4::ZERO;
+        }
+        static DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let debug = *DEBUG.get_or_init(|| std::env::var("SKATE_DEBUG_PROP_SHADOW").is_ok_and(|v| v == "1"));
+        Vec4::new(self.floor, self.window, if debug { 1.0 } else { 0.0 }, 1.0)
+    }
+}
+
+fn load_prop_world_shadow(mut commands: Commands, config: Res<crate::config::Config>) {
+    let rows = MaterialTuning::load(&config.asset_root).rows.remove("rendering.cascade_shadowmap");
+    let params = rows.as_deref().and_then(PropWorldShadow::from_rows).unwrap_or_default();
+    info!("PROP_WORLD_SHADOW floor={:.3} window={:.1} from_data={}", params.floor, params.window, params.retail.is_some());
+    commands.insert_resource(params);
+}
+
+fn advance_prop_world_shadow(params: Option<Res<PropWorldShadow>>, mut state: ResMut<FrameStateData>) {
+    let row = params.map_or(Vec4::ZERO, |p| p.row());
+    if state.prop_world_shadow != row {
+        info!("PROP_WORLD_SHADOW row floor={:.3} window={:.1} debug={} on={}", row.x, row.y, row.z, row.w);
+        state.prop_world_shadow = row;
+    }
+}
 
 /// Inputs of `g_ViewDotLight` from VLT `rendering.default` (828012D0), mod-changeable: docs/hails-additions/35-world-shading-parity.md#viewdotlight-inputs
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
@@ -316,7 +367,7 @@ impl ViewDotLightParams {
 }
 
 impl FrameStateData {
-    const SIZE: usize = 26 * 16;
+    const SIZE: usize = 27 * 16;
 
     /// Turns the world's dynamic-shadow reads on with `floor` as the lightest
     /// value a dynamic shadow can leave on the baked world (see
@@ -335,6 +386,7 @@ impl FrameStateData {
             .chain(std::iter::once(self.view_dot_light))
             .chain(self.traffic_lights)
             .chain(std::iter::once(self.video_feed))
+            .chain(std::iter::once(self.prop_world_shadow))
     }
 
     /// The buffer bytes, little-endian f32 lanes, in a fixed array: no allocation per frame (b250).
@@ -358,6 +410,7 @@ impl FrameStateData {
             .chain(std::iter::once(self.view_dot_light))
             .chain(self.traffic_lights)
             .chain(std::iter::once(self.video_feed))
+            .chain(std::iter::once(self.prop_world_shadow))
         {
             for component in row.to_array() {
                 out.extend_from_slice(&component.to_le_bytes());
@@ -2072,9 +2125,9 @@ impl Plugin for RetailRenderPlugin {
                 crate::video_screens::VideoScreensPlugin,
             ))
             .add_plugins(ExtractResourcePlugin::<FrameStateData>::default())
-            .add_systems(Startup, (initialize_frame_state, load_pca, crate::water_look::load, load_view_dot_light))
+            .add_systems(Startup, (initialize_frame_state, load_pca, crate::water_look::load, load_view_dot_light, load_prop_world_shadow))
             .init_resource::<TrafficLightCycle>()
-            .add_systems(Update, (advance_frame_state, advance_traffic_lights, advance_view_dot_light));
+            .add_systems(Update, (advance_frame_state, advance_traffic_lights, advance_view_dot_light, advance_prop_world_shadow));
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
                 Render,

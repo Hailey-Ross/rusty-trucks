@@ -393,7 +393,8 @@ function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",a
 -- livingworld_models record}, glbs = {model record = GLB path}, paint_gain, retail 1; names as in vehicles.json,
 -- sdk.engine.inspect(key, "world_tuning:vehicles") lists the live tables; cars already on the road keep theirs)
 -- or the dynamic shadow floor on the baked world ("shadows": world_floor =
--- {r, g, b}, each 0..1, retail {0.05, 0.09, 0.13}) or the district backdrop ("backdrop": visible,
+-- {r, g, b}, each 0..1, retail {0.05, 0.09, 0.13}; prop_floor 0..1, how dark props get in a building's shade,
+-- and prop_window, meters around the camera, both from the disc, retail 0.06 and 28.8) or the district backdrop ("backdrop": visible,
 -- retail true: Industrial's sea, far sea planes, tree walls; proxy_terrain, retail true: the far-proxy hills
 -- under Industrial's south tree wall) or the checkpoint respawn ("respawn": air_timeout_ticks, retail 300 =
 -- 5 s of 1/60 s ticks in the air before the skater is sent to the last checkpoint, 1..216000) or the

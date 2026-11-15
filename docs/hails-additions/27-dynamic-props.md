@@ -276,11 +276,40 @@ parse upgrade, `supported`, tests), `crates/skate-game/src/retail_world.wgsl`.
   2026-10-07, 0 to 58 s). Expect sun-facing sides lit with visible dents and corrosion from the normal / detail maps,
   sides away from the sun much darker (ambient 0.04), specular glints on metal, the player's shadow on props.
 
+## D9b: the props' world shadow and props as shadow casters (2026-11-14, ask 670)
+
+**Problem.** Props in a building's or bridge's shade were lit as if in full sun, so they stood out bright (user,
+2026-11-14: "some props are bright and stand out"). Props also cast into no shadow map.
+
+**Retail evidence (research b1022).** `shadowWorld` is not a static map: a 512 x 512 depth target (RenderMan+0xE94,
+created in 0x827F7CA8; the CSM atlas is 1536 x 512) redrawn every frame by `guess_ScenePipeMain_Render` 0x827F82F8
+from a sun-aligned view (SceneRenderPipe RenderMan+0x19940, `WorldShadow_defaultVS/PS`, depth only) [code]. Its
+window is `rendering/cascade_shadowmap` field 0x7CF59B3581056A13 = 28.8 (50 in `csm_park_edit`) [code + data].
+`g_CSMSelfBias` is written each tick by 0x827FFFB0 into RenderMan+0x34650 (`addis r27,r28,3; addi r27,r27,18000`;
+.w = field 0x02064C6BA5928870 = 0.06, .xyz = 0x025E617C7D1937D0 = (0.0025, 0.005, 0.012)) [code, recomp asm checked;
+data checked in the exported collections]. Which instance types draw into the map, its exact center and depth bias
+are still open.
+
+**Change.**
+- Setup: `render_parameters.py` exports `rendering.cascade_shadowmap` ([self bias xyz, floor], [window]).
+- Engine: `PropWorldShadow` (retail_render.rs) from those rows, written to the new frame row `prop_world_shadow`
+  (x floor, y window, w on); without the rows the term stays lit (no invented constants). Log `PROP_WORLD_SHADOW`.
+- Shader (`fam==15u`): the world term is the all-caster sun map (the one the characters read, `flags & 5 == 1`;
+  world sections, props and characters cast into it) within the window of view depth, floored at the data's floor:
+  `shade = min(step(N.L) * csm, max(world, 0.06))` as retail. NOT RETAIL YET: our sun map is Bevy's 4 cascades to
+  100 m, not a 512 map; the window center is inferred.
+- Prop parts join render layer 28, so props cast into the dynamic shadow map (the CSM term) and onto the baked world.
+- Mods: `sdk.world.set_tuning('shadows', {prop_floor, prop_window})`; disabling the mod restores the disc's values.
+- Debug: `SKATE_DEBUG_PROP_SHADOW=1` draws props green where the world term is lit, red where shaded.
+
+**Verification.** Python `test_prop_world_shadow_values_come_from_cascade_shadowmap`; Rust
+`prop_world_shadow_takes_mod_values_and_restores_the_disc` and the skate-mods patch validation; render / shader tests
+pass. Desktop debug capture (DownTown Aletown): the rails read the map (green, their shaded undersides red). A prop in
+a building's shade was not on screen at the five teleport spots checked; that case waits for play.
+
 **Open questions.**
-- `shadowWorld` (static world shadow map) has no engine pass yet: props in a building's or bridge's shade are lit as
-  if in sun. Building it means a world-geometry depth pass from the sun (retail `WorldShadow_defaultVS/PS`) and the
-  `g_CSMSelfBias.w` floor value from the recomp.
-- Props do not cast into the dynamic shadow map, so retail's prop self-shadowing is missing.
+- Which instance types retail draws into `shadowWorld` (0x827FCD28), its center and depth bias, the 256 vs 512 texel
+  step the D9 notes mention.
 - The retail CSM is a 4-tap atlas (three cascades in 1/6 atlas columns); ours uses Bevy's cascade lookup, as for the
   world receivers.
 - The `transparent` binding of `dynamicobject.alphatest` is not read by the shader; the alpha test uses the diffuse

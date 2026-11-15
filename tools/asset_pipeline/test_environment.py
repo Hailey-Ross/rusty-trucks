@@ -143,3 +143,22 @@ class DynamicObjectMaterialTests(unittest.TestCase):
             result = json.loads((Path(tmp) / 'private/render-parameters.json').read_text(encoding='utf-8'))
         for name in ('dynamicobject.default', 'dynamicobject.alphatest'):
             self.assertEqual([[round(v, 6) for v in r] for r in result[name]], [[.4, 1., 0., 0.], [.04, .04, .04, 0.]])
+
+    def test_prop_world_shadow_values_come_from_cascade_shadowmap(self):
+        import json
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from .render_parameters import convert
+        exposure = row('Hash_1FFDC8E3ACA07C1F', 'auto_exposure', auto_exposure_target_luminance=raw(.25),
+                       auto_exposure_min=raw(.75), auto_exposure_max=raw(2.5), auto_exposure_damping=raw(.5))
+        csm = row('rendering', 'cascade_shadowmap', Hash_025E617C7D1937D0=raw(.0025, .005, .012),
+                  Hash_02064C6BA5928870=raw(.06), Hash_7CF59B3581056A13=raw(28.8))
+        with TemporaryDirectory() as tmp:
+            convert(Path(tmp), {'collections': [exposure, csm]})
+            result = json.loads((Path(tmp) / 'private/render-parameters.json').read_text(encoding='utf-8'))
+        self.assertEqual([[round(v, 4) for v in r] for r in result['rendering.cascade_shadowmap']],
+                         [[.0025, .005, .012, .06], [28.8, 0., 0., 0.]])
+        with TemporaryDirectory() as tmp:
+            convert(Path(tmp), {'collections': [exposure]})
+            result = json.loads((Path(tmp) / 'private/render-parameters.json').read_text(encoding='utf-8'))
+        self.assertNotIn('rendering.cascade_shadowmap', result)

@@ -569,6 +569,8 @@ pub(crate) fn spawn_instances(
                     MeshMaterial3d(table.tinted(*slab, *class, draw, materials)),
                     Transform::default(),
                     *aabb,
+                    // Retail props cast into the CSM (doc 27 "D9"): layer 28 is the dynamic shadow light's caster set.
+                    bevy::camera::visibility::RenderLayers::from_layers(&[0, 28]),
                 )
             })
             .collect();

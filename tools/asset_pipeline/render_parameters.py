@@ -46,6 +46,22 @@ def convert(assets, converted):
         rows.append(list(struct.unpack('>%df' % count, bytes.fromhex(data[:8 * count]))) if data else None)
     if all(rows):
         result['rendering.default'] = [rows[0], rows[1], rows[2] + rows[3] + [0.0, 0.0]]
+    # The props' world shadow (research b1022, sub_827FFFB0): g_CSMSelfBias xyz / w (w floors the world shadow term of
+    # dynamicobject_defaultPS) and the world shadow window, from rendering/cascade_shadowmap. Without the record the
+    # game leaves the term lit.
+    try:
+        csm, _ = collections.resolve('rendering', 'cascade_shadowmap')
+    except KeyError:
+        csm = {}
+    bias = csm.get(key_hash('Hash_025E617C7D1937D0'), {}).get('data', '')
+    floor = csm.get(key_hash('Hash_02064C6BA5928870'), {}).get('data', '')
+    window = csm.get(key_hash('Hash_7CF59B3581056A13'), {}).get('data', '')
+    if len(bias) >= 24 and len(floor) >= 8 and len(window) >= 8:
+        xyz = list(struct.unpack('>3f', bytes.fromhex(bias[:24])))
+        result['rendering.cascade_shadowmap'] = [
+            xyz + [struct.unpack('>f', bytes.fromhex(floor[:8]))[0]],
+            [struct.unpack('>f', bytes.fromhex(window[:8]))[0], 0.0, 0.0, 0.0],
+        ]
     path = assets / 'private/render-parameters.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result), encoding='utf-8')

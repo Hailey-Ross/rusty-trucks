@@ -113,6 +113,13 @@ fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
                 Some(mut r) => *r = s,
                 None => world.insert_resource(s),
             }
+            // The props' world shadow: the mod's values over the disc's (`PropWorldShadow::retail`), the disc's again
+            // when the mod stops.
+            if let Some(mut prop) = world.get_resource_mut::<crate::retail_render::PropWorldShadow>() {
+                let (floor, window) = prop.retail.unwrap_or((0.0, 0.0));
+                prop.floor = p.prop_floor.unwrap_or(floor);
+                prop.window = p.prop_window.unwrap_or(window);
+            }
         }
         "backdrop" => {
             let p = t.merged(domain, |p| if let Patch::Backdrop(p) = p { Some(p) } else { None });
@@ -807,7 +814,10 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "yaw_replaces_torque": r.yaw_replaces_torque, "ignore_vertical": r.ignore_vertical,
                 "wake_on_command": r.wake_on_command, "by_template": by})
         }),
-        "shadows" => world.get_resource::<WorldShadowSettings>().map_or(Value::Null, |s| json!({"world_floor": s.floor.to_array()})),
+        "shadows" => world.get_resource::<WorldShadowSettings>().map_or(Value::Null, |s| {
+            let prop = world.get_resource::<crate::retail_render::PropWorldShadow>().copied().unwrap_or_default();
+            json!({"world_floor": s.floor.to_array(), "prop_floor": prop.floor, "prop_window": prop.window})
+        }),
         "backdrop" => world.get_resource::<BackdropSettings>().map_or(Value::Null, |s| json!({"visible": s.visible, "proxy_terrain": s.proxy_terrain})),
         "respawn" => world.get_resource::<RespawnSettings>().map_or(Value::Null, |s| json!({"air_timeout_ticks": s.air_timeout_ticks})),
         "exposure" => world.get_resource::<ExposureMeter>().map_or(Value::Null, |s| json!({"meter_weights": s.weights.to_array(), "meter_scale": s.scale})),
@@ -1000,6 +1010,21 @@ mod tests {
         assert_eq!(w.resource::<WorldShadowSettings>().floor, Vec3::splat(0.5));
         clear_all(&mut w);
         assert_eq!(*w.resource::<WorldShadowSettings>(), WorldShadowSettings::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn prop_world_shadow_takes_mod_values_and_restores_the_disc() {
+        use crate::retail_render::PropWorldShadow;
+        let mut w = world();
+        let disc = PropWorldShadow { retail: Some((0.06, 28.8)), floor: 0.06, window: 28.8 };
+        w.insert_resource(disc);
+        set(&mut w, "dev.a", "shadows", Some(json!({"prop_floor": 0.3, "prop_window": 60.0}))).unwrap();
+        let p = *w.resource::<PropWorldShadow>();
+        assert_eq!((p.floor, p.window), (0.3, 60.0));
+        assert_eq!(read(&w, "shadows")["prop_window"], json!(60.0f32));
+        assert!(set(&mut w, "dev.b", "shadows", Some(json!({"prop_floor": 2.0}))).is_err());
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<PropWorldShadow>(), disc, "mod disable restores the disc's values");
     }
 
     #[test]
