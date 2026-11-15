@@ -475,10 +475,15 @@ function Get-PrebuiltLauncher([string]$Out) {
     } catch { Remove-Item $Out -ErrorAction SilentlyContinue; return $false }
     finally { Remove-Item $side -ErrorAction SilentlyContinue }
 }
-# The switchover (docs/hails-additions/44-every-os.md "Switching launchers"): launcher-flavor.txt says "rust" once
-# Tools > Try the new launcher put the Rust launcher in place of SkateLauncher.exe. It keeps itself current from the
-# release, so this never puts the classic exe back over it.
-function Launcher-IsRust { $f = Join-Path $StateDir 'launcher-flavour.txt'; (Test-Path $f) -and "$(Get-Content $f -Raw)".Trim() -eq 'rust' }
+# The switchover (docs/hails-additions/44-every-os.md "Switching launchers"): the classic C# window is deprecated
+# (2026-11-14). The Rust launcher from the release is always the window: a classic SkateLauncher.exe (a .NET assembly)
+# replaces itself with it at its next start check, and build.bat downloads it instead of compiling SkateLauncher.cs.
+function Launcher-IsRust { $true }
+function Launcher-ExeIsClassic {
+    $exe = Join-Path $Here 'SkateLauncher.exe'
+    if (-not (Test-Path $exe)) { return $false }
+    try { [void][Reflection.AssemblyName]::GetAssemblyName($exe); $true } catch { $false }
+}
 function Switch-ToNewLauncher {
     $ErrorActionPreference = 'Continue'
     $repo = ((Setting 'fork_url' 'https://github.com/Hailey-Ross/rusty-trucks.git') -replace '\.git$', '') -replace '^https://github\.com/', ''
@@ -501,10 +506,14 @@ function Switch-ToNewLauncher {
     } catch { Remove-Item $new -ErrorAction SilentlyContinue; return "Try the new launcher: could not swap the launcher ($($_.Exception.Message)); nothing changed." }
     Set-Content -Path (Join-Path $StateDir 'launcher-flavour.txt') -Value 'rust' -Encoding ascii
     Set-Content -Path (Join-Path $StateDir 'restart.txt') -Value 'rust' -Encoding ascii
-    'The new launcher is installed and starts now. Tools > Switch back to the classic launcher undoes it.'
+    'The new launcher is installed and starts now.'
 }
 function Rebuild-LauncherExe {
-    if (Launcher-IsRust) { return $true }
+    if (Launcher-IsRust) {
+        if ((Test-Path (Join-Path $Here 'SkateLauncher.exe')) -and -not (Launcher-ExeIsClassic)) { return $true }
+        $r = Switch-ToNewLauncher; Self-Log $r
+        return -not (Launcher-ExeIsClassic) -and (Test-Path (Join-Path $Here 'SkateLauncher.exe'))
+    }
     $cs = Join-Path $Here 'SkateLauncher.cs'; $exe = Join-Path $Here 'SkateLauncher.exe'; $old = Join-Path $Here 'SkateLauncher.old.exe'
     $new = Join-Path $Here 'SkateLauncher.new.exe'
     if (-not (Get-PrebuiltLauncher $new)) {
@@ -523,6 +532,7 @@ function Start-Stage([string]$Text) { if ($env:SKATE_LAUNCHER_UI -eq '2') { Writ
 # One line for the result. Writes restart.txt when the window's exe was rebuilt (SkateLauncher.exe restarts into it).
 function Self-Update([switch]$Force) {
     $ErrorActionPreference = 'Continue'
+    if (Launcher-ExeIsClassic) { $r = Switch-ToNewLauncher; Self-Log $r; return $r }
     Write-Host "  Checking the launcher: $SelfBranch on $SelfUrl..."
     $keep = $env:GIT_TERMINAL_PROMPT; $env:GIT_TERMINAL_PROMPT = '0'
     try {
@@ -1033,7 +1043,7 @@ $Entries = [ordered]@{
     'tool-refresh'  = @{ Group = 'tools'; Name = 'Refresh game files';        Kind = 'tool';     Hint = 'Checks the game files without playing; converts only what changed.' }
     'tool-build'    = @{ Group = 'tools'; Name = 'Update and build the selected version'; Kind = 'tool'; Hint = 'Fetches its branch and builds it now, so the next launch starts at once.' }
     'tool-self-update' = @{ Group = 'tools'; Name = 'Update the launcher';    Kind = 'tool';     Hint = 'Brings the launcher to the newest hails-additions on the fork and rebuilds it (also at every start and before Update and build).' }
-    'tool-try-new-launcher' = @{ Group = 'tools'; Name = 'Try the new launcher'; Kind = 'tool'; Hint = 'Puts the new launcher (the same camcorder, rewritten to run on every OS) in place of this one and restarts into it. Your Steam shortcut keeps working; its Tools > Switch back to the classic launcher undoes it.' }
+    'tool-try-new-launcher' = @{ Group = 'tools'; Name = 'Try the new launcher'; Kind = 'tool'; Hint = 'Puts the new launcher (the same camcorder, rewritten to run on every OS) in place of this one and restarts into it. This launcher is deprecated and does this by itself at its next start; your Steam shortcut keeps working.' }
     'tool-send'     = @{ Group = 'tools'; Name = 'Send the logs now';         Kind = 'tool';     Hint = 'Runs the after-session send (config.json after_session).' }
     'tool-share'    = @{ Group = 'tools'; Name = 'Share the last session via GitHub'; Kind = 'tool'; Hint = "Packs the new logs and opens a GitHub issue on the selected version's repository; you drop the zip in. Needs Share sessions turned on." }
     'tool-recomp-update'  = @{ Group = 'tools'; Name = 'Recomp: get the newest build'; Kind = 'tool'; Hint = "Copies the main PC's newest recomp build (play-recomp.ps1 -Update)." }
@@ -1186,7 +1196,7 @@ function Run-Tool([string]$Key, $Ver) {
         'tool-try-new-launcher' { $r = Switch-ToNewLauncher }
         'tool-build' {
             # The launcher first, so one press brings both to the newest push.
-            $self = ''; if ((Setting 'self_update' $true) -ne $false) { $self = Self-Update; if ($self) { Write-Host "  $self" } }
+            $self = ''; if ((Setting 'self_update' $true) -ne $false -or (Launcher-ExeIsClassic)) { $self = Self-Update; if ($self) { Write-Host "  $self" } }
             $r = if (Ensure-Version $Ver) { "Ready: $($Ver.name) ($(Version-Status $Ver))" } else { "Build failed: $($Ver.name). Build log: $script:BuildLog" }
             if ($self -and $self -notlike 'Launcher: up to date*') { $r = "$self
 $r" }
@@ -1317,7 +1327,7 @@ if ($Entry -eq 'pending') {
     $cs = Join-Path $Here 'SkateLauncher.cs'; $exe = Join-Path $Here 'SkateLauncher.exe'; $old = Join-Path $Here 'SkateLauncher.old.exe'
     if (Test-Path $old) { Remove-Item $old -ErrorAction SilentlyContinue }
     $selfSaid = ''
-    if ((Setting 'self_update' $true) -ne $false -and $env:SKATE_LAUNCHER_NO_SELF -ne '1' -and (Running-Games).Count -eq 0) { $selfSaid = Self-Update }
+    if (((Setting 'self_update' $true) -ne $false -or (Launcher-ExeIsClassic)) -and $env:SKATE_LAUNCHER_NO_SELF -ne '1' -and (Running-Games).Count -eq 0) { $selfSaid = Self-Update }
     # A pulled or patched launcher updates its own exe too: SkateLauncher.cs newer than SkateLauncher.exe = build it again.
     if (-not (Test-Path $SelfRestart) -and (Test-Path $cs) -and (Test-Path $exe) -and (Get-Item $cs).LastWriteTime -gt (Get-Item $exe).LastWriteTime) {
         Start-Stage 'Building the updated launcher'

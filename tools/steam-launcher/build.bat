@@ -1,6 +1,7 @@
 @echo off
-rem Gets SkateLauncher.exe next to this file: the release's prebuilt one when it was built from this SkateLauncher.cs,
-rem otherwise built here with the C# compiler that ships with Windows (.NET Framework 4). Then starts it.
+rem Gets SkateLauncher.exe next to this file: the Skate launcher (Rust) from the release, checksum checked. The classic
+rem C# launcher (SkateLauncher.cs) is deprecated; it is compiled here only when the download fails, and it replaces
+rem itself with the Rust launcher at its next start. Then starts it.
 cd /d "%~dp0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0launcher.ps1" launcher-exe >nul 2>&1
 if not exist SkateLauncher.exe "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /out:SkateLauncher.exe SkateLauncher.cs
