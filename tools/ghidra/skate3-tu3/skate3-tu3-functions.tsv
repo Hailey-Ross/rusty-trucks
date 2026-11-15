@@ -8348,7 +8348,7 @@
 825D9728	AptEnum_RegisterAudio	h1.txt: per collection of class 0x5831CB95F3E90598 formats fe_sound_%s (upper) and %s and calls hook 0x21 _level0._root.RegisterAudioEnum (t3.txt, t4.txt)
 825D98B8	guess_GameLoad_RegisterUpdate	Registers the object +0x18 with the update registry at priority 3 and sets +0x574
 825D99C8	guess_Career_NewCareerTeleportBody	Guess: creates a teleport HUD group and activates a group by name.
-825DA2A0	guess_Career_LookupTeleportByName	Guess: hashes a name with String_HashPjw and looks it up in the maps +0xE0 / +0xF0
+825DA2A0	guess_FrontEnd_ApplyHudVisible	Guess: stores its bool argument into five hashed front-end widget entries and +0xE0 +0xB9 (was guess_Career_LookupTeleportByName)
 825DA410	Screen_ShowScreen	retail name ShowScreen per our notes
 825DA4D8	guess_FE_ShowSongChyron	Guess: shows the chyron with the current song info (+0xE4)
 825DA5F0	Screen_SetScreenState	retail name SetScreenState per our notes
@@ -8938,7 +8938,7 @@
 82612328	guess_FE_ReplayEditor_OnMenuItemB	Guess: Second replay editor menu switch on the item id with FE sounds.
 826127B8	FE_ReplayEditorScreen_Input	research/b385-replay-editor-menus.md:79 (- There are no setter natives (b343): all input is native. FE 12 input vt+40 = 0x826127B8 [code]: returns early)
 82612C28	ReplayEditor_ErrorSoundTooClose	crates/skate-core/src/replay_edit.rs:331 (/// Too close to the clips in / out point (retails error sound, 82612C28).)
-82613500	guess_FE_ReplayEditor_GetMixerValue	Guess: Reads the mixer value from the 83037410 +0xC object slot 0x24.
+82613500	guess_FE_ReplayEditor_IsMarkerCapReached	Guess: returns 1 when the +0x22C count or the mode entry count is 100 or more (was guess_FE_ReplayEditor_GetMixerValue)
 82613598	ReplayEditor_ShowNoMoreMarkersPopup	Plays the error FE sound and shows the popup ID_REPLAY_EDITOR_NO_MORE_MARKERS
 82613650	ReplayEditor_ConfirmRemoveKey	crates/skate-game/src/replay/editor.rs:461 (/// What D-pad Up asks about before removing the key at the cursor (b407, 82613650 via 82508D88, on the ac)
 82613808	ReplayEditor_AskDeleteClipMarker	Marker question popup: delete a clip marker (No / Yes).
@@ -10706,7 +10706,7 @@
 8268D6B8	guess_IconGroup_PopFree	Guess: pops the last pointer from the stack +0x7100..+0x7104, returns 0 when empty
 8268D6F8	IconGroup_Create	Allocates a "cIconGroup" (0x248 bytes, vtable 82307960, critical section +0x220) from the allocator at +0x7610 and adds it to the vector at +0x75C0.
 8268D7E0	guess_ChallengeDiscovery_ReleaseIcons	Guess: releases the icon groups +0x75C0..+0x7610; called by guess_ChallengeDiscovery_Shutdown
-8268D898	guess_IconGroup_FindFreeLocked	Guess: under the +0x220 lock scans the pointer vector +8..+0xC for an entry with +0x28 set and +0x54 clear
+8268D898	guess_MapMarkerList_Draw	Guess: draws each marker quad, the highlighted marker after the loop (was guess_IconGroup_FindFreeLocked)
 8268D960	guess_MapMarker_DrawQuad	Guess: Map markers: 32 x 32 px quads at the clip translation only (with 825E2618).
 8268DB68	Map_PixelsFromCenter	crates/skate-core/src/menus.rs:359 (map pixels relative to the map center, sub_8268DB68)
 8268DC88	guess_FrontEnd_CameraRecordCtor	Vtable 8230C738, ids -1, zero vectors and a flag
@@ -11356,7 +11356,7 @@
 826B6D58	LWCensus_Ctor	crates/skate-core/src/living_world/config.rs:24 (census ctor 826B6D58; vehicle limit 15 at census +148)
 826B6ED0	LWWorldState_DeletingDtor	Slot 0 of the LivingWorld part +0xBFE8 (global 83085498, vtable 8230C638): body 826B6F38, frees when bit 0 is set.
 826B6F38	LWWorldState_DtorBody	Dtor body: restores vtables 8230C638 / 8230C688, calls 825309E8 on (830CFD94 +0xC4) + 8 with the +4 part and releases two Attrib collections.
-826B7010	guess_LWCensus_UpdateFadeTimer	Guess: run-35 b16 + gc1: called by 826B71F0 (census update) on the census object, and by guess_LivingWorld_UpdateTraffic / guess_LivingWorld_ResetAll
+826B7010	guess_LWCensus_UpdateDensityScales	Guess: updates the census density scales (was guess_LWCensus_UpdateFadeTimer)
 826B71D0	LWWorldState_RaiseLevel9C	Slot 19: +0x9C = max(+0x9C, argument) and +0xA0 = 4.
 826B71F0	LWCensus_UpdateByKind	crates/skate-core/src/living_world/config.rs:20 (census type rotation: one type per tick, 826B71F0, +164 mod 4)
 826B7530	guess_LWCensus_SpawnPedRing	Guess: run-35 b3: schema +0x68 ring calls guess_LWCensus_RollPedSpawn after Census_CircleAtSpeed
@@ -11378,7 +11378,7 @@
 826B9B90	guess_LWCensus_VehicleSpawnAttempts	Guess: rusty-trucks/crates/skate-core/src/living_world/config.rs:113 (no heading for them (826B9B90))
 826B9D58	guess_LivingWorld_SpawnFromSchemas	Guess: large spawn pass over registered models (part F4F0 lookups by entity +0x88) that applies vehicle and ped models and queues entities.
 826BA8B0	guess_LWCensus_QueueEntitiesA	Guess: run-35 b8: queues living world entities through guess_LWManager_QueueEntityOnce / guess_LWSubsystems_CallSlot18 / 1C; called by the census rings (826B7530 / 826B7760, b3); not SkaterMgr
-826BAAB8	guess_LWCensus_QueueEntitiesB	Guess: run-35 b8: queues living world entities through guess_LWManager_QueueEntityOnce / guess_LWSubsystems_CallSlot18 / 1C; called by the census rings (826B7530 / 826B7760, b3); not SkaterMgr
+826BAAB8	guess_LWCensus_CullBeyondRadius	Guess: distance test, then queues the entity for removal through +0xAA8 (was guess_LWCensus_QueueEntitiesB)
 826BAC48	guess_LWCensus_QueueAllEntities	Guess: queues each entity of the hash map once and frees the chains
 826BAD98	LWCensus_CullDMOs	crates/skate-core/src/living_world/dmo.rs:1 (DMOs streamed by the census: pass 826B7980, cull 826BAD98, spawn 826B9D58)
 826BAFC0	guess_LivingWorld_EvalQueryNonZero	Guess: Runs guess_Input_EvaluateQuery with kind 3 on a 4 float rect and returns true when the result is not 0
@@ -14338,7 +14338,7 @@
 8279DB80	guess_MsgSubPair_Unsubscribe	Guess: Unsubscribes the two message bus subscriptions held at +4 and +0 and clears them.
 8279DBE0	guess_GameFlow_InitPresGameLists	Guess: inits the list at +0x2E680 and adds two global objects to it.
 8279DCD0	guess_PresCamera_DtorBody	Guess: clears index tables and buckets.
-8279E180	guess_Speech_StopCurrentLine	If the player (+0x70) has a current line (slot 4), calls that line's slot 4.
+8279E180	guess_Presentation_GetCurrentNested	Guess: [this+0x70] slot 4 = current object, 0 when none, else that object's slot 4 result; a read, not a stop (was guess_Speech_StopCurrentLine)
 8279E200	guess_ManualCam_CreateParts	guess: unless 83082929 is set allocates the 8 / 0x50 / 8 byte camera parts and creates the controller with guess_ManualCam_CreateController.
 8279E350	guess_GameSession_TickPresCamera	Guess: stops speech, drains the queue and reads the NIS camera.
 8279E748	guess_ManualCam_UpdateVectors	Guess: Vector update of the manual camera.
@@ -18684,7 +18684,7 @@
 82933A48	guess_ProxyMover_CollectShapeHits	Guess: clips and merges hits for a shape and copies the pointers out.
 82933C00	guess_PhysQuery_IterNextShape	Guess: advances a shape iterator: count +0x1C, stride from the low 7 bits of +0x28 times 0x18 plus 0x34
 82933D18	guess_PhysQuery_IterNextShapeB	Guess: second shape iterator step, returns early when the iterator is at its end
-82933E18	guess_ProxyMover_GetShapeSlot	Guess: picks the shape slot by bits 23..27 of +0x28.
+82933E18	guess_ProxyMover_QueryFirstHit	Guess: proxy mover query returning the first hit (was guess_ProxyMover_GetShapeSlot)
 82938A20	guess_PhysBody_CopyHitPointers	Guess: reserves and pushes a pointer to every hit into an array.
 82938A90	guess_PhysBody_CollectShapeHits	Guess: tests one shape (flag bit 29 at +0x28) and collects hits.
 82938C48	guess_ProxyMover_ShapeHitLimited	Guess: tests a shape bit and pushes hits into a limited heap.
@@ -24661,7 +24661,7 @@
 82C1E568	guess_GrindSpline_AdapterA	Guess: rusty-trucks/crates/skate-game/src/grind_world/spline.rs:1 (ZIP spline adapter checked against TU3 82C1E568)
 82C1E6C0	guess_GrindData_TransformPoints	Guess: Clears +0x24 and transforms every point of the input list (offset +0x50) with the given matrix
 82C1E9E8	guess_GrindData_ForEachGlobalEntry	Guess: Walks the global list 830846A4 and calls a step on each 64 bit entry.
-82C1EAD8	guess_Vec4_PairDistSqAboveConst	Guess: b2: no zone data; squared length of (+0 minus +0x10) compared with the constant 820C1E90; 6 callers in the biped ground state, none in session code
+82C1EAD8	guess_GrindWorld_QueryRails	Guess: rail query: a squared-distance gate, then walks the octree with Broadphase_QueryNext 82476158, capped (was guess_Vec4_PairDistSqAboveConst)
 82C1ED60	GrindData_NewAssetRecord	b20.txt + d6.txt: allocates a 0x60 record with alloc tag GrindData_AssetRecord and inserts it in the GrindData list (promote to solid)
 82C1EE28	guess_GrindData_AllocFromPool	Guess: Allocates from the pool index +0x50 when +8 is set.
 82C1EEF0	guess_GrindSpline_ReadRails	Guess: rusty-trucks/crates/skate-game/src/grind_world/spline.rs:24 (TU3 82C1EEF0 reads the rail count with lhz +2)
@@ -24671,7 +24671,7 @@
 82C1FB98	guess_GrindContact_DeckRectangle	Guess: rusty-trucks/crates/skate-core/src/physics/grind_contact.rs:45 (82C1FB98: the longitudinal deck rectangle)
 82C1FDC0	GrindContact_BuildTruckRects	rusty-trucks/crates/skate-core/src/physics/grind_contact.rs:220 (truck rectangles from 82C1FDC0, sizes from physics_grinds TruckToWheel / DeckCenterToTruck); run-47 b12.txt: only caller GrindManager_FamilyProximityArb...
 82C20130	GrindContact_TruckTrapezoids	crates/skate-core/src/physics/grind_contact/families.rs:51 (82C20130: longitudinal trapezoids beyond each truck)
-82C20530	guess_Vec4Pair_InitDefault	Writes two aligned vec4 values with the default float (82165A10) in x, y, z and 0 in w.
+82C20530	guess_Vec4x4_InitDefaultClearFlag	Guess: writes four vec4 defaults, then clears byte +0x40 (was guess_Vec4Pair_InitDefault)
 82C205D8	GrindGeometryAnalyzer_Ctor	Constructor of class 'GrindGeometryAnalyzer': called on the new block right after guess_Mem_AllocNamed with that tag (in 82D305D8, 82D61040, 82D8A318).
 82C206C0	guess_PhysState_ReleaseController	Guess: calls slot 0xC when active (+8), then slot 0x10 of the controller at +4.
 82C20728	guess_PhysState_Biped_Ground_GeometryB	Guess: rusty-trucks/crates/skate-core/src/player/offboard/ground_query.rs:1 (Biped ground geometry 82D32808, 82C20728, 82C20C08, 82D31620)
@@ -29879,7 +29879,7 @@
 82E099A0	guess_BipedAir_PredictionCollisionQuery	Guess: rusty-trucks/crates/skate-core/src/player/offboard/air_queries.rs:2 (PredictionResults come from the shared 82E099A0 collision query)
 82E09B70	guess_Simulation_ForEachFlaggedEntry	Guess: run-35 r5: only called (twice) by 82859E70 (queued as guess_Simulation_StepWorldsByMask, run 33); reads +0x2C0
 82E09C80	guess_Math_WrapAngleAbsFolded	Wraps an angle by fractional part of x * 1/(2 pi), takes the absolute value and folds it above a limit.
-82E09D28	guess_Math_NormalizedDelta	Guess: run-35 r5: math helper with 6 callers across grind, mission trick list, biped ground, off board pushing and grab spline code; not a state function
+82E09D28	guess_Math_ClosestPointOnSegment	Guess: dot with the segment direction clamped to [0, length], out = a + dir * t (was guess_Math_NormalizedDelta)
 82E09DF0	guess_PhysState_LandingSurfaceSegmentTest	Guess: Segment versus surface vector test that writes two results; landing step caller.
 82E0A060	Geom_PlaneSegmentIntersect	crates/skate-core/src/player/offboard/contact_intersections.rs:49 (82E0A060 accepts strictly opposite sides)
 82E0A120	guess_Math_CrossWithUpAxis	Guess: run-35 r5: math helper called by TrajectorSelector and the landing surface step
@@ -29949,7 +29949,7 @@
 82E0CEA0	guess_LWAIController_ReplaceActiveTask	Guess: run-35 b1: living world AI interface component (EntityComponent with vtable 8232AA98, 82E0BC28), not the skater AIController (824658C0); one tag per class
 82E0CF18	guess_LWAIController_MarkTaskDone	Guess: run-35 b1: living world AI interface component (EntityComponent with vtable 8232AA98, 82E0BC28), not the skater AIController (824658C0); one tag per class
 82E0CF28	guess_LWAIController_ResetSequence	Guess: run-35 b1: living world AI interface component (EntityComponent with vtable 8232AA98, 82E0BC28), not the skater AIController (824658C0); one tag per class
-82E0CFA0	guess_LWAIController_StartActiveTask	Guess: run-35 b1: living world AI interface component (EntityComponent with vtable 8232AA98, 82E0BC28), not the skater AIController (824658C0); one tag per class
+82E0CFA0	guess_LWPlugin_EndGraphBehaviours	Guess: plugin slot +0x1C; calls the graph controller slot +0x10 = EndAllBehaviours 82C13498 (was guess_LWAIController_StartActiveTask)
 82E0D038	LWPart1C52C_GetOrCreateAttribCache	Looks an id up in the map at +4; when missing allocates an "LWAttribCache" object (0x60 bytes, vtable 8232A868) and stores it; returns the entry. The census spawn code and guess_LWCensusMan_SpawnAtTransform call it on the global part 830854CC.
 82E0D180	MapTree_DeleteAllValues	Walks a tree map (MapTree_NextNode), deletes every value object at node +0x18 through its slot 0, frees the nodes (82425B70) and resets the header (+8, +0xC, +0x10, +0x14, +0x18).
 82E0D208	guess_LWAIController_Vt8232A930_DeletingDtor	Guess: run-35 b1: living world AI interface component (EntityComponent with vtable 8232AA98, 82E0BC28), not the skater AIController (824658C0); one tag per class
@@ -30623,7 +30623,7 @@
 82E36C18	guess_Vt8232BA88_SetChannelByName	Guess: builds a ped channel entry from a name and assigns it at +0x5A0.
 82E36CD8	LWPedEntity_ResetMotionToIdle	research/peds/b132-pro-op-internals.md:29 (ped+176 slot 20 +80 = 82E36CD8 ResetMotionToIdle(): every queued intent of the motion controller gets state 5 through 82E29A38, then 82E29B30)
 82E36D28	guess_LWPedEntity_GetCurrentCommand	Guess: entity part slot 21: returns the current 0x90 channel entry (queued set or the default one).
-82E36D70	guess_Ped_FollowLaneStep	Guess: road lane segment eval with the current AI channel record; slot in vtables at 8232C018 and 8232CCC8
+82E36D70	guess_Ped_UpdateRoot	Guess: the ped root update (ped+36 interface): builds the root matrix and adds the seat-carried step (brain +3168, flag +3280) (was guess_Ped_FollowLaneStep)
 82E37108	guess_Ped_RayProbeHeading	Guess: world ray query plus atan heading; slot at 8232C028
 82E37518	LWPedEntity_GatherNearbyEntities	Entity part slot 1, run by the ped execution update: refreshes 5 sensors (+0x9C0), queries nearby peds and vehicles (max 9 each), moving dynamic objects and the player list (83085480), and feeds them to the sensor lists +0x9E0, +0xA60, +0xAC0, +0xE30.
 82E37F68	PedBrain_Update	research/peds/b4-ped-want-producer.md:8 (## 1. Per-tick order (brain update sub_82E37F68) [code])

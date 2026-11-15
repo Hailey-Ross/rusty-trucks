@@ -92,14 +92,16 @@ pub const TRAFFIC_BANKS: &[&str] = &[
 ];
 pub const PED_BANKS: &[&str] = &["fstep_livingworld", "Tazer"];
 
-/// Retail's `rand()` draws as the world owners use them (`sub_82A8AF10`, the C runtime's): the
+/// Retail's `rand()` draws as the world owners use them (`sub_82A8AF10`, the title's shared generator): the
 /// host supplies the generator so tests can pin it. Not the AEMS evaluator's shared generator.
 pub trait Draw {
     fn draw(&mut self) -> u32;
 }
 
-/// A small deterministic generator for hosts without their own (the MSVC-style LCG; which
-/// generator retail's `sub_82A8AF10` runs is not identified, only its use is ported).
+/// A small deterministic generator for hosts without their own (an MSVC-style LCG, not retail's).
+/// Retail's `sub_82A8AF10` is the title-wide six-word add-with-carry generator ([`crate::eval::rng::Rng`]
+/// from [`crate::grain::GrainBed::SEED`]) that every owner shares; the world callers only take `% n`
+/// (n <= 1000) or low bits, which this reaches alike.
 #[derive(Clone, Debug)]
 pub struct Lcg(pub u32);
 

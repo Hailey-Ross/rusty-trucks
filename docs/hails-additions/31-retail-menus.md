@@ -514,8 +514,9 @@ small_popup places "Futura Shadow" but no character that uses futuraheavy.
 ### Change
 - `apt_text.rs`: `Font::foreground` is now the secondary native font itself (`Option<Box<Font>>`), not an APT
   character id. `RETAIL_FONT_PAIRS` holds retail's one pair; data may replace it with `font_pairs` (APT name ->
-  native file name; the menu export writes retail's table into shared.json, an empty map turns pairs off). The
-  partner is found in the whole native table (`font_mappings` by file name), case-insensitive. A missing partner
+  native file name; the menu export writes retail's table into shared.json, an empty map turns pairs off). The APT
+  name must match exactly (2026-11-14 port review: sub_825D6B68 compares with sub_82AE89B0, a plain signed-byte
+  strcmp [code]; it matched case-insensitively before). The partner is found in the whole native table (`font_mappings` by file name), case-insensitive. A missing partner
   (old export, a mod's data) leaves the text with its primary pass: no error, no panic.
 - `apt_movie.rs` (import linking) copies the secondary with the font; `apt_scene.rs` draws it directly;
   `scoring_hud.rs` loads its texture too. HUD output unchanged (same fonts, same passes).

@@ -8347,7 +8347,7 @@ AptEnum_RegisterChallengeList 0x825D96B8 f
 AptEnum_RegisterAudio 0x825D9728 f
 guess_GameLoad_RegisterUpdate 0x825D98B8 f
 guess_Career_NewCareerTeleportBody 0x825D99C8 f
-guess_Career_LookupTeleportByName 0x825DA2A0 f
+guess_FrontEnd_ApplyHudVisible 0x825DA2A0 f
 Screen_ShowScreen 0x825DA410 f
 guess_FE_ShowSongChyron 0x825DA4D8 f
 Screen_SetScreenState 0x825DA5F0 f
@@ -8937,7 +8937,7 @@ FE_ReplayEditor_EffectsMenuInput 0x82612038 f
 guess_FE_ReplayEditor_OnMenuItemB 0x82612328 f
 FE_ReplayEditorScreen_Input 0x826127B8 f
 ReplayEditor_ErrorSoundTooClose 0x82612C28 f
-guess_FE_ReplayEditor_GetMixerValue 0x82613500 f
+guess_FE_ReplayEditor_IsMarkerCapReached 0x82613500 f
 ReplayEditor_ShowNoMoreMarkersPopup 0x82613598 f
 ReplayEditor_ConfirmRemoveKey 0x82613650 f
 ReplayEditor_AskDeleteClipMarker 0x82613808 f
@@ -10705,7 +10705,7 @@ guess_ObjectiveScriptMapBase_DeletingDtorB 0x8268D648 f
 guess_IconGroup_PopFree 0x8268D6B8 f
 IconGroup_Create 0x8268D6F8 f
 guess_ChallengeDiscovery_ReleaseIcons 0x8268D7E0 f
-guess_IconGroup_FindFreeLocked 0x8268D898 f
+guess_MapMarkerList_Draw 0x8268D898 f
 guess_MapMarker_DrawQuad 0x8268D960 f
 Map_PixelsFromCenter 0x8268DB68 f
 guess_FrontEnd_CameraRecordCtor 0x8268DC88 f
@@ -11355,7 +11355,7 @@ guess_LivingWorld_StopPedViewer 0x826B6C78 f
 LWCensus_Ctor 0x826B6D58 f
 LWWorldState_DeletingDtor 0x826B6ED0 f
 LWWorldState_DtorBody 0x826B6F38 f
-guess_LWCensus_UpdateFadeTimer 0x826B7010 f
+guess_LWCensus_UpdateDensityScales 0x826B7010 f
 LWWorldState_RaiseLevel9C 0x826B71D0 f
 LWCensus_UpdateByKind 0x826B71F0 f
 guess_LWCensus_SpawnPedRing 0x826B7530 f
@@ -11377,7 +11377,7 @@ guess_LWCensus_PedSpawnAttempts 0x826B9940 f
 guess_LWCensus_VehicleSpawnAttempts 0x826B9B90 f
 guess_LivingWorld_SpawnFromSchemas 0x826B9D58 f
 guess_LWCensus_QueueEntitiesA 0x826BA8B0 f
-guess_LWCensus_QueueEntitiesB 0x826BAAB8 f
+guess_LWCensus_CullBeyondRadius 0x826BAAB8 f
 guess_LWCensus_QueueAllEntities 0x826BAC48 f
 LWCensus_CullDMOs 0x826BAD98 f
 guess_LivingWorld_EvalQueryNonZero 0x826BAFC0 f
@@ -14337,7 +14337,7 @@ guess_PresCamera_DeletingDtor 0x8279DB18 f
 guess_MsgSubPair_Unsubscribe 0x8279DB80 f
 guess_GameFlow_InitPresGameLists 0x8279DBE0 f
 guess_PresCamera_DtorBody 0x8279DCD0 f
-guess_Speech_StopCurrentLine 0x8279E180 f
+guess_Presentation_GetCurrentNested 0x8279E180 f
 guess_ManualCam_CreateParts 0x8279E200 f
 guess_GameSession_TickPresCamera 0x8279E350 f
 guess_ManualCam_UpdateVectors 0x8279E748 f
@@ -18683,7 +18683,7 @@ guess_PhysBody_CollectHits 0x829338B0 f
 guess_ProxyMover_CollectShapeHits 0x82933A48 f
 guess_PhysQuery_IterNextShape 0x82933C00 f
 guess_PhysQuery_IterNextShapeB 0x82933D18 f
-guess_ProxyMover_GetShapeSlot 0x82933E18 f
+guess_ProxyMover_QueryFirstHit 0x82933E18 f
 guess_PhysBody_CopyHitPointers 0x82938A20 f
 guess_PhysBody_CollectShapeHits 0x82938A90 f
 guess_ProxyMover_ShapeHitLimited 0x82938C48 f
@@ -24660,7 +24660,7 @@ guess_SGCondition_SegmentsCross 0x82C1E460 f
 guess_GrindSpline_AdapterA 0x82C1E568 f
 guess_GrindData_TransformPoints 0x82C1E6C0 f
 guess_GrindData_ForEachGlobalEntry 0x82C1E9E8 f
-guess_Vec4_PairDistSqAboveConst 0x82C1EAD8 f
+guess_GrindWorld_QueryRails 0x82C1EAD8 f
 GrindData_NewAssetRecord 0x82C1ED60 f
 guess_GrindData_AllocFromPool 0x82C1EE28 f
 guess_GrindSpline_ReadRails 0x82C1EEF0 f
@@ -24670,7 +24670,7 @@ GrindContact_InvertedDeckFamily 0x82C1F968 f
 guess_GrindContact_DeckRectangle 0x82C1FB98 f
 GrindContact_BuildTruckRects 0x82C1FDC0 f
 GrindContact_TruckTrapezoids 0x82C20130 f
-guess_Vec4Pair_InitDefault 0x82C20530 f
+guess_Vec4x4_InitDefaultClearFlag 0x82C20530 f
 GrindGeometryAnalyzer_Ctor 0x82C205D8 f
 guess_PhysState_ReleaseController 0x82C206C0 f
 guess_PhysState_Biped_Ground_GeometryB 0x82C20728 f
@@ -29878,7 +29878,7 @@ guess_AmbientFlag_InitBuffers 0x82E09928 f
 guess_BipedAir_PredictionCollisionQuery 0x82E099A0 f
 guess_Simulation_ForEachFlaggedEntry 0x82E09B70 f
 guess_Math_WrapAngleAbsFolded 0x82E09C80 f
-guess_Math_NormalizedDelta 0x82E09D28 f
+guess_Math_ClosestPointOnSegment 0x82E09D28 f
 guess_PhysState_LandingSurfaceSegmentTest 0x82E09DF0 f
 Geom_PlaneSegmentIntersect 0x82E0A060 f
 guess_Math_CrossWithUpAxis 0x82E0A120 f
@@ -29948,7 +29948,7 @@ guess_LWAIController_AnyChannelActive 0x82E0CE10 f
 guess_LWAIController_ReplaceActiveTask 0x82E0CEA0 f
 guess_LWAIController_MarkTaskDone 0x82E0CF18 f
 guess_LWAIController_ResetSequence 0x82E0CF28 f
-guess_LWAIController_StartActiveTask 0x82E0CFA0 f
+guess_LWPlugin_EndGraphBehaviours 0x82E0CFA0 f
 LWPart1C52C_GetOrCreateAttribCache 0x82E0D038 f
 MapTree_DeleteAllValues 0x82E0D180 f
 guess_LWAIController_Vt8232A930_DeletingDtor 0x82E0D208 f
@@ -30622,7 +30622,7 @@ guess_LWPedEntity_SetChannelEntry 0x82E36B58 f
 guess_Vt8232BA88_SetChannelByName 0x82E36C18 f
 LWPedEntity_ResetMotionToIdle 0x82E36CD8 f
 guess_LWPedEntity_GetCurrentCommand 0x82E36D28 f
-guess_Ped_FollowLaneStep 0x82E36D70 f
+guess_Ped_UpdateRoot 0x82E36D70 f
 guess_Ped_RayProbeHeading 0x82E37108 f
 LWPedEntity_GatherNearbyEntities 0x82E37518 f
 PedBrain_Update 0x82E37F68 f

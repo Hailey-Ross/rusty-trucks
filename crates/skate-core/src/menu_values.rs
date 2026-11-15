@@ -131,7 +131,7 @@ pub fn number(value: &SettingValue) -> f64 {
 /// Labels and offsets ([code] sub_8260C258 / sub_8260D968, settings object
 /// `[[0x83067060] + 28]`): 11 Camera Angle +188 (0 LOW, 1 HIGH); 12 / 13 offboard axis
 /// +192 / +193 (NORMAL, INVERTED); 14 Subtitles +157, 15 Minimap +158, 16 HUD +164 (then
-/// applied by sub_824AD2F0 / sub_825DA2A0), 17 Camera manual +165, 19 Vibration +163
+/// applied by sub_825DA2A0 to the front-end object of sub_824AD2F0), 17 Camera manual +165, 19 Vibration +163
 /// (sub_8260DF40, a test rumble when switched on), 26 Transparency +195, 30..34 Skate Feed
 /// +196..+200 (OFF, ON); 24 Units +168 (METRIC, IMPERIAL); 28 Play Mode +180 cycles 3
 /// (sub_8260DE60, applied at once by sub_827D8450 outside an online session); 29 HOM mode
