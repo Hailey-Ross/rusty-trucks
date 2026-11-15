@@ -113,9 +113,12 @@ runner idle test (no challenge or tutorial running) and names the open screen in
 (`retail_menu_stage.rs`) opens that movie (templates RewardSummary 105, MilestoneUnlock 107, TeammateUnlock 108;
 each new card opens its movie again), shows it after its intro, and turns A (AptNext) into `accepted`, which the
 career passes to `Presentation::accept` (retail 82650738 / 826504E0). Logged `SKATE_CAREER presentation open <screen>
-<index>` and `RETAIL_MENUS open <template> <index>`. NOT RETAIL YET: the stage side is behind
-`SKATE_RETAIL_END_SCREENS=1` until the screens are seen drawing (the end dialog was not, laptop 2026-11-07); without
-it, or without the movies (sets exported before them), each screen is accepted the frame it opens; gameplay is not suspended under the cards (FE 65 / 66 suspend it in
+<index>` and `RETAIL_MENUS open <template> <index>`. On by default since 2026-11-14 (`SKATE_RETAIL_END_SCREENS=0` turns it off):
+desktop verify (tut_sksc_01 forced pass + a dev mod's `grant_reward`): the summary draws its tab and row ("Gear", "You
+got new adidas stuff!"); stage tests `retail_reward_summary_draws`, `retail_milestone_and_teammate_cards_draw`. The
+summary opens only with retail's content (827C58B8: money, sales or other rows, research b899); big rewards alone no
+longer open an empty summary. Without the movies (sets exported before them) each screen is accepted the frame it
+opens. NOT RETAIL YET: gameplay is not suspended under the cards (FE 65 / 66 suspend it in
 retail's screen table); the teammate card offers only Continue (create / preset choices are M6).
 
 Summary data: each pass adds its owned / killed cash and board sales to `Career.summary` (retail summary +0x3C..+0x4C;

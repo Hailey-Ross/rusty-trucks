@@ -159,11 +159,19 @@ const END_DIALOGS: [(&str, &str, &str); 3] = [
 ];
 /// The sign-up poster (FE 0x1B page 0, template 23; research b932, b935): movie key, path, template.
 const POSTER: (&str, &str, &str) = ("source/screens/challenge/challenge_signup", "challenge/challenge_signup.swf", "SignUp_Poster");
-/// `SKATE_RETAIL_END_SCREENS=1`: the end dialog and reward screens open on the stage. Off by default until they are
-/// seen drawing (laptop run 2026-11-07: logged as shown, nothing drawn); off = the old continue / accept at once.
+/// The end dialog and reward screens open on the stage, on by default (seen drawing 2026-11-14: the end dialog and the
+/// reward summary in game, the milestone / teammate cards on the stage tests). `SKATE_RETAIL_END_SCREENS=0` turns
+/// them off (the old continue / accept at once).
 pub(crate) fn screens_switch() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("SKATE_RETAIL_END_SCREENS").is_ok_and(|v| v == "1"))
+    *ON.get_or_init(|| std::env::var("SKATE_RETAIL_END_SCREENS").map_or(true, |v| v != "0"))
+}
+/// The sign-up poster, on by default as in retail (a sign-up press opens it; the challenge starts on its Accept), so a
+/// stray D-pad Up (the session marker's LB + D-pad Up near a sign-up) starts nothing. `SKATE_RETAIL_POSTER=0` turns it
+/// off (the sign-up starts at once).
+pub(crate) fn poster_switch() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SKATE_RETAIL_POSTER").map_or(true, |v| v != "0"))
 }
 
 /// Stage updates after which an opened end dialog / reward screen is shown even without its load or intro call.
@@ -974,7 +982,7 @@ fn update(
         fe.end_dialog = e.open.then(|| crate::end_dialog_host::EndDialogHost { dialog: e.dialog.clone(), title: e.title.clone(), results: e.results.clone() });
     }
     if let Some(p) = poster_screen.as_mut() {
-        let available = screens_switch() && ms.poster_id.is_some();
+        let available = poster_switch() && ms.poster_id.is_some();
         if p.available != available {
             p.available = available;
         }
