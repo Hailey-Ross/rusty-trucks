@@ -140,6 +140,18 @@ is computed from its parent as before, so the results are the same. Doc:
 `docs/hails-additions/34-physics-performance.md#transform-propagation-stalls`. On a Bevy upgrade: check whether
 upstream's worker still spins without yielding; re-apply or drop the patch.
 
+## Per-light shadow map override
+
+`bevy_pbr/src/render/light.rs` adds an opt-in component `ShadowMapOverride { size, world_from_view, clip_from_world }`
+for a `DirectionalLight`: its first cascade is drawn with that matrix into a `size` x `size` viewport at the corner of
+its own layer of the shared directional shadow map array (the view entity gets `ShadowMapOverrideViewport`, which the
+shadow pass node turns into `set_viewport`), and the light's GPU flags get `SHADOW_MAP_OVERRIDE` (bit 3, also in
+`mesh_view_types.wgsl`). Lights without the component take exactly the old path: same cascades, frusta, viewport,
+texture and flags. Why: retail's world shadow map for props is a 512 x 512 height map over a camera-centered sun box
+(research b1023), which Bevy's fitted cascades and global map size cannot express. Doc:
+`docs/hails-additions/27-dynamic-props.md#d9b-the-props-world-shadow-and-props-as-shadow-casters-2026-11-14-ask-670`.
+On a Bevy upgrade: re-apply, or drop it if Bevy gains per-light shadow map sizes and custom projections.
+
 ## SDL3 static C runtime
 
 `sdl3-sys` is vendored from crates.io 0.7.1+SDL-3.4.16 with its original license.

@@ -122,7 +122,7 @@ impl crate::skater_ghost::GhostMaterial for CharacterMaterial {
 }
 
 #[derive(Component)]
-struct ShadowSource;
+pub(crate) struct ShadowSource;
 
 /// Package-owned graphics retain their authored PBR materials.
 #[derive(Component)]
@@ -193,7 +193,7 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>, sources: Que
         else { entity.try_remove::<RenderLayers>(); }
     }
     for (entity, layers) in &cameras {
-        commands.entity(entity).try_insert(layers.clone().without(28));
+        commands.entity(entity).try_insert(layers.clone().without(28).without(crate::retail_render::WORLD_SHADOW_LAYER));
     }
     if !retail.0 { return; }
     let Some(map_path) = &config.map_path else {
@@ -260,6 +260,17 @@ fn spawn_shadow_sources(commands: &mut Commands, light: Vec3) {
             ..default()
         }
         .build(),
+    ));
+    // The props' world shadow map: world sections only, retail's 512 grid and view (retail_render::world_shadow_view).
+    // Bevy's cascade only picks the visible casters; its far bound covers every visible receiver in retail's box.
+    commands.spawn((
+        ShadowSource,
+        crate::retail_render::WorldShadowLight,
+        Name::new("World shadow map for props"),
+        DirectionalLight { illuminance: 0., shadows_enabled: true, affects_lightmapped_mesh_diffuse: false, ..default() },
+        RenderLayers::layer(crate::retail_render::WORLD_SHADOW_LAYER),
+        Transform::default().looking_to(-light, Vec3::Y),
+        bevy::light::CascadeShadowConfigBuilder { num_cascades: 1, maximum_distance: 100., ..default() }.build(),
     ));
 }
 
@@ -372,8 +383,9 @@ fn shadow_views(
     }
     for (entity, layers) in &cameras {
         let layers = layers.cloned().unwrap_or_default();
-        if !layers.intersects(&RenderLayers::layer(28)) {
-            commands.entity(entity).insert(layers.with(28));
+        let world_shadow = crate::retail_render::WORLD_SHADOW_LAYER;
+        if !layers.intersects(&RenderLayers::layer(28)) || !layers.intersects(&RenderLayers::layer(world_shadow)) {
+            commands.entity(entity).insert(layers.with(28).with(world_shadow));
         }
     }
 }
@@ -666,12 +678,22 @@ mod tests {
         let terrain = RenderLayers::default();
         let mut receivers = 0;
         let mut character_sources = 0;
-        for (light, layers, cascades) in world
-            .query::<(&DirectionalLight, Option<&RenderLayers>, &bevy::light::CascadeShadowConfig)>()
+        let mut world_shadow = 0;
+        for (light, layers, cascades, is_world_shadow) in world
+            .query::<(&DirectionalLight, Option<&RenderLayers>, &bevy::light::CascadeShadowConfig, Has<crate::retail_render::WorldShadowLight>)>()
             .iter(&world)
         {
             let layers = layers.cloned().unwrap_or_default();
             assert!(light.shadows_enabled);
+            if is_world_shadow {
+                // The props' world shadow map: world sections only (layer 26), no light, not the CSM receiver.
+                assert_eq!(layers, RenderLayers::layer(crate::retail_render::WORLD_SHADOW_LAYER));
+                assert_eq!(light.illuminance, 0.);
+                assert!(!light.affects_lightmapped_mesh_diffuse);
+                assert_eq!(cascades.bounds.len(), 1);
+                world_shadow += 1;
+                continue;
+            }
             assert!(layers.intersects(&player));
             if light.affects_lightmapped_mesh_diffuse {
                 assert_eq!(light.illuminance, 0.);
@@ -686,6 +708,6 @@ mod tests {
                 character_sources += 1;
             }
         }
-        assert_eq!((receivers, character_sources), (1, 1));
+        assert_eq!((receivers, character_sources, world_shadow), (1, 1, 1));
     }
 }

@@ -290,14 +290,31 @@ window is `rendering/cascade_shadowmap` field 0x7CF59B3581056A13 = 28.8 (50 in `
 data checked in the exported collections]. Which instance types draw into the map, its exact center and depth bias
 are still open.
 
+**Retail evidence, the view (research b1023, 2026-11-15).** The map is a height map, not a sun depth map [code, recomp
+asm checked]:
+- Center: BuildFrustum 0x827FB200: camera position + camera forward x E x offset; offset (field 0x0FB8D6F785615EBE)
+  is (0, 0, 0), so the box is centered on the camera.
+- Box: orthographic, half-width E = 28.8 (1/E from 0x8231A844), so 57.6 m square, 0.1125 m per texel. Basis
+  D = -light direction, F = D x up, U = D x F.
+- Snap: clip x/y translation x 256, floor (0x82F4DE80), x 1/256 (constants 0x822F8A44 / 0x822F8A48), in BuildFrustum
+  and again in ComputeViewBlock 0x827FB608.
+- Depth: ComputeViewBlock replaces the depth column so depth = (f - y_world) / (f - n). BuildCullList 0x827FCD28 takes
+  n / f from the culled casters' Y range, padded by 15% of it (0x820994B4 = 0.15), stored to pipe+0x4EC0 / +0x4EC4.
+- Casters: only the world presentation manager 0x82790FA0 adds the world shadow pipe (offset 0x19940 occurs at 7
+  code sites), so world sections only; props and characters do not draw into it.
+- Receiver: 2x2 bilinear compare on the 512 grid, lit when stored >= depth, no receiver bias.
+
 **Change.**
 - Setup: `render_parameters.py` exports `rendering.cascade_shadowmap` ([self bias xyz, floor], [window]).
 - Engine: `PropWorldShadow` (retail_render.rs) from those rows, written to the new frame row `prop_world_shadow`
   (x floor, y window, w on); without the rows the term stays lit (no invented constants). Log `PROP_WORLD_SHADOW`.
-- Shader (`fam==15u`): the world term is the all-caster sun map (the one the characters read, `flags & 5 == 1`;
-  world sections, props and characters cast into it) within the window of view depth, floored at the data's floor:
-  `shade = min(step(N.L) * csm, max(world, 0.06))` as retail. NOT RETAIL YET: our sun map is Bevy's 4 cascades to
-  100 m, not a 512 map; the window center is inferred.
+- Shader (`fam==15u`): `shade = min(step(N.L) * csm, max(world, 0.06))` as retail. The world term (2026-11-15, ask
+  671) reads a dedicated world shadow map: a light (`WorldShadowLight`, layer 26 = the world sections, tagged
+  `WorldShadowCaster`) whose `ShadowMapOverride` (vendor patch, `vendor/README.md` "Per-light shadow map override")
+  draws retail's 512 grid with retail's view from `world_shadow_view` (camera-centered box, texel snap, height depth
+  padded 15%, reverse depth so the highest caster stays). Hardware 2x2 compare, lit outside the box. The frame row is
+  now x floor, y map texels (512), w on. Before 2026-11-15 the term read the all-caster sun map within a view-depth
+  window, so props and characters shaded other props.
 - Prop parts join render layer 28, so props cast into the dynamic shadow map (the CSM term) and onto the baked world.
 - Mods: `sdk.world.set_tuning('shadows', {prop_floor, prop_window})`; disabling the mod restores the disc's values.
 - Debug: `SKATE_DEBUG_PROP_SHADOW=1` draws props green where the world term is lit, red where shaded.
@@ -306,10 +323,15 @@ are still open.
 `prop_world_shadow_takes_mod_values_and_restores_the_disc` and the skate-mods patch validation; render / shader tests
 pass. Desktop debug capture (DownTown Aletown): the rails read the map (green, their shaded undersides red). A prop in
 a building's shade was not on screen at the five teleport spots checked; that case waits for play.
+2026-11-15 (the dedicated 512 height map): Rust `world_shadow_view_is_retails_camera_centered_height_map`, the
+light-setup test and the three shader validation tests pass (skate-game 1101 passed, 0 failed). Desktop debug captures
+(DownTown Aletown, Core Plaza; settings restored and hash-checked): no render errors, the Aletown rails in open sun read
+lit, their undersides no longer shaded by props; a prop in a building's shade still waits for play.
 
 **Open questions.**
-- Which instance types retail draws into `shadowWorld` (0x827FCD28), its center and depth bias, the 256 vs 512 texel
-  step the D9 notes mention.
+- After b1023: the basis signs (only flip u/v), the exact tap offsets, whether the skybox casts, a raster depth bias
+  in the caster pass, the park-edit gate (R+0x34786 skips the pass; what props read then), sampling outside the box
+  (ours: lit).
 - The retail CSM is a 4-tap atlas (three cascades in 1/6 atlas columns); ours uses Bevy's cascade lookup, as for the
   world receivers.
 - The `transparent` binding of `dynamicobject.alphatest` is not read by the shader; the alpha test uses the diffuse

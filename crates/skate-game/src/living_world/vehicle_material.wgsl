@@ -46,7 +46,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     let view_z = (frame::view.view_from_world * i.world_position).z;
     var shadow = 1.0;
     for (var light_id = 0u; light_id < frame::lights.n_directional_lights; light_id += 1u) {
-        if (frame::lights.directional_lights[light_id].flags & 5u) == 1u {
+        if (frame::lights.directional_lights[light_id].flags & 13u) == 1u {
             shadow = fetch_directional_shadow(light_id, i.world_position, vn, view_z);
             break;
         }
