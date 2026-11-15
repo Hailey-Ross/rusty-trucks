@@ -601,7 +601,9 @@ fn publish_facts(career: &Career, data: &Loaded, menus: &mut crate::retail_menus
 fn present(state: &mut CareerState, data: &Loaded, screens: &mut RewardScreens, runner_idle: bool) -> bool {
     use skate_core::career::presentation::Out;
     let unlocks = &state.career.unlocks;
-    let summary = !state.career.summary.is_empty() || !unlocks.summary_big.is_empty() || !unlocks.summary_other.is_empty();
+    // Retail's content test 827C58B8 (research b899): money, sales or other rows; big rewards alone open no summary
+    // (their cards wait for the next location arrival).
+    let summary = !state.career.summary.is_empty() || !unlocks.summary_other.is_empty();
     let mut out = if runner_idle { state.presentation.runner_idle(summary) } else { Vec::new() };
     if std::mem::take(&mut screens.accepted) && screens.open.is_some() {
         out.extend(state.presentation.accept(state.career.pending));

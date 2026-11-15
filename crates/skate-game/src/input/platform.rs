@@ -60,7 +60,6 @@ pub(crate) enum DeviceError {
     State(u32),
     Capabilities(u32),
     /// No device backend could be started.
-    #[cfg(not(windows))]
     Unavailable,
 }
 
@@ -643,7 +642,6 @@ enum Backend {
     Sdl(&'static sdl::Shared),
     #[cfg(windows)]
     XInput,
-    #[cfg(not(windows))]
     Unavailable,
 }
 
@@ -651,6 +649,14 @@ static BACKEND: OnceLock<Backend> = OnceLock::new();
 
 fn backend() -> &'static Backend {
     BACKEND.get_or_init(|| {
+        // Test runs: `SKATE3_INPUT=none`, and background windows (`SKATE_BACKGROUND_WINDOW=1`, runs while someone uses
+        // the pad elsewhere), read no controller, so only the run's injected keys drive it.
+        if std::env::var("SKATE3_INPUT").is_ok_and(|v| v.eq_ignore_ascii_case("none"))
+            || std::env::var("SKATE_BACKGROUND_WINDOW").is_ok_and(|v| v == "1")
+        {
+            bevy::log::info!("Controller input: none (SKATE3_INPUT=none or SKATE_BACKGROUND_WINDOW=1)");
+            return Backend::Unavailable;
+        }
         #[cfg(windows)]
         if std::env::var("SKATE3_INPUT").is_ok_and(|v| v.eq_ignore_ascii_case("xinput")) {
             bevy::log::info!("Controller input: XInput (SKATE3_INPUT=xinput)");
@@ -679,7 +685,6 @@ pub(crate) fn set_rumble(index: usize, speeds: [u16; 2]) {
         Backend::Sdl(shared) => sdl::set_rumble(shared, index, speeds),
         #[cfg(windows)]
         Backend::XInput => windows::set_rumble(index as u32, speeds),
-        #[cfg(not(windows))]
         Backend::Unavailable => {}
     }
 }
@@ -718,7 +723,6 @@ pub(crate) fn poll_cached(
         }
         #[cfg(windows)]
         Backend::XInput => windows::poll(index as u32, cache),
-        #[cfg(not(windows))]
         Backend::Unavailable => Err(DeviceError::Unavailable),
     }
 }

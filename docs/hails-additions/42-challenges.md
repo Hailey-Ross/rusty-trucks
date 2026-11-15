@@ -589,7 +589,7 @@ course from the split centers).
   ChangeDifficulty after a loss or exit. The movie: a lost race shows challengefailed_small (no table), a won race with
   2+ rows endchallengeoptions (the table).
 - Ours: skate-core `challenges::results` (`race_results`, `ResultsView`, the 8-item data block, `ResultsRules` with the
-  retail ids as data); race_host builds it at `Results`, opens the end dialog (`SKATE_RETAIL_END_SCREENS=1`) and turns
+  retail ids as data); race_host builds it at `Results`, opens the end dialog (on by default) and turns
   the player's choice into Continue / Retry; with the autopilot driving it continues after 3 s. end_dialog_host answers
   Results_GetNumPlayers / LayoutType / LeaderboardDataBlock / SelfRank / LeaderboardColTitle / ThrowdownType /
   LeaderboardType. The table movie reads `endchallengeoptions.STRUCT_ITEMS` and `eResultsLBType_*` that retail's
@@ -1033,8 +1033,9 @@ HUDComponents.Results_GetNumPlayers (0: our families write no result rows, b925)
 and `RETAIL_MENUS end dialog slot <n>`. Test runs: `SKATE_VERIFY_TUTORIAL_PASS=1` (with `SKATE_VERIFY_TUTORIAL`) completes the objectives once they evaluate, so the dialog and the career's reward chain run unplayed; `SKATE3_RETAIL_MENUS_KEYS` presses through them. Laptop runs 2026-11-07: the dialog draws (endchallenge_small; its movie path must match the exported key's case, the
 stage's lookup is case sensitive), its buttons read the localized option texts (text natives answer `#` + the
 localized text), its title comment comes from the movie's own `Math.random()` pick, and A picks Continue and completes
-the tutorial. NOT RETAIL YET: the stage side is still behind `SKATE_RETAIL_END_SCREENS=1`; without it, or without the
-movies, the run continues at once; Retry after a
+the tutorial. On by default since 2026-11-14 (desktop verify, tut_sksc_01 with `SKATE_VERIFY_TUTORIAL_PASS`: the dialog
+draws, A continues; `SKATE_RETAIL_END_SCREENS=0` turns it off); without the movies the run continues at once. NOT
+RETAIL YET: Retry after a
 pass skips the rematch confirm popup 217; retry's fade and music restart (b923 §3) and ChangeDifficulty (FE 45) are
 not ported. Own the spot has no dialog in retail either (b929).
 
@@ -1064,8 +1065,13 @@ argument) and `objectives_enabled` (Bool 0x858D73CD6085C8EC) next to `descriptio
 or a non-empty ObjectivesKilledIt) and the owned / killed board sales (OwnedItReward / KilledItReward +4) come from
 the career's `progression.json` (`killable`, `challenge_rewards`); own the spot objective titles are
 `ID_OBJECTIVE_BEAT_SCORE` with the owned / killed point requirement (8264D130, type 9). Arguments are printed as
-plain decimals before substitution [the substitution itself inferred]. NOT RETAIL YET: behind
-`SKATE_RETAIL_END_SCREENS=1` like the end dialog; the co-op bonus is online only (0 here); the killed objective row
+plain decimals before substitution [the substitution itself inferred]. On by default since 2026-11-14, its own
+switch (`SKATE_RETAIL_POSTER=0` turns it off; the end dialog and reward screens are on by default too).
+Desktop verify 2026-11-14 (ots_dwtn_03, `SKATE_VERIFY_CHALLENGE`): the press opens it and it draws (title, description,
+Kill it objective, reward, B Decline / A Accept); test `apt_stage::tests::retail_sign_up_poster_draws`. Before, with the
+poster off, a D-pad Up in a sign-up sphere started the challenge at once, so returning to a session marker (LB + D-pad
+Up) near a spot started it (user play 2026-11-14: two unwanted attempts, each ending in the leave countdown). The log now has `SKATE_CHALLENGE sign-up press` and
+`SESSION_MARKER placed` / `returned`. The co-op bonus is online only (0 here); the killed objective row
 is shown when the killed points are above 0 [inferred stand-in for a non-empty ObjectivesKilledIt]; no teammates or
 co-op offline, so Start is the only option. Several challenges in reach keep our pick
 popup; the map's Sign Up is not ported yet (retail's arrival path skips the poster, b913).

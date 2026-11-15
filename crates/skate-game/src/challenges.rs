@@ -648,6 +648,9 @@ fn sign_up(
     let (modifier, _, _) = input.session_marker_actions();
     let mut pressed = !near.is_empty() && !modifier && input.dpad_up_pressed() && challenges.last_batch != input.consumed_batches
         && challenges.prompt_age >= REPRESS_DELAY_SECONDS;
+    if pressed {
+        info!("SKATE_CHALLENGE sign-up press (D-pad Up, LB up) near {ids:?}");
+    }
     challenges.last_batch = input.consumed_batches;
     if let Some((id, frames)) = challenges.verify.as_mut().filter(|(id, _)| near.iter().any(|c| c.id == *id)) {
         if *frames != u32::MAX {

@@ -2005,6 +2005,188 @@ traces (last 40): {:?}", game.calls, &traces[traces.len().saturating_sub(40)..])
         assert!(game.calls.iter().any(|c| c == "Game.OnScreenOutroComplete(600)"), "{:?}", game.calls);
     }
 
+    /// The sign-up poster (FE 0x1B, template SignUp_Poster; b932 / b935) opened like retail_menu_stage does it: it must
+    /// draw (desktop verify 2026-11-14: shown in the log, nothing on screen). Data-gated; `SKATE3_DUMP_DRAWS=1` prints.
+    #[test]
+    fn retail_sign_up_poster_draws() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/challenge/challenge_signup") {
+            eprintln!("skipped: menu set without challenge_signup");
+            return;
+        }
+        let assets = crate::apt_imports::main_checkout().join("assets");
+        let (data, loaded) = crate::retail_menus::read(&assets);
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        let view = skate_core::challenges::poster::PosterView { can_sign_up: true, ..Default::default() };
+        game.poster = Some(crate::poster_host::PosterHost { poster: skate_core::challenges::poster::Poster::new(view), teammates: Vec::new() });
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        let before = stage.draw(|key, movie| set.scene(key, movie)).unwrap().len();
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("SignUp_Poster".into())], &mut game).unwrap();
+        let args = ["source/screens/challenge/challenge_signup.swf", "screen", "0", "SignUp_Poster"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", args, &mut game).unwrap();
+        let mut shown = false;
+        for frame in 0..120 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+            let loaded = game.calls.iter().any(|c| c == "Game.OnScreenLoaded(600)");
+            if !shown && (loaded || frame > 30) {
+                shown = true;
+                stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text("600".into()), Value::Text("true".into())], &mut game).unwrap();
+                stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text(skate_core::challenges::poster::STATE_SIGN_UP.to_string())], &mut game).unwrap();
+            }
+        }
+        let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
+        if std::env::var_os("SKATE3_DUMP_DRAWS").is_some() {
+            eprintln!("calls: {:?}\nunhandled: {:?}", game.calls, stage.unhandled());
+            let traces = stage.take_traces();
+            eprintln!("traces (last 30): {:?}", &traces[traces.len().saturating_sub(30)..]);
+            for d in &draws {
+                eprintln!("draw {:?} mul {:?} v0 {:?}", d.texture, d.multiply, d.vertices.first().map(|v| v.position));
+            }
+            let level = stage.levels().iter().find(|l| l.key.ends_with("challenge_signup")).expect("poster loaded");
+            for c in level.movie.instances.keys().take(40) {
+                let name = stage.vm.get(*c, "_name").text();
+                eprintln!("clip {name} _visible {:?} _alpha {:?} _currentframe {:?}", stage.vm.get(*c, "_visible").text(), stage.vm.get(*c, "_alpha").number(), stage.vm.get(*c, "_currentframe").number());
+            }
+        }
+        eprintln!("draws before {before}, with the poster {}", draws.len());
+        assert!(draws.len() > before + 4, "the poster adds no draws ({before} -> {})", draws.len());
+    }
+
+    /// The reward summary card (FE 64, template RewardSummary; doc 43) opened like retail_menu_stage does it, with one
+    /// big reward: it must draw (desktop run 2026-11-14: shown in the log, blank on screen). Data-gated;
+    /// `SKATE3_DUMP_DRAWS=1` prints.
+    #[test]
+    fn retail_reward_summary_draws() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/unlock/unlockoverlay") {
+            eprintln!("skipped: menu set without unlockoverlay");
+            return;
+        }
+        let assets = crate::apt_imports::main_checkout().join("assets");
+        let (data, loaded) = crate::retail_menus::read(&assets);
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        game.reward_summary.view.milestones = vec![skate_core::career::presentation::Card {
+            title: "ID_REWARD_CAC_SHOE_ADIDAS_INVENTORY".into(),
+            image: "fe\\source\\images\\unlocks\\unlock_brand_adidas".into(),
+            description: "ID_REWARD_SPONSORSHIP_ADIDAS".into(),
+        }];
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        let before = stage.draw(|key, movie| set.scene(key, movie)).unwrap().len();
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("RewardSummary".into())], &mut game).unwrap();
+        let args = ["source/screens/unlock/unlockoverlay.swf", "screen", "0", "RewardSummary"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", args, &mut game).unwrap();
+        let mut shown = false;
+        for frame in 0..120 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+            if !shown && (game.calls.iter().any(|c| c == "Game.OnScreenLoaded(600)") || frame > 30) {
+                shown = true;
+                stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text("600".into()), Value::Text("true".into())], &mut game).unwrap();
+            }
+        }
+        let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
+        if std::env::var_os("SKATE3_DUMP_DRAWS").is_some() {
+            eprintln!("calls: {:?}\nunhandled: {:?}", game.calls, stage.unhandled());
+            let traces = stage.take_traces();
+            eprintln!("traces (last 30): {:?}", &traces[traces.len().saturating_sub(30)..]);
+            for d in &draws {
+                eprintln!("draw {:?} mul {:?} v0 {:?}", d.texture, d.multiply, d.vertices.first().map(|v| v.position));
+            }
+            if let Some(level) = stage.levels().iter().find(|l| l.key.ends_with("unlockoverlay")) {
+                for c in level.movie.instances.keys().take(60) {
+                    let name = stage.vm.get(*c, "_name").text();
+                    eprintln!("clip {name} _visible {:?} _alpha {:?} _currentframe {:?}", stage.vm.get(*c, "_visible").text(), stage.vm.get(*c, "_alpha").number(), stage.vm.get(*c, "_currentframe").number());
+                }
+            }
+        }
+        eprintln!("draws before {before}, with the reward summary {}", draws.len());
+        assert!(draws.len() > before + 4, "the reward summary adds no draws ({before} -> {})", draws.len());
+    }
+
+    /// The milestone and teammate cards (FE 65 / 66, templates MilestoneUnlock / TeammateUnlock) open and draw like
+    /// the reward summary. Data-gated.
+    #[test]
+    fn retail_milestone_and_teammate_cards_draw() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        let assets = crate::apt_imports::main_checkout().join("assets");
+        let (data, loaded) = crate::retail_menus::read(&assets);
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        for (key, swf, template) in [
+            ("source/screens/unlock/unlock_milestone", "source/screens/unlock/unlock_milestone.swf", "MilestoneUnlock"),
+            ("source/screens/unlock/unlock_teammate", "source/screens/unlock/unlock_teammate.swf", "TeammateUnlock"),
+        ] {
+            if !movies.contains_key(key) {
+                eprintln!("skipped: menu set without {key}");
+                continue;
+            }
+            let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+            game.reward_summary.view.milestones = vec![skate_core::career::presentation::Card {
+                title: "ID_REWARD_CAC_SHOE_ADIDAS_INVENTORY".into(),
+                image: "fe\\source\\images\\unlocks\\unlock_brand_adidas".into(),
+                description: "ID_REWARD_SPONSORSHIP_ADIDAS".into(),
+            }];
+            let mut stage = Stage::new(&game).unwrap();
+            stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+            for _ in 0..4 {
+                stage.update(16.0, &movies, &mut game).unwrap();
+            }
+            let before = stage.draw(|k, m| set.scene(k, m)).unwrap().len();
+            stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text(template.into())], &mut game).unwrap();
+            let args = [swf, "screen", "0", template].map(|a| Value::Text(a.into())).to_vec();
+            stage.call_path("_global.ScreenManager.OpenScreen", args, &mut game).unwrap();
+            let mut shown = false;
+            for frame in 0..120 {
+                stage.update(16.0, &movies, &mut game).unwrap();
+                if !shown && (game.calls.iter().any(|c| c == "Game.OnScreenLoaded(600)") || frame > 30) {
+                    shown = true;
+                    stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text("600".into()), Value::Text("true".into())], &mut game).unwrap();
+                }
+            }
+            let after = stage.draw(|k, m| set.scene(k, m)).unwrap().len();
+            eprintln!("{template}: draws before {before}, with the card {after}; unhandled {:?}", stage.unhandled());
+            assert!(after > before + 4, "{template} adds no draws ({before} -> {after})");
+        }
+    }
+
     /// The won race's results table (endchallengeoptions, template 33): the table control builds one row clip per
     /// racer from the Results natives (laptop race-results5: the panel showed no rows). Data-gated.
     #[test]

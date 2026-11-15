@@ -182,6 +182,7 @@ fn update(
                 foot_forward: skater.animation.foot_forward(),
                 generation: map.generation,
             });
+            info!("SESSION_MARKER placed at {:?}", &transform[3][..3]);
             events.write(SessionMarkerEvent { action: SessionMarkerAction::Placed });
         } else {
             events.write(SessionMarkerEvent { action: SessionMarkerAction::Refused });
@@ -211,6 +212,7 @@ fn update(
                     session.hold.cancel();
                 } else {
                     // sub_82898FC8: the go-to sound in the relocation tick.
+                    info!("SESSION_MARKER returned to {:?}", &target.transform[3][..3]);
                     events.write(SessionMarkerEvent { action: SessionMarkerAction::Returned });
                     skater.animation.restore_foot_forward(target.foot_forward);
                     skater.teleport_state.request_manual(target.transform, target.on_board);
