@@ -23,15 +23,26 @@ down. Players who stream or record need music they may use, credited, without hu
 
 **Sources and rules (2026-11-15).**
 - Every track is credited in full (title, artist, source, license), even when its license does not require credit.
-- Public playlists: only CC0 or CC BY tracks whose artist or label states the license on their own page, from Free
+- Public playlists: CC0, CC BY, CC BY-NC, CC BY-SA or CC BY-NC-SA tracks (the engine is always free to use, so
+  non-commercial licenses fit; each track's exact license is in its entry and in `CREDITS.txt`) whose artist or label
+  states the license on their own page, from Free
   Music Archive, Internet Archive (artist and netlabel uploads only: uploader-set licenses there are often wrong; a
   search for CC0 audio returned well-known commercial albums labeled CC0) and OpenGameArt. Each one is checked on its
   own page before it goes in.
 - Built in (2026-11-15): 27 OpenGameArt tracks in two playlists, "Lofi and Funk" (19) and "Fast" (8). Each entry's
   page shows CC0 under the author's own upload; descriptions were read for remixes, samples or covers (one entry
   dropped: vocal sweeps of unclear origin and a file name that did not match the title). Every file's sha256 is
-  pinned, and the page's own "Copyright/Attribution Notice" is kept in the credit. Free Music Archive's pages are
-  built by script and Internet Archive needs per-uploader checks: both are next.
+  pinned, and the page's own "Copyright/Attribution Notice" is kept in the credit.
+- Built in (2026-11-15): 28 Internet Archive netlabel tracks in two playlists, "Chill" (20) and "Electronic" (8).
+  Every item is in the label's own collection, uploaded by the label, and the label's or artist's own site states the
+  license: Silent Running Scandal (22 tracks by Artificial.Music, Ashiera, Ash Electric, Caturday & Babasmas,
+  epi- chord; each artist's Bandcamp links CC BY 4.0), Toucan Music (3; the item says CC BY 2.5, the label's
+  licensing page says free for non-commercial use, so credited as CC BY-NC 2.5 with the link to toucanmusic.com the
+  label asks for) and BuckramBeats (3 by Mylar Man; the item says CC BY 3.0, the label's site stated CC BY-NC-SA 2.5
+  for all its music, so credited as that). Releases were read for covers, parodies, sample packs, mixes, famous
+  featured artists, samples, unreadable lyrics and explicit titles; about 18 releases were dropped. Built by
+  `.local/stream-safe/build_ia_playlists.ps1` from the vetted list. Free Music Archive (built by script) and
+  blocSonic (beats, per-release NC licenses on its own site) are next.
 - Not used: Jamendo (its pages point Twitch / YouTube use to the paid licensing plan), StreamBeats (its license
   requires separate licensing for games), FreePD (closed in 2025). Incompetech (Kevin MacLeod, CC BY 4.0) is used
   locally only until he answers our question about apps downloading his files and whitelisting.
@@ -43,4 +54,4 @@ playlists (27 tracks): see the PR tests table.
 **Open questions.**
 - Menu, loading screen and replay editor music: check whether the disc soundtrack plays anywhere the mod's playlist
   does not replace it.
-- The public playlists' tracks.
+- More punk and funk: almost none passed on the Internet Archive; Free Music Archive and blocSonic next.

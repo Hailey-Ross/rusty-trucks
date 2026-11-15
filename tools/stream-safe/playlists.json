@@ -1,5 +1,5 @@
 {
-    "about":  "Stream-safe mode\u0027s built-in playlists (docs/hails-additions/46-stream-safe-music.md). Only tracks whose license the artist or label states on their own page: CC0 or CC BY from Free Music Archive, Internet Archive (artist / netlabel uploads only; uploader-set licenses there are often wrong) and OpenGameArt. Every track is credited in full, even under CC0. A file local-playlists.json in the launcher\u0027s stream-safe folder adds playlists for local use.",
+    "about":  "Stream-safe mode\u0027s built-in playlists (docs/hails-additions/46-stream-safe-music.md). Only tracks whose license the artist or label states on their own page: CC0 or CC BY (also CC BY-NC / BY-SA / BY-NC-SA: the engine is always free to use) from Free Music Archive, Internet Archive (artist / netlabel uploads only; uploader-set licenses there are often wrong) and OpenGameArt. Every track is credited in full, even under CC0. A file local-playlists.json in the launcher\u0027s stream-safe folder adds playlists for local use.",
     "playlists":  [
                       {
                           "id":  "oga-lofi-funk",
@@ -261,6 +261,278 @@
                                              "credit":  "\"Crate Punks OST\" by Shuhei Yasuda\nSource: OpenGameArt (https://opengameart.org/content/crate-punks-ost)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
                                              "license":  "CC0 1.0",
                                              "sha256":  "4eb0eeca8abf507834c3bd693499f94dc8ed2a5837f00bb1b406545399e1a3d7"
+                                         }
+                                     ]
+                      },
+                      {
+                          "id":  "ia-chill",
+                          "name":  "Internet Archive: Chill",
+                          "source":  "Internet Archive",
+                          "source_url":  "https://archive.org/details/netlabels",
+                          "license":  "Per track (CC BY / CC BY-NC / CC BY-NC-SA)",
+                          "license_url":  "",
+                          "tracks":  [
+                                         {
+                                             "title":  "And So It Begins",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS02607/Artificial.Music%20-%20Chillin\u0027%20In%20Tonight\u0027s%20Sky%20-%2001%20And%20So%20It%20Begins.mp3",
+                                             "page":  "https://archive.org/details/SRS02607",
+                                             "credit":  "\"And So It Begins\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS02607)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/album/chillin-in-tonights-sky",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "c9be527c9e9268ed0311bffbec7784c43b18c887d0f534755d8201a1e13f514b"
+                                         },
+                                         {
+                                             "title":  "Nighttime Stroll",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS02607/Artificial.Music%20-%20Chillin\u0027%20In%20Tonight\u0027s%20Sky%20-%2003%20Nighttime%20Stroll.mp3",
+                                             "page":  "https://archive.org/details/SRS02607",
+                                             "credit":  "\"Nighttime Stroll\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS02607)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/album/chillin-in-tonights-sky",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "358c5d5ae01ce8a0c7ca5e18324906b9f1bee8801d870002efaef46ee930ec10"
+                                         },
+                                         {
+                                             "title":  "Moving Forward",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS02607/Artificial.Music%20-%20Chillin\u0027%20In%20Tonight\u0027s%20Sky%20-%2010%20Moving%20Forward.mp3",
+                                             "page":  "https://archive.org/details/SRS02607",
+                                             "credit":  "\"Moving Forward\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS02607)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/album/chillin-in-tonights-sky",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "9972fb092fdc6a08d4cf8de48a9e2a8fa5918c7017470a112fcef4f0d3301f6c"
+                                         },
+                                         {
+                                             "title":  "Curtains",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS07907/Artificial.Music%20-%20Curtains.mp3",
+                                             "page":  "https://archive.org/details/SRS07907",
+                                             "credit":  "\"Curtains\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS07907)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/curtains",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "e2464407f3076e3a6053293c09739d0b6980a8c1273d19bdf409b3d356383ff4"
+                                         },
+                                         {
+                                             "title":  "Infinity Robes",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS15607/Artificial.Music%20-%20Infinity%20Robes.mp3",
+                                             "page":  "https://archive.org/details/SRS15607",
+                                             "credit":  "\"Infinity Robes\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS15607)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/infinity-robes",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "50bd1c5ffedb184bbec0ef851551278ce39e4fe1637956bf1e569303614d7b13"
+                                         },
+                                         {
+                                             "title":  "New Window",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS16407/Artificial.Music%20-%20New%20Window.mp3",
+                                             "page":  "https://archive.org/details/SRS16407",
+                                             "credit":  "\"New Window\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS16407)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/new-window",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "c4d68ba370907b9340159a59be366b440ae259c169621cbe612d1f77dcbd702f"
+                                         },
+                                         {
+                                             "title":  "Celestial Gold",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS19107/Artificial.Music%20-%20Celestial%20Gold.mp3",
+                                             "page":  "https://archive.org/details/SRS19107",
+                                             "credit":  "\"Celestial Gold\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS19107)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/celestial-gold",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "5c5a7f1d2591e6bf62568578124c1b56f724a937546156f79799d5a13bf11b97"
+                                         },
+                                         {
+                                             "title":  "Skyline Mirage",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS19907/Artificial.Music%20-%20Skyline%20Mirage.mp3",
+                                             "page":  "https://archive.org/details/SRS19907",
+                                             "credit":  "\"Skyline Mirage\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS19907)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/skyline-mirage",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "6835f66fed3dc8e7a3cafce791b34914f60f304fb87d0e1d80e42cf9b1805427"
+                                         },
+                                         {
+                                             "title":  "Meadows in the Sky",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS13307/Artificial.Music%20-%20Meadows%20in%20the%20Sky.mp3",
+                                             "page":  "https://archive.org/details/SRS13307",
+                                             "credit":  "\"Meadows in the Sky\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS13307)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/meadows-in-the-sky",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "325e47be99a27e0ca7bd5acfdf559275fc0cd403a4846d6f506ad141271cc956"
+                                         },
+                                         {
+                                             "title":  "Determined to Succeed",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS19007/Artificial.Music%20-%20Determined%20to%20Succeed.mp3",
+                                             "page":  "https://archive.org/details/SRS19007",
+                                             "credit":  "\"Determined to Succeed\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS19007)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/determined-to-succeed",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "49aedff1f0074f04e899b9f13c012e4a1e520079f29a09769e4cb31d79b75eba"
+                                         },
+                                         {
+                                             "title":  "In The Light",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS07807/Artificial.Music%20-%20In%20The%20Light.mp3",
+                                             "page":  "https://archive.org/details/SRS07807",
+                                             "credit":  "\"In The Light\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS07807)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/in-the-light",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "96401d07c0a6efeb2cf4e2269c95079cf62cd07a5a69814c57a4f69d860e7776"
+                                         },
+                                         {
+                                             "title":  "Almost There",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS18907/Artificial.Music%20-%20Almost%20There.mp3",
+                                             "page":  "https://archive.org/details/SRS18907",
+                                             "credit":  "\"Almost There\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS18907)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/almost-there",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "e65bec5bd3210adc602de476ea40f0ae52f1e22ec4febc41387556e1f56b4f9a"
+                                         },
+                                         {
+                                             "title":  "Good Times",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS07607/Artificial.Music%20-%20Good%20Times.mp3",
+                                             "page":  "https://archive.org/details/SRS07607",
+                                             "credit":  "\"Good Times\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS07607)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/good-times",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "33543a3983136e974fd7cb393ae900c91aec35accf27f359ab695c496d108f26"
+                                         },
+                                         {
+                                             "title":  "Lights in Action",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS13607/Artificial.Music%20-%20Lights%20in%20Action.mp3",
+                                             "page":  "https://archive.org/details/SRS13607",
+                                             "credit":  "\"Lights in Action\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS13607)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/lights-in-action",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "bcc7a4e11653668973d597ef6515b78b5fb0b831de7e61ce3f71bb96fba306cc"
+                                         },
+                                         {
+                                             "title":  "Steadfast Boots",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS16007/Artificial.Music%20-%20Steadfast%20Boots.mp3",
+                                             "page":  "https://archive.org/details/SRS16007",
+                                             "credit":  "\"Steadfast Boots\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS16007)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/track/steadfast-boots",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "189d67e40566262c6994ecb1e32f5830a33f88a0b6ce9fbaf42560f21c741619"
+                                         },
+                                         {
+                                             "title":  "Echorobot\u0027s Chords pt. 1",
+                                             "artist":  "Artificial.Music",
+                                             "url":  "https://archive.org/download/SRS04507/Artificial.Music%20-%20Robotic%20Echoes%20-%2001%20Echorobot\u0027s%20Chords%20pt.%201.mp3",
+                                             "page":  "https://archive.org/details/SRS04507",
+                                             "credit":  "\"Echorobot\u0027s Chords pt. 1\" by Artificial.Music\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS04507)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://artificialaryll.bandcamp.com/album/robotic-echoes",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "19aa489e25c5eb44e1eb6cb91c57745fd925e6b75bf9565b033203b8795d0cd6"
+                                         },
+                                         {
+                                             "title":  "Space Journey",
+                                             "artist":  "Caturday \u0026 Babasmas",
+                                             "url":  "https://archive.org/download/SRS15802/Caturday%20%26%20Babasmas%20-%20Space%20Journey.mp3",
+                                             "page":  "https://archive.org/details/SRS15802",
+                                             "credit":  "\"Space Journey\" by Caturday \u0026 Babasmas\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS15802)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://babasmas.bandcamp.com/track/space-journey",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "943814103d702e9cfc50c37ccb7c681b91a837647cb8bfc94929990f04abfd7d"
+                                         },
+                                         {
+                                             "title":  "Sankalpa Trailhead",
+                                             "artist":  "Mylar Man",
+                                             "url":  "https://archive.org/download/buckram017/01-buckram017-sankalpa_trailhead.mp3",
+                                             "page":  "https://archive.org/details/buckram017",
+                                             "credit":  "\"Sankalpa Trailhead\" by Mylar Man\nLabel: BuckramBeats\nSource: Internet Archive (https://archive.org/details/buckram017)\nLicense: CC BY-NC-SA 2.5 (https://creativecommons.org/licenses/by-nc-sa/2.5/)",
+                                             "license":  "CC BY-NC-SA 2.5",
+                                             "sha256":  "c7b8339396ba697a1788a5a729af70ee1cd3e62303f5b9297ae82ca5d6f47d6d"
+                                         },
+                                         {
+                                             "title":  "Summit",
+                                             "artist":  "Mylar Man",
+                                             "url":  "https://archive.org/download/buckram017/03-buckram017-summit.mp3",
+                                             "page":  "https://archive.org/details/buckram017",
+                                             "credit":  "\"Summit\" by Mylar Man\nLabel: BuckramBeats\nSource: Internet Archive (https://archive.org/details/buckram017)\nLicense: CC BY-NC-SA 2.5 (https://creativecommons.org/licenses/by-nc-sa/2.5/)",
+                                             "license":  "CC BY-NC-SA 2.5",
+                                             "sha256":  "04b7635f0cee9d1104ab783177f294a24278c55069b8a653ac7aff4f9222299f"
+                                         },
+                                         {
+                                             "title":  "Peak",
+                                             "artist":  "Mylar Man",
+                                             "url":  "https://archive.org/download/buckram017/04-buckram017-peak.mp3",
+                                             "page":  "https://archive.org/details/buckram017",
+                                             "credit":  "\"Peak\" by Mylar Man\nLabel: BuckramBeats\nSource: Internet Archive (https://archive.org/details/buckram017)\nLicense: CC BY-NC-SA 2.5 (https://creativecommons.org/licenses/by-nc-sa/2.5/)",
+                                             "license":  "CC BY-NC-SA 2.5",
+                                             "sha256":  "b27e85c91ead538cc5331429930f3b4792a42904c45caa7e1502ca7fa83d74d4"
+                                         }
+                                     ]
+                      },
+                      {
+                          "id":  "ia-electronic",
+                          "name":  "Internet Archive: Electronic",
+                          "source":  "Internet Archive",
+                          "source_url":  "https://archive.org/details/netlabels",
+                          "license":  "Per track (CC BY / CC BY-NC / CC BY-NC-SA)",
+                          "license_url":  "",
+                          "tracks":  [
+                                         {
+                                             "title":  "Drift City",
+                                             "artist":  "Ashiera",
+                                             "url":  "https://archive.org/download/SRS10413/Ashiera%20-%20Drift%20City.mp3",
+                                             "page":  "https://archive.org/details/SRS10413",
+                                             "credit":  "\"Drift City\" by Ashiera\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS10413)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://ash-electric.bandcamp.com/track/drift-city",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "858f79101cbe14752360d5a2aeca0e1ceb2b8164cf2d8089cd08fcea3000dbe0"
+                                         },
+                                         {
+                                             "title":  "Route 205",
+                                             "artist":  "Ashiera",
+                                             "url":  "https://archive.org/download/SRS09713/Ashiera%20-%20Route%20205.mp3",
+                                             "page":  "https://archive.org/details/SRS09713",
+                                             "credit":  "\"Route 205\" by Ashiera\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS09713)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://ash-electric.bandcamp.com/track/route-205",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "8916332fc6d01d3207b2e7cb42cd458f7b5973da569c323c08a201058efed878"
+                                         },
+                                         {
+                                             "title":  "Northbound",
+                                             "artist":  "Ash Electric",
+                                             "url":  "https://archive.org/download/SRS10613/Ash%20Electric%20-%20Northbound.mp3",
+                                             "page":  "https://archive.org/details/SRS10613",
+                                             "credit":  "\"Northbound\" by Ash Electric\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS10613)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://ash-electric.bandcamp.com/track/northbound",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "214d2ba6f312e2d5393d26afdb3d9c59b9fd4f6175ab8199280b8f1fc31f4c4f"
+                                         },
+                                         {
+                                             "title":  "BREACH",
+                                             "artist":  "Ash Electric",
+                                             "url":  "https://archive.org/download/SRS08913/Ash%20Electric%20-%20BREACH.mp3",
+                                             "page":  "https://archive.org/details/SRS08913",
+                                             "credit":  "\"BREACH\" by Ash Electric\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS08913)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://ash-electric.bandcamp.com/track/breach",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "ac9bf5255d862f9a2b76daeb646c8e343fd6032d75c97fa8bd2be9f6f0e92517"
+                                         },
+                                         {
+                                             "title":  "Blastoff",
+                                             "artist":  "epi- chord",
+                                             "url":  "https://archive.org/download/SRS11315/epi-%20chord%20-%20Spaceman%20-%2002%20Blastoff.mp3",
+                                             "page":  "https://archive.org/details/SRS11315",
+                                             "credit":  "\"Blastoff\" by epi- chord\nLabel: Silent Running Scandal\nSource: Internet Archive (https://archive.org/details/SRS11315)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://epi-chord.bandcamp.com/album/spaceman",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "f6f8654299bcd6b41c87e91b3cbbcd29381565e5badb4aeeab6b5fda2f27ca26"
+                                         },
+                                         {
+                                             "title":  "Power Line (original mix)",
+                                             "artist":  "Psychadelik Pedestrian",
+                                             "url":  "https://archive.org/download/tou227/tou227a.mp3",
+                                             "page":  "https://archive.org/details/tou227",
+                                             "credit":  "\"Power Line (original mix)\" by Psychadelik Pedestrian\nLabel: Toucan Music\nSource: Internet Archive (https://archive.org/details/tou227)\nLicense: CC BY-NC 2.5 (Toucan Music: free for non-commercial use; the Internet Archive item says CC BY 2.5) (https://creativecommons.org/licenses/by-nc/2.5/)\nToucan Music: https://www.toucanmusic.com",
+                                             "license":  "CC BY-NC 2.5 (Toucan Music: free for non-commercial use; the Internet Archive item says CC BY 2.5)",
+                                             "sha256":  "4fb028a4598953ddcb61ce0bfb5451ec5cb5a718e248be36194d38a8834076de"
+                                         },
+                                         {
+                                             "title":  "Travels In The North (original mix)",
+                                             "artist":  "Psychadelik Pedestrian",
+                                             "url":  "https://archive.org/download/tour43/toulp1j.mp3",
+                                             "page":  "https://archive.org/details/tour43",
+                                             "credit":  "\"Travels In The North (original mix)\" by Psychadelik Pedestrian\nLabel: Toucan Music\nSource: Internet Archive (https://archive.org/details/tour43)\nLicense: CC BY-NC 2.5 (Toucan Music: free for non-commercial use; the Internet Archive item says CC BY 2.5) (https://creativecommons.org/licenses/by-nc/2.5/)\nToucan Music: https://www.toucanmusic.com",
+                                             "license":  "CC BY-NC 2.5 (Toucan Music: free for non-commercial use; the Internet Archive item says CC BY 2.5)",
+                                             "sha256":  "2a5f9bb70efc8409df4fab1dd3f2c37469192d58eb54158ef1fd2433ef54f747"
+                                         },
+                                         {
+                                             "title":  "Audial Assault (drum solo)",
+                                             "artist":  "The Toucan",
+                                             "url":  "https://archive.org/download/tou205/tou205d.mp3",
+                                             "page":  "https://archive.org/details/tou205",
+                                             "credit":  "\"Audial Assault (drum solo)\" by The Toucan\nLabel: Toucan Music\nSource: Internet Archive (https://archive.org/details/tou205)\nLicense: CC BY-NC 2.5 (Toucan Music: free for non-commercial use; the Internet Archive item says CC BY 2.5) (https://creativecommons.org/licenses/by-nc/2.5/)\nToucan Music: https://www.toucanmusic.com",
+                                             "license":  "CC BY-NC 2.5 (Toucan Music: free for non-commercial use; the Internet Archive item says CC BY 2.5)",
+                                             "sha256":  "f751e2f3c20e4f3e41538518a02e6a91512ce60dd907af05a7f8829bcacafecb"
                                          }
                                      ]
                       }
