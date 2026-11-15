@@ -93,10 +93,57 @@ impl Plugin for StartupLoadingPlugin {
     fn build(&self, app: &mut App) {
         let mut loading = StartupLoading::new();
         loading.hold("audio", "Loading sound");
+        if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render.add_systems(bevy::render::Render, count_waiting_pipelines.after(bevy::render::RenderSystems::Cleanup));
+            loading.hold(PIPELINES, "Preparing graphics");
+        }
         app.insert_resource(loading)
             .add_systems(Startup, |mut time: ResMut<Time<Virtual>>| time.pause())
             .add_systems(PreUpdate, hold_time.after(crate::graphics_menu::MenuInput))
-            .add_systems(Update, track_audio);
+            .add_systems(Update, (track_audio, track_pipelines));
+    }
+}
+
+const PIPELINES: &str = "pipelines";
+/// Render frames in a row that ended with no pipeline waiting, and all render frames (render world writes).
+static PIPELINES_CLEAR_STREAK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RENDER_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Clear render frames after the other holds went before the pipelines hold goes (one covers the pipelined render).
+const PIPELINES_CLEAR_FRAMES: u64 = 3;
+/// The pipelines hold alone never keeps the window hidden longer than this.
+const PIPELINES_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn count_waiting_pipelines(cache: Option<Res<bevy::render::render_resource::PipelineCache>>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if SHOWN.load(Relaxed) {
+        return;
+    }
+    if cache.is_some_and(|c| c.waiting_pipelines().next().is_some()) {
+        PIPELINES_CLEAR_STREAK.store(0, Relaxed);
+    } else {
+        PIPELINES_CLEAR_STREAK.fetch_add(1, Relaxed);
+    }
+    RENDER_FRAMES.fetch_add(1, Relaxed);
+}
+
+/// The pipelines hold goes once every other hold is gone (the scene is spawned) and the shaders it needs finished
+/// compiling: their first frame in view was a ~200 ms stall right after the loading screen.
+fn track_pipelines(mut loading: ResMut<StartupLoading>, mut others_gone: Local<Option<(u64, Instant)>>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if loading.done || !loading.holding(PIPELINES) {
+        return;
+    }
+    if loading.holds.len() > 1 {
+        *others_gone = None;
+        return;
+    }
+    let (base, since) = *others_gone.get_or_insert_with(|| (RENDER_FRAMES.load(Relaxed), Instant::now()));
+    let streak = PIPELINES_CLEAR_STREAK.load(Relaxed);
+    if RENDER_FRAMES.load(Relaxed) >= base + PIPELINES_CLEAR_FRAMES && streak >= PIPELINES_CLEAR_FRAMES {
+        loading.release(PIPELINES);
+    } else if since.elapsed() > PIPELINES_MAX_WAIT {
+        warn!("STARTUP_LOADING pipelines still compiling after {} s; showing the game", PIPELINES_MAX_WAIT.as_secs());
+        loading.release(PIPELINES);
     }
 }
 

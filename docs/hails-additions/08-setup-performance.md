@@ -481,6 +481,8 @@ The game is silent while the splash is up (`AudioSettings::master` is 0 until `s
 
 The slowest hold is the native audio runtime's first start (~40 s on an HDD with a cold file cache; `game_audio::native::begin_launch` builds it on its own thread). Engine systems and mods hold the phase with [`StartupLoading::hold`] / [`StartupLoading::release`] (a label each, shown as the splash's step) and report the item being read with [`detail`].
 
+**Pipelines hold (2026-11-15, ask 676).** The first frame after the splash closed was a ~200 ms stall: the scene's render pipelines were still compiling (hails-additions 0064c981, DownTown: frame 7 206.8 ms, 169 ms waiting on the render thread, 20 pipelines compiling, 10 done that frame). The phase now also holds `pipelines` ("Preparing graphics", only with a render app): a render-world system counts render frames that end with no pipeline waiting (`PipelineCache::waiting_pipelines`), and the hold goes once every other hold is released and 3 render frames in a row since then had none waiting; it gives way after 20 s on its own. Verification (world/challenges, release, DownTown, muted, 30 s, two runs): the hold went 194 ms after the last other hold; worst frame after the game showed 13.5 ms and 30.0 ms (an audio frame), was 206.8 ms. A 216 ms frame ~21 s into the first measurement (all in `pre_update`, no fixed steps, no phase time) did not come back in either run; it needs a trace when it shows again.
+
 ### The setup window (2026-10-27, ask 385)
 
 **Problem.** The setup / update window showed a long paragraph (asset version list, reuse notes, where to keep the game data) and its button even when nothing had to be picked; the user asked for a less cluttered, better-looking screen.
