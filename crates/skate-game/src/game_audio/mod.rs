@@ -112,7 +112,8 @@ impl Default for SavedSettings {
             mod_emitter_slots: ModEmitterSlots::Extra,
             retail_volumes: RetailVolumes::default(),
             music_playlist: Vec::new(),
-            music_mode: 0,
+            // A new profile's Interactive Mode (retail 825009F0 writes 1; ask 677).
+            music_mode: 1,
             defaults_version: AUDIO_DEFAULTS_VERSION,
         }
     }
@@ -381,8 +382,15 @@ impl AudioSettings {
     pub(crate) fn music_playlist(&self, songs: u32) -> Vec<u32> {
         skate_core::music_player::sanitise(&self.saved.music_playlist, songs)
     }
+    /// The saved music mode. A new profile is in the Interactive Mode (retail's profile reset 825009F0 writes 1); 0 is
+    /// what files saved before 2026-11-15 hold without a choice (the screen's tabs only set 1 and 2), so it loads as the
+    /// Interactive Mode too, and a chosen 1 or 2 stays (ask 677).
     pub(crate) fn music_mode(&self) -> skate_core::music_player::MusicMode {
-        skate_core::music_player::MusicMode::from_code(self.saved.music_mode).unwrap_or_default()
+        use skate_core::music_player::MusicMode;
+        match self.saved.music_mode {
+            0 => MusicMode::Ambient,
+            code => MusicMode::from_code(code).unwrap_or_default(),
+        }
     }
     /// Save the Music Player's playlist and mode.
     pub(crate) fn set_music_player(&mut self, playlist: &[u32], mode: skate_core::music_player::MusicMode) -> String {

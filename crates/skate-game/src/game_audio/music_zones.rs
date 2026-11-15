@@ -85,6 +85,24 @@ pub(crate) struct MusicZonesData {
     pub playlists: BTreeMap<String, Playlist>,
     #[serde(default)]
     pub interactive: BTreeMap<String, Interactive>,
+    /// The music state each FE screen posts when it comes on top (`fe_hudstate` eMusicFEStates), by screen key in hex;
+    /// screens with state 0 are not listed (research b1024).
+    #[serde(default)]
+    pub fe_music_states: BTreeMap<String, i32>,
+}
+
+/// UpdateMode 82499468 in the Interactive Mode: music state 2 sets this playlist (no TU3 screen posts 2) ...
+const FE_PLAYLIST_STATE_2: &str = "DE63C26DA486B5C0";
+/// ... and states 3 / 4 (Create-a-Skater, credits, the trick tutorial, the web screen) this one: every soundtrack song.
+const FE_PLAYLIST_MENUS: &str = "E7CC11BB107155EC";
+
+/// The playlist a top screen's music state plays in the Interactive Mode, if any.
+pub(crate) fn fe_playlist(state: i32) -> Option<&'static str> {
+    match state {
+        2 => Some(FE_PLAYLIST_STATE_2),
+        3 | 4 => Some(FE_PLAYLIST_MENUS),
+        _ => None,
+    }
 }
 
 /// A race's music tuning (class 4ADAC090BCE2A930; UpdateRaceState's control 8249E9B8).
@@ -431,6 +449,19 @@ pub(crate) struct EnvironmentHost {
     env: Environment,
     ids: Option<EnumIds>,
     active: bool,
+    /// The FE screen playlist playing over the zones (its key), ask 677.
+    menu: Option<&'static str>,
+}
+
+/// The queue for an FE screen's playlist: its licensed songs on the soundtrack graph; ePlayListMode 0 plays them in
+/// order, the others pick at random without repeats (82499B68; research b1024).
+fn fe_playlist_request(key: Option<&'static str>, data: &MusicZonesData, ids: &EnumIds) -> MusicRequest {
+    let list = key.and_then(|k| data.playlists.get(k));
+    let tracks = list.map(|l| l.songs.iter()
+        .filter_map(|s| EnumIds::value(&ids.ipod, s.0))
+        .map(|k| Track::Graph { set: IPOD_SET.into(), var: IPOD_VAR.into(), value: k, play: IPOD_PLAY })
+        .collect()).unwrap_or_default();
+    MusicRequest::MenuPlaylist { key: key.map(str::to_owned), tracks, shuffle: list.is_none_or(|l| l.mode != 0) }
 }
 
 /// Per frame in the Interactive Mode (the Music Player's mode 1): the zones choose the music. Nothing while a mod owns
@@ -446,6 +477,7 @@ pub(crate) fn environment(
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     config: Res<crate::config::Config>,
     time: Res<Time>,
+    backdrop: Option<Res<crate::fe_backdrop::FeBackdrop>>,
 ) {
     let Some(library) = library else { return };
     let interactive = music.soundtrack_off && music.owner.is_none();
@@ -455,6 +487,7 @@ pub(crate) fn environment(
         if host.active {
             host.active = false;
             host.env = Environment::default();
+            host.menu = None;
         }
         return;
     }
@@ -463,6 +496,22 @@ pub(crate) fn environment(
         host.env.rng = time.elapsed().as_nanos() as u32 | 1;
     }
     let ids = host.ids.get_or_insert_with(|| enum_ids(&config.asset_root)).clone();
+    // The top FE screen's music state (ask 677): Create-a-Skater, the credits, the trick tutorial and the web screen
+    // play every soundtrack song at random over the zones; leaving brings the zones' music back where it was.
+    // NOT RETAIL YET: retail restores the zones' request on the next state-1 screen (8249A580); ours on any screen
+    // without a playlist state.
+    let state = backdrop.as_ref().and_then(|b| b.top_key())
+        .and_then(|k| library.music_zones().fe_music_states.get(k).copied()).unwrap_or(0);
+    let want = fe_playlist(state);
+    if want != host.menu {
+        let request = fe_playlist_request(want, library.music_zones(), &ids);
+        info!("AUDIO_MUSIC FE music state {state}: {}", want.map_or("back to the zones".to_owned(), |k| format!("playlist {k}")));
+        music.requests.push(request);
+        host.menu = want;
+    }
+    if host.menu.is_some() {
+        return;
+    }
     let (multiplier, score) = skater.as_ref().map_or((1.0, 0.0), |s| (s.scoring.session.combo.multiplier, s.scoring.session.combo.timer.points));
     let done = music.queue_done();
     for code in triggers {

@@ -105,6 +105,13 @@ impl FeBackdrop {
         })
     }
 
+    /// The top screen's key (16 hex digits): what the FE stack posts as the audio / music state message when its top
+    /// changes (825EC5E0; the music state per key is setup data, `fe_music_states`).
+    pub(crate) fn top_key(&self) -> Option<&str> {
+        let id = self.stack.last()?;
+        self.screens.iter().find(|s| &s.id == id).map(|s| s.key.as_str())
+    }
+
     /// The FE stack changed (retail applies the top screen's flag on every push / pop).
     pub(crate) fn set_stack(&mut self, keys: Vec<String>) {
         self.stack = keys;

@@ -8,11 +8,13 @@ pub const MAX_SONGS: usize = 100;
 /// sub_8260BBE0): the Ambient tab 1, the Music Player tab 2.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MusicMode {
-    /// 0: the game's default music (music manager state 2); a new profile's mode.
-    #[default]
+    /// 0: music manager state 2 with the stream faded out (825E4A60 sets +0x3F8 = 3): retail plays nothing in it. No
+    /// tab sets it and a new profile starts in 1, so ours loads a saved 0 as the Interactive Mode (research b1024).
     Default,
-    /// 1: the screen's Interactive Mode (sub_82498A80(manager, 4)): the soundtrack stops and the music zones choose
-    /// the music (licensed location songs or DJ world music; .local/research/music-zones-dj.md).
+    /// 1: the screen's Interactive Mode (sub_82498A80(manager, 4)), a new profile's mode (profile reset 825009F0): the
+    /// music zones choose the music in play (licensed location songs or DJ world music; .local/research/music-zones-dj.md)
+    /// and some FE screens play their playlist (music states 3 / 4: every soundtrack song at random).
+    #[default]
     Ambient,
     /// 2: the Music Player plays the playlist (manager state 7, sub_825E46B0 picks the song).
     Player,

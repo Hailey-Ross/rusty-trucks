@@ -2,8 +2,9 @@
 //! runtime's music stream ([`skate_audio::music::player`]). A retail track plays through its set's PathFinder graph
 //! (research b1016: track k = `ipod` = k, then the play event); a player's own track (a music bank's track table,
 //! from a playlist) plays its segments in order. The next segment decodes on a worker thread, a few seconds ahead.
-//! Default queue: the disc soundtrack (every `ipod` track, shuffled). NOT RETAIL YET: which retail mode free roam plays
-//! (soundtrack or the interactive DJ music) and the stream gain (the Music option volume directly; the MixMap output
+//! Default queue: the disc soundtrack (every `ipod` track, shuffled) in Playlist Mode; the Interactive Mode (a new
+//! profile's) plays the zones and some FE screens' playlists (doc 11 "Free skate music by mode"). NOT RETAIL YET: the
+//! stream gain (the Music option volume directly; the MixMap output
 //! that scales retail's music is open). Test aids: `SKATE_MUSIC=0` (off), `SKATE_MUSIC_PLAYLIST=<playlist.json>`.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -243,6 +244,10 @@ pub(crate) enum MusicRequest {
     PlayIndex(usize),
     /// The queue tracks the player turned off (0-based; the Music Player on a mod's queue).
     SetOff(Vec<usize>),
+    /// An FE screen's playlist over the Interactive Mode's zones (ask 677): `key` Some puts it in place of the queue
+    /// (kept aside), None brings the kept queue back. Each playlist keeps its cursor and played history between visits
+    /// and picks again on every entry (82499B68 with first-pick 1).
+    MenuPlaylist { key: Option<String>, tracks: Vec<Track>, shuffle: bool },
 }
 
 /// Where a segment comes from: a retail set's bank, or a player's bank file.
@@ -290,6 +295,11 @@ pub(crate) struct Music {
     pub(crate) soundtrack_off: bool,
     /// Overlay stings to start this frame.
     overlays: Vec<(PathBuf, f32)>,
+    /// The FE screen playlist playing now (`MenuPlaylist`), the queue it replaced, and each playlist's queue between
+    /// visits.
+    menu_key: Option<String>,
+    menu_saved: Option<Sequencer>,
+    menu_queues: HashMap<String, Sequencer>,
 }
 
 /// A track became audible (its first segment started playing): the caption, mods' `sdk.music` events.
@@ -395,6 +405,11 @@ impl Music {
         (playing, seq.off.iter().map(|i| *i as u32 + 1).collect())
     }
 
+    /// An FE screen's playlist plays over the zones (the menu's music stays audible while the game is paused).
+    pub(crate) fn menu_playing(&self) -> bool {
+        self.menu_key.is_some()
+    }
+
     pub(crate) fn is_loaded(&self) -> bool {
         self.loaded
     }
@@ -420,6 +435,11 @@ impl Music {
     fn apply(&mut self) -> bool {
         let mut restart = false;
         for request in std::mem::take(&mut self.requests) {
+            // Anything else that sets the queue ends an FE screen's playlist without bringing the kept queue back.
+            if matches!(request, MusicRequest::Playlist { queue: false, .. } | MusicRequest::Soundtrack { .. } | MusicRequest::Stop { .. } | MusicRequest::Queue { .. }) {
+                self.menu_key = None;
+                self.menu_saved = None;
+            }
             match request {
                 MusicRequest::Playlist { owner, path, queue, soundtrack, shuffle: shuffle_override } => match playlist_tracks(&path) {
                     Ok((mut tracks, shuffle)) => {
@@ -505,6 +525,30 @@ impl Music {
                     if let Some(seq) = self.sequencer.as_mut() {
                         seq.off = off;
                     }
+                }
+                MusicRequest::MenuPlaylist { key, tracks, shuffle } => {
+                    // The playlist being left keeps its cursor and history; the queue it replaced comes back.
+                    if let Some(active) = self.menu_key.take() {
+                        if let Some(seq) = self.sequencer.take() {
+                            self.menu_queues.insert(active, seq);
+                        }
+                        self.sequencer = self.menu_saved.take();
+                    }
+                    if let Some(key) = key {
+                        self.menu_saved = self.sequencer.take();
+                        let mut seq = match self.menu_queues.remove(&key) {
+                            Some(seq) => seq,
+                            None => {
+                                self.seed = self.seed.wrapping_add(1);
+                                Sequencer::new(tracks, shuffle, self.seed)
+                            }
+                        };
+                        // Every entry picks a song again (retail's first pick), continuing the playlist's cycle.
+                        seq.skip();
+                        self.sequencer = Some(seq);
+                        self.menu_key = Some(key);
+                    }
+                    restart = true;
                 }
                 MusicRequest::Control(value) => {
                     if let Some(seq) = self.sequencer.as_mut() {
@@ -652,6 +696,30 @@ mod tests {
 
     fn bank(name: &str, first: u32) -> Track {
         Track::Bank { bank: PathBuf::from("mine.bank"), first, count: 1, name: name.into(), artist: "Band".into() }
+    }
+
+    /// Ask 677: an FE screen's playlist replaces the zones' queue, the zones' queue comes back after, and the playlist
+    /// continues its cycle on the next visit; a stop ends it without bringing a queue back.
+    #[test]
+    fn an_fe_screen_playlist_plays_over_the_zones_and_gives_them_back() {
+        let graphs = HashMap::new();
+        let mut m = Music { loaded: true, ..Default::default() };
+        m.sequencer = Some(Sequencer::new(vec![bank("zone", 0)], false, 1));
+        m.requests.push(MusicRequest::MenuPlaylist { key: Some("E7".into()), tracks: vec![bank("A", 0), bank("B", 1)], shuffle: true });
+        assert!(m.apply());
+        assert!(m.menu_playing());
+        let first = m.sequencer.as_mut().unwrap().next(&graphs);
+        m.requests.push(MusicRequest::MenuPlaylist { key: None, tracks: Vec::new(), shuffle: false });
+        assert!(m.apply());
+        assert!(!m.menu_playing());
+        assert_eq!(m.sequencer.as_ref().unwrap().tracks, vec![bank("zone", 0)], "the zones' queue is back");
+        m.requests.push(MusicRequest::MenuPlaylist { key: Some("E7".into()), tracks: Vec::new(), shuffle: true });
+        m.apply();
+        assert_eq!(m.sequencer.as_ref().unwrap().tracks.len(), 2, "the playlist is kept between visits");
+        assert_ne!(m.sequencer.as_mut().unwrap().next(&graphs), first, "a new pick, the cycle continues");
+        m.requests.push(MusicRequest::Stop { owner: None });
+        m.apply();
+        assert!(!m.menu_playing() && m.sequencer.is_none(), "a stop ends it without bringing a queue back");
     }
 
     /// Ask 675: songs the player turned off in the Music Player are skipped while one stays on; a pick plays at once.
