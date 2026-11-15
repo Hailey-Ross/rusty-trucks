@@ -67,7 +67,9 @@ down. Players who stream or record need music they may use, credited, without hu
 
 **Verification.** Launcher unit tests: the built-in playlists parse and every track has a title, artist and https URL;
 credits name the artist, source and license; file names are safe on every OS; the FMA sign-in reads the form token,
-encodes the form body and tells a returned web page from a song. A local run with the Incompetech
+encodes the form body and tells a returned web page from a song. A real sign-in through the window (2026-11-15):
+a wrong password shows its error, the right one closes the window as signed in, and a download with that session
+matched the track's pinned sha256 (`.local/stream-safe/test_fma_signin.ps1`). A local run with the Incompetech
 playlists (27 tracks): see the PR tests table.
 
 **Open questions.**
