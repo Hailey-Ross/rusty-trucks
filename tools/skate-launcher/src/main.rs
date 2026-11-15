@@ -10,6 +10,7 @@ mod cli;
 mod dlc;
 mod ensure;
 mod entries;
+mod fma;
 mod ojson;
 mod patch;
 mod pick;
