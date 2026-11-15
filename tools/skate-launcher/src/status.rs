@@ -164,6 +164,7 @@ pub fn status(l: &Launcher) -> Vec<String> {
         format!("last\t{last}"),
         format!("send\t{send}"),
         format!("share\t{}", share(l, &l.version_dir(v))),
+        format!("stream_safe\t{}", crate::streamsafe::status(l)),
         format!("fixed_executor\t{}", fixed_executor(l)),
         format!("setup_missing\t{}", setup_missing(l, l.use_release(v))),
         format!("first_setup\t{}", if first_setup { "" } else { "1" }),

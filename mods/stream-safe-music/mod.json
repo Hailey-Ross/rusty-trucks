@@ -1,0 +1,27 @@
+{
+  "id": "stream-safe-music",
+  "api": 2,
+  "name": "Stream-safe Music",
+  "version": "0.1.0",
+  "author": "Hails",
+  "description": "For streaming and recording: plays music that streams and videos may use instead of the game's soundtrack, with each song's title and artist on screen. Turn it on in the launcher (Tools > Stream-safe mode), which downloads the music and writes CREDITS.txt for your stream or video description.",
+  "entry": "main.lua",
+  "enabled_by_default": false,
+  "settings": {
+    "shuffle": {
+      "type": "boolean",
+      "label": "Shuffle",
+      "description": "Play the songs in a random order.",
+      "default": true
+    },
+    "volume": {
+      "type": "number",
+      "label": "Volume",
+      "description": "The music's volume on the game's music level (1 = the same).",
+      "min": 0,
+      "max": 2,
+      "step": 0.1,
+      "default": 1
+    }
+  }
+}

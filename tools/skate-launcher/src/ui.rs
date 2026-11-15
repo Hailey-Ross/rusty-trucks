@@ -28,6 +28,8 @@ enum Action {
     Begin { entry: String, ask: bool },
     BeginLabel { entry: String, label: String },
     Job(Vec<String>),
+    /// A long job with live output (stream-safe downloads).
+    Run(Vec<String>),
     SetVersion(String),
     Setting(String),
     Confirm { text: String, args: Vec<String> },
@@ -734,6 +736,7 @@ impl App {
                 ("Opt-ins and settings", "The game's opt-ins and settings, the same ones as its Guide / F1 overlay.", Action::Open(PageKind::OptIns)),
             ];
             items.extend(more.into_iter().map(|(t, h, a)| Item { text: t.into(), hint: h.into(), on: true, action: a, ..Default::default() }));
+            items.extend(self.stream_safe_items());
             let same = crate::window::same_monitor_file(&self.state_dir).exists();
             items.push(Item {
                 text: format!("Open on: {}", if same { "the monitor it was started from" } else { "the main monitor" }),
@@ -795,6 +798,30 @@ impl App {
             item("Not now", "Sharing stays off.", true, Action::Back),
             item("What is shared", "Game logs, trace folders and launcher build logs of this PC, with your Windows user name, home folder and PC name replaced. Not shared: saves, game files, recomp sound captures. Issues on public repositories are public. Turn it off here or in Tools at any time.", false, Action::None),
         ], ..Default::default() }
+    }
+
+    /// Stream-safe mode's toggle row, and the remove row once songs are downloaded.
+    fn stream_safe_items(&self) -> Vec<Item> {
+        let s = self.status_of("stream_safe").unwrap_or_default();
+        if s.is_empty() {
+            return Vec::new();
+        }
+        let on = s.starts_with("on");
+        let none = s == "off none";
+        let mut items = vec![Item {
+            text: format!("Stream-safe mode: {}", if on { "ON" } else { "OFF" }),
+            hint: if on { "The soundtrack is replaced by music streams and videos may use; each song shows its title and artist. Credits: stream-safe\\CREDITS.txt in the launcher folder. Press to turn off.".into() }
+                else if none { "No stream-safe playlists are available yet.".into() }
+                else { "For streaming or recording: downloads music that streams and videos may use, with full credit to every artist, and plays it instead of the soundtrack. Press to turn on.".into() },
+            on: on || !none,
+            action: Action::Run(vec!["stream-safe".into()]),
+            ..Default::default()
+        }];
+        if !on && !none && std::fs::read_dir(self.state_dir.join("stream-safe").join("music")).is_ok_and(|mut d| d.next().is_some()) {
+            items.push(Item { text: "Remove stream-safe songs".into(), hint: "Deletes the downloaded stream-safe songs and their music banks.".into(), on: true,
+                action: Action::Job(vec!["stream-safe-remove".into()]), ..Default::default() });
+        }
+        items
     }
 
     /// The share toggle row (`ShowShare`).
@@ -1066,9 +1093,12 @@ impl App {
                 self.pages.pop();
                 self.begin(&entry, &label);
             }
+            Action::Run(args) => {
+                self.run_job(&item.text, args.clone());
+            }
             Action::Job(args) => {
                 let lines = if args.len() == 1 && args[0] == "notes" { self.listed("notes") } else { query(&self.exe, &args.iter().map(String::as_str).collect::<Vec<_>>()) };
-                if args[0].starts_with("share-") {
+                if args[0].starts_with("share-") || args[0].starts_with("stream-safe") {
                     self.relist();
                     self.pages.pop();
                 }

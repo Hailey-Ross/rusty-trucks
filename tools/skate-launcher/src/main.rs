@@ -19,6 +19,7 @@ mod selfupdate;
 mod settings;
 mod state;
 mod status;
+mod streamsafe;
 mod ui;
 mod wear;
 mod window;
@@ -152,6 +153,20 @@ fn main() -> ExitCode {
             }
         },
         "sizes" => builds::sizes(&launcher),
+        "stream-safe" | "stream-safe-on" | "stream-safe-off" | "stream-safe-remove" => {
+            let turn_on = arg(0) == "stream-safe-on" || (arg(0) == "stream-safe" && !streamsafe::enabled(&launcher));
+            match arg(0) {
+                "stream-safe-remove" => streamsafe::remove(&launcher),
+                _ if !turn_on => streamsafe::off(&launcher),
+                _ => match streamsafe::on(&launcher) {
+                    Ok(lines) => lines,
+                    Err(e) => {
+                        println!("{e}");
+                        return ExitCode::FAILURE;
+                    }
+                },
+            }
+        }
         "config-set" => match cli::config_set(&launcher, arg(1)) {
             Ok(lines) => lines,
             Err(e) => {
