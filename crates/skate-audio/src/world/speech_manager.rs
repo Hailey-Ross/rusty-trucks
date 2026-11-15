@@ -68,7 +68,7 @@ pub const FAR: i32 = 1;
 pub const NEAR: i32 = 2;
 
 /// `sub_824AB6C8`: the event of a speech value on the living-world path, or `None` (the value says
-/// nothing). `rand()` draws come from `rng` (retail's C runtime `rand`, `sub_82A8AF10`).
+/// nothing). `rand()` draws come from `rng` (retail's shared generator `sub_82A8AF10`).
 pub fn event_for_value(value: i32, speaker_kind: u32, rng: &mut dyn Draw) -> Option<u16> {
     let odd = |rng: &mut dyn Draw| rng.draw() & 1 == 1;
     Some(match value {

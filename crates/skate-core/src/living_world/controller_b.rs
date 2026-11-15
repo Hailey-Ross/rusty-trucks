@@ -105,7 +105,7 @@ pub struct PathElement {
     pub exit: [f32; 3],
 }
 
-/// The path service behind the plan (`829277C0`, path object `828AAE90`).
+/// The path service behind the plan (`829277C0`; its path object is allocated through `828AAE90`).
 pub trait PathService {
     /// A path from `from` to `to`: `None` = no path, an empty list = go straight. An off-mesh `from` snaps to the
     /// nearest walkable point within `start_radius`, an off-mesh `to` to the nearest reachable point within

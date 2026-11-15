@@ -45,7 +45,7 @@ pub const ENGINE_STRINGS: &[(&str, &str)] = &[("ID_HAILS_REPLAY_SAVE_TO_PC", "Sa
 
 /// Font ids handed to script-named fonts in `TextAssets::fonts` (below every character id).
 pub const NAMED_FONT_BASE: i32 = -1_000_000;
-/// Retail's one secondary-font rule, 825D6B68: an APT font named "Futura Shadow" (8220BD44, stricmp
+/// Retail's one secondary-font rule, 825D6B68: an APT font named "Futura Shadow" (8220BD44, exact strcmp
 /// 82AE89B0) gets the native font "futuraheavy" (8220BD54) from the global font table (82809208), whether
 /// or not the movie itself uses that font. Data can replace it (`font_pairs`: APT name -> native file name).
 pub const RETAIL_FONT_PAIRS: &[(&str, &str)] = &[("Futura Shadow", "futuraheavy")];
@@ -55,12 +55,12 @@ pub fn paired_file(json: &serde_json::Value, apt_name: &str) -> Option<String> {
     match json.get("font_pairs").and_then(|p| p.as_object()) {
         Some(pairs) => pairs
             .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(apt_name))
+            .find(|(k, _)| *k == apt_name)
             .and_then(|(_, v)| v.as_str())
             .map(str::to_owned),
         None => RETAIL_FONT_PAIRS
             .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(apt_name))
+            .find(|(k, _)| *k == apt_name)
             .map(|(_, v)| (*v).to_owned()),
     }
 }
@@ -289,10 +289,12 @@ mod font_pair_tests {
     }
 
     #[test]
-    fn data_pairs_replace_the_retail_table_case_insensitively() {
+    fn data_pairs_replace_the_retail_table_by_exact_name() {
         let mut m = movie();
-        m["font_pairs"] = json!({"futura shadow": "FUTURAHEAVY"});
+        m["font_pairs"] = json!({"Futura Shadow": "FUTURAHEAVY"});
         assert!(TextAssets::load(&m).unwrap().fonts[&3].foreground.is_some());
+        m["font_pairs"] = json!({"futura shadow": "futuraheavy"});
+        assert!(TextAssets::load(&m).unwrap().fonts[&3].foreground.is_none());
         m["font_pairs"] = json!({});
         assert!(TextAssets::load(&m).unwrap().fonts[&3].foreground.is_none());
         m["font_pairs"] = json!({"Futura Shadow": "no_such_font"});
