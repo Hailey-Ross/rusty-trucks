@@ -53,9 +53,10 @@ Everything here is in the `hails-additions` build, and the [release notes](https
 - **The loading screen:** Skate 3's tips screen, with Coach Frank and your career stats, while a map loads.
 - **Instant replay:** the last 90 seconds of the whole world with sound, the replay editor, and Save to PC.
 - **Your DLC:** the DLC maps, Challenge Map folders, skate.Park layouts and teleporters from the packs you own.
-- **World shading:** Skate 3's lightmaps and shaders for fences, signs, billboards, traffic lights and trees.
+- **World shading:** Skate 3's lightmaps and shaders for fences, signs, billboards, traffic lights and trees, and props that sit in a building's or bridge's shade the way they do in Skate 3.
 - **Audio:** Skate 3's audio engine, ported natively, with audio modding.
 - **Music:** Skate 3's soundtrack from your disc, the Music Player (Playlist Mode or Interactive Mode with the map's music zones and race music), and Custom Music to play your own songs.
+- **Stream-safe mode:** for streaming and recording. In the launcher, go to **Tools** and press **Stream-safe mode**: it downloads free-to-use music (every artist credited), plays it instead of the soundtrack, and writes a `CREDITS.txt` you can paste into your stream or video description. The Music Player lists those songs so you can pick one or turn some off, and the Guide / F1 / Esc menu gets a **Skip Song** button while they play.
 - **Career mode and challenges** (still being built, behind the Career and Challenges opt-in): own the spot, races, contests and all 12 Skate 101 tutorials, with the career, your team and the Skate Profile page.
 - **Every OS:** the game builds for Windows, Linux and macOS, and the Skate launcher is now one app for all three.
 - **Opt-ins:** anything that's off by default or not quite Skate 3 lives in one place, the Opt-Ins section of the Guide / F1 / Esc menu.
@@ -83,6 +84,8 @@ This is where you can help the most. A few things I'd love a second pair of eyes
 - Skate 3's menus (press Start).
 - **New:** turn on **Career and Challenges** in the Opt-Ins, ride up to an own the spot and press D-pad Up, and give the Skate 101 tutorials, a race and a contest a go. How close does it feel to the real thing?
 - **New:** Options > Music Player, and the soundtrack in Interactive Mode. Does the music feel like Skate 3's?
+- **New:** Stream-safe mode (launcher > Tools). Do the songs and their names show up, can you pick and skip songs in the Music Player and with Skip Song, and does the soundtrack stay quiet everywhere (menus, replays, contests)?
+- **New:** props in shade. Push a bench or bin under a bridge or next to a tall building: does it darken like the ground around it?
 
 **Found something?** Every game the launcher starts saves a session log (without the launcher, use `PLAY-WITH-LOG.bat`). Tell me which opt-ins were on and roughly when and where it happened, attach the log (and a short video if you can) to a [test report](https://github.com/Hailey-Ross/rusty-trucks/issues/new?title=Test%20report%3A%20), and I'll dig in. One problem per session makes it much easier to track down.
 
