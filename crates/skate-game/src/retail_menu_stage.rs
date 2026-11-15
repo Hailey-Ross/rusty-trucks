@@ -1636,9 +1636,20 @@ fn update(
                         .map(|t| t.ipod_tracks)
                         .unwrap_or_default();
                     let songs = crate::music_player_host::song_rows(&tracks[..tracks.len().min(music_link.songs as usize)], &ms.language);
-                    info!("RETAIL_MENUS open Music Player (FE {i}): {} songs, {} in the playlist, {:?}", songs.len(), music_link.playlist.len(), music_link.mode);
-                    fe.music_player.open_with(songs, music_link.playlist.clone(), music_link.mode, music_link.volume);
-                    fe.music_player.playing = music_link.playing;
+                    // A mod's queue plays: its songs in place of the soundtrack (ask 675).
+                    match music_link.mod_songs.clone() {
+                        Some(mod_songs) => {
+                            info!("RETAIL_MENUS open Music Player (FE {i}): the mod queue, {} songs, {} on", mod_songs.len(), music_link.mod_on.len());
+                            fe.music_player.open_with(mod_songs, music_link.mod_on.clone(), music_link.mode, music_link.volume);
+                            fe.music_player.modded = true;
+                            fe.music_player.playing = music_link.mod_playing;
+                        }
+                        None => {
+                            info!("RETAIL_MENUS open Music Player (FE {i}): {} songs, {} in the playlist, {:?}", songs.len(), music_link.playlist.len(), music_link.mode);
+                            fe.music_player.open_with(songs, music_link.playlist.clone(), music_link.mode, music_link.volume);
+                            fe.music_player.playing = music_link.playing;
+                        }
+                    }
                     open_screen(&mut ms.stage, MUSIC_PLAYER_PATH, MUSIC_PLAYER, &mut fe)?;
                 }
                 Effect::Close(i) if Some(i) == music => {
@@ -2149,7 +2160,15 @@ fn update(
             info!("RETAIL_MENUS music player {action:?}");
             match action {
                 MusicPlayerAction::Close { save } => {
-                    if save {
+                    if save && fe.music_player.modded {
+                        // The mod queue's on / off songs apply to that queue only; the soundtrack playlist stays.
+                        music_link.mod_on = fe.music_player.playlist.clone();
+                        music_link.mod_changed = true;
+                        if fe.music_player.mode != music_link.mode {
+                            music_link.mode = fe.music_player.mode;
+                            music_link.save = true;
+                        }
+                    } else if save {
                         music_link.playlist = fe.music_player.playlist.clone();
                         music_link.mode = fe.music_player.mode;
                         music_link.save = true;

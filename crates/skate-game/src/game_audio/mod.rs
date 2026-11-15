@@ -803,7 +803,21 @@ mod tests {
 
 /// The Music Player screen's link (docs/hails-additions/11-audio.md#music-player-screen): loads the saved playlist and
 /// mode once the soundtrack is known, reports the volume and the playing song, and applies what the screen asked.
-fn music_player_link(mut link: ResMut<crate::music_player_host::MusicPlayerLink>, mut settings: Option<ResMut<AudioSettings>>, mut music: ResMut<music::Music>) {
+fn music_player_link(mut link: ResMut<crate::music_player_host::MusicPlayerLink>, mut settings: Option<ResMut<AudioSettings>>, mut music: ResMut<music::Music>,
+    menu: Option<ResMut<crate::graphics_menu::Menu>>) {
+    // The overlay's Skip Song: shown while a mod plays its own music, a skip when pressed (ask 675).
+    if let Some(mut menu) = menu {
+        let modded = music.owner.is_some() && music.sequencer.is_some();
+        if menu.mod_music != modded {
+            menu.mod_music = modded;
+        }
+        if menu.skip_song {
+            menu.skip_song = false;
+            if modded {
+                music.requests.push(music::MusicRequest::Skip);
+            }
+        }
+    }
     use crate::music_player_host::MusicPlayerAction;
     let Some(settings) = settings.as_deref_mut() else { return };
     let count = music.soundtrack_count();
@@ -816,11 +830,32 @@ fn music_player_link(mut link: ResMut<crate::music_player_host::MusicPlayerLink>
     }
     link.volume = settings.retail_volume(RetailVolume::Music);
     link.playing = music.soundtrack_playing();
+    // A mod's queue: the Music Player lists and controls it (ask 675).
+    let changed = std::mem::take(&mut link.mod_changed);
+    if changed {
+        if let Some(songs) = link.mod_songs.as_ref() {
+            let off = (1..=songs.len() as u32).filter(|id| !link.mod_on.contains(id)).map(|id| id as usize - 1).collect();
+            music.requests.push(music::MusicRequest::SetOff(off));
+        }
+    }
+    link.mod_songs = music.mod_songs();
+    let (playing, off) = music.mod_state();
+    link.mod_playing = playing;
+    // The queue takes a new off list next frame: until then the screen's own list stands.
+    if let (false, Some(songs)) = (changed, link.mod_songs.as_ref()) {
+        link.mod_on = (1..=songs.len() as u32).filter(|id| !off.contains(id)).collect();
+    }
+    let modded = link.mod_songs.is_some();
     for action in std::mem::take(&mut link.actions) {
         match action {
             MusicPlayerAction::Volume(v) => {
                 settings.set_retail_volume(RetailVolume::Music, v);
             }
+            MusicPlayerAction::PlaySong(id) if modded => {
+                info!("AUDIO_MUSIC music player plays mod queue song {id}");
+                music.requests.push(music::MusicRequest::PlayIndex(id.saturating_sub(1) as usize));
+            }
+            MusicPlayerAction::Next if modded => music.requests.push(music::MusicRequest::Skip),
             MusicPlayerAction::Mode(mode) => {
                 link.mode = mode;
                 apply_music_player(&mut music, &link.playlist, mode, count);
