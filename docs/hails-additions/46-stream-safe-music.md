@@ -51,11 +51,13 @@ down. Players who stream or record need music they may use, credited, without hu
 - Free Music Archive: "Surf, Garage and Funk" (Blue Wave Theory's instrumental surf rock, Crowander, Mr Smith,
   Lemon Knife's instrumentals, Speed Limit 35, Heavenless' funk). Each track page shows the license the artist set
   (CC BY, BY-SA or BY-NC 4.0; picks from `.local/stream-safe/fma_scan.ps1`). FMA lets only signed-in accounts
-  download, so the playlist has `"login": "fma"`: when its songs are missing, the launcher asks for the player's own
-  FMA email and password in the system's sign-in dialog (Windows' credential prompt, macOS dialogs, zenity or
-  kdialog; `tools/skate-launcher/src/fma.rs`), signs in once, downloads with that session and deletes the session
-  file; the password goes to FMA over https through curl's stdin and is never saved. Canceled or refused: only that
-  playlist is skipped. The playlist links FMA's download endpoints and track pages, never mp3 files. FMA's terms of use
+  download (membership is free), so the playlist has `"login": "fma"`: when its songs are missing, the launcher opens
+  its own sign-in window (`skate-launcher fma-login`, `tools/skate-launcher/src/fma.rs`, the panel's colors and
+  fonts, every OS): "I have an account" or "Create a free account" (opens FMA's sign-up page in the browser, then
+  sign in there), "Skip this playlist", and on the form "Forgot your password?". The window signs in itself, shows a
+  wrong email or password inline and lets the player retry; it leaves only the session cookie in a temporary file,
+  which the downloads use and then delete. The password goes to FMA over https through curl's stdin and is never
+  saved. Skipped or closed: only that playlist is left out. The playlist links FMA's download endpoints and track pages, never mp3 files. FMA's terms of use
   ask for no deep links to its mp3 files and no automated requests or data mining: one player's launcher downloading
   the playlist's tracks once with their own account is the same as them pressing download. Built by
   `.local/stream-safe/build_fma_playlist.ps1` (same sign-in, sha256 pinned).

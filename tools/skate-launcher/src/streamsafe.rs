@@ -155,7 +155,7 @@ pub fn on(l: &Launcher) -> Result<Vec<String>, String> {
             file.is_file() && (t.sha256.is_empty() || sha256_file(&file).is_some_and(|h| h.eq_ignore_ascii_case(&t.sha256)))
         };
         let session = if p.login == "fma" && !p.tracks.iter().all(have) {
-            match fma.get_or_insert_with(|| crate::fma::sign_in(&root)) {
+            match fma.get_or_insert_with(|| crate::fma::sign_in(&root, &p.name)) {
                 Ok(s) => Some(&*s),
                 Err(e) => {
                     println!("  Skipped {}: {e}. Turn stream-safe mode on again to sign in.", p.name);
