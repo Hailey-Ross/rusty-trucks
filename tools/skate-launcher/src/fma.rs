@@ -30,6 +30,7 @@ pub fn sign_in(dir: &Path, playlist: &str) -> Result<Session, String> {
     let s = Session { jar: dir.join(format!(".fma-session-{}", std::process::id())) };
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     println!("  Free Music Archive: sign in or create a free account in the window that opened.");
+    crate::window::allow_foreground();
     let code = crate::proc::cmd(exe).arg("fma-login").arg(&s.jar).arg(playlist).stdin(Stdio::null()).status().map_err(|e| e.to_string())?.code();
     match code {
         Some(0) if s.jar.is_file() => Ok(s),
@@ -141,7 +142,7 @@ pub fn window(jar: &str, playlist: &str) -> i32 {
     let run = eframe::run_native("Free Music Archive", options, Box::new(move |cc| {
         crate::camcorder::install_fonts(&cc.egui_ctx);
         style(&cc.egui_ctx);
-        Ok(Box::new(Shell { app, out }))
+        Ok(Box::new(Shell { app, out, done: false, raised: 0 }))
     }));
     if run.is_err() {
         return 1;
@@ -152,12 +153,24 @@ pub fn window(jar: &str, playlist: &str) -> i32 {
 struct Shell {
     app: Login,
     out: std::sync::Arc<std::sync::Mutex<i32>>,
+    done: bool,
+    raised: u8,
 }
 
 impl eframe::App for Shell {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Our own Close comes back as a close request on the next frame: the first answer stands.
+        if self.done {
+            return;
+        }
+        // Started from the launcher's background job: come to the front once it is on screen.
+        if self.raised < 3 {
+            self.raised += 1;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
         if let Some(code) = self.app.frame(ctx) {
             if let Ok(mut r) = self.out.lock() { *r = code; }
+            self.done = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
