@@ -10,6 +10,7 @@ mod cli;
 mod dlc;
 mod ensure;
 mod entries;
+mod fma;
 mod ojson;
 mod patch;
 mod pick;
@@ -109,6 +110,9 @@ fn main() -> ExitCode {
     // CI: the patch from the previous release package to this one (needs no launcher folder)
     if args.first().is_some_and(|a| a == "release-patch") {
         return ensure::cli_release_patch(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("fma-login") {
+        return exit(fma::window(args.get(1).map(String::as_str).unwrap_or_default(), args.get(2).map(String::as_str).unwrap_or_default()));
     }
     if let Some(cmd @ ("make-patch" | "apply-patch" | "write-manifest")) = args.first().map(String::as_str) {
         let r = match cmd {

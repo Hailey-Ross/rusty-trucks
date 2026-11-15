@@ -29,6 +29,9 @@ pub struct Playlist {
     pub license: String,
     #[serde(default)]
     pub license_url: String,
+    /// "fma": the source only lets signed-in accounts download; the player is asked for their own login.
+    #[serde(default)]
+    pub login: String,
     #[serde(default)]
     pub tracks: Vec<Track>,
 }
@@ -142,18 +145,36 @@ pub fn on(l: &Launcher) -> Result<Vec<String>, String> {
     std::fs::create_dir_all(root.join("banks")).map_err(|e| e.to_string())?;
     let mut credits = vec!["Music in this stream or video:".to_owned(), String::new()];
     let mut packed = 0;
+    let mut fma: Option<Result<crate::fma::Session, String>> = None;
     for p in &m.playlists {
         println!("Playlist: {} ({}, {})", p.name, p.source, p.license);
         let folder = root.join("music").join(&p.id);
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let have = |t: &Track| {
+            let file = folder.join(t.file_name());
+            file.is_file() && (t.sha256.is_empty() || sha256_file(&file).is_some_and(|h| h.eq_ignore_ascii_case(&t.sha256)))
+        };
+        let session = if p.login == "fma" && !p.tracks.iter().all(have) {
+            match fma.get_or_insert_with(|| crate::fma::sign_in(&root, &p.name)) {
+                Ok(s) => Some(&*s),
+                Err(e) => {
+                    println!("  Skipped {}: {e}. Turn stream-safe mode on again to sign in.", p.name);
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
         let mut names = serde_json::Map::new();
         for (i, t) in p.tracks.iter().enumerate() {
             let file = folder.join(t.file_name());
-            let have = file.is_file() && (t.sha256.is_empty() || sha256_file(&file).is_some_and(|h| h.eq_ignore_ascii_case(&t.sha256)));
-            if !have {
+            if !have(t) {
                 println!("  Downloading {}/{}: {} by {}", i + 1, p.tracks.len(), t.title, t.artist);
                 let part = file.with_extension("part");
-                let ok = crate::proc::cmd("curl").args(["-fsSL", "--retry", "2", "--max-time", "600", "-o"]).arg(&part).arg(&t.url).status().is_ok_and(|s| s.success());
+                let ok = match session {
+                    Some(s) => crate::fma::download(s, &t.url, &part),
+                    None => crate::proc::cmd("curl").args(["-fsSL", "--retry", "2", "--max-time", "600", "-o"]).arg(&part).arg(&t.url).status().is_ok_and(|s| s.success()),
+                };
                 if !ok {
                     let _ = std::fs::remove_file(&part);
                     println!("  Skipped {}: the download did not work.", t.title);

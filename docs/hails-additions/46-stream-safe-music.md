@@ -42,20 +42,32 @@ down. Players who stream or record need music they may use, credited, without hu
   for all its music, so credited as that). Releases were read for covers, parodies, sample packs, mixes, famous
   featured artists, samples, unreadable lyrics and explicit titles; about 18 releases were dropped. Built by
   `.local/stream-safe/build_ia_playlists.ps1` from the vetted list.
-- Built in (2026-11-15): "Beats (blocSonic)" (20 instrumentals: C da 76er, Moki Mcfly, aitänna77, Cutside; each
+- Built in (2026-11-15): "Beats (blocSonic)" (23 instrumentals: C da 76er, Moki Mcfly, aitänna77, Cutside and the
+  funk of Pimpstrut Local #13; each
   release page on blocsonic.com states CC BY-NC-SA 4.0 per track; the label's BY-NC-ND releases, its sample packs, rap
   with vocals and releases with explicit titles were left out) and "Disco, Dance and Metal (Loyalty Freak Music)" (19;
   the artist's album pages and FAQ on loyaltyfreakmusic.com state CC0 and allow monetized use; the files come from
   the Internet Archive copies since the artist's site offers zips only).
-- Free Music Archive: its track pages show the artist's license (scan: `.local/stream-safe/fma_scan.ps1`; Blue Wave
-  Theory's instrumental surf rock is CC BY-SA 4.0), but its download links need a signed-in account; only the player's
-  stream links work without one. Not used until that is settled.
+- Free Music Archive: "Surf, Garage and Funk" (Blue Wave Theory's instrumental surf rock, Crowander, Mr Smith,
+  Lemon Knife's instrumentals, Speed Limit 35, Heavenless' funk). Each track page shows the license the artist set
+  (CC BY, BY-SA or BY-NC 4.0; picks from `.local/stream-safe/fma_scan.ps1`). FMA lets only signed-in accounts
+  download (membership is free), so the playlist has `"login": "fma"`: when its songs are missing, the launcher opens
+  its own sign-in window (`skate-launcher fma-login`, `tools/skate-launcher/src/fma.rs`, the panel's colors and
+  fonts, every OS): "I have an account" or "Create a free account" (opens FMA's sign-up page in the browser, then
+  sign in there), "Skip this playlist", and on the form "Forgot your password?". The window signs in itself, shows a
+  wrong email or password inline and lets the player retry; it leaves only the session cookie in a temporary file,
+  which the downloads use and then delete. The password goes to FMA over https through curl's stdin and is never
+  saved. Skipped or closed: only that playlist is left out. The playlist links FMA's download endpoints and track pages, never mp3 files. FMA's terms of use
+  ask for no deep links to its mp3 files and no automated requests or data mining: one player's launcher downloading
+  the playlist's tracks once with their own account is the same as them pressing download. Built by
+  `.local/stream-safe/build_fma_playlist.ps1` (same sign-in, sha256 pinned).
 - Not used: Jamendo (its pages point Twitch / YouTube use to the paid licensing plan), StreamBeats (its license
   requires separate licensing for games), FreePD (closed in 2025). Incompetech (Kevin MacLeod, CC BY 4.0) is used
   locally only until he answers our question about apps downloading his files and whitelisting.
 
 **Verification.** Launcher unit tests: the built-in playlists parse and every track has a title, artist and https URL;
-credits name the artist, source and license; file names are safe on every OS. A local run with the Incompetech
+credits name the artist, source and license; file names are safe on every OS; the FMA sign-in reads the form token,
+encodes the form body and tells a returned web page from a song. A local run with the Incompetech
 playlists (27 tracks): see the PR tests table.
 
 **Open questions.**
