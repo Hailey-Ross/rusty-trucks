@@ -775,6 +775,11 @@ pub struct CarryMaterialPatch {
 pub struct ShadowsPatch {
     /// Dynamic shadow floor on the baked world, RGB 0..=1 (retail 0.05, 0.09, 0.13).
     pub world_floor: Option<[f32; 3]>,
+    /// The props' world shadow floor, 0..=1 (retail `g_CSMSelfBias.w` from the disc, 0.06): how dark a prop in a
+    /// building's shade gets.
+    pub prop_floor: Option<f32>,
+    /// The props' world shadow window around the camera in meters, 0..=1000 (retail from the disc, 28.8).
+    pub prop_window: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1308,7 +1313,7 @@ impl Merge for GhostPatch {
 
 impl Merge for ShadowsPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; world_floor);
+        merge_opts!(self, b; world_floor, prop_floor, prop_window);
     }
 }
 
@@ -1519,6 +1524,8 @@ impl ExposurePatch {
 impl ShadowsPatch {
     pub fn validate(&self) -> bool {
         self.world_floor.is_none_or(|c| c.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)))
+            && self.prop_floor.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+            && self.prop_window.is_none_or(|v| v.is_finite() && (0.0..=1000.0).contains(&v))
     }
 }
 
@@ -1687,6 +1694,9 @@ mod tests {
         assert!(valid_patch("shadows", &json!({"world_floor": [0.05, 0.09, 0.13]})));
         assert!(!valid_patch("shadows", &json!({"world_floor": [0.05, 0.09]})));
         assert!(!valid_patch("shadows", &json!({"world_floor": [0.05, 0.09, 1.5]})));
+        assert!(valid_patch("shadows", &json!({"prop_floor": 0.06, "prop_window": 28.8})));
+        assert!(!valid_patch("shadows", &json!({"prop_floor": 1.5})));
+        assert!(!valid_patch("shadows", &json!({"prop_window": -1.0})));
         assert!(!valid_patch("shadows", &json!({"floor": [0.0, 0.0, 0.0]})));
         assert!(valid_patch("exposure", &json!({"meter_weights": [0.3, 0.4, 0.3], "meter_scale": 2.515})));
         assert!(!valid_patch("exposure", &json!({"meter_weights": [0.3, 0.4]})));

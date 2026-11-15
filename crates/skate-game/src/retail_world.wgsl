@@ -475,8 +475,22 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
                 }
             }
         }
-        // Retail also reads the static world shadow map (floored at g_CSMSelfBias.w); no world shadow pass yet: lit.
-        let world_visibility = 1.0;
+        // 49..52, 65, 67, 69..82, 84..85: the world shadow map, floored at g_CSMSelfBias.w (research b1022: a sun map
+        // drawn every frame over a window around the camera). Ours: the all-caster sun map (flags & 5 == 1, as the
+        // characters read it) within the data's window of view depth [window center inferred]; lit beyond it.
+        var world_visibility = 1.0;
+        let pws = frame_state.prop_world_shadow;
+        if pws.w > 0.0 {
+            let wz = (frame::view.view_from_world*i.world_position).z;
+            if -wz <= pws.y {
+                for (var light_id=0u; light_id<frame::lights.n_directional_lights; light_id+=1u) {
+                    if (frame::lights.directional_lights[light_id].flags & 5u)==1u {
+                        world_visibility = max(fetch_directional_shadow(light_id,i.world_position,wn,wz),pws.x);
+                        break;
+                    }
+                }
+            }
+        }
         let shade = min(select(0.0,1.0,nl>=0.0)*csm,world_visibility);
         // 57, 64, 68, 88: counter light (sun mirrored about the vertical),
         // weighted by m_params[1].w.
@@ -494,6 +508,8 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             // 96, 98..100: shadowed, masked by specular.r.
             lin += ks*vec3<f32>(2.1,1.8,1.5)*shade*masks.x;
         }
+        // SKATE_DEBUG_PROP_SHADOW=1: green where the world shadow term is lit, red where shaded.
+        if pws.z > 0.5 { lin = mix(vec3<f32>(0.0,0.6,0.0),vec3<f32>(1.0,0.0,0.0),1.0-world_visibility); }
         // Alpha-tested props test the diffuse alpha (WORLD_ALPHA_CUTOFF).
         alpha = 1.0;
     } else {
