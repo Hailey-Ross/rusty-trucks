@@ -62,11 +62,13 @@ pub(crate) struct Sequencer {
     replay: bool,
     /// The queue plays once and stops (a DJ world music piece); otherwise it starts over.
     pub once: bool,
+    /// Queue indices the player turned off in the Music Player (skipped while at least one stays on).
+    pub off: Vec<usize>,
 }
 
 impl Sequencer {
     pub(crate) fn new(tracks: Vec<Track>, shuffle: bool, seed: u32) -> Self {
-        let mut s = Self { order: (0..tracks.len()).collect(), tracks, shuffle, at: 0, playing: None, rng: seed.max(1), current: None, replay: false, once: false };
+        let mut s = Self { order: (0..tracks.len()).collect(), tracks, shuffle, at: 0, playing: None, rng: seed.max(1), current: None, replay: false, once: false, off: Vec::new() };
         s.reorder();
         s
     }
@@ -118,7 +120,7 @@ impl Sequencer {
     /// The next segment to queue: (set name or bank file, 0-based segment). Moves on to the next track when one ends;
     /// `None` when the queue is empty.
     pub(crate) fn next(&mut self, graphs: &HashMap<String, Arc<Graph>>) -> Option<(Source, u32)> {
-        for _ in 0..=self.tracks.len() * 2 + 1 {
+        for _ in 0..=self.tracks.len() * 3 + 2 {
             match self.playing.as_mut() {
                 Some(Playing::Retail { set, stream }) => {
                     if let Some(g) = graphs.get(set.as_str()) {
@@ -145,8 +147,12 @@ impl Sequencer {
                 }
                 self.reorder();
             }
-            let track = self.tracks[self.order[self.at]].clone();
+            let index = self.order[self.at];
             self.at += 1;
+            if self.off.contains(&index) && self.off.len() < self.tracks.len() {
+                continue;
+            }
+            let track = self.tracks[index].clone();
             self.start(track, graphs);
         }
         None
@@ -233,6 +239,10 @@ pub(crate) enum MusicRequest {
     Control(i32),
     /// A one-shot sting over the music (a decoded overlay WAV) at a gain.
     Overlay { file: PathBuf, gain: f32 },
+    /// Plays the queue's track `index` (0-based) now; the queue goes on after it (the Music Player on a mod's queue).
+    PlayIndex(usize),
+    /// The queue tracks the player turned off (0-based; the Music Player on a mod's queue).
+    SetOff(Vec<usize>),
 }
 
 /// Where a segment comes from: a retail set's bank, or a player's bank file.
@@ -259,6 +269,9 @@ pub(crate) struct Music {
     /// The stream id of the next queued segment, and the first segment of each track (announced when it plays).
     next_id: u32,
     decoding_track: Option<Track>,
+    /// A track was started on request (picked in the Music Player): its first segment is announced even though the
+    /// queue's current track was already set.
+    announce: bool,
     marks: HashMap<u32, Track>,
     /// Requests to apply on the next frame (engine systems and mods).
     pub(crate) requests: Vec<MusicRequest>,
@@ -364,6 +377,24 @@ impl Music {
         }
     }
 
+    /// A mod's queue (it set the music): [artist, title, where it is from] per queue track, the Music Player's rows.
+    pub(crate) fn mod_songs(&self) -> Option<Vec<[String; 3]>> {
+        let owner = self.owner.as_ref()?;
+        let seq = self.sequencer.as_ref()?;
+        Some(seq.tracks.iter().map(|t| match t {
+            Track::Bank { name, artist, .. } => [artist.clone(), name.clone(), owner.clone()],
+            Track::Retail { track, .. } => [String::new(), format!("Soundtrack song {track}"), "Skate 3".into()],
+            Track::Graph { var, value, .. } => [String::new(), format!("{var} {value}"), "Skate 3".into()],
+        }).collect())
+    }
+
+    /// The mod queue's playing track (1-based) and the ones the player turned off (1-based).
+    pub(crate) fn mod_state(&self) -> (Option<u32>, Vec<u32>) {
+        let Some(seq) = self.sequencer.as_ref().filter(|_| self.owner.is_some()) else { return (None, Vec::new()) };
+        let playing = seq.current.as_ref().and_then(|c| seq.tracks.iter().position(|t| t == c)).map(|i| i as u32 + 1);
+        (playing, seq.off.iter().map(|i| *i as u32 + 1).collect())
+    }
+
     pub(crate) fn is_loaded(&self) -> bool {
         self.loaded
     }
@@ -414,6 +445,7 @@ impl Music {
                     self.sequencer = self.soundtrack();
                     if let (Some(k), Some(seq)) = (track, self.sequencer.as_mut()) {
                         seq.play_now(Track::Retail { set: SOUNDTRACK_SET.into(), track: k }, &graphs);
+                        self.announce = true;
                     }
                     self.owner = owner;
                     restart = true;
@@ -457,6 +489,23 @@ impl Music {
                     restart = true;
                 }
                 MusicRequest::Overlay { file, gain } => self.overlays.push((file, gain)),
+                MusicRequest::PlayIndex(index) => {
+                    let graphs = self.graphs.clone();
+                    let started = self.sequencer.as_mut().and_then(|seq| {
+                        let track = seq.tracks.get(index).cloned()?;
+                        seq.play_now(track, &graphs).then_some(())
+                    });
+                    info!("AUDIO_MUSIC play queue track {} now: {}", index + 1, if started.is_some() { "started" } else { "not found" });
+                    if started.is_some() {
+                        self.announce = true;
+                        restart = true;
+                    }
+                }
+                MusicRequest::SetOff(off) => {
+                    if let Some(seq) = self.sequencer.as_mut() {
+                        seq.off = off;
+                    }
+                }
                 MusicRequest::Control(value) => {
                     if let Some(seq) = self.sequencer.as_mut() {
                         seq.set_control(value);
@@ -510,7 +559,7 @@ impl Music {
         let Some((source, index)) = self.sequencer.as_mut().and_then(|s| s.next(&graphs)) else { return };
         let now = self.sequencer.as_ref().and_then(|s| s.current.clone());
         // A track that just started: its first segment is this one.
-        self.decoding_track = if now != before { now } else { None };
+        self.decoding_track = if now != before || std::mem::take(&mut self.announce) { now } else { None };
         let Some((path, bank)) = self.bank(&source) else { return };
         let cell: Decoded = Arc::new(Mutex::new(None));
         let result = cell.clone();
@@ -600,6 +649,31 @@ pub(super) fn frame(mut music: ResMut<Music>, native: Option<Res<Native>>, libra
 mod tests {
     use super::*;
     use skate_audio::music::pathfinder::format::{Action, Branch, Event, Kind, Node, Operand};
+
+    fn bank(name: &str, first: u32) -> Track {
+        Track::Bank { bank: PathBuf::from("mine.bank"), first, count: 1, name: name.into(), artist: "Band".into() }
+    }
+
+    /// Ask 675: songs the player turned off in the Music Player are skipped while one stays on; a pick plays at once.
+    #[test]
+    fn turned_off_songs_are_skipped_and_a_picked_song_plays_now() {
+        let graphs = HashMap::new();
+        let mut seq = Sequencer::new(vec![bank("A", 0), bank("B", 1), bank("C", 2)], false, 1);
+        seq.off = vec![1];
+        let heard: Vec<u32> = (0..6).filter_map(|_| seq.next(&graphs).map(|(_, s)| s)).collect();
+        assert_eq!(heard, vec![0, 2, 0, 2, 0, 2]);
+        seq.off = vec![0, 1, 2];
+        assert!(seq.next(&graphs).is_some(), "with every song off the queue still plays");
+        let mut music = Music { owner: Some("stream-safe-music".into()), sequencer: Some(Sequencer::new(vec![bank("A", 0), bank("B", 1)], false, 1)), ..Default::default() };
+        let songs = music.mod_songs().unwrap();
+        assert_eq!(songs[1], ["Band".to_string(), "B".to_string(), "stream-safe-music".to_string()]);
+        music.requests.push(MusicRequest::PlayIndex(1));
+        music.requests.push(MusicRequest::SetOff(vec![0]));
+        assert!(music.apply());
+        assert_eq!(music.mod_state(), (Some(2), vec![1]));
+        music.owner = None;
+        assert!(music.mod_songs().is_none(), "the soundtrack is not a mod queue");
+    }
 
     /// A soundtrack graph of two tracks (entry -> two segments -> stop), its play event as the disc's.
     fn soundtrack() -> HashMap<String, Arc<Graph>> {

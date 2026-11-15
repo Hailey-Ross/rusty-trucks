@@ -60,6 +60,8 @@ pub struct MusicPlayerHost {
     pub selection: i32,
     /// Screen +0x54: something changed (saved on Back).
     pub dirty: bool,
+    /// The rows are a mod's queue, not the soundtrack (ask 675): Back applies the on / off songs to that queue.
+    pub modded: bool,
     pub states: Vec<i32>,
     pub sounds: Vec<u64>,
     pub actions: Vec<MusicPlayerAction>,
@@ -293,6 +295,15 @@ pub struct MusicPlayerLink {
     pub actions: Vec<MusicPlayerAction>,
     /// Save the playlist and mode (Back after a change).
     pub save: bool,
+    /// A mod's queue plays (it set the music): the screen lists these songs ([artist, title, the mod]) in place of the
+    /// soundtrack, picking one plays it and turning one off skips it (ask 675; not retail, mod music only).
+    pub mod_songs: Option<Vec<[String; 3]>>,
+    /// The mod queue's playing song (1-based).
+    pub mod_playing: Option<u32>,
+    /// The mod queue's songs still on (1-based), as the screen shows them.
+    pub mod_on: Vec<u32>,
+    /// The screen changed `mod_on` (applied next frame).
+    pub mod_changed: bool,
 }
 
 /// [artist, title, album] for each soundtrack song from menu-tables `ipod_tracks` and the language table

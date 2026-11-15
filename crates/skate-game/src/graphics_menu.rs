@@ -163,6 +163,10 @@ pub(crate) struct Menu {
     /// A retail FE screen that suspends gameplay is open (info record +0; `retail_menu_stage`): gameplay stops
     /// like it does for this menu.
     pub(crate) fe_suspended: bool,
+    /// A mod plays its own music (ask 675): Audio shows Skip Song (not retail).
+    pub(crate) mod_music: bool,
+    /// Skip Song was pressed; the music takes it next frame.
+    pub(crate) skip_song: bool,
     selected: usize,
     settings: GraphicsSettings,
     path: PathBuf,
@@ -372,7 +376,8 @@ impl Menu {
             0 => (1000..1000 + self.maps.len()).collect(),
             1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([CAMERA_ANGLE_ROW,8,10]).collect(),
             1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
-            2 => vec![0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, FRAME_STATS_CORNER_ROW, SESSION_TIMER_ROW],
+            2 => [0, 1, 2, 13, 16, 17, 18].into_iter().chain(self.mod_music.then_some(SKIP_SONG_ROW))
+                .chain([FRAME_STATS_ROW, FRAME_STATS_CORNER_ROW, SESSION_TIMER_ROW]).collect(),
             // Quitting is the rail's Close Game; Refresh Game Files only while the game files are out of date.
             4 => [14, 19].into_iter().chain((!crate::setup::stale_groups().is_empty()).then_some(REFRESH_ROW)).collect(),
             // Every opt-in (off by default or not retail) in one place, in row order (user 2026-10-25, USER-ASKS 336).
@@ -584,6 +589,8 @@ impl Menu {
             12 => RowView::action("Teleport", "Pick a drop-in spot on this map."),
             13 => RowView::action("Day & Night", "Time of day, day cycle speed and ambient light for custom maps. Retail maps keep their authored lighting."),
             14 => RowView::action("Mods", "Turn mods on or off and open their menus."),
+            SKIP_SONG_ROW => RowView::new(Kind::Action, "Skip Song", "",
+                "Plays the next song of the music a mod plays (not retail). Options > Music Player lists its songs."),
             REFRESH_ROW => RowView::new(Kind::Action, "Refresh Game Files", "Out of date",
                 format!("Your game files were converted by an older version of the game ({}), so new features that need them may not work. Refresh converts only what changed, then the game starts again. It takes a few minutes; keep the setup window open.", crate::setup::stale_groups().iter().map(|g| group_name(g)).collect::<Vec<_>>().join(", "))).danger(),
             16 => audio_view(16, "Master Volume", "Overall game volume."),
@@ -797,7 +804,7 @@ fn setup(
     if config.start_paused { time.pause(); }
     commands.insert_resource(Menu {
         open: config.start_paused,
-        fe_suspended: false,
+        fe_suspended: false, mod_music: false, skip_song: false,
         selected: 1000,
         settings,
         path,
@@ -816,6 +823,8 @@ fn setup(
 const FRAME_STATS_ROW: usize = 28;
 const FRAME_STATS_CORNER_ROW: usize = 49;
 const SESSION_TIMER_ROW: usize = 58;
+/// Audio: Skip Song, only while a mod plays its own music (ask 675; not retail).
+const SKIP_SONG_ROW: usize = 59;
 /// The setup groups (`tools/asset_pipeline/versions.py`) by what the player knows them as.
 fn group_name(group: &str) -> &str {
     match group {
@@ -1399,6 +1408,10 @@ fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
             },
             13 => { menu.daylight = true; menu.selected = 0; },
             14 => mods.begin(),
+            SKIP_SONG_ROW => {
+                menu.skip_song = true;
+                menu.status = "Next song.".into();
+            }
             REFRESH_ROW => match crate::setup::restart_with_refresh() {
                 Ok(()) => {
                     info!("PC_OVERLAY refresh game files: restarting into setup");
@@ -1698,7 +1711,7 @@ mod tests {
     use super::*;
     fn menu() -> Menu {
         Menu {
-            open: true, fe_suspended: false, selected: 1000, settings: GraphicsSettings::default(),
+            open: true, fe_suspended: false, mod_music: false, skip_song: false, selected: 1000, settings: GraphicsSettings::default(),
             path: PathBuf::new(), difficulty: Difficulty::Easy, custom:Tuning::default(), custom_defaults:Tuning::default(), custom_apply:false, custom_dirty:false, status: String::new(),
             maps: (0..40).map(|i| crate::map_library::Entry { label: format!("Map {i}"), path: None, world: None }).collect(),
             selected_map: 0, multiplayer: false, browser: false, network_page: 0, browser_count: 0, daylight: false, section: 0, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
