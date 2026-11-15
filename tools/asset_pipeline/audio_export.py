@@ -318,6 +318,32 @@ INTERACTIVE_FIELDS = {
 INTERACTIVE_RECORDS = ('default', 'nomultiplier', 'times15', 'times2', 'times3')
 
 
+FE_HUDSTATE_CLASSES = ('fe_hudstate', 'Hash_1FCCED72C8A5FE81')
+FE_MUSIC_STATE = 'Hash_82807031E3C54B0A'  # Sk8::Audio::eMusicFEStates
+
+
+def fe_music_states(collections: list[dict]) -> dict[str, int]:
+    """The music state each front-end / HUD screen posts when it comes on top (class `fe_hudstate`, field
+    eMusicFEStates; the FE stack posts it in 825EC5E0, the audio system reads it in 8248AA10 and the music system
+    switches on it in 82499468; research b1024): {screen key hex: state}, the key being hash64 of the record name
+    as the FE screen tables' `key`. States 0 (most screens: no change) are left out."""
+    from .vlt import hash64
+    records = {c['key']: c for c in collections if c['class'] in FE_HUDSTATE_CLASSES}
+    out = {}
+    for key in records:
+        cursor, value, depth = key, None, 0
+        while cursor in records and depth < 16:
+            field = records[cursor]['fields'].get(FE_MUSIC_STATE)
+            if field is not None:
+                value = int(field['data'], 16)
+                break
+            cursor, depth = records[cursor]['parent'], depth + 1
+        if value:
+            hex_key = key[5:].lower() if key.startswith('Hash_') else '%016x' % hash64(key)
+            out[hex_key] = value
+    return out
+
+
 def music_playlists(collections: list[dict]) -> dict[str, dict]:
     """aud_playlists by record key (hex): mode, preset (eChannelMapPreset: 3 DJ world music, 4 licensed location), the
     licensed songs [id, gain, extra] and the DJ pieces [id, gain, play seconds, extra], parents resolved."""
@@ -1565,7 +1591,8 @@ def _convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report
     manifest['frontend'] = frontend_sounds(collections)
     attributes = emitter_attributes(collections)
     manifest['emitters'], placed = emitters(files, attributes, packs)
-    manifest['music_zones'] = {'playlists': music_playlists(collections), 'interactive': music_interactive(collections)}
+    manifest['music_zones'] = {'playlists': music_playlists(collections), 'interactive': music_interactive(collections),
+                               'fe_music_states': fe_music_states(collections)}
     manifest['music_settings'] = music_settings(collections)
     manifest['race_music'] = race_music(collections)
     by_file = {Path(e.path).name.lower(): Path(e.path).name for e in files.entries}

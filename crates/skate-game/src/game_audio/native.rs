@@ -1091,6 +1091,7 @@ fn follow_volume(
     mut sinks: Query<&mut AudioSink, With<NativeOutput>>,
     voices: Option<ResMut<super::Voices>>,
     mut listeners: Query<&mut SpatialListener, With<super::GameAudioListener>>,
+    music: Option<Res<super::music::Music>>,
 ) {
     let Some(settings) = settings else { return };
     // rodio 0.20's spatial source gives the ear FARTHER from the source the larger factor
@@ -1106,6 +1107,10 @@ fn follow_volume(
         }
     }
     let silenced = super::silenced(menu.as_deref(), &replay);
+    // An FE screen's playlist (credits, the trick tutorial ... in the Interactive Mode, ask 677) plays while the game
+    // is paused: the output keeps running with the world's layers at 0, so only the music is heard.
+    let menu_music = silenced && music.as_ref().is_some_and(|m| m.menu_playing());
+    let silenced = silenced && !menu_music;
     let volume = settings.master().clamp(0.0, 1.0);
     // The measured world layers (zone beds, location sets, crossfades) are tuned at measured retail
     // level × RETAIL_SCALE; against the native voices (retail level) they play at the measured
@@ -1123,9 +1128,10 @@ fn follow_volume(
     }
     if let Some(native) = native {
         if let Ok(mut runtime) = native.shared.lock() {
-            runtime.aems_gain = settings.category(super::Category::Ambience).clamp(0.0, 1.0);
-            runtime.player_gain = settings.category(super::Category::Effects).clamp(0.0, 1.0);
-            runtime.grains.gain = settings.category(super::Category::Effects).clamp(0.0, 1.0);
+            let world = if menu_music { 0.0 } else { 1.0 };
+            runtime.aems_gain = world * settings.category(super::Category::Ambience).clamp(0.0, 1.0);
+            runtime.player_gain = world * settings.category(super::Category::Effects).clamp(0.0, 1.0);
+            runtime.grains.gain = world * settings.category(super::Category::Effects).clamp(0.0, 1.0);
         }
     }
     for mut sink in &mut sinks {

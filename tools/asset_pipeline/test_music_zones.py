@@ -25,6 +25,18 @@ class MusicZones(unittest.TestCase):
         self.assertEqual(out['00000000000000BB'], {'mode': 1, 'preset': 3, 'pieces': [[0x9FF750AB, 1.8, 195.0, 155]]})
         self.assertEqual(out['00000000000000CC'], {'preset': 4, 'songs': [[0x4CAB08CC, 0.9, 118]]})
 
+    def test_fe_music_states_by_screen_key(self):
+        # Ask 677: the music state each FE screen posts, keyed as the FE screen tables' `key` (hash64 of the name);
+        # an inherited state resolves through the parent, state 0 is left out.
+        from tools.asset_pipeline.vlt import hash64
+        state = lambda v: {'Hash_82807031E3C54B0A': field('Sk8::Audio::eMusicFEStates', f'{v:08X}')}
+        default = {'class': 'fe_hudstate', 'key': 'default', 'parent': '', 'fields': state(0)}
+        credits = {'class': 'fe_hudstate', 'key': 'credits', 'parent': 'default', 'fields': state(3)}
+        hashed = {'class': 'Hash_1FCCED72C8A5FE81', 'key': 'Hash_00000000000000AA', 'parent': 'credits', 'fields': {}}
+        out = audio_export.fe_music_states([default, credits, hashed])
+        self.assertEqual(out, {'%016x' % hash64('credits'): 3, '00000000000000aa': 3})
+        self.assertEqual('%016x' % hash64('credits'), '0bdb6ab1cb803a1b', 'the TU3 FE screen key of Credits')
+
     def test_interactive_records_by_name(self):
         default = {'class': audio_export.INTERACTIVE_CLASS, 'key': 'default', 'parent': '', 'fields': {
             'Hash_6AAE7EF9E3C13ABD': field('EA::Reflection::Float', '41F00000')}}

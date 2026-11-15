@@ -129,8 +129,10 @@ impl MusicPlayerHost {
                 self.actions.push(MusicPlayerAction::Previous);
                 Value::Undefined
             }
-            // NOT RETAIL YET (not read): Play / Stop / PlayPlaylist, shuffle, playlist order, saved playlists.
-            "getisshuffle" => Value::Bool(true),
+            // Retail: GetIsShuffle is 825B3C80 (returns false) and SetIsShuffle 825BC5A8 (no-op); the Music Player always
+            // picks a random unplayed song (825E46B0; research b1024). NOT RETAIL YET (not read): Play / Stop /
+            // PlayPlaylist, playlist order, saved playlists.
+            "getisshuffle" => Value::Bool(false),
             "play" | "playplaylist" | "stop" | "setisshuffle" | "setplaylistorder" | "setnumsongsinplaylist" | "restoreplaylist" => Value::Undefined,
             "getcurrentplaylistid" => Value::Number(0.0),
             _ => return Ok(None),
