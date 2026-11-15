@@ -58,10 +58,13 @@ fn validate(source: &str, extras: &[&str]) -> naga::Module {
             "frame",
             "#define_import_path bevy_pbr::mesh_view_bindings\n\
              struct View {view_from_world:mat4x4<f32>,clip_from_world:mat4x4<f32>,viewport:vec4<f32>,world_position:vec3<f32>,padding:f32}\n\
-             struct Light {flags:u32}\n\
+             struct Cascade {clip_from_world:mat4x4<f32>,texel_size:f32,far_bound:f32}\n\
+             struct Light {cascades:array<Cascade,4>,flags:u32,depth_texture_base_index:u32}\n\
              struct Lights {n_directional_lights:u32,directional_lights:array<Light,10>}\n\
              @group(0) @binding(0) var<uniform> view:View;\n\
-             @group(0) @binding(1) var<storage> lights:Lights;"
+             @group(0) @binding(1) var<storage> lights:Lights;\n\
+             @group(0) @binding(5) var directional_shadow_textures:texture_depth_2d_array;\n\
+             @group(0) @binding(6) var directional_shadow_textures_comparison_sampler:sampler_comparison;"
                 .to_string(),
         ),
         (

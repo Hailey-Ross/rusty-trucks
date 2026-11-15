@@ -66,6 +66,7 @@ Playing this branch's rolling build on a second PC (couch testing): [second-pc-t
 | 43 | [Career mode](43-career.md) | Setup + engine | On `world/challenges` (with doc 42), in progress: research summary, M1 design, the progression export (`progression.json`: groups, actions, rewards, challenge rewards) |
 | 44 | [Every OS](44-every-os.md) | Engine + setup + tools | On `world/challenges`, in progress: Linux and macOS ports imported (#7, stev0760), our changes made OS-independent, the Skate launcher rewrite in Rust planned (spec: [44a](44a-launcher-spec.md)) |
 | 45 | [Ghidra function names](45-ghidra-function-names.md) | Tools | On `world/challenges` (#68): 32,931 decoded Skate 3 (TU3) function names (guesses labeled) for Ghidra, loadable with the built-in ImportSymbolsScript.py or ApplyNames.java (descriptions as comments). |
+| 46 | [Stream-safe music](46-stream-safe-music.md) | Launcher + engine + mod | On `world/challenges` (#68): Tools > Stream-safe mode downloads credited CC0 / CC BY music, packs it into music banks and plays it instead of the soundtrack (mod stream-safe-music); CREDITS.txt for stream descriptions. |
 
 ## Environment used for verification
 

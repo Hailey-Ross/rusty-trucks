@@ -302,15 +302,93 @@ impl PropWorldShadow {
             .then_some(Self { retail: Some((floor, window)), floor, window })
     }
 
-    /// The frame row: x floor, y window, z 1 for the debug view (`SKATE_DEBUG_PROP_SHADOW=1`: props drawn green where
-    /// the world shadow term is lit, red where shaded), w 1 when on.
+    /// The frame row: x floor, y the map's texels per side, z 1 for the debug view (`SKATE_DEBUG_PROP_SHADOW=1`: props
+    /// drawn green where the world shadow term is lit, red where shaded), w 1 when on.
     pub(crate) fn row(&self) -> Vec4 {
         if self.retail.is_none() && self.window <= 0.0 {
             return Vec4::ZERO;
         }
         static DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let debug = *DEBUG.get_or_init(|| std::env::var("SKATE_DEBUG_PROP_SHADOW").is_ok_and(|v| v == "1"));
-        Vec4::new(self.floor, self.window, if debug { 1.0 } else { 0.0 }, 1.0)
+        Vec4::new(self.floor, WORLD_SHADOW_MAP_SIZE as f32, if debug { 1.0 } else { 0.0 }, 1.0)
+    }
+}
+
+/// Render layer of the world sections, the only casters of the world shadow map (research b1023).
+pub(crate) const WORLD_SHADOW_LAYER: usize = 26;
+/// Retail's world shadow map: 512 x 512 (research b1022 / b1023).
+pub(crate) const WORLD_SHADOW_MAP_SIZE: u32 = 512;
+
+/// On every world section draw: a world shadow caster.
+#[derive(Component, Clone, Copy, Default)]
+pub(crate) struct WorldShadowCaster;
+
+/// The light that draws the world shadow map (`ShadowMapOverride`, layer [`WORLD_SHADOW_LAYER`]).
+#[derive(Component)]
+pub(crate) struct WorldShadowLight;
+
+/// Retail's world shadow view (BuildFrustum 827FB200, BuildCullList 827FCD28, ComputeViewBlock 827FB608; research
+/// b1023): a sun-aligned box of half-width `half_width` centered on the camera, x/y snapped to whole texels, depth =
+/// the world height between the casters' Y range padded by 15% (reverse depth: higher = nearer). `None` without a
+/// caster in the box (retail keeps the depth column unless |f - n| > 0).
+pub(crate) fn world_shadow_view(sun_forward: Vec3, camera: Vec3, half_width: f32, casters: impl IntoIterator<Item = (Vec3, Vec3)>) -> Option<(Mat4, Mat4)> {
+    let d = (-sun_forward).try_normalize()?;
+    let seed = if d.y.abs() > 0.999 { Vec3::X } else { Vec3::Y };
+    let f_axis = d.cross(seed).normalize();
+    let u_axis = d.cross(f_axis).normalize();
+    let world_from_view = Mat4::from_cols(f_axis.extend(0.0), u_axis.extend(0.0), d.extend(0.0), camera.extend(1.0));
+    let view_from_world = world_from_view.inverse();
+    let (mut min_y, mut max_y) = (f32::MAX, f32::MIN_POSITIVE);
+    for (min, max) in casters {
+        let (center, half) = ((min + max) * 0.5, (max - min) * 0.5);
+        let c = view_from_world.transform_point3(center);
+        let ex = half.dot(f_axis.abs());
+        let ey = half.dot(u_axis.abs());
+        if c.x.abs() - ex <= half_width && c.y.abs() - ey <= half_width {
+            min_y = min_y.min(min.y);
+            max_y = max_y.max(max.y);
+        }
+    }
+    let range = max_y - min_y;
+    if !(range > 0.0) {
+        return None;
+    }
+    let (n, f) = (min_y - 0.15 * range, max_y + 0.15 * range);
+    let snap = WORLD_SHADOW_MAP_SIZE as f32 * 0.5;
+    let mut r0 = view_from_world.row(0) / half_width;
+    let mut r1 = view_from_world.row(1) / half_width;
+    r0.w = (r0.w * snap).floor() / snap;
+    r1.w = (r1.w * snap).floor() / snap;
+    let r2 = Vec4::new(0.0, 1.0 / (f - n), 0.0, -n / (f - n));
+    let clip_from_world = Mat4::from_cols(r0, r1, r2, Vec4::W).transpose();
+    Some((world_from_view, clip_from_world))
+}
+
+#[allow(clippy::type_complexity)]
+fn advance_world_shadow_light(
+    mut commands: Commands,
+    params: Option<Res<PropWorldShadow>>,
+    lights: Query<Entity, With<WorldShadowLight>>,
+    suns: Query<(&DirectionalLight, &GlobalTransform), (With<crate::retail_character::ShadowSource>, Without<WorldShadowLight>)>,
+    cameras: Query<&GlobalTransform, With<crate::camera::GameplayCamera>>,
+    casters: Query<(&bevy::camera::primitives::Aabb, &GlobalTransform), With<WorldShadowCaster>>,
+) {
+    let Ok(light) = lights.single() else { return };
+    let Some(params) = params.filter(|p| p.row().w > 0.0) else { return };
+    let Some((_, sun)) = suns.iter().find(|(l, _)| l.illuminance > 0.0) else { return };
+    let Some(camera) = cameras.iter().next() else { return };
+    let boxes = casters.iter().map(|(aabb, t)| {
+        let center = t.transform_point(aabb.center.into());
+        let m = t.affine().matrix3;
+        let half = Vec3::new(
+            Vec3::from(m.row(0).abs()).dot(aabb.half_extents.into()),
+            Vec3::from(m.row(1).abs()).dot(aabb.half_extents.into()),
+            Vec3::from(m.row(2).abs()).dot(aabb.half_extents.into()),
+        );
+        (center - half, center + half)
+    });
+    if let Some((world_from_view, clip_from_world)) = world_shadow_view(*sun.forward(), camera.translation(), params.window, boxes) {
+        commands.entity(light).insert(bevy::pbr::ShadowMapOverride { size: WORLD_SHADOW_MAP_SIZE, world_from_view, clip_from_world });
     }
 }
 
@@ -324,7 +402,7 @@ fn load_prop_world_shadow(mut commands: Commands, config: Res<crate::config::Con
 fn advance_prop_world_shadow(params: Option<Res<PropWorldShadow>>, mut state: ResMut<FrameStateData>) {
     let row = params.map_or(Vec4::ZERO, |p| p.row());
     if state.prop_world_shadow != row {
-        info!("PROP_WORLD_SHADOW row floor={:.3} window={:.1} debug={} on={}", row.x, row.y, row.z, row.w);
+        info!("PROP_WORLD_SHADOW row floor={:.3} map_texels={:.0} debug={} on={}", row.x, row.y, row.z, row.w);
         state.prop_world_shadow = row;
     }
 }
@@ -2127,7 +2205,8 @@ impl Plugin for RetailRenderPlugin {
             .add_plugins(ExtractResourcePlugin::<FrameStateData>::default())
             .add_systems(Startup, (initialize_frame_state, load_pca, crate::water_look::load, load_view_dot_light, load_prop_world_shadow))
             .init_resource::<TrafficLightCycle>()
-            .add_systems(Update, (advance_frame_state, advance_traffic_lights, advance_view_dot_light, advance_prop_world_shadow));
+            .add_systems(Update, (advance_frame_state, advance_traffic_lights, advance_view_dot_light, advance_prop_world_shadow))
+            .add_systems(PostUpdate, advance_world_shadow_light.after(bevy::transform::TransformSystems::Propagate));
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
                 Render,
@@ -2146,6 +2225,31 @@ pub(crate) fn world_changed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn world_shadow_view_is_retails_camera_centered_height_map() {
+        let sun = Vec3::new(0.3, -1.0, 0.2).normalize();
+        let camera = Vec3::new(10.0, 2.0, -5.0);
+        let ground = (Vec3::new(-100.0, 0.0, -100.0), Vec3::new(100.0, 0.5, 100.0));
+        let roof = (Vec3::new(9.0, 0.0, -6.0), Vec3::new(11.0, 10.0, -4.0));
+        let far_tower = (Vec3::new(500.0, 0.0, 500.0), Vec3::new(510.0, 200.0, 510.0));
+        let (world_from_view, clip) = world_shadow_view(sun, camera, 28.8, [ground, roof, far_tower]).unwrap();
+        assert!(world_from_view.w_axis.truncate().distance(camera) < 1e-5, "centered on the camera");
+        let c = clip * camera.extend(1.0);
+        assert!(c.x.abs() <= 1.0 / 256.0 && c.y.abs() <= 1.0 / 256.0, "camera at the box center up to the texel snap");
+        let t = clip.w_axis;
+        assert_eq!((t.x * 256.0).fract(), 0.0, "x snapped to whole texels");
+        assert_eq!((t.y * 256.0).fract(), 0.0, "y snapped to whole texels");
+        // The far tower is outside the box: n/f from ground and roof only, padded by 15% of 10 m.
+        let depth = |y: f32| (clip * Vec4::new(camera.x, y, camera.z, 1.0)).z;
+        assert!((depth(-1.5) - 0.0).abs() < 1e-5 && (depth(11.5) - 1.0).abs() < 1e-5);
+        // Depth depends on height only: moving along the sun ray keeps x/y, changes depth with y.
+        let p = Vec3::new(10.0, 3.0, -5.0);
+        let (a, b) = (clip * p.extend(1.0), clip * (p - sun * 4.0).extend(1.0));
+        assert!((a.truncate().truncate() - b.truncate().truncate()).length() < 1e-5);
+        assert!(b.z > a.z, "nearer the sun = higher = larger reverse depth");
+        assert!(world_shadow_view(sun, camera, 28.8, [far_tower]).is_none(), "no caster in the box");
+    }
 
     /// The per-vertex material index only works if no vertex is shared between
     /// triangles of different materials. `main` never had to care: it split

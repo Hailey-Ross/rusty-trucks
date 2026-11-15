@@ -418,6 +418,12 @@ fn pack_music_folder() -> Option<i32> {
         }
     };
     files.sort();
+    // Optional names.json next to the music ({"file.mp3": {"title", "artist"}}): exact credits over the files' tags
+    // (the launcher's Stream-safe mode writes it).
+    let names: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(std::path::Path::new(&dir).join("names.json")).ok()
+        .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok()).unwrap_or_default();
+    let named = |path: &std::path::Path, field: &str| path.file_name().and_then(|f| names.get(f.to_str()?))
+        .and_then(|n| n.get(field)?.as_str()).filter(|s| !s.trim().is_empty()).map(str::to_owned);
     // First pass: each file's segment count and names (the bank's index comes first); unreadable files are skipped.
     let mut tracks = Vec::new();
     let mut readable = Vec::new();
@@ -426,7 +432,8 @@ fn pack_music_folder() -> Option<i32> {
         let mut count = 0u32;
         match music_pack::decode(path, |_| { count += 1; Ok(()) }) {
             Ok(info) if count > 0 => {
-                tracks.push(Track { first, count, name: info.title, artist: info.artist });
+                let (name, artist) = (named(path, "title").unwrap_or(info.title), named(path, "artist").unwrap_or(info.artist));
+                tracks.push(Track { first, count, name, artist });
                 readable.push(path.clone());
                 first += count;
             }

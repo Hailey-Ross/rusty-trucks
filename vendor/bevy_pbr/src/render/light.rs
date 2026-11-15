@@ -85,8 +85,27 @@ pub struct ExtractedPointLight {
     pub affects_lightmapped_mesh_diffuse: bool,
 }
 
+/// Opt-in for a [`DirectionalLight`] (skate3rust patch): its first cascade renders with this matrix into a
+/// `size` x `size` viewport at the corner of its layer of the shared shadow map array, instead of Bevy's fitted
+/// cascade. The light gets `DirectionalLightFlags::SHADOW_MAP_OVERRIDE`. Lights without it are unchanged.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct ShadowMapOverride {
+    /// Texels per side; clamped to the [`DirectionalLightShadowMap`] size.
+    pub size: u32,
+    /// Affine light view transform.
+    pub world_from_view: Mat4,
+    pub clip_from_world: Mat4,
+}
+
+/// On a shadow view rendered for a [`ShadowMapOverride`]: the shadow pass draws into this corner viewport.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct ShadowMapOverrideViewport {
+    pub size: u32,
+}
+
 #[derive(Component, Debug)]
 pub struct ExtractedDirectionalLight {
+    pub shadow_map_override: Option<ShadowMapOverride>,
     pub color: LinearRgba,
     pub illuminance: f32,
     pub transform: GlobalTransform,
@@ -152,7 +171,8 @@ bitflags::bitflags! {
         const SHADOWS_ENABLED                   = 1 << 0;
         const VOLUMETRIC                        = 1 << 1;
         const AFFECTS_LIGHTMAPPED_MESH_DIFFUSE  = 1 << 2;
-        const NONE                              = 0;
+        const SHADOW_MAP_OVERRIDE               = 1 << 3;
+        const NONE                             = 0;
         const UNINITIALIZED                     = 0xFFFF;
     }
 }
@@ -333,6 +353,7 @@ pub fn extract_lights(
                 Option<&VolumetricLight>,
                 Has<OcclusionCulling>,
                 Option<&SunDisk>,
+                Option<&ShadowMapOverride>,
             ),
             Without<SpotLight>,
         >,
@@ -515,6 +536,7 @@ pub fn extract_lights(
         volumetric_light,
         occlusion_culling,
         sun_disk,
+        shadow_map_override,
     ) in &directional_lights
     {
         if !view_visibility.get() {
@@ -561,6 +583,7 @@ pub fn extract_lights(
             .expect("Light entity wasn't synced.")
             .insert((
                 ExtractedDirectionalLight {
+                    shadow_map_override: shadow_map_override.copied(),
                     color: directional_light.color.into(),
                     illuminance: directional_light.illuminance,
                     transform: *transform,
@@ -1198,6 +1221,9 @@ pub fn prepare_lights(
             if light.affects_lightmapped_mesh_diffuse {
                 flags |= DirectionalLightFlags::AFFECTS_LIGHTMAPPED_MESH_DIFFUSE;
             }
+            if light.shadow_map_override.is_some() {
+                flags |= DirectionalLightFlags::SHADOW_MAP_OVERRIDE;
+            }
 
             gpu_directional_lights[index] = GpuDirectionalLight {
                 // Filled in later.
@@ -1533,9 +1559,31 @@ pub fn prepare_lights(
             for (cascade_index, (((cascade, frustum), bound), view_light_entity)) in
                 iter.zip(light_view_entities.iter().copied()).enumerate()
             {
+                let overridden = light
+                    .shadow_map_override
+                    .filter(|_| cascade_index == 0)
+                    .map(|o| {
+                        let size = o.size.clamp(1, directional_light_shadow_map.size as u32);
+                        (o, size)
+                    });
+                let (clip_from_world, world_from_view, clip_from_view, viewport_size) =
+                    match overridden {
+                        Some((o, size)) => (
+                            o.clip_from_world,
+                            o.world_from_view,
+                            o.clip_from_world * o.world_from_view,
+                            size,
+                        ),
+                        None => (
+                            cascade.clip_from_world,
+                            cascade.world_from_cascade,
+                            cascade.clip_from_cascade,
+                            directional_light_shadow_map.size as u32,
+                        ),
+                    };
                 gpu_lights.directional_lights[light_index].cascades[cascade_index] =
                     GpuDirectionalCascade {
-                        clip_from_world: cascade.clip_from_world,
+                        clip_from_world,
                         texel_size: cascade.texel_size,
                         far_bound: *bound,
                     };
@@ -1562,7 +1610,10 @@ pub fn prepare_lights(
 
                 directional_depth_texture_array_index += 1;
 
-                let mut frustum = *frustum;
+                let mut frustum = match overridden {
+                    Some(_) => Frustum::from_clip_from_world(&clip_from_world),
+                    None => *frustum,
+                };
                 // Push the near clip plane out to infinity for directional lights
                 frustum.half_spaces[Frustum::NEAR_PLANE_IDX] = HalfSpace::new(
                     frustum.half_spaces[Frustum::NEAR_PLANE_IDX]
@@ -1585,15 +1636,10 @@ pub fn prepare_lights(
                     },
                     ExtractedView {
                         retained_view_entity,
-                        viewport: UVec4::new(
-                            0,
-                            0,
-                            directional_light_shadow_map.size as u32,
-                            directional_light_shadow_map.size as u32,
-                        ),
-                        world_from_view: GlobalTransform::from(cascade.world_from_cascade),
-                        clip_from_view: cascade.clip_from_cascade,
-                        clip_from_world: Some(cascade.clip_from_world),
+                        viewport: UVec4::new(0, 0, viewport_size, viewport_size),
+                        world_from_view: GlobalTransform::from(world_from_view),
+                        clip_from_view,
+                        clip_from_world: Some(clip_from_world),
                         hdr: false,
                         color_grading: Default::default(),
                         invert_culling: false,
@@ -1604,6 +1650,19 @@ pub fn prepare_lights(
                         cascade_index,
                     },
                 ));
+
+                match overridden {
+                    Some((_, size)) => {
+                        commands
+                            .entity(view_light_entity)
+                            .insert(ShadowMapOverrideViewport { size });
+                    }
+                    None => {
+                        commands
+                            .entity(view_light_entity)
+                            .remove::<ShadowMapOverrideViewport>();
+                    }
+                }
 
                 if !matches!(gpu_preprocessing_mode, GpuPreprocessingMode::Culling) {
                     commands.entity(view_light_entity).insert(NoIndirectDrawing);
@@ -2221,7 +2280,12 @@ pub struct ShadowPassNode {
     /// The query that finds cameras in which shadows are visible.
     main_view_query: QueryState<Read<ViewLightEntities>>,
     /// The query that finds shadow cascades.
-    view_light_query: QueryState<(Read<ShadowView>, Read<ExtractedView>, Has<OcclusionCulling>)>,
+    view_light_query: QueryState<(
+        Read<ShadowView>,
+        Read<ExtractedView>,
+        Has<OcclusionCulling>,
+        Option<Read<ShadowMapOverrideViewport>>,
+    )>,
 }
 
 impl FromWorld for EarlyShadowPassNode {
@@ -2299,7 +2363,7 @@ impl ShadowPassNode {
 
         if let Ok(view_lights) = self.main_view_query.get_manual(world, graph.view_entity()) {
             for view_light_entity in view_lights.lights.iter().copied() {
-                let Ok((view_light, extracted_light_view, occlusion_culling)) =
+                let Ok((view_light, extracted_light_view, occlusion_culling, override_viewport)) =
                     self.view_light_query.get_manual(world, view_light_entity)
                 else {
                     continue;
@@ -2340,6 +2404,17 @@ impl ShadowPassNode {
                     let mut render_pass = TrackedRenderPass::new(&render_device, render_pass);
                     let pass_span =
                         diagnostics.pass_span(&mut render_pass, view_light.pass_name.clone());
+
+                    if let Some(viewport) = override_viewport {
+                        render_pass.set_viewport(
+                            0.0,
+                            0.0,
+                            viewport.size as f32,
+                            viewport.size as f32,
+                            0.0,
+                            1.0,
+                        );
+                    }
 
                     if let Err(err) =
                         shadow_phase.render(&mut render_pass, world, view_light_entity)

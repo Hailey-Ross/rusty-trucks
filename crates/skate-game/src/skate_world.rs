@@ -136,6 +136,8 @@ fn spawn_static<T: Bundle + Clone>(
                 // (RFC 1 D4). The extents were already computed while merging.
                 aabb,
                 tag.clone(),
+                crate::retail_render::WorldShadowCaster,
+                bevy::camera::visibility::RenderLayers::from_layers(&[0, crate::retail_render::WORLD_SHADOW_LAYER]),
             ));
             stats.draws += 1;
         }

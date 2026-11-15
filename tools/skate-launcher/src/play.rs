@@ -419,6 +419,7 @@ pub fn launch(l: &Launcher, key: &str, label: &str, version_id: &str, path_arg: 
             }
         }
         envs.push(("SKATE_FIXED_EXECUTOR".into(), crate::status::fixed_executor_pub(l).into()));
+        crate::streamsafe::prepare(l, v);
     }
     let since = std::time::SystemTime::now();
     let playing = l.state_dir.join("PLAYING.txt");

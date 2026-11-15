@@ -48,7 +48,7 @@ fn shade_character(p: CharacterParams, vn: vec3<f32>, position: vec4<f32>, d: ve
     var shadow=1.0;
     for (var light_id=0u; light_id<frame::lights.n_directional_lights; light_id+=1u) {
         // All-caster visibility light does not affect lightmapped world diffuse.
-        if (frame::lights.directional_lights[light_id].flags & 5u)==1u {
+        if (frame::lights.directional_lights[light_id].flags & 13u)==1u {
             shadow=fetch_directional_shadow(light_id,position,vn,view_z);
             break;
         }

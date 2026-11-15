@@ -1,0 +1,268 @@
+{
+    "about":  "Stream-safe mode\u0027s built-in playlists (docs/hails-additions/46-stream-safe-music.md). Only tracks whose license the artist or label states on their own page: CC0 or CC BY from Free Music Archive, Internet Archive (artist / netlabel uploads only; uploader-set licenses there are often wrong) and OpenGameArt. Every track is credited in full, even under CC0. A file local-playlists.json in the launcher\u0027s stream-safe folder adds playlists for local use.",
+    "playlists":  [
+                      {
+                          "id":  "oga-lofi-funk",
+                          "name":  "OpenGameArt: Lofi and Funk",
+                          "source":  "OpenGameArt",
+                          "source_url":  "https://opengameart.org",
+                          "license":  "CC0 1.0",
+                          "license_url":  "https://creativecommons.org/publicdomain/zero/1.0/",
+                          "tracks":  [
+                                         {
+                                             "title":  "lofi hip hop",
+                                             "artist":  "omfgdude",
+                                             "url":  "https://opengameart.org/sites/default/files/lofihiphop.ogg",
+                                             "page":  "https://opengameart.org/content/lofi-hip-hop",
+                                             "credit":  "\"lofi hip hop\" by omfgdude\nSource: OpenGameArt (https://opengameart.org/content/lofi-hip-hop)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "8641e8203d0e7dc06db0276b69fc15f59e9f45faf76d2d647bc076a3339c1ef1"
+                                         },
+                                         {
+                                             "title":  "Iced Village (8 Bit Lofi Hip Hop)",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/8_bit_iced_village_lofi_0.mp3",
+                                             "page":  "https://opengameart.org/content/iced-village-8-bit-lofi-hip-hop",
+                                             "credit":  "\"Iced Village (8 Bit Lofi Hip Hop)\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/iced-village-8-bit-lofi-hip-hop)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nArtist\u0027s notice: Tad: https://www.youtube.com/c/Tadon",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "c9b22755c707ff132e56af27129b1f65321cf748709cb2e6be583d0d84f44540"
+                                         },
+                                         {
+                                             "title":  "The Past (8 Bit Lofi Hip Hop)",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/the_past_8_bit_lofi__0.mp3",
+                                             "page":  "https://opengameart.org/content/the-past-8-bit-lofi-hip-hop",
+                                             "credit":  "\"The Past (8 Bit Lofi Hip Hop)\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/the-past-8-bit-lofi-hip-hop)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nArtist\u0027s notice: Tad: https://www.youtube.com/c/Tadon",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "e253c514ddd4112f22c9b94088715a096d17201fc0831d39f2ab6c16b05acde1"
+                                         },
+                                         {
+                                             "title":  "Funky Hip Hop Lofi Jam",
+                                             "artist":  "omfgdude",
+                                             "url":  "https://opengameart.org/sites/default/files/CVP701Jam-Lowpass.ogg",
+                                             "page":  "https://opengameart.org/content/funky-hip-hop-lofi-jam",
+                                             "credit":  "\"Funky Hip Hop Lofi Jam\" by omfgdude\nSource: OpenGameArt (https://opengameart.org/content/funky-hip-hop-lofi-jam)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nArtist\u0027s notice: omfgdude",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "575835755b43731e74307b08c946b94f4f46c1c78036ea07a9dfc482888af920"
+                                         },
+                                         {
+                                             "title":  "Chill lofi inspired",
+                                             "artist":  "omfgdude",
+                                             "url":  "https://opengameart.org/sites/default/files/ChillLofiR_0.mp3",
+                                             "page":  "https://opengameart.org/content/chill-lofi-inspired",
+                                             "credit":  "\"Chill lofi inspired\" by omfgdude\nSource: OpenGameArt (https://opengameart.org/content/chill-lofi-inspired)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "1796a480e3db0c02d5e58059b2ae7cfbeab344f95e0443496790da022cbe91b5"
+                                         },
+                                         {
+                                             "title":  "Funked Up",
+                                             "artist":  "Joth",
+                                             "url":  "https://opengameart.org/sites/default/files/Funked%20Up.mp3",
+                                             "page":  "https://opengameart.org/content/funked-up",
+                                             "credit":  "\"Funked Up\" by Joth\nSource: OpenGameArt (https://opengameart.org/content/funked-up)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nArtist\u0027s notice: Credit to Joth, link to opengameart.org/users/joth, or link to @Joth_Music twitter.com/Joth_Music. Appreciated but not required.",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "57cd81254a0f4e068535c5421f93b586514332ad2377f81aea190dd91659fff3"
+                                         },
+                                         {
+                                             "title":  "Raspberry Jam",
+                                             "artist":  "congusbongus",
+                                             "url":  "https://opengameart.org/sites/default/files/raspberry_jam.ogg",
+                                             "page":  "https://opengameart.org/content/raspberry-jam",
+                                             "credit":  "\"Raspberry Jam\" by congusbongus\nSource: OpenGameArt (https://opengameart.org/content/raspberry-jam)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "99d2ff8088f26abaf5bd0b492e870e46ab798eed4eb71bcad6eb310af1049c12"
+                                         },
+                                         {
+                                             "title":  "Wednesday Night [Funk Fusion]",
+                                             "artist":  "Zane Little Music",
+                                             "url":  "https://opengameart.org/sites/default/files/wednesday_night_0.mp3",
+                                             "page":  "https://opengameart.org/content/wednesday-night-funk-fusion",
+                                             "credit":  "\"Wednesday Night [Funk Fusion]\" by Zane Little Music\nSource: OpenGameArt (https://opengameart.org/content/wednesday-night-funk-fusion)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nArtist\u0027s notice: https://ko-fi.com/zanelittle",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "6187f62385f94db5feda3360da6309d90664c5410dda1351f837f978df2c5861"
+                                         },
+                                         {
+                                             "title":  "Midnight Cruiser",
+                                             "artist":  "Zane Little Music",
+                                             "url":  "https://opengameart.org/sites/default/files/midnight_cruiser_0.mp3",
+                                             "page":  "https://opengameart.org/content/midnight-cruiser",
+                                             "credit":  "\"Midnight Cruiser\" by Zane Little Music\nSource: OpenGameArt (https://opengameart.org/content/midnight-cruiser)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "be0285ba239d85c47c6a0de6466123e3fe8dbc4ad4d9419ccd224ab8ea2b54fc"
+                                         },
+                                         {
+                                             "title":  "Jazzy blues",
+                                             "artist":  "LushoGames",
+                                             "url":  "https://opengameart.org/sites/default/files/blues_0.mp3",
+                                             "page":  "https://opengameart.org/content/jazzy-blues",
+                                             "credit":  "\"Jazzy blues\" by LushoGames\nSource: OpenGameArt (https://opengameart.org/content/jazzy-blues)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "9e410244ba3bf767b57a97564a3886fada87661ec51346329f0c2b3435fe9858"
+                                         },
+                                         {
+                                             "title":  "A cup of tea",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/A%20cup%20of%20tea_0.mp3",
+                                             "page":  "https://opengameart.org/content/lofi-compilation",
+                                             "credit":  "\"A cup of tea\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/lofi-compilation)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "03f8128bfa193e9fee5f0647f189baeb7adbf2a1f7b0fecf849ad57e6355091c"
+                                         },
+                                         {
+                                             "title":  "Cue",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/Cue_0.mp3",
+                                             "page":  "https://opengameart.org/content/lofi-compilation",
+                                             "credit":  "\"Cue\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/lofi-compilation)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "c97929e1a7b209d0ce24445d33396e3272b4675f50c3d72dbaa315c0152372a4"
+                                         },
+                                         {
+                                             "title":  "Bartender",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/Bartender_0.mp3",
+                                             "page":  "https://opengameart.org/content/lofi-compilation",
+                                             "credit":  "\"Bartender\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/lofi-compilation)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "5cbbbe5058ed31d5a9288529ac7b4c3e16a440aad5a4b603bb8bc90df54708d4"
+                                         },
+                                         {
+                                             "title":  "Cat caffe",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/Cat%20caffe_0.mp3",
+                                             "page":  "https://opengameart.org/content/lofi-compilation",
+                                             "credit":  "\"Cat caffe\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/lofi-compilation)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "896b036154c439e0790fa821bf4a5a1d208d17954c8db1b10c72a6d053c7d3d9"
+                                         },
+                                         {
+                                             "title":  "Rainy Forest",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/Rainy%20Forest_0.mp3",
+                                             "page":  "https://opengameart.org/content/lofi-compilation",
+                                             "credit":  "\"Rainy Forest\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/lofi-compilation)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "36dcdeb142c22b691eb8a487520da2d49149e2df4430f65c2f8a44df6d7d2e1a"
+                                         },
+                                         {
+                                             "title":  "Countryside",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/Countryside_0.mp3",
+                                             "page":  "https://opengameart.org/content/lofi-compilation",
+                                             "credit":  "\"Countryside\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/lofi-compilation)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "db4ecc6a540b08cfb8cc95c0703ee8616801db9d588f33686f9743f50955e442"
+                                         },
+                                         {
+                                             "title":  "Oceanside",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/Oceanside_0.mp3",
+                                             "page":  "https://opengameart.org/content/lofi-compilation",
+                                             "credit":  "\"Oceanside\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/lofi-compilation)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "deff92ce46a101ee4ded838de9afcfcb99d6d8f4d227a483a5000d91684d69f6"
+                                         },
+                                         {
+                                             "title":  "Florist",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/Florist_0.mp3",
+                                             "page":  "https://opengameart.org/content/lofi-compilation",
+                                             "credit":  "\"Florist\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/lofi-compilation)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "c68ac934076d05883376badb440d945738b9e075d493e03d4d00e05354945738"
+                                         },
+                                         {
+                                             "title":  "Morning rain",
+                                             "artist":  "TAD",
+                                             "url":  "https://opengameart.org/sites/default/files/Morning%20rain_0.mp3",
+                                             "page":  "https://opengameart.org/content/lofi-compilation",
+                                             "credit":  "\"Morning rain\" by TAD\nSource: OpenGameArt (https://opengameart.org/content/lofi-compilation)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "11c9c43be5d3baf5892cd59034ba3c1b690db9a4b986070530597d0afaa12306"
+                                         }
+                                     ]
+                      },
+                      {
+                          "id":  "oga-fast",
+                          "name":  "OpenGameArt: Fast",
+                          "source":  "OpenGameArt",
+                          "source_url":  "https://opengameart.org",
+                          "license":  "CC0 1.0",
+                          "license_url":  "https://creativecommons.org/publicdomain/zero/1.0/",
+                          "tracks":  [
+                                         {
+                                             "title":  "Streets After Midnight",
+                                             "artist":  "Tsorthan Grove",
+                                             "url":  "https://opengameart.org/sites/default/files/streets_after_midnight.flac",
+                                             "page":  "https://opengameart.org/content/streets-after-midnight",
+                                             "credit":  "\"Streets After Midnight\" by Tsorthan Grove\nSource: OpenGameArt (https://opengameart.org/content/streets-after-midnight)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nArtist\u0027s notice: CC0 / Public Domain. No Rights Reserved. Free to use, no attribution required.",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "73ff7655af573e018bfec1ffb7aa47daa6811fed353c787c9ce3c37096f1e9d6"
+                                         },
+                                         {
+                                             "title":  "Race of the Wasp",
+                                             "artist":  "OwlishMedia",
+                                             "url":  "https://opengameart.org/sites/default/files/Race%20of%20the%20Wasp.wav",
+                                             "page":  "https://opengameart.org/content/race-of-the-wasp",
+                                             "credit":  "\"Race of the Wasp\" by OwlishMedia\nSource: OpenGameArt (https://opengameart.org/content/race-of-the-wasp)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "24711640582fca7b00273c8778be9431e3e306f76a22907615db01fd4a293ab9"
+                                         },
+                                         {
+                                             "title":  "Rhythm Factory",
+                                             "artist":  "Zane Little Music",
+                                             "url":  "https://opengameart.org/sites/default/files/rhythm_factory_0.mp3",
+                                             "page":  "https://opengameart.org/content/rhythm-factory",
+                                             "credit":  "\"Rhythm Factory\" by Zane Little Music\nSource: OpenGameArt (https://opengameart.org/content/rhythm-factory)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "5126faf85adffc64f22a4cd176b84ed47b6014c03328ba8380fdb24efca11f90"
+                                         },
+                                         {
+                                             "title":  "Black Diamond",
+                                             "artist":  "Joth",
+                                             "url":  "https://opengameart.org/sites/default/files/Black%20Diamond.mp3",
+                                             "page":  "https://opengameart.org/content/black-diamond",
+                                             "credit":  "\"Black Diamond\" by Joth\nSource: OpenGameArt (https://opengameart.org/content/black-diamond)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nArtist\u0027s notice: Credit to Joth, link to opengameart.org/users/joth, or link to @Joth_Music twitter.com/Joth_Music. Appreciated but not required.",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "9fd1c9a97740411e7dcaebdc9af17ab017cf070a82089a48503765a24b7bedf4"
+                                         },
+                                         {
+                                             "title":  "Final Hour",
+                                             "artist":  "isaiah658",
+                                             "url":  "https://opengameart.org/sites/default/files/Final-Hour-isaiah658_0.mp3",
+                                             "page":  "https://opengameart.org/content/final-hour",
+                                             "credit":  "\"Final Hour\" by isaiah658\nSource: OpenGameArt (https://opengameart.org/content/final-hour)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nArtist\u0027s notice: Attribution to isaiah658 not required but appreciated. Would also like to know if anyone uses.",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "f461db3518cd8e06901f962622101a1ead3088146f075c433a797686533f27d9"
+                                         },
+                                         {
+                                             "title":  "Space Bass",
+                                             "artist":  "Fupi",
+                                             "url":  "https://opengameart.org/sites/default/files/Space%20Bass_0.ogg",
+                                             "page":  "https://opengameart.org/content/space-bass",
+                                             "credit":  "\"Space Bass\" by Fupi\nSource: OpenGameArt (https://opengameart.org/content/space-bass)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "2c76d522dc727e42b9390112b21f1bdeee7c825ca93db072cac228101168dba6"
+                                         },
+                                         {
+                                             "title":  "Action Track",
+                                             "artist":  "LushoGames",
+                                             "url":  "https://opengameart.org/sites/default/files/actionTrack_0.mp3",
+                                             "page":  "https://opengameart.org/content/action-track",
+                                             "credit":  "\"Action Track\" by LushoGames\nSource: OpenGameArt (https://opengameart.org/content/action-track)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "c17d6ea16ba6334f3a1f6a553f3fa25a9102eeb0af871c7956f5129d93c987b1"
+                                         },
+                                         {
+                                             "title":  "Crate Punks OST",
+                                             "artist":  "Shuhei Yasuda",
+                                             "url":  "https://opengameart.org/sites/default/files/cratePunksOST_5.mp3",
+                                             "page":  "https://opengameart.org/content/crate-punks-ost",
+                                             "credit":  "\"Crate Punks OST\" by Shuhei Yasuda\nSource: OpenGameArt (https://opengameart.org/content/crate-punks-ost)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "4eb0eeca8abf507834c3bd693499f94dc8ed2a5837f00bb1b406545399e1a3d7"
+                                         }
+                                     ]
+                      }
+                  ]
+}

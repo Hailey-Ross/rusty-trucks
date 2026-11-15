@@ -475,20 +475,28 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
                 }
             }
         }
-        // 49..52, 65, 67, 69..82, 84..85: the world shadow map, floored at g_CSMSelfBias.w (research b1022: a sun map
-        // drawn every frame over a window around the camera). Ours: the all-caster sun map (flags & 5 == 1, as the
-        // characters read it) within the data's window of view depth [window center inferred]; lit beyond it.
+        // 46..52, 65, 67, 69..82, 84..85: the world shadow map (research b1023): world sections only, a height map on a
+        // pws.y-texel grid of a camera-centered sun box (the light with the shadow map override flag, cascade 0, drawn
+        // in the corner of its layer). 2x2 bilinear compare, lit when the receiver is at least as high as the highest
+        // caster on its sun ray (reverse depth), no receiver bias; floored at g_CSMSelfBias.w. Outside the box: lit.
         var world_visibility = 1.0;
         let pws = frame_state.prop_world_shadow;
         if pws.w > 0.0 {
-            let wz = (frame::view.view_from_world*i.world_position).z;
-            if -wz <= pws.y {
-                for (var light_id=0u; light_id<frame::lights.n_directional_lights; light_id+=1u) {
-                    if (frame::lights.directional_lights[light_id].flags & 5u)==1u {
-                        world_visibility = max(fetch_directional_shadow(light_id,i.world_position,wn,wz),pws.x);
-                        break;
-                    }
+            for (var light_id=0u; light_id<frame::lights.n_directional_lights; light_id+=1u) {
+                let wl = frame::lights.directional_lights[light_id];
+                if (wl.flags & 9u)!=9u { continue; }
+                let c = wl.cascades[0].clip_from_world*i.world_position;
+                if all(abs(c.xy)<=vec2<f32>(1.0)) {
+                    let scale = pws.y/f32(textureDimensions(frame::directional_shadow_textures).x);
+                    let uv = vec2<f32>(c.x*0.5+0.5,0.5-c.y*0.5)*scale;
+#ifdef NO_ARRAY_TEXTURES_SUPPORT
+                    let lit = textureSampleCompareLevel(frame::directional_shadow_textures,frame::directional_shadow_textures_comparison_sampler,uv,c.z);
+#else
+                    let lit = textureSampleCompareLevel(frame::directional_shadow_textures,frame::directional_shadow_textures_comparison_sampler,uv,i32(wl.depth_texture_base_index),c.z);
+#endif
+                    world_visibility = max(lit,pws.x);
                 }
+                break;
             }
         }
         let shade = min(select(0.0,1.0,nl>=0.0)*csm,world_visibility);
