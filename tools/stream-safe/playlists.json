@@ -269,7 +269,7 @@
                           "name":  "Internet Archive: Chill",
                           "source":  "Internet Archive",
                           "source_url":  "https://archive.org/details/netlabels",
-                          "license":  "Per track (CC BY / CC BY-NC / CC BY-NC-SA)",
+                          "license":  "Per track (CC0 / CC BY / CC BY-NC / CC BY-NC-SA)",
                           "license_url":  "",
                           "tracks":  [
                                          {
@@ -459,7 +459,7 @@
                           "name":  "Internet Archive: Electronic",
                           "source":  "Internet Archive",
                           "source_url":  "https://archive.org/details/netlabels",
-                          "license":  "Per track (CC BY / CC BY-NC / CC BY-NC-SA)",
+                          "license":  "Per track (CC0 / CC BY / CC BY-NC / CC BY-NC-SA)",
                           "license_url":  "",
                           "tracks":  [
                                          {
@@ -533,6 +533,377 @@
                                              "credit":  "\"Audial Assault (drum solo)\" by The Toucan\nLabel: Toucan Music\nSource: Internet Archive (https://archive.org/details/tou205)\nLicense: CC BY-NC 2.5 (Toucan Music: free for non-commercial use; the Internet Archive item says CC BY 2.5) (https://creativecommons.org/licenses/by-nc/2.5/)\nToucan Music: https://www.toucanmusic.com",
                                              "license":  "CC BY-NC 2.5 (Toucan Music: free for non-commercial use; the Internet Archive item says CC BY 2.5)",
                                              "sha256":  "f751e2f3c20e4f3e41538518a02e6a91512ce60dd907af05a7f8829bcacafecb"
+                                         }
+                                     ]
+                      },
+                      {
+                          "id":  "ia-beats",
+                          "name":  "Internet Archive: Beats (blocSonic)",
+                          "source":  "Internet Archive",
+                          "source_url":  "https://archive.org/details/netlabels",
+                          "license":  "Per track (CC0 / CC BY / CC BY-NC / CC BY-NC-SA)",
+                          "license_url":  "",
+                          "tracks":  [
+                                         {
+                                             "title":  "Retro Instrumental",
+                                             "artist":  "C da 76er",
+                                             "url":  "https://archive.org/download/BSOG0075/01-05-RetroInstrumental_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0075",
+                                             "credit":  "\"Retro Instrumental\" by C da 76er\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0075)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0075",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "c917899d7f6324800dd104ea0261d52240d4471210d819aae5813dd3b7b1aaa1"
+                                         },
+                                         {
+                                             "title":  "Hip Hop For Scholars Intro Instrumental",
+                                             "artist":  "C da 76er",
+                                             "url":  "https://archive.org/download/BSOG0075/01-09-HipHopForScholarsIntroInstrumental_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0075",
+                                             "credit":  "\"Hip Hop For Scholars Intro Instrumental\" by C da 76er\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0075)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0075",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "16945c2f0e95f6c17cf3cae2241308899fb316e4a8469d86f59fd9ebf01c97b6"
+                                         },
+                                         {
+                                             "title":  "I Don\u0027t Blame \u0027Em Instrumental",
+                                             "artist":  "C da 76er",
+                                             "url":  "https://archive.org/download/BSOG0075/01-14-IDontBlameEmInstrumental_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0075",
+                                             "credit":  "\"I Don\u0027t Blame \u0027Em Instrumental\" by C da 76er\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0075)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0075",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "ad525f3ee4a3c7d8123895819d28bfe637f35c55b83cf0cc7456926642857ef3"
+                                         },
+                                         {
+                                             "title":  "True Pros Instrumental",
+                                             "artist":  "C da 76er",
+                                             "url":  "https://archive.org/download/BSOG0075/01-20-TrueProsInstrumental_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0075",
+                                             "credit":  "\"True Pros Instrumental\" by C da 76er\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0075)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0075",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "69edc2123a876ca909e68d4d7d614f66cec28c5a3ac2a1df7397163cab16ac55"
+                                         },
+                                         {
+                                             "title":  "Creative On The Mic Instrumental",
+                                             "artist":  "C da 76er",
+                                             "url":  "https://archive.org/download/BSOG0075/02-02-CreativeOnTheMicInstrumental_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0075",
+                                             "credit":  "\"Creative On The Mic Instrumental\" by C da 76er\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0075)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0075",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "ebb884b01e83aa973d0349ddf7679fd8acddaf84d3a32d9c134d78fa266c7915"
+                                         },
+                                         {
+                                             "title":  "Ya Tu Sabe (That\u0027s How It Is) Instrumental",
+                                             "artist":  "C da 76er",
+                                             "url":  "https://archive.org/download/BSOG0075/02-17-YaTuSabe_ThatsHowItIsInstrumental_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0075",
+                                             "credit":  "\"Ya Tu Sabe (That\u0027s How It Is) Instrumental\" by C da 76er\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0075)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0075",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "b167a673103f6caf4ec0fc58bc1bdf0a75d24023e2bc473b8628f7fd5b841297"
+                                         },
+                                         {
+                                             "title":  "Silom",
+                                             "artist":  "Moki Mcfly",
+                                             "url":  "https://archive.org/download/BSOG0078/12-Silom_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0078",
+                                             "credit":  "\"Silom\" by Moki Mcfly\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0078)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0078",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "21c1e6edcc19d392e135f95c69eb7b07c6b418b45c21d551dbe834a85a9a072f"
+                                         },
+                                         {
+                                             "title":  "Obscure Fish",
+                                             "artist":  "Moki Mcfly",
+                                             "url":  "https://archive.org/download/BSOG0078/13-ObscureFish_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0078",
+                                             "credit":  "\"Obscure Fish\" by Moki Mcfly\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0078)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0078",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "b6e282569a3d50509a4ae54fd4aac40277c1dd504de4c816f80d2a9fc12325f3"
+                                         },
+                                         {
+                                             "title":  "Noodle Stacks",
+                                             "artist":  "Moki Mcfly",
+                                             "url":  "https://archive.org/download/BSOG0078/04-NoodleStacks_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0078",
+                                             "credit":  "\"Noodle Stacks\" by Moki Mcfly\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0078)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0078",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "ef383d57387ff9df72f97eeaec1a0718f6748f6dbdc4338ba9875b1b754ab550"
+                                         },
+                                         {
+                                             "title":  "Thai Pods",
+                                             "artist":  "Moki Mcfly",
+                                             "url":  "https://archive.org/download/BSOG0078/10-ThaiPods_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0078",
+                                             "credit":  "\"Thai Pods\" by Moki Mcfly\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0078)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0078",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "1c87e237138852f98e12a365fb72eb16577a8072c08fe75358368d278da5a487"
+                                         },
+                                         {
+                                             "title":  "Chang\u0027s",
+                                             "artist":  "Moki Mcfly",
+                                             "url":  "https://archive.org/download/BSOG0078/07-Changs_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0078",
+                                             "credit":  "\"Chang\u0027s\" by Moki Mcfly\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0078)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0078",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "5b545113d71a81d9abd6b3c15ce0df4ffcbc056224aab990bc1c11bc0613ab07"
+                                         },
+                                         {
+                                             "title":  "Magic Number 7",
+                                             "artist":  "aitÃ¤nna77",
+                                             "url":  "https://archive.org/download/BSOG0081/03-MagicNumber7_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0081",
+                                             "credit":  "\"Magic Number 7\" by aitÃ¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "abc22137afd937e06e96156808d40afd32a3d1b4f8820ec8c8e79f6ad11efff1"
+                                         },
+                                         {
+                                             "title":  "Mood Congruence",
+                                             "artist":  "aitÃ¤nna77",
+                                             "url":  "https://archive.org/download/BSOG0081/04-MoodCongruence_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0081",
+                                             "credit":  "\"Mood Congruence\" by aitÃ¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "547644e3a561c218c684a8b869d42f62141f83220347f18d95e1c203a8772be4"
+                                         },
+                                         {
+                                             "title":  "Hazy",
+                                             "artist":  "aitÃ¤nna77",
+                                             "url":  "https://archive.org/download/BSOG0081/07-Hazy_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0081",
+                                             "credit":  "\"Hazy\" by aitÃ¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "1fe7df075c4d0c840abd3cdbb3f07c0d72c5652b283700f244cd8c860bd3312e"
+                                         },
+                                         {
+                                             "title":  "Forgotten Village",
+                                             "artist":  "aitÃ¤nna77",
+                                             "url":  "https://archive.org/download/BSOG0081/08-ForgottenVillage_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSOG0081",
+                                             "credit":  "\"Forgotten Village\" by aitÃ¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "75e1b678a86d49500f419d73f7e34ca6900cf8187d6dee6df5c114192f4de17f"
+                                         },
+                                         {
+                                             "title":  "Home",
+                                             "artist":  "Cutside",
+                                             "url":  "https://archive.org/download/BSMX0177/01-Home_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSMX0177",
+                                             "credit":  "\"Home\" by Cutside\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSMX0177)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsmx0177",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "c979182f41cc9c8ab2d653d0acc18df2fcadef22ec58be754bcaa00f3cc66350"
+                                         },
+                                         {
+                                             "title":  "Stargazer",
+                                             "artist":  "Cutside",
+                                             "url":  "https://archive.org/download/BSMX0177/02-Stargazer_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSMX0177",
+                                             "credit":  "\"Stargazer\" by Cutside\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSMX0177)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsmx0177",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "b14e8bbd58d7508df8834fb4c27521f634aaddbecaa9982b62245ed2e8c58c09"
+                                         },
+                                         {
+                                             "title":  "Fly Away",
+                                             "artist":  "Cutside",
+                                             "url":  "https://archive.org/download/BSMX0177/04-FlyAway_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSMX0177",
+                                             "credit":  "\"Fly Away\" by Cutside\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSMX0177)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsmx0177",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "8ccc6fdc91c6450c5505f37cd10ce9365fce3cd591ce6267d93286142eb58382"
+                                         },
+                                         {
+                                             "title":  "Secret Of 3rd Planet",
+                                             "artist":  "Cutside",
+                                             "url":  "https://archive.org/download/BSMX0170/01-SecretOf3rdPlanet_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSMX0170",
+                                             "credit":  "\"Secret Of 3rd Planet\" by Cutside\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSMX0170)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsmx0170",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "eb526eb8d9afc473883328d17ed484bed5113e1359dbc564b8d7c15e0dcb6bdd"
+                                         },
+                                         {
+                                             "title":  "Swarm",
+                                             "artist":  "Cutside",
+                                             "url":  "https://archive.org/download/BSMX0170/03-Swarm_192kb.mp3",
+                                             "page":  "https://archive.org/details/BSMX0170",
+                                             "credit":  "\"Swarm\" by Cutside\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSMX0170)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsmx0170",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "73392d8179ce59cba113ad620a12a5f69eb0b2edf62046c6f7eb3a63e6e8d0f4"
+                                         }
+                                     ]
+                      },
+                      {
+                          "id":  "ia-disco-metal",
+                          "name":  "Internet Archive: Disco, Dance and Metal (Loyalty Freak Music)",
+                          "source":  "Internet Archive",
+                          "source_url":  "https://archive.org/details/netlabels",
+                          "license":  "Per track (CC0 / CC BY / CC BY-NC / CC BY-NC-SA)",
+                          "license_url":  "",
+                          "tracks":  [
+                                         {
+                                             "title":  "Roller Fever",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE/Loyalty%20Freak%20Music%20-%20ROLLER%20DISCO%20DANCE%20DANCE%20-%2001%20Roller%20Fever.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE",
+                                             "credit":  "\"Roller Fever\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/roller-disco-dance-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "ad9521d17db4733ddbe4691d4810cc2a337c087ecc465ba4704af253511fadad"
+                                         },
+                                         {
+                                             "title":  "Dance Robot ACTIVATE",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE/Loyalty%20Freak%20Music%20-%20ROLLER%20DISCO%20DANCE%20DANCE%20-%2002%20Dance%20Robot%20ACTIVATE.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE",
+                                             "credit":  "\"Dance Robot ACTIVATE\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/roller-disco-dance-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "fdb0815b7527a409073b85f82a919024023935d349eafaeaa7f95f96f624990e"
+                                         },
+                                         {
+                                             "title":  "I\u0027M ON FIRE",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE/Loyalty%20Freak%20Music%20-%20ROLLER%20DISCO%20DANCE%20DANCE%20-%2003%20I\u0027M%20ON%20FIRE.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE",
+                                             "credit":  "\"I\u0027M ON FIRE\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/roller-disco-dance-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "165274c573b636127c762196feb3c5335db3618c20747e40c231aa1f11d872e2"
+                                         },
+                                         {
+                                             "title":  "Can\u0027t Stop My Feet !",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE/Loyalty%20Freak%20Music%20-%20ROLLER%20DISCO%20DANCE%20DANCE%20-%2004%20Can\u0027t%20Stop%20My%20Feet%20!.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE",
+                                             "credit":  "\"Can\u0027t Stop My Feet !\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/roller-disco-dance-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "e557d9fa86b8f68870036f4b4c77111dfb0a7b8ba410938703589240cd783037"
+                                         },
+                                         {
+                                             "title":  "Grab A Partner",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE/Loyalty%20Freak%20Music%20-%20ROLLER%20DISCO%20DANCE%20DANCE%20-%2005%20Grab%20A%20Partner.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE",
+                                             "credit":  "\"Grab A Partner\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/roller-disco-dance-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "113f0ed518990d77030382c8f7efc798e705171f891679a954829342f01f7fad"
+                                         },
+                                         {
+                                             "title":  "Take A Break",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE/Loyalty%20Freak%20Music%20-%20ROLLER%20DISCO%20DANCE%20DANCE%20-%2006%20Take%20A%20Break.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE",
+                                             "credit":  "\"Take A Break\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/roller-disco-dance-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "1337a88a50c9de93113c54b41361f3554e2196d0358341c7c9ecbd8bc15453c6"
+                                         },
+                                         {
+                                             "title":  "Sweat Time !",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE/Loyalty%20Freak%20Music%20-%20ROLLER%20DISCO%20DANCE%20DANCE%20-%2007%20Sweat%20Time%20!.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE",
+                                             "credit":  "\"Sweat Time !\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/roller-disco-dance-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "13f29d44ec1c203ac14ad797b41e8e21661e1bab5d3dbcff661a9302449f74c9"
+                                         },
+                                         {
+                                             "title":  "Last Energy For The Day",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE/Loyalty%20Freak%20Music%20-%20ROLLER%20DISCO%20DANCE%20DANCE%20-%2008%20Last%20Energy%20For%20The%20Day.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE",
+                                             "credit":  "\"Last Energy For The Day\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusic-ROLLERDISCODANCEDANCE)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/roller-disco-dance-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "73e8d2f8833b40fb80e72cea67a2f8682c321031507469c2b0b64fc99e55d717"
+                                         },
+                                         {
+                                             "title":  "Everyone is so alive",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicROBOTDANCE2017113032423755/Loyalty_Freak_Music_-_01_-_Everyone_is_so_alive.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicROBOTDANCE2017113032423755",
+                                             "credit":  "\"Everyone is so alive\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicROBOTDANCE2017113032423755)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/robot-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "3d02ef9b41ae9a82727f833caa8f45175ee3294b0abf9452420de90cf969f010"
+                                         },
+                                         {
+                                             "title":  "High Technologic Beat Explosion",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicROBOTDANCE2017113032423755/Loyalty_Freak_Music_-_02_-_High_Technologic_Beat_Explosion.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicROBOTDANCE2017113032423755",
+                                             "credit":  "\"High Technologic Beat Explosion\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicROBOTDANCE2017113032423755)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/robot-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "f1adda54b8ed9564781d5cb93bca93e10cfadc4cab2bc71a49200c7bff557f32"
+                                         },
+                                         {
+                                             "title":  "After Party",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicROBOTDANCE2017113032423755/Loyalty_Freak_Music_-_03_-_After_Party.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicROBOTDANCE2017113032423755",
+                                             "credit":  "\"After Party\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicROBOTDANCE2017113032423755)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/robot-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "06c6ae83d6a2530b1313af7d6ff58a69b7fb043549e2bbad6c3682b2773fd8a1"
+                                         },
+                                         {
+                                             "title":  "It feels good to be alive too",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicROBOTDANCE2017113032423755/Loyalty_Freak_Music_-_04_-_It_feels_good_to_be_alive_too.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicROBOTDANCE2017113032423755",
+                                             "credit":  "\"It feels good to be alive too\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicROBOTDANCE2017113032423755)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/robot-dance/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "b4cc19ebd9103961bc14a1a0a651f1310720b757f40265a98e4b762bcff97b7f"
+                                         },
+                                         {
+                                             "title":  "Maxi Metal",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicHYPERMETAL2017122060804395/LoyaltyFreakMusic-HyperMetal-02MaxiMetal.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395",
+                                             "credit":  "\"Maxi Metal\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/hyper-metal/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "cd0757f8976e98d0fa1fc814fca4b02582a63e898f495d3bd015cfa4ad18be24"
+                                         },
+                                         {
+                                             "title":  "Mega Metal",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicHYPERMETAL2017122060804395/LoyaltyFreakMusic-HyperMetal-03MegaMetal.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395",
+                                             "credit":  "\"Mega Metal\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/hyper-metal/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "56ce947af1e5536978a9b8370ddc7f3dc22fc1b6263495f90aa3ea38b03d8bf5"
+                                         },
+                                         {
+                                             "title":  "Ultra Metal",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicHYPERMETAL2017122060804395/LoyaltyFreakMusic-HyperMetal-04UltraMetal.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395",
+                                             "credit":  "\"Ultra Metal\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/hyper-metal/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "fc8c411c4aa08bf7e4bff5ccedae3961a732e1fe61f34e27f08533526437d2ca"
+                                         },
+                                         {
+                                             "title":  "Extra Metal",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicHYPERMETAL2017122060804395/LoyaltyFreakMusic-HyperMetal-05ExtraMetal.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395",
+                                             "credit":  "\"Extra Metal\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/hyper-metal/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "39d9caa8a2c54aa2b7a7adcdb5f0b6b59e84486e977159896e7e3b4c4b0cdaac"
+                                         },
+                                         {
+                                             "title":  "Super Metal",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicHYPERMETAL2017122060804395/LoyaltyFreakMusic-HyperMetal-06SuperMetal.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395",
+                                             "credit":  "\"Super Metal\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/hyper-metal/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "c4f9efd7ba5265a4ab44e971dae1733d5af55c6044667078f6843a5ff95bc5df"
+                                         },
+                                         {
+                                             "title":  "Giga Metal",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicHYPERMETAL2017122060804395/LoyaltyFreakMusic-HyperMetal-07GigaMetal.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395",
+                                             "credit":  "\"Giga Metal\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/hyper-metal/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "6c71695bda9d9a54268a646dde3d299a177e0b0fa75fd30ace89172b8f60ab60"
+                                         },
+                                         {
+                                             "title":  "Ultimate Metal",
+                                             "artist":  "Loyalty Freak Music",
+                                             "url":  "https://archive.org/download/LoyaltyFreakMusicHYPERMETAL2017122060804395/LoyaltyFreakMusic-HyperMetal-08UltimateMetal.mp3",
+                                             "page":  "https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395",
+                                             "credit":  "\"Ultimate Metal\" by Loyalty Freak Music\nLabel: Loyalty Freak Music\nSource: Internet Archive (https://archive.org/details/LoyaltyFreakMusicHYPERMETAL2017122060804395)\nLicense: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)\nRelease: https://loyaltyfreakmusic.com/music/hyper-metal/",
+                                             "license":  "CC0 1.0",
+                                             "sha256":  "1162c0ebe990418ce47f1729fe708c052592e7a8141e8c5f546e7e2bec4d4851"
                                          }
                                      ]
                       }

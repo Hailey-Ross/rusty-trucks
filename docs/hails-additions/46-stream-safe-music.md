@@ -41,8 +41,15 @@ down. Players who stream or record need music they may use, credited, without hu
   label asks for) and BuckramBeats (3 by Mylar Man; the item says CC BY 3.0, the label's site stated CC BY-NC-SA 2.5
   for all its music, so credited as that). Releases were read for covers, parodies, sample packs, mixes, famous
   featured artists, samples, unreadable lyrics and explicit titles; about 18 releases were dropped. Built by
-  `.local/stream-safe/build_ia_playlists.ps1` from the vetted list. Free Music Archive (built by script) and
-  blocSonic (beats, per-release NC licenses on its own site) are next.
+  `.local/stream-safe/build_ia_playlists.ps1` from the vetted list.
+- Built in (2026-11-15): "Beats (blocSonic)" (20 instrumentals: C da 76er, Moki Mcfly, aitänna77, Cutside; each
+  release page on blocsonic.com states CC BY-NC-SA 4.0 per track; the label's BY-NC-ND releases, its sample packs, rap
+  with vocals and releases with explicit titles were left out) and "Disco, Dance and Metal (Loyalty Freak Music)" (19;
+  the artist's album pages and FAQ on loyaltyfreakmusic.com state CC0 and allow monetized use; the files come from
+  the Internet Archive copies since the artist's site offers zips only).
+- Free Music Archive: its track pages show the artist's license (scan: `.local/stream-safe/fma_scan.ps1`; Blue Wave
+  Theory's instrumental surf rock is CC BY-SA 4.0), but its download links need a signed-in account; only the player's
+  stream links work without one. Not used until that is settled.
 - Not used: Jamendo (its pages point Twitch / YouTube use to the paid licensing plan), StreamBeats (its license
   requires separate licensing for games), FreePD (closed in 2025). Incompetech (Kevin MacLeod, CC BY 4.0) is used
   locally only until he answers our question about apps downloading his files and whitelisting.
