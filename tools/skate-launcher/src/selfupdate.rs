@@ -37,13 +37,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 // ---------- the switchover (doc 44 "Switching launchers") ----------
-// `launcher-flavour.txt` in the state folder says which launcher is the window: "rust" once the user switched (Tools >
-// Try the new launcher in the C# window), absent for the classic SkateLauncher.exe. While it says "rust", every update
-// path (the start check, Tools > Update the launcher, build.bat's launcher-exe) keeps the Rust launcher current from
-// the release instead of rebuilding the C# one.
+// The classic C# launcher is deprecated (2026-11-14): the Rust launcher is always the window, and every update path
+// (the start check, Tools > Update the launcher, build.bat's launcher-exe) keeps it current from the release instead
+// of rebuilding the C# one. A classic window still running replaces itself with it at its next start check.
 
-pub fn flavour_rust(l: &Launcher) -> bool {
-    std::fs::read_to_string(l.state_dir.join("launcher-flavour.txt")).is_ok_and(|t| t.trim() == "rust")
+pub fn flavour_rust(_l: &Launcher) -> bool {
+    true
 }
 
 fn release_base(l: &Launcher) -> String {
@@ -119,28 +118,12 @@ pub fn update_rust_binary(l: &Launcher) -> Result<bool, String> {
     if swap_in(&exe, &new) { Ok(true) } else { Err(format!("could not replace {}", exe.display())) }
 }
 
-/// Tools > Switch back to the classic launcher (Windows): the kept SkateLauncher.classic.exe, else the classic exe
-/// rebuilt; the window restarts into it.
-pub fn switch_to_classic(l: &Launcher) -> String {
-    if !cfg!(windows) {
-        return "The classic launcher is Windows only.".into();
-    }
-    let _ = std::fs::remove_file(l.state_dir.join("launcher-flavour.txt"));
-    let classic = l.here.join("SkateLauncher.classic.exe");
-    let ok = if classic.exists() {
-        let new = l.here.join("SkateLauncher.new.exe");
-        std::fs::copy(&classic, &new).is_ok() && swap_in(&window_exe(l), &new)
-    } else {
-        rebuild_launcher_exe(l)
-    };
-    if ok {
-        let _ = std::fs::write(l.state_dir.join("restart.txt"), "classic\r\n");
-        log(l, "Switched back to the classic launcher.");
-        "Switched back to the classic launcher; it starts now. Tools > Try the new launcher switches again.".into()
-    } else {
-        let _ = std::fs::write(l.state_dir.join("launcher-flavour.txt"), "rust\r\n");
-        "Could not put the classic launcher back; the new one stays.".into()
-    }
+
+/// The release's launcher for every user, also with `self_update` off (that setting only covers the launcher files).
+pub fn binary_update(l: &Launcher) -> String {
+    let mut r = String::new();
+    rust_binary_step(l, &mut r);
+    r
 }
 
 /// The Rust launcher's own update, after the launcher files (every start check and Tools > Update the launcher).

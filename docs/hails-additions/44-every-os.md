@@ -160,11 +160,13 @@ The new launcher replaces SkateLauncher.exe in place, so Steam shortcuts keep wo
 - The classic launcher's Tools > **Try the new launcher** (`launcher.ps1` `tool-try-new-launcher`): downloads and checks
   it, keeps the classic exe as `SkateLauncher.classic.exe`, puts the new one in as `SkateLauncher.exe`, writes
   `launcher-flavour.txt` (`rust`) and `restart.txt` in the state folder; the classic window restarts into it.
-- While the flavor is `rust`, every update path keeps the new launcher current from the release (the start check,
-  Tools > Update the launcher, build.bat's `launcher-exe`) instead of rebuilding the classic exe; `launcher.ps1`'s
-  `Rebuild-LauncherExe` leaves it alone.
-- The new launcher's Tools > **Switch back to the classic launcher** puts the classic exe back (or rebuilds it), removes
-  the flavor file and restarts into it.
+- The classic C# launcher is deprecated (2026-11-14) and every user is moved to the new one: a classic
+  `SkateLauncher.exe` (a .NET assembly) runs the switch above at its next start check, also with `self_update` off;
+  `build.bat` downloads the new launcher (it compiles `SkateLauncher.cs` only when the download fails, and that exe
+  switches at its next start). There is no way back to the classic window (the old Switch back entry is gone).
+- Every update path keeps the new launcher current from the release (the start check, Tools > Update the launcher,
+  build.bat's `launcher-exe`). The start check downloads a changed release launcher for every user, also with
+  `self_update` off (that setting only covers the launcher's files); only a running game or a skipped check defers it.
 - On Windows the new launcher is a windowed program (no console behind it from Steam); its text commands attach to the
   terminal they were started from, and every program it starts gets CREATE_NO_WINDOW (`proc.rs`).
 

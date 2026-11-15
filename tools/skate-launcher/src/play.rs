@@ -308,7 +308,6 @@ fn run_tool(l: &Launcher, key: &str, v: &Value, path_arg: &str) -> bool {
             if ok { "First-time setup: everything is installed.".to_owned() } else { "First-time setup: not finished (see the steps above).".to_owned() }
         }
         "tool-self-update" => crate::selfupdate::self_update(l, true).unwrap_or_else(|| "Launcher: up to date.".into()),
-        "tool-classic-launcher" => crate::selfupdate::switch_to_classic(l),
         "tool-build" => {
             let auto = setting(&l.config, "self_update").and_then(Value::as_bool) != Some(false);
             let me = if auto { crate::selfupdate::self_update(l, false).unwrap_or_default() } else { String::new() };
@@ -515,7 +514,13 @@ pub fn pending(l: &Launcher) -> bool {
     let _ = std::fs::remove_file(l.here.join("SkateLauncher.old.exe"));
     let auto = setting(&l.config, "self_update").and_then(Value::as_bool) != Some(false);
     let no_self = std::env::var("SKATE_LAUNCHER_NO_SELF").is_ok_and(|v| v == "1");
-    let mut self_said = if auto && !no_self && running_games().is_empty() { crate::selfupdate::self_update(l, false).unwrap_or_default() } else { String::new() };
+    let mut self_said = if no_self || !running_games().is_empty() {
+        String::new()
+    } else if auto {
+        crate::selfupdate::self_update(l, false).unwrap_or_default()
+    } else {
+        crate::selfupdate::binary_update(l)
+    };
     if cfg!(windows) {
         let (cs, exe, restart) = (l.here.join("SkateLauncher.cs"), l.here.join("SkateLauncher.exe"), l.state_dir.join("restart.txt"));
         let newer = std::fs::metadata(&cs).and_then(|m| m.modified()).ok().zip(std::fs::metadata(&exe).and_then(|m| m.modified()).ok()).is_some_and(|(c, e)| c > e);

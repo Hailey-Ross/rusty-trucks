@@ -92,8 +92,9 @@ build and without a copy of the repository. It downloads only the versions you u
    `skate-launcher`), checks it against the release's SHA-256, runs the first-time setup (`setup.ps1` / `setup.sh`,
    installing what is missing with one permission prompt) and starts it. Run it again to repair or update the launcher.
    **Set up the launcher** then asks for the game folder, the space for builds, your Skate 3 disc and, optionally, the
-   recomp and RPCS3. Add `SkateLauncher.exe` (`skate-launcher`) to Steam as a non-Steam game for the couch. Tools >
-   Switch back to the classic launcher builds `SkateLauncher.cs` with `build.bat` (Windows only).
+   recomp and RPCS3. Add `SkateLauncher.exe` (`skate-launcher`) to Steam as a non-Steam game for the couch. The launcher
+   keeps itself current from the release at every start. The old C# launcher (`SkateLauncher.cs`) is deprecated: it
+   replaces itself with this one at its next start.
 3. Choose your versions (optional): by default the launcher lists hails-additions and upstream main. To keep only
    one, put `{"builtin_versions": ["hails-additions"]}` in `config.json`; add your own branches in `versions.json`
    (each with `"url"` and `"branch"`).
