@@ -86,9 +86,12 @@ pub(super) fn show(mut commands: Commands, mut started: MessageReader<MusicTrack
                    time: Res<Time>, mut captions: Query<(Entity, &mut MusicCaption)>,
                    mut texts: Query<(&ChildOf, &CaptionText, &mut TextColor)>,
                    mut bands: Query<(Entity, &mut BackgroundColor), With<CaptionBand>>,
-                   mut pending: ResMut<PendingCaption>, mut fonts: ResMut<crate::ui_fonts::FallbackFonts>) {
+                   mut pending: ResMut<PendingCaption>, mut fonts: ResMut<crate::ui_fonts::FallbackFonts>,
+                   external: Option<Res<super::external_music::ExternalMusic>>) {
     let style = style.effective();
-    if let Some(track) = started.read().filter(|t| t.custom && style.enabled).last() {
+    // While Spotify plays the game's music is silent: only Spotify's songs get the caption.
+    let foreign = |t: &MusicTrackStarted| external.as_ref().is_some_and(|e| e.silenced() && !e.is_shown(t));
+    if let Some(track) = started.read().filter(|t| t.custom && style.enabled && !foreign(t)).last() {
         pending.0 = Some(track.clone());
     }
     let waiting = pending.0.as_ref().is_some_and(|t| {

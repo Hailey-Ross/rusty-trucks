@@ -250,6 +250,7 @@ fn covered(world: &World) -> bool {
 }
 
 fn poll(world: &mut World) {
+    let _slow = crate::frame_timing::hitch::SlowSystem::start("map_transition::poll");
     {
         let finished = matches!(&world.resource::<MapTransition>().phase, Phase::Loading { job, .. } if job.is_finished());
         let mut t = world.resource_mut::<MapTransition>();

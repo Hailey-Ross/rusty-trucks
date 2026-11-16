@@ -268,6 +268,22 @@ pub struct HomScoring {
     pub graphs: [Graph; 12],
 }
 
+/// The per-tick DMO slot query of the bail tracker (0x82760ED0 / 0x82761100, b598): props within `radius` of the
+/// skater whose bounding sphere (half diagonal + `pad`) holds it. Retail values; a mod may replace them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DmoQuery {
+    /// m (0x82099250 = 8.0, the vehicle query's radius too).
+    pub radius: f32,
+    /// m (0x8231A844 = 1.0).
+    pub pad: f32,
+}
+
+impl Default for DmoQuery {
+    fn default() -> Self {
+        Self { radius: 8.0, pad: 1.0 }
+    }
+}
+
 /// What the ObjectiveHOM record getters read of the last closed bail (the record P, b880 §3).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BailSummary {
@@ -275,13 +291,15 @@ pub struct BailSummary {
     pub duration: f32,
     pub peds: u32,
     pub vehicles: u32,
+    /// P+0x3488: distinct dynamic props (GetNumDMOsHit).
+    pub objects: u32,
     /// Each bone's level, -1 none (GetNumBonesAtDamageLevel / GTOE).
     pub levels: [i8; BONES],
 }
 
 impl Default for BailSummary {
     fn default() -> Self {
-        Self { duration: 0.0, peds: 0, vehicles: 0, levels: [-1; BONES] }
+        Self { duration: 0.0, peds: 0, vehicles: 0, objects: 0, levels: [-1; BONES] }
     }
 }
 

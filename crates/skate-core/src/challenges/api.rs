@@ -207,6 +207,7 @@ impl Api for ObjectiveApi<'_> {
             "GetWipeoutDuration" => Value::Num(self.skater.bail.duration),
             "GetNumVehiclesHit" => num(self.skater.bail.vehicles as i32),
             "GetNumPedestriansHit" => num(self.skater.bail.peds as i32),
+            "GetNumDMOsHit" => num(self.skater.bail.objects as i32),
             "GetNumBonesAtDamageLevel" => num(self.skater.bail.bones_at(index(args)? as i8) as i32),
             "GetNumBonesGTOEDamageLevel" => num(self.skater.bail.bones_at_least(index(args)? as i8) as i32),
             "GetObjectiveStatus" => self.statuses.get(index(args)?).map_or(Value::Nil, |s| num(*s as i32)),

@@ -371,6 +371,7 @@ fn image_bytes(image: &Image) -> usize {
 
 /// A slice of the pending map meshes, then textures, per frame; the rest of the frame's budget carries over.
 pub(crate) fn upload_slices(map: Option<ResMut<MapAssets>>, mut meshes: ResMut<Assets<Mesh>>, mut images: ResMut<Assets<Image>>) {
+    let _slow = crate::frame_timing::hitch::SlowSystem::start("upload_slices");
     let Some(mut map) = map else { return };
     let map = &mut *map;
     let Some((staged_meshes, staged_images)) = map.uploads.as_mut() else { return };

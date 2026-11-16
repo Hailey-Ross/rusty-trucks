@@ -1644,6 +1644,7 @@ fn apply_one(
         Command::MusicVar { name, value } => music::var(world, name, value)?,
         Command::MusicPost { event } => music::post(world, event)?,
         Command::MusicCaption { options } => music::caption(world, id, options)?,
+        Command::MusicExternal { on } => music::external(world, id, on)?,
         Command::CareerAddSales { amount, reason } => career::add_sales(world, id, amount, reason)?,
         Command::CareerAddMoney { amount } => career::add_money(world, id, amount)?,
         Command::CareerArmAction { id: action } => career::arm_action(world, id, &action)?,

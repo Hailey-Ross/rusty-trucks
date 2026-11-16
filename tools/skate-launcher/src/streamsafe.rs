@@ -233,7 +233,8 @@ pub fn remove(l: &Launcher) -> Vec<String> {
         let _ = std::fs::remove_dir_all(root.join(sub));
     }
     let _ = std::fs::remove_file(root.join("CREDITS.txt"));
-    lines.push("The downloaded stream-safe songs were removed.".into());
+    crate::fma::saved::forget(&root);
+    lines.push("The downloaded stream-safe songs and the saved Free Music Archive login were removed.".into());
     lines
 }
 

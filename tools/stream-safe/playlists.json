@@ -645,37 +645,37 @@
                                          },
                                          {
                                              "title":  "Magic Number 7",
-                                             "artist":  "aitÃƒÂ¤nna77",
+                                             "artist":  "aitÃƒÆ’Ã‚Â¤nna77",
                                              "url":  "https://archive.org/download/BSOG0081/03-MagicNumber7_192kb.mp3",
                                              "page":  "https://archive.org/details/BSOG0081",
-                                             "credit":  "\"Magic Number 7\" by aitÃƒÂ¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
+                                             "credit":  "\"Magic Number 7\" by aitÃƒÆ’Ã‚Â¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
                                              "license":  "CC BY-NC-SA 4.0",
                                              "sha256":  "abc22137afd937e06e96156808d40afd32a3d1b4f8820ec8c8e79f6ad11efff1"
                                          },
                                          {
                                              "title":  "Mood Congruence",
-                                             "artist":  "aitÃƒÂ¤nna77",
+                                             "artist":  "aitÃƒÆ’Ã‚Â¤nna77",
                                              "url":  "https://archive.org/download/BSOG0081/04-MoodCongruence_192kb.mp3",
                                              "page":  "https://archive.org/details/BSOG0081",
-                                             "credit":  "\"Mood Congruence\" by aitÃƒÂ¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
+                                             "credit":  "\"Mood Congruence\" by aitÃƒÆ’Ã‚Â¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
                                              "license":  "CC BY-NC-SA 4.0",
                                              "sha256":  "547644e3a561c218c684a8b869d42f62141f83220347f18d95e1c203a8772be4"
                                          },
                                          {
                                              "title":  "Hazy",
-                                             "artist":  "aitÃƒÂ¤nna77",
+                                             "artist":  "aitÃƒÆ’Ã‚Â¤nna77",
                                              "url":  "https://archive.org/download/BSOG0081/07-Hazy_192kb.mp3",
                                              "page":  "https://archive.org/details/BSOG0081",
-                                             "credit":  "\"Hazy\" by aitÃƒÂ¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
+                                             "credit":  "\"Hazy\" by aitÃƒÆ’Ã‚Â¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
                                              "license":  "CC BY-NC-SA 4.0",
                                              "sha256":  "1fe7df075c4d0c840abd3cdbb3f07c0d72c5652b283700f244cd8c860bd3312e"
                                          },
                                          {
                                              "title":  "Forgotten Village",
-                                             "artist":  "aitÃƒÂ¤nna77",
+                                             "artist":  "aitÃƒÆ’Ã‚Â¤nna77",
                                              "url":  "https://archive.org/download/BSOG0081/08-ForgottenVillage_192kb.mp3",
                                              "page":  "https://archive.org/details/BSOG0081",
-                                             "credit":  "\"Forgotten Village\" by aitÃƒÂ¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
+                                             "credit":  "\"Forgotten Village\" by aitÃƒÆ’Ã‚Â¤nna77\nLabel: blocSonic\nSource: Internet Archive (https://archive.org/details/BSOG0081)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nRelease: https://blocsonic.com/releases/bsog0081",
                                              "license":  "CC BY-NC-SA 4.0",
                                              "sha256":  "75e1b678a86d49500f419d73f7e34ca6900cf8187d6dee6df5c114192f4de17f"
                                          },
@@ -939,7 +939,7 @@
                           "name":  "Free Music Archive: Surf, Garage and Funk",
                           "source":  "Free Music Archive",
                           "source_url":  "https://freemusicarchive.org",
-                          "license":  "Per track (CC BY / CC BY-SA / CC BY-NC)",
+                          "license":  "Per track (CC BY / CC BY-SA / CC BY-NC / CC BY-NC-SA)",
                           "license_url":  "",
                           "login":  "fma",
                           "tracks":  [
@@ -1151,6 +1151,24 @@
                                              "sha256":  "2aa08e31ad1731c08b5f4b3ad84740815e675b6144ac16200aac350610dcf0f9"
                                          },
                                          {
+                                             "title":  "Ship of Theseus",
+                                             "artist":  "Lemon Knife",
+                                             "url":  "https://freemusicarchive.org/track/ship-of-theseus/download/",
+                                             "page":  "https://freemusicarchive.org/music/lemon-knife/event-horizon-1/ship-of-theseus/",
+                                             "credit":  "\"Ship of Theseus\" by Lemon Knife\nSource: Free Music Archive (https://freemusicarchive.org/music/lemon-knife/event-horizon-1/ship-of-theseus/)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://freemusicarchive.org/music/lemon-knife/",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "b21ce40d3813bab6779a76d3fa6412ba9707783353a627d38ab88425b72503ae"
+                                         },
+                                         {
+                                             "title":  "Ship of Theseus (Instrumental)",
+                                             "artist":  "Lemon Knife",
+                                             "url":  "https://freemusicarchive.org/track/ship-of-theseus-instrumental/download/",
+                                             "page":  "https://freemusicarchive.org/music/lemon-knife/event-horizon-1/ship-of-theseus-instrumental/",
+                                             "credit":  "\"Ship of Theseus (Instrumental)\" by Lemon Knife\nSource: Free Music Archive (https://freemusicarchive.org/music/lemon-knife/event-horizon-1/ship-of-theseus-instrumental/)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://freemusicarchive.org/music/lemon-knife/",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "358b32821101d530fb0a0114df573a4fad302c72a6e09537113b0ae0539dacd1"
+                                         },
+                                         {
                                              "title":  "Snakes! Snakes! (Instrumental)",
                                              "artist":  "Lemon Knife",
                                              "url":  "https://freemusicarchive.org/track/snakes-snakes-instrumental/download/",
@@ -1178,6 +1196,15 @@
                                              "sha256":  "59980d58c32c5af359e109b529bb58edae118968c4b85867b79b5761515f985f"
                                          },
                                          {
+                                             "title":  "Disco light",
+                                             "artist":  "Heavenless",
+                                             "url":  "https://freemusicarchive.org/track/disco-light/download/",
+                                             "page":  "https://freemusicarchive.org/music/heavenless/disco-house/disco-light/",
+                                             "credit":  "\"Disco light\" by Heavenless\nSource: Free Music Archive (https://freemusicarchive.org/music/heavenless/disco-house/disco-light/)\nLicense: CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)\nArtist: https://freemusicarchive.org/music/heavenless/",
+                                             "license":  "CC BY-NC 4.0",
+                                             "sha256":  "05e5ecb67bc3de9c3d9d9ef3465141fd378f979040efd570045a7dcdf3ea833b"
+                                         },
+                                         {
                                              "title":  "Disco night",
                                              "artist":  "Heavenless",
                                              "url":  "https://freemusicarchive.org/track/disco-night/download/",
@@ -1196,6 +1223,15 @@
                                              "sha256":  "d65493310eb8b20d4734fd5deaca34482b68efe7ec418fb3dafed933c807ec5d"
                                          },
                                          {
+                                             "title":  "Funky house background",
+                                             "artist":  "Heavenless",
+                                             "url":  "https://freemusicarchive.org/track/funky-house-background/download/",
+                                             "page":  "https://freemusicarchive.org/music/heavenless/disco-house/funky-house-background/",
+                                             "credit":  "\"Funky house background\" by Heavenless\nSource: Free Music Archive (https://freemusicarchive.org/music/heavenless/disco-house/funky-house-background/)\nLicense: CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)\nArtist: https://freemusicarchive.org/music/heavenless/",
+                                             "license":  "CC BY-NC 4.0",
+                                             "sha256":  "87534b06534a35a8d586f7415bbbb289db18a80f1a42b398b127157fd37a2594"
+                                         },
+                                         {
                                              "title":  "Funky vibe",
                                              "artist":  "Heavenless",
                                              "url":  "https://freemusicarchive.org/track/funky-vibe/download/",
@@ -1203,6 +1239,69 @@
                                              "credit":  "\"Funky vibe\" by Heavenless\nSource: Free Music Archive (https://freemusicarchive.org/music/heavenless/disco-vibe/funky-vibe/)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://freemusicarchive.org/music/heavenless/",
                                              "license":  "CC BY 4.0",
                                              "sha256":  "5ecd9f979b517a5179097b08cf50a1fcd5fde5e3716306b66a77c0614ac8f740"
+                                         },
+                                         {
+                                             "title":  "Happy dancing",
+                                             "artist":  "Heavenless",
+                                             "url":  "https://freemusicarchive.org/track/happy-dancing/download/",
+                                             "page":  "https://freemusicarchive.org/music/heavenless/disco-house/happy-dancing/",
+                                             "credit":  "\"Happy dancing\" by Heavenless\nSource: Free Music Archive (https://freemusicarchive.org/music/heavenless/disco-house/happy-dancing/)\nLicense: CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)\nArtist: https://freemusicarchive.org/music/heavenless/",
+                                             "license":  "CC BY-NC 4.0",
+                                             "sha256":  "6bf92fde23a41a6413a06f4ec859d52a537f44f3ff999dd21f01e5e9fef09982"
+                                         },
+                                         {
+                                             "title":  "RNB background",
+                                             "artist":  "Heavenless",
+                                             "url":  "https://freemusicarchive.org/track/rnb-background/download/",
+                                             "page":  "https://freemusicarchive.org/music/heavenless/disco-house/rnb-background/",
+                                             "credit":  "\"RNB background\" by Heavenless\nSource: Free Music Archive (https://freemusicarchive.org/music/heavenless/disco-house/rnb-background/)\nLicense: CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)\nArtist: https://freemusicarchive.org/music/heavenless/",
+                                             "license":  "CC BY-NC 4.0",
+                                             "sha256":  "65e5bc7f7f694b64baaf9710f621629d9c5996e801999bb158668a6b1e3edb89"
+                                         },
+                                         {
+                                             "title":  "No Body Left Behind",
+                                             "artist":  "Sleeping Boats",
+                                             "url":  "https://freemusicarchive.org/track/no-body-left-behind/download/",
+                                             "page":  "https://freemusicarchive.org/music/sleeping-boats/last-night-was-a-movie/no-body-left-behind/",
+                                             "credit":  "\"No Body Left Behind\" by Sleeping Boats\nSource: Free Music Archive (https://freemusicarchive.org/music/sleeping-boats/last-night-was-a-movie/no-body-left-behind/)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://freemusicarchive.org/music/sleeping-boats/",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "105f0ad1375fb79fc6c1be41fb7c15c2cc24048c63ba3eba021ee6143e497896"
+                                         },
+                                         {
+                                             "title":  "Tsar Bomba",
+                                             "artist":  "Rhapsody",
+                                             "url":  "https://freemusicarchive.org/track/tsar-bomba/download/",
+                                             "page":  "https://freemusicarchive.org/music/rhapsody/the-manhattan-series/tsar-bomba/",
+                                             "credit":  "\"Tsar Bomba\" by Rhapsody\nSource: Free Music Archive (https://freemusicarchive.org/music/rhapsody/the-manhattan-series/tsar-bomba/)\nLicense: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)\nArtist: https://freemusicarchive.org/music/rhapsody/",
+                                             "license":  "CC BY-NC-SA 4.0",
+                                             "sha256":  "98294cafb8d0c55316923035fa779c0cbd7bfc48f0154e6ae431a93e7d6d635e"
+                                         },
+                                         {
+                                             "title":  "Indie energy",
+                                             "artist":  "Audioflame",
+                                             "url":  "https://freemusicarchive.org/track/indie-energy/download/",
+                                             "page":  "https://freemusicarchive.org/music/audioflame/indie-pop-background/indie-energy/",
+                                             "credit":  "\"Indie energy\" by Audioflame\nSource: Free Music Archive (https://freemusicarchive.org/music/audioflame/indie-pop-background/indie-energy/)\nLicense: CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)\nArtist: https://freemusicarchive.org/music/audioflame/",
+                                             "license":  "CC BY-NC 4.0",
+                                             "sha256":  "b07ec7fdb4311403804e009a8bafc02c1139b2c45b667377a73b683b829c9499"
+                                         },
+                                         {
+                                             "title":  "Indie joy",
+                                             "artist":  "Audioflame",
+                                             "url":  "https://freemusicarchive.org/track/indie-joy/download/",
+                                             "page":  "https://freemusicarchive.org/music/audioflame/indie-pop-background/indie-joy/",
+                                             "credit":  "\"Indie joy\" by Audioflame\nSource: Free Music Archive (https://freemusicarchive.org/music/audioflame/indie-pop-background/indie-joy/)\nLicense: CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)\nArtist: https://freemusicarchive.org/music/audioflame/",
+                                             "license":  "CC BY-NC 4.0",
+                                             "sha256":  "b72ba4a57555b2d7b3b3e2013560e054598ee941791a48568cb88ab5d3df0e27"
+                                         },
+                                         {
+                                             "title":  "Disjointed",
+                                             "artist":  "legacyAlli",
+                                             "url":  "https://freemusicarchive.org/track/disjointed/download/",
+                                             "page":  "https://freemusicarchive.org/music/legacyalli/legacyalli-2026/disjointed/",
+                                             "credit":  "\"Disjointed\" by legacyAlli\nSource: Free Music Archive (https://freemusicarchive.org/music/legacyalli/legacyalli-2026/disjointed/)\nLicense: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\nArtist: https://freemusicarchive.org/music/legacyalli/",
+                                             "license":  "CC BY 4.0",
+                                             "sha256":  "0b3a4a0d48dbd5ca3492b7843f5078b41c3934774387fb6519d11a606fe48b1e"
                                          }
                                      ]
                       }
