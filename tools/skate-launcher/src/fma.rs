@@ -2,8 +2,9 @@
 //! download, and membership is free. When such a playlist's songs are missing, the launcher opens its own small window
 //! (`fma-login`): sign in with an FMA account, or create one in the browser first, or skip the playlist. The window
 //! signs in itself (wrong details show there and can be retried) and leaves only the session cookie in a temporary
-//! file, deleted when the downloads are done. The password goes to FMA once over https through curl's stdin (never a
-//! command line or a file) and is not saved.
+//! file, deleted when the downloads are done. The password goes to FMA over https through curl's stdin (never a
+//! command line); once FMA accepts it the login is saved encrypted ([`saved`]) and later downloads sign in with it
+//! without the window.
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -25,9 +26,17 @@ impl Drop for Session {
     }
 }
 
-/// Opens the sign-in window for `playlist` and waits. Err: skipped, closed, or the window could not start.
+/// Signs in with the saved login when there is one (no window); otherwise, or when FMA refuses it, opens the sign-in
+/// window for `playlist` and waits. Err: skipped, closed, or the window could not start.
 pub fn sign_in(dir: &Path, playlist: &str) -> Result<Session, String> {
     let s = Session { jar: dir.join(format!(".fma-session-{}", std::process::id())) };
+    if let Some((email, password)) = saved::load(dir) {
+        if login(&s.jar, &email, &password).is_ok() {
+            println!("  Free Music Archive: signed in with the saved login.");
+            return Ok(s);
+        }
+        println!("  Free Music Archive: the saved login did not work; sign in again in the window.");
+    }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     println!("  Free Music Archive: sign in or create a free account in the window that opened.");
     crate::window::allow_foreground();
@@ -282,7 +291,16 @@ impl Login {
             if (go.clicked() || (enter && ready)) && !busy {
                 let (tx, rx) = mpsc::channel();
                 let (jar, email, password) = (self.jar.clone(), self.email.clone(), std::mem::take(&mut self.password));
-                std::thread::spawn(move || { let _ = tx.send(login(&jar, &email, &password)); });
+                std::thread::spawn(move || {
+                    let r = login(&jar, &email, &password);
+                    // Saved only once FMA accepted it, so the next download signs in without the window.
+                    if r.is_ok() {
+                        if let Some(dir) = jar.parent() {
+                            saved::store(dir, &email, &password);
+                        }
+                    }
+                    let _ = tx.send(r);
+                });
                 self.error = None;
                 self.busy = Some(rx);
             }
@@ -299,14 +317,115 @@ impl Login {
             if !new_account && ui.link(RichText::new("No account yet? Create one").font(font(13.0, false))).clicked() { open_url(REGISTER); }
         });
         ui.add_space(4.0);
-        ui.label(RichText::new("Your password goes only to Free Music Archive and is not saved.").font(font(12.5, false)).color(DIM));
+        ui.label(RichText::new("Your login goes only to Free Music Archive and is saved on this PC, encrypted, so you sign in once.").font(font(12.5, false)).color(DIM));
         close
+    }
+}
+
+/// The saved FMA login (`fma-login.bin` in the stream-safe folder): Windows encrypts it for this user with DPAPI;
+/// Linux and macOS keep it in a file only this user can read. Forgotten by "Remove stream-safe songs".
+pub mod saved {
+    use std::path::{Path, PathBuf};
+
+    fn path(dir: &Path) -> PathBuf {
+        dir.join("fma-login.bin")
+    }
+
+    pub fn store(dir: &Path, email: &str, password: &str) {
+        let plain = format!("{email}\n{password}");
+        if let Some(bytes) = protect(plain.as_bytes()) {
+            write_private(&path(dir), &bytes);
+        }
+    }
+
+    pub fn load(dir: &Path) -> Option<(String, String)> {
+        let plain = unprotect(&std::fs::read(path(dir)).ok()?)?;
+        let text = String::from_utf8(plain).ok()?;
+        let (email, password) = text.split_once('\n')?;
+        (!email.is_empty() && !password.is_empty()).then(|| (email.to_owned(), password.to_owned()))
+    }
+
+    pub fn forget(dir: &Path) {
+        let _ = std::fs::remove_file(path(dir));
+    }
+
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    fn crypt(data: &[u8], protect: bool) -> Option<Vec<u8>> {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CryptProtectData, CryptUnprotectData};
+        let input = CRYPT_INTEGER_BLOB { cbData: u32::try_from(data.len()).ok()?, pbData: data.as_ptr().cast_mut() };
+        let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        // SAFETY: valid in / out blobs; the output buffer is LocalAlloc'd by the call and freed here after copying.
+        unsafe {
+            let ok = if protect {
+                CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, &mut output)
+            } else {
+                CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, &mut output)
+            };
+            if ok == 0 || output.pbData.is_null() {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+            LocalFree(output.pbData.cast());
+            Some(bytes)
+        }
+    }
+
+    #[cfg(windows)]
+    fn protect(data: &[u8]) -> Option<Vec<u8>> {
+        crypt(data, true)
+    }
+
+    #[cfg(windows)]
+    fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
+        crypt(data, false)
+    }
+
+    #[cfg(not(windows))]
+    fn protect(data: &[u8]) -> Option<Vec<u8>> {
+        Some(data.to_vec())
+    }
+
+    #[cfg(not(windows))]
+    fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
+        Some(data.to_vec())
+    }
+
+    fn write_private(path: &Path, bytes: &[u8]) {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(path) {
+                let _ = f.write_all(bytes);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::write(path, bytes);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_login_comes_back_and_is_not_stored_in_the_clear() {
+        let dir = std::env::temp_dir().join(format!("fma-saved-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        saved::store(&dir, "me@example.com", "p4ss word");
+        assert_eq!(saved::load(&dir), Some(("me@example.com".into(), "p4ss word".into())));
+        if cfg!(windows) {
+            let raw = std::fs::read(dir.join("fma-login.bin")).unwrap();
+            assert!(!String::from_utf8_lossy(&raw).contains("p4ss word"), "DPAPI-encrypted on Windows");
+        }
+        saved::forget(&dir);
+        assert_eq!(saved::load(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_form_token_is_read_and_the_body_is_encoded() {

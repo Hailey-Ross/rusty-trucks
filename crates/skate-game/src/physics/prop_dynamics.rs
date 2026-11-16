@@ -458,6 +458,9 @@ pub(crate) struct PropBody {
     /// ([`LOCAL_PUSHER`] or an NPC skater proxy id): the authority owner a
     /// future host uses for the moved prop. `None` until something pushes it.
     pushed_by: Option<u64>,
+    /// Actors whose volumes touched this prop, sticky (retail's per-actor touched mask item+0x1098, set by the DMO
+    /// collision callback 0x82C54618; no clear was found in retail, b599 Q2: ours starts empty when the body is built).
+    touched_by: Vec<u64>,
     /// `PROP_PUSHED` diagnostics since it last slept: start position, pushes, largest dv, and that push's closing speed, direction and source (board / body).
     push_log: Option<(Vector3, u32, f32, f32, Vector3, bool)>,
     /// Pose last written to the collision layer; an unchanged pose skips the
@@ -1661,6 +1664,7 @@ impl PropDynamics {
             axis_scale: Vector3::new(axis_scale[0], axis_scale[1], axis_scale[2]),
             stuck_ticks: 0,
             pushed_by: None,
+            touched_by: Vec::new(),
             push_log: None,
             baked: None,
             contacts: 0,
@@ -2014,6 +2018,23 @@ impl PropDynamics {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn pushed_by(&self, id: u32) -> Option<u64> {
         self.bodies.get(*self.by_id.get(&id)?)?.pushed_by
+    }
+
+    /// The actor's DMO slots this tick (0x82760ED0 / 0x82761100, b598): props within `radius` of `at` (max 0x20
+    /// candidates, nearest first) whose bounding sphere (half diagonal + `pad`) holds `at`, max 8; returns the ids of
+    /// the slots whose touched mask has this actor (the "active" byte the DMO scorer counts).
+    pub(crate) fn dmo_slots(&self, actor: u64, at: [f32; 3], radius: f32, pad: f32) -> Vec<u32> {
+        let mut near: Vec<(f32, usize)> = self.bodies.iter().enumerate().filter(|(_, b)| !b.dormant).filter_map(|(i, b)| {
+            let p = b.rates.position;
+            let d2 = (p.x - at[0]).powi(2) + (p.y - at[1]).powi(2) + (p.z - at[2]).powi(2);
+            (d2 <= radius * radius).then_some((d2, i))
+        }).collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        near.into_iter().take(0x20).filter(|&(d2, i)| {
+            let h = self.bodies[i].half_extents;
+            let r = (h.x * h.x + h.y * h.y + h.z * h.z).sqrt() + pad;
+            r * r > d2
+        }).take(8).filter(|&(_, i)| self.bodies[i].touched_by.contains(&actor)).map(|(_, i)| self.bodies[i].id).collect()
     }
 
     /// Work done by the last `step`.
@@ -2667,6 +2688,9 @@ impl PropDynamics {
                     }) else {
                         continue;
                     };
+                    if !self.bodies[index].touched_by.contains(&actor) {
+                        self.bodies[index].touched_by.push(actor);
+                    }
                     let pushes = self.stats.skater_pushes;
                     let push_mass = self.actor_push_mass.iter().find(|a| a.0 == actor).map(|a| a.1);
                     // The held prop's mesh is parked while carried, so its box contact gives the rows (and the ped its shove).
@@ -5372,6 +5396,26 @@ mod tests {
             assert!(prop - npc > -(0.4 + half[0]) - 0.05 || dynamics.bodies[0].rates.position.z.abs() > 0.6, "bin {prop} behind npc {npc}");
         }
         let _ = end_npc;
+    }
+
+    /// The Hall of Meat DMO slots: a prop the NPC touched stays in its slots while near (the touched mask is sticky),
+    /// never in an actor's that did not touch it, and not out of the query radius.
+    #[test]
+    fn dmo_slots_list_props_the_actor_touched_within_reach() {
+        let half = [0.3, 0.45, 0.3];
+        let rest = super::super::ground::HEIGHT + 0.45;
+        let (world, mut layer, mut dynamics) = box_fixture([0., rest, 0.], half);
+        let id = dynamics.bodies[0].id;
+        let npc = crate::living_world::npc_skaters::PROXY_ID_TAG | NPC.to_u64();
+        assert!(dynamics.dmo_slots(npc, [0.0, rest, 0.0], 8.0, 1.0).is_empty(), "nothing touched it yet");
+        npc_run(&mut dynamics, &world, &mut layer, -3.0, 5.0, 120, true);
+        let p = dynamics.bodies[0].rates.position;
+        assert_eq!(dynamics.dmo_slots(npc, [p.x, p.y, p.z], 8.0, 1.0), vec![id]);
+        assert!(dynamics.dmo_slots(LOCAL_PUSHER, [p.x, p.y, p.z], 8.0, 1.0).is_empty(), "the player never touched it");
+        // Sphere radius: half diagonal sqrt(0.3^2 + 0.45^2 + 0.3^2) = 0.62 m + 1 m pad = 1.62 m.
+        assert_eq!(dynamics.dmo_slots(npc, [p.x + 1.5, p.y, p.z], 8.0, 1.0), vec![id], "inside its sphere");
+        assert!(dynamics.dmo_slots(npc, [p.x + 2.0, p.y, p.z], 8.0, 1.0).is_empty(), "outside its sphere (half diagonal + pad)");
+        assert!(dynamics.dmo_slots(npc, [p.x + 20.0, p.y, p.z], 8.0, 1.0).is_empty(), "outside the query radius");
     }
 
     /// A bench (126 kg) on the line is pushed by the same rule (weight-scaled, board-capped);

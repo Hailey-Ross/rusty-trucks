@@ -6,6 +6,7 @@ use bevy::prelude::*;
 use serde_json::{json, Value};
 
 use super::Mods;
+use crate::game_audio::external_music::ExternalMusic;
 use crate::game_audio::music::{Music, MusicRequest};
 
 pub(super) fn snapshot(world: &World) -> Value {
@@ -13,7 +14,9 @@ pub(super) fn snapshot(world: &World) -> Value {
         return json!({"on": false, "playing": null, "queued": 0, "owner": null, "volume": 1.0});
     };
     let playing = m.playing.as_ref().map(|p| json!({"title": p.title, "artist": p.artist, "custom": p.custom}));
+    let external = world.get_resource::<ExternalMusic>().and_then(|e| e.now()).map(|n| json!({"title": n.title, "artist": n.artist}));
     json!({
+        "external": external,
         "on": m.sequencer.is_some(),
         "playing": playing,
         "queued": m.sequencer.as_ref().map_or(0, |s| s.tracks.len()),
@@ -78,9 +81,21 @@ pub(super) fn caption(world: &mut World, id: &str, options: Option<skate_mods::M
     Ok(())
 }
 
+/// `sdk.music.spotify(on)`: Spotify passthrough on / off while the mod runs (None: the engine's setting again).
+pub(super) fn external(world: &mut World, id: &str, on: Option<bool>) -> Result<(), String> {
+    let mut ext = world.get_resource_mut::<ExternalMusic>().ok_or("music is not ready")?;
+    ext.mod_override = on.map(|o| (id.to_owned(), o));
+    Ok(())
+}
+
 pub(super) fn clear_owner(world: &mut World, id: &str) {
     if let Some(mut music) = world.get_resource_mut::<Music>() {
         music.requests.push(MusicRequest::ClearOwner(id.to_owned()));
+    }
+    if let Some(mut ext) = world.get_resource_mut::<ExternalMusic>() {
+        if ext.mod_override.as_ref().is_some_and(|o| o.0 == id) {
+            ext.mod_override = None;
+        }
     }
     if let Some(mut style) = world.get_resource_mut::<crate::game_audio::music_caption::MusicCaptionStyle>() {
         style.set(id, None);
@@ -90,10 +105,14 @@ pub(super) fn clear_owner(world: &mut World, id: &str) {
 /// Every mod's music changes end (all mods unloaded).
 pub(super) fn clear(world: &mut World) {
     let owners: Vec<String> = world.get_resource::<Music>().map_or_else(Vec::new, |m| {
-        m.owner.iter().chain(m.volume.iter().map(|v| &v.0)).cloned().collect()
+        // The Spotify passthrough's silence is the engine's own, not a mod's.
+        m.owner.iter().chain(m.volume.iter().map(|v| &v.0)).filter(|o| o.as_str() != crate::game_audio::external_music::OWNER).cloned().collect()
     });
     for id in owners {
         clear_owner(world, &id);
+    }
+    if let Some(mut ext) = world.get_resource_mut::<ExternalMusic>() {
+        ext.mod_override = None;
     }
     if let Some(mut style) = world.get_resource_mut::<crate::game_audio::music_caption::MusicCaptionStyle>() {
         style.overrides.clear();

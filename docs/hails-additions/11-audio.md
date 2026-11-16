@@ -5267,3 +5267,25 @@ The race control (8249E9B8, research section 8): setup exports the race tuning r
 - On the disc only two of these actions occur, both waits on stream property 20 [data, checked by the data-gated test `only_two_waits_occur_and_no_sync_ramp_pause_or_stop`]: game.mpf's escape event 0xB9B8F8 (wait, then goto node 3 of the chase section) and world.mpf's DJ end event 0x5B4DEF (set the section to 3, wait, then goto the end entry). No sync wait, ramp (volume / sfxsendlevel), pause or stop is used by the shipped music.
 - Our stream skips the waits, so the following goto applies at the next segment the host picks (it decodes about 6 s ahead). Retail runs the event list up to the wait and resumes it when property 20 (a player status countdown, vtable +0x18 field +0x2C) reaches 0.
 - Open: whether property 20 reaches 0 at the audible segment end or when the next segment is queued (decides whether ours already matches: a short recomp trace of property 20 settles it); the ramp evaluator and the 0..127 volume curve (only mods would use ramps). Port plan (resumable event lists, the ramp envelope in `MusicPlayer`, mod entry points) in the research file.
+
+## Spotify passthrough
+
+**Problem.** A player listening to Spotify heard it over the game's music. (ask 679, 2026-11-15)
+
+**Change.** When Spotify plays on the same PC, it takes over: the game's music is silenced (a music volume request
+owned by `spotify`, cleared when Spotify pauses or closes, so the game's music comes back where its queue is) and each
+Spotify song shows its title and artist in the music caption; game tracks get no caption meanwhile. No account or web
+API: a worker thread looks at the local app once a second (`crates/skate-game/src/game_audio/external_music.rs`).
+Windows: the Spotify window's title ("Artist - Title" while playing, "Spotify ..." when paused). Linux: Spotify's
+MPRIS player over `dbus-send` (PlaybackStatus, xesam:title / xesam:artist). macOS: `osascript`, asked only when
+Spotify already runs (it would start it otherwise). Off with `SKATE_SPOTIFY=0` (no watcher at all). Mods: `sdk.music.spotify(true | false | nil)` turns it on or off
+while the mod runs (nil: the engine's setting; undone when the mod stops), and `sdk.music.state().external` is
+`{title, artist}` while Spotify takes over. The silence is the engine's own music volume owner `spotify`, so unloading
+mods never lifts it.
+
+**Verification.** `the_spotify_window_title_gives_artist_and_title`,
+`spotify_silences_the_music_and_captions_each_song_then_gives_it_back` (silence on, one caption per song, the volume
+given back, a mod's off keeps the music on). Not yet: a real Spotify session on each OS (the user's play).
+
+**Open questions.** A settings row (Audio); a mod's own music volume set while Spotify plays is
+replaced by the silence and not restored after.

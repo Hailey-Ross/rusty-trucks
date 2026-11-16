@@ -847,6 +847,11 @@ pub enum Command {
         #[serde(default)]
         options: Option<MusicCaptionOptions>,
     },
+    /// Spotify passthrough on / off while the mod runs; none: back to the engine's setting.
+    MusicExternal {
+        #[serde(default)]
+        on: Option<bool>,
+    },
     ChallengeStart {
         id: String,
     },
@@ -1303,7 +1308,7 @@ impl Command {
             Self::ChallengeAbort {} => true,
             Self::MusicPlaylist { path, .. } => valid_package_path(path),
             Self::MusicSoundtrack { track } => track.is_none_or(|t| (1..=4096).contains(&t)),
-            Self::MusicStop {} | Self::MusicSkip {} => true,
+            Self::MusicStop {} | Self::MusicSkip {} | Self::MusicExternal { .. } => true,
             Self::MusicVolume { level } => level.is_none_or(|l| l.is_finite() && (0.0..=2.0).contains(&l)),
             Self::MusicVar { name, .. } => !name.is_empty() && name.len() <= 16 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
             Self::MusicPost { event } => *event <= 0x00FF_FFFF,
@@ -1480,6 +1485,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::MusicVar { .. } => "music_var",
         Command::MusicPost { .. } => "music_post",
         Command::MusicCaption { .. } => "music_caption",
+        Command::MusicExternal { .. } => "music_external",
         Command::ChallengeStart { .. } => "challenge_start",
         Command::ChallengeAbort { .. } => "challenge_abort",
         Command::ChallengeEnable { .. } => "challenge_enable",

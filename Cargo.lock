@@ -4165,6 +4165,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nihav_codec_support"
+version = "0.1.0"
+dependencies = [
+ "nihav_core",
+]
+
+[[package]]
+name = "nihav_core"
+version = "0.1.0"
+
+[[package]]
+name = "nihav_duck"
+version = "0.1.0"
+dependencies = [
+ "nihav_codec_support",
+ "nihav_core",
+]
+
+[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5636,6 +5655,16 @@ dependencies = [
  "skate-audio",
  "skate-dynamics",
  "zip",
+]
+
+[[package]]
+name = "skate-movie"
+version = "0.1.0"
+dependencies = [
+ "nihav_codec_support",
+ "nihav_core",
+ "nihav_duck",
+ "sha2",
 ]
 
 [[package]]

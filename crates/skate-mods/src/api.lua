@@ -620,6 +620,9 @@ function sdk.music.set_volume(level) submit{kind="music_volume",level=level} end
 function sdk.music.set_var(name, value) submit{kind="music_var",name=name,value=value} end
 function sdk.music.post(event) submit{kind="music_post",event=event} end
 function sdk.music.caption(options) submit{kind="music_caption",options=non_empty(options)} end
+-- Spotify passthrough (the local app takes over the music and the caption): true / false while the mod runs, nil back
+-- to the engine's setting. sdk.music.state().external = {title, artist} while Spotify plays.
+function sdk.music.spotify(on) submit{kind="music_external",on=on} end
 
 -- Challenges (own the spot): the current map's challenges with their saved records, the run going, start / abort,
 -- hiding a challenge's sign-up, and per-mod value overrides (undone when the mod stops). Events arrive in on_event:

@@ -221,10 +221,14 @@ fn track(
         return;
     }
     host.record(row::TIME_PLAYED, dt);
-    // In the bail: the skater's wipeout mode (retail in_bail = mode 4, 0x82DAE4F0, b880 §1.1; our WipeoutGround,
-    // state 300). The board's wiping flag stayed set across teleports into standing states and opened extra 0 point
-    // bails (laptop runs 2026-11-13). NOT RETAIL YET: in_bail's +0x44 / +0x45 bail-end flags are not mapped.
-    let wiping = s.physical_state_id() == 300;
+    // In the bail (0x82DAE4F0, research b1026): the filtered state category is Wipeout (PhysOut_Filtered, 4; set by
+    // 0x82DE5BA0 for state 300, the ragdoll in the air included, kept through 701, ended by a teleport's 702) and the
+    // wipeout has not started its automatic reset (PhysOut_State +0x44 teleport countdown, +0x45 reset request: our
+    // state flags 68 / 69).
+    let flags = &s.player_state.state_flags;
+    let wiping = s.player_input.physical.filtered_state_0 == skate_core::physics::filtered_state::FilteredCategory::Wipeout as u32
+        && !flags[68 - 52]
+        && !flags[69 - 52];
     if wiping {
         let skeleton = &s.player_input.physical.skeleton;
         let (over, strength) = (skeleton.over_599 != 0, skeleton.response_strength_580);
@@ -249,6 +253,13 @@ fn track(
             poses: physics.as_ref().and_then(|p| p.settings.hall_of_meat_poses.as_ref()),
         };
         bail.tick(&tick, peds, vehicles);
+        // Props in the active DMO slots. NOT RETAIL YET: their points (EntityDMOCollisionAttribData) are not loaded,
+        // so they count for row 35 / GetNumDMOsHit but add no judo kicks.
+        if let Some(dynamics) = physics.as_ref().and_then(|p| p.prop_dynamics()) {
+            let q = challenges.as_ref().map(|c| c.dmo_query).unwrap_or_default();
+            let slots = dynamics.dmo_slots(crate::physics::prop_dynamics::LOCAL_PUSHER, at, q.radius, q.pad);
+            bail.hit_objects(slots.into_iter().map(|id| (id, 0)));
+        }
         if let Some(tuning) = physics.as_ref().and_then(|p| p.settings.hall_of_meat.as_ref()) {
             let bones = &s.collision_feedback.bones;
             let impacts = skate_core::hall_of_meat::part_impacts(&bones.map(|b| b.force), &bones.map(|b| b.specific_force));
@@ -327,7 +338,8 @@ pub(crate) struct CareerStatsPlugin;
 impl Plugin for CareerStatsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, load)
-            .add_systems(FixedUpdate, track.after(crate::app::SimulationSet::Physics))
+            // Before traffic takes the tick's car hits (apply_vehicle_hits drains skater.vehicle_hits).
+            .add_systems(FixedUpdate, track.after(crate::app::SimulationSet::Physics).before(crate::living_world::vehicles::apply_vehicle_hits))
             .add_systems(Update, hits)
             .add_systems(Last, save);
     }

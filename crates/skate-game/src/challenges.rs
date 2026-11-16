@@ -416,6 +416,8 @@ pub(crate) struct Challenges {
     /// Bails closed so far (the Hall of Meat host turns a change into WipeoutOver).
     pub bails_closed: u32,
     pub last_bail: skate_core::hall_of_meat::BailSummary,
+    /// The bail tracker's DMO slot query (retail values; the mod entry point for props hit in bails).
+    pub dmo_query: skate_core::hall_of_meat::DmoQuery,
     pub retail: Vec<Challenge>,
     pub loaded: bool,
     pub generation: Option<u64>,

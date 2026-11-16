@@ -334,3 +334,22 @@ mod tests {
         assert!(spans.open.iter().all(Option::is_none));
     }
 }
+
+/// Logs `SLOW_SYSTEM name=<name> ms=<ms>` when the system it is created in runs longer than 50 ms (ask 676: a
+/// one-off 216 ms `pre_update` frame with nothing else in the log). Observation only.
+pub(crate) struct SlowSystem(&'static str, std::time::Instant);
+
+impl SlowSystem {
+    pub(crate) fn start(name: &'static str) -> Self {
+        Self(name, std::time::Instant::now())
+    }
+}
+
+impl Drop for SlowSystem {
+    fn drop(&mut self) {
+        let ms = self.1.elapsed().as_secs_f64() * 1000.0;
+        if ms > 50.0 {
+            bevy::log::info!("SLOW_SYSTEM name={} ms={ms:.1}", self.0);
+        }
+    }
+}

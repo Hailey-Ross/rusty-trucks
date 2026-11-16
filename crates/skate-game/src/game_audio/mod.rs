@@ -52,6 +52,7 @@ mod nis_speech;
 pub(crate) mod music;
 pub(crate) mod music_zones;
 pub(crate) mod music_caption;
+pub(crate) mod external_music;
 
 use bevy::{audio::Volume, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -512,6 +513,8 @@ impl Plugin for GameAudioPlugin {
             .add_systems(Update, music_player_link.before(music::frame))
             .init_resource::<emitters::MusicZone>()
             .add_systems(Update, (emitters::music_zones, music_zones::environment).chain().after(music_player_link).after(map_audio::update).before(music::frame))
+            .init_resource::<external_music::ExternalMusic>()
+            .add_systems(Update, external_music::apply.after(music_zones::environment).before(music::frame))
             .init_resource::<music_caption::MusicCaptionStyle>()
             .init_resource::<music_caption::PendingCaption>()
             .init_resource::<crate::ui_fonts::FallbackFonts>()

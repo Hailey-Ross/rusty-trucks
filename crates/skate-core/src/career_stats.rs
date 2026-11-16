@@ -40,6 +40,8 @@ pub mod row {
     pub const JUDO_KICKS: usize = 43;
     pub const SPREAD_EAGLE_TIME: usize = 44;
     pub const VEHICLES_HIT: usize = 28;
+    /// Distinct dynamic props hit in bails (record +0x458, b599).
+    pub const OBJECTS_HIT: usize = 35;
     pub const BAIL_DISTANCE: usize = 29;
     pub const DISLOCATIONS: usize = 30;
     pub const SPRAINS: usize = 31;
@@ -153,6 +155,8 @@ pub struct BailRecord {
     /// Distinct peds / vehicles the body touched (the scorers 0x82DAF948 / 0x82DAFBC0 refuse a 9th).
     pub peds: Vec<u64>,
     pub vehicles: Vec<u64>,
+    /// Distinct dynamic props (DMOs) in the body's active DMO slots, max 8 (the DMO scorer 0x82DAFFA0, record +0x458).
+    pub objects: Vec<u32>,
     /// Finished airs (no bone touching), s; an air still open at bail end is not added (0x82DAEBC0).
     pub air_seconds: f32,
     air_open: f32,
@@ -252,10 +256,23 @@ impl BailRecord {
         }
     }
 
+    /// The tick's active DMO slots as (prop id, points). Every new prop counts (row 35), only ones worth points add a
+    /// judo kick (the DMO scorer 0x82DAFFA0 counts "connected" hits only when 0x82DAFE38 gives points, b597).
+    pub fn hit_objects(&mut self, slots: impl IntoIterator<Item = (u32, u32)>) {
+        for (id, points) in slots {
+            if self.objects.len() < Self::ENTITY_CAP && !self.objects.contains(&id) {
+                self.objects.push(id);
+                if points > 0 && self.poses.judo() {
+                    self.judo_kicks += 1;
+                }
+            }
+        }
+    }
+
     /// What the ObjectiveHOM getters read of this bail once it closed.
     pub fn summary(&self) -> crate::hall_of_meat::BailSummary {
         crate::hall_of_meat::BailSummary { duration: self.active_seconds, peds: self.peds.len() as u32,
-            vehicles: self.vehicles.len() as u32, levels: self.injuries.level }
+            vehicles: self.vehicles.len() as u32, objects: self.objects.len() as u32, levels: self.injuries.level }
     }
 
     /// The Hall of Meat score at bail close (0x82DADC48 = damage 0x82DAD448 + bonus 0x82DADA30, b880 §1.3 / §1.4).
@@ -282,7 +299,7 @@ impl BailRecord {
     }
 
     /// The rows 0x8250F820 adds at bail end; the injury counts come from 0x82510990.
-    pub fn rows(&self) -> [(usize, f32); 20] {
+    pub fn rows(&self) -> [(usize, f32); 21] {
         // Rolls: floor((degrees rotated in the pose + 90) / 360); barrel = pose 3, cannonball = pose 0 (0x8250F820).
         let rolls = |pose: usize| ((self.poses.rotation[pose] + 90.0) / 360.0).floor().max(0.0);
         let c = self.injuries.counts();
@@ -298,6 +315,7 @@ impl BailRecord {
             (row::PUSH_OFFS, self.push_off_ticks.round()),
             (row::PEDS_HIT, self.peds.len() as f32),
             (row::VEHICLES_HIT, self.vehicles.len() as f32),
+            (row::OBJECTS_HIT, self.objects.len() as f32),
             // Row 36: the time in bail less the air time (0x8250F820).
             (row::BAIL_GROUND_TIME, (self.active_seconds - self.air_seconds).max(0.0)),
             (row::BAIL_AIR_TIME, self.air_seconds),
@@ -561,11 +579,18 @@ mod tests {
         assert_eq!(rows[2], (row::PEDS_HIT, BailRecord::ENTITY_CAP as f32));
         assert_eq!(rows[3], (row::VEHICLES_HIT, 1.0));
         assert!(b.rows()[..7].iter().all(|r| r.1 == 0.0));
+        // Props: distinct, max 8, each counts with or without points; outside the judo pose none adds a kick.
+        b.hit_objects((0..12u32).map(|i| (i % 10, i % 2)));
+        b.hit_objects([(3, 50)]);
+        assert_eq!(b.objects.len(), BailRecord::ENTITY_CAP);
+        assert_eq!(b.rows()[11], (row::OBJECTS_HIT, BailRecord::ENTITY_CAP as f32));
+        assert_eq!(b.summary().objects, BailRecord::ENTITY_CAP as u32);
+        assert_eq!(b.judo_kicks, 0);
         // Two airs: 4 ticks, then 1 tick closed by the last call.
-        assert!((b.rows()[12].1 - 5.0 * dt).abs() < 1e-6);
-        assert!((b.rows()[11].1 - 7.0 * dt).abs() < 1e-6);
-        assert!((b.rows()[14].1 - 1.5).abs() < 1e-6, "{:?}", b.rows()[14]);
+        assert!((b.rows()[13].1 - 5.0 * dt).abs() < 1e-6);
+        assert!((b.rows()[12].1 - 7.0 * dt).abs() < 1e-6);
+        assert!((b.rows()[15].1 - 1.5).abs() < 1e-6, "{:?}", b.rows()[15]);
         // Ground ticks: 0..4, 8..19 and the last call = 16 at 3 m/s.
-        assert!((b.rows()[13].1 - 16.0 * dt * 3.0).abs() < 1e-5);
+        assert!((b.rows()[14].1 - 16.0 * dt * 3.0).abs() < 1e-5);
     }
 }

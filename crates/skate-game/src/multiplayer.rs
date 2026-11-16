@@ -450,6 +450,7 @@ fn world_changed(
     net.browser_status.clear();
 }
 fn receive(mut net: ResMut<Multiplayer>) {
+    let _slow = crate::frame_timing::hitch::SlowSystem::start("multiplayer::receive");
     let now = net.started.elapsed().as_millis() as u64;
     let net = &mut *net;
     let Some(t) = &mut net.transport else {

@@ -163,3 +163,15 @@ the `-MT` flag cmake-rs adds, so without this the static-CRT link fails with
 unresolved `__imp_*` CRT symbols. Development builds (`scripts/Build.ps1`) are
 unaffected. When upgrading `sdl3`/`sdl3-sys`, re-vendor and reapply this change,
 or drop it if upstream cmake-rs/sdl3-sys handle the runtime themselves.
+
+## nihav-vp6 (movie decoder)
+
+`vendor/nihav-vp6` is ruffle-rs/nihav-vp6 at `12d0bdf10a85641dc2de3d6900c747894431ed77` (MIT, `COPYING` kept; nihav by
+Kostya Shishkov), used by `crates/skate-movie` to decode the disc's VP6 movies. Upstream text is unchanged except two
+decoder fixes, which make every frame of all 11 disc movies byte-identical to FFmpeg (research b898 / b921):
+
+- `nihav-duck/src/codecs/vp56.rs`: the chroma motion vector of a 4-vector macroblock rounds the sum of the four
+  luma vectors like VP6 (`(a + 2) >> 2` for positive, `(a + 1) >> 2` otherwise) instead of truncating `sum / 4`.
+- `nihav-duck/src/codecs/vp6.rs`: the motion compensation loop filter runs only when the frame's `loop_mode` is
+  on (the simple profile never sets it), as FFmpeg's `vp6_filter` does.
+- Offered upstream: https://github.com/ruffle-rs/nihav-vp6/pull/4 (2026-11-15).

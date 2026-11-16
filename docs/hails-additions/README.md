@@ -62,6 +62,7 @@ Each document stands alone. File paths are relative to the repository root.
 | 44 | [Every OS](44-every-os.md) | Engine + setup + tools | On `world/challenges`, in progress: Linux and macOS ports imported (#7, stev0760), our changes made OS-independent, the Skate launcher rewrite in Rust planned (spec: [44a](44a-launcher-spec.md)) |
 | 45 | [Ghidra function names](45-ghidra-function-names.md) | Tools | On `world/challenges` (#68): 32,931 decoded Skate 3 (TU3) function names (guesses labeled) for Ghidra, loadable with the built-in ImportSymbolsScript.py or ApplyNames.java (descriptions as comments). |
 | 46 | [Stream-safe music](46-stream-safe-music.md) | Launcher + engine + mod | On `world/challenges` (#68): Tools > Stream-safe mode downloads credited CC0 / CC BY music, packs it into music banks and plays it instead of the soundtrack (mod stream-safe-music); CREDITS.txt for stream descriptions. |
+| 47 | [Movie player](47-movie-player.md) | Engine | On `world/challenges` (#68), in progress: the disc's VP6 movies decoded in pure Rust (vendored nihav-vp6, byte-identical to FFmpeg), the EA container reader; the FE 24 player, audio and the boot / career hooks next. |
 
 ## Environment used for verification
 

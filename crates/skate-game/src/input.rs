@@ -104,6 +104,7 @@ fn start_controllers(config: Res<crate::config::Config>) {
 }
 
 pub(crate) fn poll_controllers(mut input: ResMut<ControllerInput>,config:Res<crate::config::Config>,net:Option<Res<crate::multiplayer::Multiplayer>>,windows:Query<&Window>,mut capabilities:Local<[platform::CapabilityCache;4]>) {
+    let _slow = crate::frame_timing::hitch::SlowSystem::start("poll_controllers");
     let previous = input.status;
     let previous_kinds = input.kinds.clone();
     let focused=windows.iter().any(|w|w.focused);
