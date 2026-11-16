@@ -133,6 +133,7 @@ mod render_capacity;
 mod retail_backdrop;
 mod retail_render;
 mod video_screens;
+mod movie_player;
 mod retail_character;
 mod retail_exposure;
 mod colour_matrix;

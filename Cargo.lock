@@ -5617,6 +5617,7 @@ dependencies = [
  "skate-data",
  "skate-dynamics",
  "skate-mods",
+ "skate-movie",
  "skate-net",
  "symphonia",
  "wgpu",
