@@ -2201,6 +2201,7 @@ impl Plugin for RetailRenderPlugin {
                 crate::retail_exposure::RetailExposurePlugin,
                 crate::skater_ghost::GhostPlugin,
                 crate::video_screens::VideoScreensPlugin,
+                crate::movie_player::MoviePlayerPlugin,
             ))
             .add_plugins(ExtractResourcePlugin::<FrameStateData>::default())
             .add_systems(Startup, (initialize_frame_state, load_pca, crate::water_look::load, load_view_dot_light, load_prop_world_shadow))

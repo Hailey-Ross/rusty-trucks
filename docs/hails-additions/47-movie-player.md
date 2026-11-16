@@ -20,9 +20,14 @@ career welcome flow (PR 68 "Planned") need it.
   memory), `FrameDecoder` is the replaceable decoder trait (a mod or platform can bring its own), `Vp6Decoder` returns
   top-down YUV 4:2:0 planes.
 
-**Planned.** Setup export of the movies and their audio per language (vgmstream decodes EA-XA, b924); a worker thread
-that decodes ahead; frames on screen as three R8 planes with a YUV shader (the `video_screens.rs` render-world path,
-b926 §2); a streaming 6-channel audio source folded to stereo with the retail output table, its sample count as the
+**Change (step 2, 2026-11-16).** `crates/skate-game/src/movie_player.rs` + `movie.wgsl`: a worker thread decodes up to 6
+frames ahead; the frame clock is retail's (target frame = elapsed ms x fps x 0.001, late frames dropped, the newest due
+frame shown, no slow-down); the three YUV planes are written straight into persistent R8 textures in the render world
+(as `video_screens.rs` copies its feed); a UI material converts BT.601 limited range to RGB, letterboxed on black above
+everything. Dev entry `SKATE_MOVIE=<file.vp6>` (Escape ends it). Checked 2026-11-16: intro_movie plays in a muted
+desktop run (`--verify` capture at 15 s: the right picture, upright, natural color).
+
+**Planned.** Setup export of the movies per language (the audio is decoded at runtime: `skate-movie::audio`); a streaming 6-channel audio source folded to stereo with the retail output table, its sample count as the
 movie clock (b926 §3); the FE 24 screen with the retail skip rules, subtitles (`.sub`, b955 §5) and the fe_movie rows
 as data; Lua `sdk.movies.play(key, on_finished)` / `skip()`; the boot (ea_intro) and career hooks (b926 §1).
 
