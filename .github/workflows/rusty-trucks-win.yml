@@ -46,7 +46,7 @@ jobs:
       # release has the fix (mozilla/sccache#3026), the build uses 0.19.0 with .github/sccache's patch, which hands
       # rustc a response file again; built once per patch and cached.
       - id: sccache-patched
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/sccache-patched
           key: sccache-0.19.0-${{ hashFiles('.github/sccache/*.patch') }}
