@@ -34,6 +34,8 @@ pub mod objective_program;
 pub mod progression;
 pub mod living_world;
 pub mod menu_tables;
+pub mod movie_rows;
+pub mod subtitles;
 pub mod ped_anim;
 pub mod ped_nav;
 pub mod roads;

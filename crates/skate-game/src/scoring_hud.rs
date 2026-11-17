@@ -40,6 +40,11 @@ impl Material2d for HudMaterial {
 }
 /// The offscreen target already contains RGB multiplied by coverage. Applying
 /// ImageNode's straight-alpha blend again suppresses the original soft glow.
+/// The node that shows every APT layer (HUD, menus, fmv_popup) on the screen; the movie player raises it above the
+/// video while a movie plays (`movie_player::raise_apt`).
+#[derive(Component)]
+pub(crate) struct AptComposite;
+
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 struct HudComposite {
     #[texture(0)]
@@ -415,6 +420,7 @@ fn setup(
             ));
             hud.composite = composites.add(HudComposite { image: target });
             commands.spawn((
+                AptComposite,
                 MaterialNode(hud.composite.clone()),
                 UiTargetCamera(output),
                 GlobalZIndex(1),
@@ -722,6 +728,13 @@ struct CentralWatch {
     peak: usize,
 }
 
+/// What the HUD needs to turn `prompt/<button>` draws into the connected pad's glyphs.
+type PromptSources<'w> = (
+    Option<ResMut<'w, crate::prompt_glyphs::PromptImages>>,
+    ResMut<'w, Assets<Image>>,
+    Option<Res<'w, crate::input::ControllerInput>>,
+);
+
 fn render(
     commands: Commands,
     hud: Option<ResMut<Hud>>,
@@ -733,9 +746,14 @@ fn render(
     mut was_showing: Local<CentralWatch>,
     heading: Res<hud_minimap::MinimapHeading>,
     icons: Res<hud_minimap::MinimapIcons>,
+    movie: Option<Res<crate::movie_player::MoviePlayer>>,
+    prompts: PromptSources,
 ) {
     let started = std::time::Instant::now();
-    render_hud(commands, hud, meshes, materials, fe_hud, overlay, menus, &mut was_showing, &heading, &icons);
+    // A movie (FE 24) hides the gameplay HUD; only fmv_popup's chyron draws over the video.
+    // A movie or a new career's boot flow screens hide the gameplay HUD.
+    let movie_playing = movie.is_some_and(|m| m.playing()) || crate::career::boot_flow_covers();
+    render_hud(commands, hud, meshes, materials, fe_hud, overlay, menus, &mut was_showing, &heading, &icons, movie_playing, prompts);
     crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_HUD_RENDER, started);
 }
 fn render_hud(
@@ -749,6 +767,8 @@ fn render_hud(
     was_showing: &mut CentralWatch,
     heading: &hud_minimap::MinimapHeading,
     icons: &hud_minimap::MinimapIcons,
+    movie_playing: bool,
+    (prompt_images, mut images, controllers): PromptSources,
 ) {
     let Some(mut hud) = hud else {
         return;
@@ -758,7 +778,7 @@ fn render_hud(
         .as_deref()
         .and_then(|m| crate::retail_menus::setting(m, "ID_GAMESETTINGS_HUD_TOGGLE"))
         .is_some_and(|v| skate_core::menu_values::number(&v) == 0.0);
-    let hidden = fe_hud.as_ref().is_some_and(|f| !f.hud) || overlay.as_ref().is_some_and(|m| m.overlay_visible()) || hud_off;
+    let hidden = fe_hud.as_ref().is_some_and(|f| !f.hud) || overlay.as_ref().is_some_and(|m| m.overlay_visible()) || hud_off || movie_playing;
     let draws = if hud.failed || hidden {
         Vec::new()
     } else {
@@ -865,6 +885,17 @@ fn render_hud(
         }
     }
     let hud = &mut *hud;
+    // Inline button tags in HUD text (`prompt/<retail button>`): the first connected pad's glyphs, as the menus.
+    if let Some(mut cache) = prompt_images {
+        let pad = controllers.as_deref().and_then(crate::prompt_glyphs::first_pad);
+        for name in draws.iter().chain(&central_draws).filter_map(|d| d.texture.strip_prefix("prompt/")) {
+            if let Some(handle) = cache.get(&mut images, name, pad.as_deref()) {
+                if hud.textures.get(&format!("prompt/{name}")) != Some(&handle) {
+                    hud.textures.insert(format!("prompt/{name}"), handle);
+                }
+            }
+        }
+    }
     apply_draws(
         &mut commands,
         &mut hud.slots,

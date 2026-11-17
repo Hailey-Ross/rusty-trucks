@@ -76,6 +76,7 @@ mod offline_profile_host;
 mod reward_summary_host;
 mod end_dialog_host;
 mod poster_host;
+mod welcome_host;
 mod extras_host;
 mod spawn_skater_host;
 mod music_player_host;

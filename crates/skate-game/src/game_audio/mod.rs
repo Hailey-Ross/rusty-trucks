@@ -701,12 +701,18 @@ fn feed_replay_audio(
 /// True while game sound must be silent: menu open, or a replay that is not moving forward (retail mutes a paused
 /// replay: Master.in6 with time scale 0, `sub_824D5160`, b375). A playing replay is heard from its recorded steps.
 fn silenced(menu: Option<&crate::graphics_menu::Menu>, replay: &crate::replay::Replay) -> bool {
-    menu.is_some_and(|m| m.open || m.fe_suspended) || (replay.active && !replay.audible())
+    menu.is_some_and(|m| m.open || m.fe_suspended) || (replay.active && !replay.audible()) || movie_playing()
 }
 
 /// Speech is silent in any replay (retail blocks speech requests in replay: `824AABD0`, `824ABA18`, b375).
 fn speech_silenced(menu: Option<&crate::graphics_menu::Menu>, replay: &crate::replay::Replay) -> bool {
-    menu.is_some_and(|m| m.open || m.fe_suspended) || replay.active
+    menu.is_some_and(|m| m.open || m.fe_suspended) || replay.active || movie_playing()
+}
+
+/// A movie (FE 24) suspends the game's sound and music; retail pauses every Path player of the four outputs on FE 24
+/// init and resumes them on close (b955 2c, vt+0x40 / +0x44).
+fn movie_playing() -> bool {
+    crate::movie_player::PLAYING.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]

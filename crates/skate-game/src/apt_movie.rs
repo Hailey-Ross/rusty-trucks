@@ -89,6 +89,8 @@ pub struct Movie {
 pub const SCRIPT_DEPTH: i32 = 16384;
 /// Character ids of text fields made by createTextField (each has its own descriptor; below every disc id).
 pub const SCRIPT_TEXT_BASE: i32 = -2_000_000;
+/// A text field's inline button tag names, newline-separated, in `_displayText`'s `||` order (apt_text::button_tags).
+pub const BUTTON_TAGS: &str = "_buttonTags";
 
 /// `_xscale` / `_yscale` / `_rotation` of a placement matrix (AS2 reads them from the clip's matrix).
 fn seed_scale(vm: &mut Vm, id: usize, m: &[f32; 6]) -> Result<(), String> {
@@ -392,8 +394,9 @@ impl Movie {
         let Some(text) = &character.text else {
             return Ok(());
         };
-        let value = self.text_assets.localize(&vm.get(id, "text").text());
+        let (value, tags) = crate::apt_text::button_tags(&self.text_assets.localize(&vm.get(id, "text").text()));
         vm.set(id, "_displayText", Value::Text(value.clone()))?;
+        vm.set(id, BUTTON_TAGS, Value::Text(tags.join("\n")))?;
         let font = self
             .text_assets
             .fonts

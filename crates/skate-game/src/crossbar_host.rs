@@ -234,6 +234,11 @@ pub struct FrontEnd<'a> {
     pub popup: crate::popup_host::PopupHost,
     /// The action overlay's teleporter title (`SignUpPoster.GetTeleportTitle`, 825C1020; teleporters.rs).
     pub signup_title: Option<String>,
+    /// The movie subtitle line's string label and the show gate (option or forced; movie_player::MovieSubtitle).
+    pub subtitle: Option<String>,
+    pub subtitles_shown: bool,
+    /// FE 9 WelcomeFlow's natives (welcome_host).
+    pub welcome: crate::welcome_host::WelcomeHost,
 }
 
 impl<'a> FrontEnd<'a> {
@@ -272,13 +277,16 @@ impl<'a> FrontEnd<'a> {
             image_slots: Default::default(),
             popup: Default::default(),
             signup_title: None,
+            subtitle: None,
+            subtitles_shown: false,
+            welcome: Default::default(),
         }
     }
 }
 
 impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     fn objects(&self) -> Vec<String> {
-        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos", "FECredits", "SkaterSpawner", "FreeSkateOption", "TipsLoader", "FERewardSummary", "Mission", "MusicPlayer"]
+        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos", "FECredits", "SkaterSpawner", "FreeSkateOption", "TipsLoader", "FERewardSummary", "Mission", "MusicPlayer", "TeamManagement"]
             .map(String::from)
             .to_vec()
     }
@@ -295,6 +303,9 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
         }
         // A shown popup is the focus screen (sub_82D09F28): its natives and the Game menu callbacks go to it first.
         if let Some(value) = self.popup.call(object, method, &args) {
+            return Ok(value);
+        }
+        if let Some(value) = self.welcome.call(vm, object, method, &args)? {
             return Ok(value);
         }
         if let Some(value) = self.image_slots.call(object, method, &args) {
@@ -328,6 +339,16 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
         // The action overlay's sign-up text (research b426): the teleporter's title in the Teleport state.
         if (object, method) == ("SignUpPoster", "GetTeleportTitle") || (object, method) == ("HUDComponents", "SignUp_GetChallengeTitle") {
             return Ok(Value::Text(self.signup_title.clone().unwrap_or_default()));
+        }
+        // The subtitle movie's line (825A55D8: the line, or "#" for none; text only while shown, 825E0E90) and
+        // HasSubtitles (825A2D78: option or forced), which fmv_popup reads to lift the skip chyron.
+        if (object, method) == ("Game", "GetMovieSubtitleString") {
+            let text = self.subtitle.as_ref().filter(|_| self.subtitles_shown).and_then(|label| self.language.get(label));
+            let page = text.and_then(|t| skate_data::subtitles::first_page(t)).unwrap_or("#");
+            return Ok(Value::Text(page.to_owned()));
+        }
+        if (object, method) == ("Audio", "HasSubtitles") {
+            return Ok(Value::Bool(self.subtitles_shown));
         }
         if object == "tos" {
             if let Some(value) = self.tos.call(vm, method, &args)? {

@@ -241,7 +241,17 @@ fn visit(
         } else {
             vec![(font, false, 0.)]
         };
-        for (font, shadow, advance_x) in passes {
+        let tags = vm.get(id, crate::apt_movie::BUTTON_TAGS).text();
+        let tags: Vec<&str> = if tags.is_empty() { Vec::new() } else { tags.split('\n').collect() };
+        // Inline icons are laid out from the field's own font (its capital height and middle, X), the same in both
+        // passes so the shadow and the sharp text stay together.
+        let field_height = text["font_height"].as_f64().ok_or("Invalid text height")? as f32;
+        let field_sy = font.scale[1] * field_height;
+        let (cap, middle) = font.glyph('X').map_or((font.ascent * 0.7 * field_sy, font.ascent * 0.5 * field_sy), |g| {
+            (g.height * field_sy, (font.ascent - g.y_offset + g.height * 0.5) * field_sy)
+        });
+        for (pass, (font, shadow, advance_x)) in passes.into_iter().enumerate() {
+            let mut tag = 0;
             let height = text["font_height"].as_f64().ok_or("Invalid text height")? as f32;
             let sx = font.scale[0] * height;
             let sy = font.scale[1] * height;
@@ -269,7 +279,18 @@ fn visit(
                     _ => 0.,
                 };
             let y = bounds[1] + font.offset[1] * sy + row as f32 * font.line_advance(height);
-            for c in value.chars() {
+            let mut chars = value.chars().peekable();
+            while let Some(c) = chars.next() {
+                // An inline button tag (82808708): its `||` pair draws the icon and advances one icon cell.
+                if c == '|' && tag < tags.len() && chars.peek() == Some(&'|') {
+                    chars.next();
+                    if pass == 0 && crate::prompt_glyphs::known(tags[tag]) {
+                        out.push(button_icon(tags[tag], x, y + middle, cap, matrix, multiply[3]));
+                    }
+                    tag += 1;
+                    x += (BUTTON_ICON_LEAD + BUTTON_ICON_SIZE + BUTTON_ICON_TRAIL) * cap;
+                    continue;
+                }
                 if let Some(g) = font.glyph(c) {
                     let x0 = x + g.x_offset * sx;
                     let y0 = y + (font.ascent - g.y_offset) * sy;
@@ -334,6 +355,30 @@ fn visit(
         visit(movie, vm, shapes, *child, matrix, multiply, add, out)?;
     }
     Ok(())
+}
+
+/// Inline icon layout in units of the line's capital height, measured from the PS3 skip chyron (RPCS3 frame
+/// 2026-11-16, `.local/research/rpcs3-new-profile-2026-11-16/skip-chyron-1080p.png`): space from the pen to the icon,
+/// the icon's side, and the pen move after it. The frame's gaps (word to icon 0.90, icon to word 0.69) include the
+/// space character the strings put around a tag (`<B:A> Skip`, our space = 0.82), hence the negative trail. NOT
+/// RETAIL YET: retail's 82808E58 offsets and its button texture size are not decoded (b491).
+const BUTTON_ICON_LEAD: f32 = 0.08;
+const BUTTON_ICON_SIZE: f32 = 1.57;
+const BUTTON_ICON_TRAIL: f32 = -0.13;
+
+/// One inline button icon: white, centered on the line's middle `cy`. The field alpha on the icon is ours
+/// (824FA608 not read).
+fn button_icon(name: &str, x: f32, cy: f32, cap: f32, matrix: [f32; 6], alpha: f32) -> Draw {
+    let (cx, h) = (x + (BUTTON_ICON_LEAD + BUTTON_ICON_SIZE * 0.5) * cap, BUTTON_ICON_SIZE * cap * 0.5);
+    let corner = |px: f32, py: f32, u: f32, v: f32| transform(matrix, &Vertex { position: [px, py], uv: [u, v] });
+    let (a, b, c, d) = (corner(cx - h, cy - h, 0., 0.), corner(cx + h, cy - h, 1., 0.), corner(cx + h, cy + h, 1., 1.), corner(cx - h, cy + h, 0., 1.));
+    Draw {
+        texture: format!("prompt/{name}"),
+        fill: Fill::TextureClamped,
+        vertices: vec![a.clone(), b, c.clone(), a, c, d],
+        multiply: [1., 1., 1., alpha],
+        add: [0.; 4],
+    }
 }
 
 /// The last run of decimal digits in a clip name (`mRenderComponent7` -> 7), as retail 825E2028 reads the slot.
