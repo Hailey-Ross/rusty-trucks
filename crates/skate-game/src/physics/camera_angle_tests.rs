@@ -15,7 +15,8 @@ fn camera_angle_switches_between_the_stock_low_and_high_graphs() {
             .unwrap();
     let mut skater = SkaterRuntime::load(&root, &graphs, &physics, "normal").unwrap();
     let mut camera = crate::camera::CameraRuntime::load(&root).unwrap();
-    assert_eq!(camera.camera_type(), crate::camera::CameraAngle::High.graph_type());
+    assert_eq!(camera.camera_type(), crate::camera::CameraAngle::Low.graph_type(), "a new profile starts on Low");
+    camera.set_camera_type(crate::camera::CameraAngle::High.graph_type());
     let mut input = crate::input::ControllerInput::default();
     let mut controls = PlayerControls::load(&root).unwrap();
     let mut run = |camera: &mut crate::camera::CameraRuntime, ticks: usize| -> (String, f32) {

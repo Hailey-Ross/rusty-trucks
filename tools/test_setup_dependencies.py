@@ -25,6 +25,7 @@ class EnsureDependencies(unittest.TestCase):
         venv_python = setup.ROOT / '.local' / 'venv-setup' / 'Scripts' / 'python.exe'
         with mock.patch.dict(sys.modules, {'numpy': None}), \
              mock.patch.object(sys, 'argv', ['setup.py', '--base', 'data', '--refresh']), \
+             mock.patch.object(sys, 'prefix', str(setup.ROOT / 'system-python')), \
              mock.patch.object(Path, 'is_file', return_value=False), \
              mock.patch.object(Path, 'read_text', return_value='pyinstaller==6.19.0\nnumpy==2.2.6\nPillow==11.3.0\n'), \
              mock.patch('subprocess.run') as run, mock.patch('subprocess.call', return_value=0) as call:
