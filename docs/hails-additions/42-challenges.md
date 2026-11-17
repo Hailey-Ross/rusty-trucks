@@ -1390,6 +1390,9 @@ Races and contests (demos too) join the same prompt. `challenges.py` exported th
 
 **Change.**
 - `tools/prepare_hud.py`: exports `hud2/huddistance` -> `private/hud/runtime/huddistance.json` (needs Refresh Game Files; without it the component is skipped and logged).
+  Fixed 2026-11-16: `tools/install_prepared_hud.py` OPTIONAL_MOVIES lacked `huddistance.json`, so setup exported the
+  movie but never installed it (laptop suite 2026-11-16, `test_optional_movies_match_prepare_hud`). Installs need a
+  Refresh Game Files (dev: `.local/poc-tests/hud-reexport.py`).
 - `crates/skate-core/src/challenges/distance_meter.rs` (new): `flag`, `DistanceMeter` (setup, a 5-tick refresh at 60 Hz HUD ticks, any frame rate) and `MeterTuning` (retail values as data).
 - `crates/skate-core/src/career_stats.rs`: `distance_text` shared by the stats and the meter.
 - `crates/skate-game/src/hud_challenge.rs`: `Component::DistanceMeter`, `ChallengeHudState::distance` (serializable: shown meters, units, flag) and the `DistanceMeter_GetData` binding.

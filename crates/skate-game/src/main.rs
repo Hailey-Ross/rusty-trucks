@@ -48,6 +48,7 @@ mod camera;
 mod config;
 mod setup;
 mod map_library;
+mod layered_upload;
 mod map_render;
 mod map_transition;
 mod map_read_ahead;

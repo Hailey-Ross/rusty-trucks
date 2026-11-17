@@ -49,6 +49,7 @@ elif [ -z "${INSTALL:-}" ] || [ ! -d "$INSTALL/maps" ]; then
 else
   I="$INSTALL"
   SKATE3_ASSET_ROOT="${SKATE3_ASSET_ROOT:-$I/assets}" SKATE3_MAP="${SKATE3_MAP:-$I/maps/DownTown.skate}" \
+  SKATE_SCORING_HUD_ROOT="${SKATE_SCORING_HUD_ROOT:-$I/assets/private/hud}" \
   SKATE_BUDGET_MAP="${SKATE_BUDGET_MAP:-$I/maps/DownTown.skate}" SKATE_MAP_TEST_PATH="${SKATE_MAP_TEST_PATH:-$I/maps/DownTown.skate}" \
   SKATE3_GRIND_MAP="${SKATE3_GRIND_MAP:-$I/maps/University.skate}" SKATE3_WATER_MAP="${SKATE3_WATER_MAP:-$I/maps/Industrial.skate}" \
   SKATE_TRANSITION_TEST_ASSETS="${SKATE_TRANSITION_TEST_ASSETS:-$I/assets}" \

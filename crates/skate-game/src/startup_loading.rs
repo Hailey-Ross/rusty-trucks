@@ -118,7 +118,7 @@ fn count_waiting_pipelines(cache: Option<Res<bevy::render::render_resource::Pipe
     if SHOWN.load(Relaxed) {
         return;
     }
-    if cache.is_some_and(|c| c.waiting_pipelines().next().is_some()) {
+    if cache.is_some_and(|c| c.waiting_pipelines().next().is_some()) || crate::map_render::render_upload_backlog() {
         PIPELINES_CLEAR_STREAK.store(0, Relaxed);
     } else {
         PIPELINES_CLEAR_STREAK.fetch_add(1, Relaxed);
