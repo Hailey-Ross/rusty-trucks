@@ -498,7 +498,39 @@ combined, the pairs have to be recomputed for the combined tree (as for F + G).
 - **Tests:** `map_render::tests::a_slice_takes_assets_in_order_up_to_the_budget_and_at_least_one`; the installed map
   transition test runs the slices to the end after each commit.
 - **Open:** a switch run to measure the render frames per slice (`tools/dev-bench/frame-time-run.ps1`,
-  `SKATE_MAP_SWITCH`); the largest single texture array bounds a slice.
+  `SKATE_MAP_SWITCH`); the largest single texture array bounds a slice. Done 2026-11-16, next section.
+
+## Map switch: the loading spinner no longer freezes at the end (2026-11-16, USER-ASKS 691)
+
+- **Problem:** the loading screen's spinner froze for a moment at the end of a map change.
+- **Measured** (desktop, release, DownTown -> University 8 s after start, `SKATE_MAP_SWITCH`, `SKATE_FRAME_LOG`,
+  `SKATE_SYSTEM_TIMING`): worst frame 191 ms, several 80-110 ms frames. Causes: the scoring HUD reloading every
+  challenge HUD on the commit frame (94 ms); `prepare_assets<GpuImage>` 60-110 ms per frame, which a smaller budget
+  did not change: the map's texture pages are single array images of 176 MB (256x256x505), 436 MB (512x512x311) and
+  285 MB (1024x1024x51), each uploaded whole in one frame; `allocate_and_free_meshes` ~40 ms at 64 MB mesh slices.
+- **Changes:**
+  - `scoring_hud`: the map-change reset marks the challenge HUDs stale and reloads one per frame.
+  - `layered_upload` (new): an RGBA8 2D array larger than the frame budget is published without data (Bevy only
+    allocates the texture) and its layers are written by a render-world system with `RenderQueue::write_texture`,
+    whole layers (all mips) until the budget is used, at least one layer a frame. Hooked where staged images go into
+    `Assets<Image>` (`StagedAssets::publish_some`), so the startup map and map changes both use it.
+  - Bevy's `RenderAssetBytesPerFrame` is set for all textures and meshes (`SKATE_RENDER_UPLOAD_MB`, default 32,
+    0 = no limit); the layer writer counts against the same budget.
+  - `map_render::RENDER_UPLOAD_BACKLOG`: set while the render world used its whole budget or layers are left. The
+    map change stays in its publishing phase (loading screen up) and the startup pipelines hold stays up until it
+    clears, so nothing appears half-uploaded; the load screen runs a little longer instead.
+  - Map change mesh / texture slices 64 -> 16 MB a frame (`SKATE_MAP_UPLOAD_MB`).
+  - The old world's physics, skater and camera are dropped on a `map-retire` thread instead of the commit frame.
+    `MAP_PUBLISH_TIMING` also prints `retire_ms`.
+- **Result** (same run, `.local/poc-tests/map-switch-run.ps1`): worst frame 191 -> ~91-101 ms (the commit frame,
+  main thread: retiring the old map 22 ms, HUD reset ~20 ms, menu stage ~20 ms, the new world's first systems),
+  one ~47 ms frame (the first physics tick on the new map), otherwise under 30 ms; `prepare_assets<GpuImage>` gone
+  from the top systems, the layer writer at most 12-16 ms a frame. The University textures look the same in the
+  end screenshot as before the change.
+- **Tests:** `layered_upload::tests::layer_bytes_sum_the_mip_chain`; the installed map transition test
+  (`SKATE_TRANSITION_TEST_ASSETS`) and the scoring HUD writer test pass.
+- **Open:** the commit frame (retire the old map's entities over the covered frames before the commit, spread the
+  new world's first-frame systems); the first physics tick on the new map.
 
 ## Optimization pass: the 2026-10-24 evening work (USER-ASKS 327)
 

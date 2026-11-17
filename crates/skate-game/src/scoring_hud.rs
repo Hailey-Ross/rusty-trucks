@@ -102,6 +102,27 @@ struct ChallengeMovie {
     failed: bool,
     /// Updates since it was hidden, so its outro still draws (`None` while shown or before it ever showed).
     hidden_for: Option<u32>,
+    /// A map change asked for a fresh runtime that is not loaded yet (`reset` loads one per frame; `advance` loads them
+    /// all at once when a challenge wants its HUD first).
+    stale: bool,
+}
+
+impl ChallengeMovie {
+    /// A fresh runtime, as at startup.
+    fn reload(&mut self) {
+        match hud_challenge::Runtime::load_linked(self.runtime.component, &self.source, &self.sounds, &self.libraries) {
+            Ok(runtime) => {
+                self.runtime = runtime;
+                self.failed = false;
+            }
+            Err(error) => {
+                error!("Challenge HUD {:?} reset: {error}", self.runtime.component);
+                self.failed = true;
+            }
+        }
+        self.hidden_for = None;
+        self.stale = false;
+    }
 }
 /// Updates a hidden challenge movie keeps drawing for its outro (2 s at 30 a second).
 const CHALLENGE_OUTRO_UPDATES: u32 = 60;
@@ -309,7 +330,7 @@ fn setup(
                 let runtime = hud_challenge::Runtime::load_linked(component, &source, &sounds, &libraries)?;
                 let mut shapes: apt_scene::Shapes = serde_json::from_value(source["shapes"].clone()).map_err(|e| e.to_string())?;
                 shapes.extend(libraries.imported_shapes(&runtime.bindings.movie));
-                Ok(ChallengeMovie { runtime, libraries: libraries.clone(), source, shapes, sounds: sounds.clone(), slots: Vec::new(), failed: false, hidden_for: None })
+                Ok(ChallengeMovie { runtime, libraries: libraries.clone(), source, shapes, sounds: sounds.clone(), slots: Vec::new(), failed: false, hidden_for: None, stale: false })
             })() {
                 Ok(m) => {
                     for texture in m.shapes.values().flatten().filter_map(|s| s.texture.as_ref()) {
@@ -585,6 +606,11 @@ fn reset(
         return;
     };
     if hud.generation == map.generation {
+        // The challenge HUDs a map change marked stale load one per frame (each takes ~10 ms; all nine in the switch
+        // frame made it ~100 ms behind the loading screen, user 2026-11-16). Same fresh runtimes, spread out.
+        if let Some(m) = hud.challenge.iter_mut().find(|m| m.stale) {
+            m.reload();
+        }
         return;
     }
     match hud_runtime::Runtime::load(&hud.source, skater.scoring.hud_input()) {
@@ -599,17 +625,8 @@ fn reset(
         }
     }
     for m in hud.challenge.iter_mut() {
-        match hud_challenge::Runtime::load_linked(m.runtime.component, &m.source, &m.sounds, &m.libraries) {
-            Ok(runtime) => {
-                m.runtime = runtime;
-                m.failed = false;
-                m.hidden_for = None;
-            }
-            Err(error) => {
-                error!("Challenge HUD {:?} reset: {error}", m.runtime.component);
-                m.failed = true;
-            }
-        }
+        m.stale = true;
+        m.hidden_for = None;
     }
     if let Some(central) = hud.central.as_mut() {
         match hud_central::Runtime::load(&central.source, &central.sounds) {
@@ -638,13 +655,20 @@ fn advance(
         return;
     };
     if hud.generation == map.generation {
+        // A challenge wants its HUD before the spread reload finished: every stale movie loads now (shared globals
+        // need all writers). Otherwise stale movies wait, hidden.
+        if !challenge.shown.is_empty() {
+            for m in hud.challenge.iter_mut().filter(|m| m.stale) {
+                m.reload();
+            }
+        }
         // Writers of shared globals first, each copied on at once: the DPO reads the leaderboard's height in SetupDPO.
         let mut order: Vec<usize> = (0..hud.challenge.len()).collect();
         order.sort_by_key(|&i| !hud_challenge::SHARED_GLOBALS.iter().any(|(w, _)| *w == hud.challenge[i].runtime.component));
         for i in order {
             share_globals(&mut hud.challenge);
             let m = &mut hud.challenge[i];
-            if m.failed {
+            if m.failed || m.stale {
                 continue;
             }
             let was = m.runtime.shown();
@@ -859,7 +883,7 @@ fn render_hud(
         .iter_mut()
         .map(|m| {
             let drawn = m.runtime.shown() || m.hidden_for.is_some_and(|n| n < CHALLENGE_OUTRO_UPDATES);
-            if m.failed || hidden || !drawn {
+            if m.failed || m.stale || hidden || !drawn {
                 return Vec::new();
             }
             apt_scene::draw(&m.runtime.bindings.movie, &m.runtime.vm, &m.shapes).unwrap_or_else(|error| {

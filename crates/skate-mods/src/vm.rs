@@ -1746,10 +1746,16 @@ impl Vm {
             lua.set_hook(
                 HookTriggers::new().every_nth_instruction(LUA_INSTRUCTIONS_PER_BUDGET_UNIT as u32),
                 move |_, _| {
-                    if counter
-                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
-                        .is_err()
-                    {
+                    // One unit off the budget (the loop `fetch_update` runs; deprecated on newer Rust).
+                    let mut n = counter.load(Ordering::Relaxed);
+                    let spent = loop {
+                        let Some(next) = n.checked_sub(1) else { break false };
+                        match counter.compare_exchange_weak(n, next, Ordering::Relaxed, Ordering::Relaxed) {
+                            Ok(_) => break true,
+                            Err(current) => n = current,
+                        }
+                    };
+                    if !spent {
                         return Err(mlua::Error::RuntimeError(
                             "Lua instruction budget exhausted".into(),
                         ));

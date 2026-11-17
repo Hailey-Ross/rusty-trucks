@@ -67,8 +67,11 @@ impl<A: Asset> StagedAssets<A> {
             bytes = bytes.saturating_add(size(asset));
             taken += 1;
         }
-        for (handle, asset) in self.pending.drain(..taken) {
+        for (handle, mut asset) in self.pending.drain(..taken) {
             self.owned.push(handle.id());
+            if let Some(image) = (&mut asset as &mut dyn std::any::Any).downcast_mut::<Image>() {
+                crate::layered_upload::defer(handle.id().untyped().typed::<Image>(), image);
+            }
             // The handle came from this same provider moments ago, so a stale
             // generation would mean the reservation logic is broken, not that a
             // map failed to load. Say so rather than dropping geometry silently.
@@ -350,15 +353,38 @@ impl PreparedScene {
     }
 }
 
-/// Bytes of meshes and textures a map switch inserts per frame (`SKATE_MAP_UPLOAD_MB`, default 64; 0 = all at once,
+/// Bytes of meshes and textures a map switch inserts per frame (`SKATE_MAP_UPLOAD_MB`, default 16; 0 = all at once,
 /// as before). At least one asset goes in each frame.
 fn slice_bytes() -> usize {
     static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *BYTES.get_or_init(|| match std::env::var("SKATE_MAP_UPLOAD_MB").ok().and_then(|v| v.trim().parse::<usize>().ok()) {
         Some(0) => usize::MAX,
         Some(mb) => mb << 20,
-        None => 64 << 20,
+        None => 16 << 20,
     })
+}
+
+/// Bytes of textures and meshes the render world uploads per frame (Bevy's `RenderAssetBytesPerFrame`,
+/// `SKATE_RENDER_UPLOAD_MB`, default 32; 0 = no limit). The rest waits for the next frame.
+pub(crate) fn render_upload_budget() -> Option<usize> {
+    match std::env::var("SKATE_RENDER_UPLOAD_MB").ok().and_then(|v| v.trim().parse::<usize>().ok()) {
+        Some(0) => None,
+        Some(mb) => Some(mb << 20),
+        None => Some(32 << 20),
+    }
+}
+
+/// The render world used up its upload budget this frame, so uploads may be left for the next one.
+pub(crate) static RENDER_UPLOAD_BACKLOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn note_render_upload_backlog(limiter: Res<bevy::render::render_asset::RenderAssetBytesPerFrameLimiter>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let full = limiter.max_bytes.is_some_and(|max| limiter.bytes_written.load(Relaxed) >= max) || crate::layered_upload::busy();
+    RENDER_UPLOAD_BACKLOG.store(full, Relaxed);
+}
+
+pub(crate) fn render_upload_backlog() -> bool {
+    RENDER_UPLOAD_BACKLOG.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn mesh_bytes(mesh: &Mesh) -> usize {

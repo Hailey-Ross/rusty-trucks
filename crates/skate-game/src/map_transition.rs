@@ -115,6 +115,13 @@ impl Plugin for MapTransitionPlugin {
     fn build(&self, app: &mut App) {
         let config = app.world().resource::<Config>();
         let current = CurrentMap::from_package(config.map_path.clone(), config.map.as_ref());
+        if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render.add_systems(bevy::render::Render, (crate::layered_upload::write_layers, crate::map_render::note_render_upload_backlog)
+                .chain().after(bevy::render::RenderSystems::PrepareAssets).before(bevy::render::RenderSystems::PrepareBindGroups));
+            if let Some(bytes) = crate::map_render::render_upload_budget() {
+                app.insert_resource(bevy::render::render_asset::RenderAssetBytesPerFrame::new(bytes));
+            }
+        }
         app.insert_resource(current)
             .init_resource::<MapTransition>()
             .init_resource::<LoadingCover>()
@@ -260,7 +267,8 @@ fn poll(world: &mut World) {
             t.cover_wait = Some(Instant::now());
         }
     }
-    let uploading = world.get_resource::<crate::map_render::MapAssets>().is_some_and(crate::map_render::MapAssets::uploading);
+    let uploading = world.get_resource::<crate::map_render::MapAssets>().is_some_and(crate::map_render::MapAssets::uploading)
+        || crate::map_render::render_upload_backlog();
     let ready = match &world.resource::<MapTransition>().phase {
         Phase::Idle => false,
         Phase::Loading { job, .. } => job.is_finished() && covered(world),
@@ -310,6 +318,7 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
     // All fallible decoding/validation/construction finished before this point.
     // No simulation system can observe a mixture of the two worlds.
     crate::map_render::MapAssets::retire(world);
+    let retire_ms = publication_started.elapsed().as_millis();
     prepared.scene.publish_sliced(world);
     crate::camera::set_world_environment(world, prepared.retail);
     world.insert_resource(crate::retail_render::RetailScene(prepared.retail));
@@ -326,6 +335,10 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
     world.insert_resource(crate::modding::PreparedGround { generation: prepared.metadata.generation, ground: Some(prepared.mod_ground) });
     world.insert_resource(crate::map_read_ahead::PreparedMapData::new(
         prepared.metadata.name.clone(), prepared.metadata.generation, prepared.metadata.path.clone(), prepared.game_data));
+    // The old world's collision and skater data are large: freed on a worker, not in this frame.
+    let old = (world.remove_resource::<GamePhysics>(), world.remove_resource::<SkaterRuntime>(),
+        world.remove_resource::<crate::camera::CameraRuntime>());
+    let _ = std::thread::Builder::new().name("map-retire".into()).spawn(move || drop(old));
     world.insert_resource(prepared.physics);
     world.insert_resource(prepared.skater);
     world.insert_resource(prepared.controls);
@@ -348,6 +361,6 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
         messages.write(WorldChanged);
     }
     world.insert_resource(prepared.metadata);
-    eprintln!("MAP_PUBLISH_TIMING cpu_ms={}", publication_started.elapsed().as_millis());
+    eprintln!("MAP_PUBLISH_TIMING cpu_ms={} retire_ms={retire_ms}", publication_started.elapsed().as_millis());
     notice
 }

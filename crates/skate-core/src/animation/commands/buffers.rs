@@ -5,11 +5,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) fn new_owner() -> usize {
     static NEXT_OWNER: AtomicUsize = AtomicUsize::new(0);
-    NEXT_OWNER
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            value.checked_add(1)
-        })
-        .expect("animation storage identity exhausted")
+    // The loop `fetch_update` runs (deprecated on newer Rust, its replacement `try_update` is not on every toolchain we
+    // build with).
+    let mut value = NEXT_OWNER.load(Ordering::Relaxed);
+    loop {
+        let next = value.checked_add(1).expect("animation storage identity exhausted");
+        match NEXT_OWNER.compare_exchange_weak(value, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(previous) => return previous,
+            Err(current) => value = current,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
