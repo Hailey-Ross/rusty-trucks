@@ -6,12 +6,15 @@ use std::collections::BTreeMap;
 
 pub mod achievements;
 pub mod boot;
+pub mod boot_flow;
+pub mod first_team_member;
 pub mod graph;
 pub mod milestones;
 pub mod presentation;
 pub mod profile;
 pub mod team;
 pub mod unlocks;
+pub mod welcome;
 
 /// The six counters of retail's progression manager (+0x48, b855): owned it, killed it, bonus and set board sales,
 /// money now and money earned. Offline play keeps `sales_bonus` and `sales_set` at 0.

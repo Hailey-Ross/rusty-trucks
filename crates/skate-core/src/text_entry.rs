@@ -26,6 +26,27 @@ impl TextEntryRequest {
 
 pub const CHEAT_CALLBACK: &str = "cheat_code";
 
+/// The new career's team name (boot step 82704DD8, research b1004 / b1010): "Enter New Team Name", default "New
+/// Team", 16 characters, mode 1, empty passed on. OK writes the team name (82705470), cancel writes the default
+/// (82705528).
+pub const TEAM_NAME_CALLBACK: &str = "engine:team_name";
+pub const TEAM_NAME_TITLE: &str = "ID_WELCOME_NEW_TEAM_HEADER";
+pub const TEAM_NAME_DEFAULT: &str = "ID_WELCOME_NEW_TEAM_NAME";
+
+impl TextEntryRequest {
+    /// `default` = the localized `TEAM_NAME_DEFAULT`.
+    pub fn team_name(default: &str) -> Self {
+        Self { title: TEAM_NAME_TITLE.into(), default: default.into(), max_len: 0x10, allow_empty: true, mode: 1, callback: TEAM_NAME_CALLBACK.into() }
+    }
+
+    /// FE 67's profile name (82650EC0): "Enter your name:", default "The Legend", 16 characters, empty not allowed;
+    /// OK sets the name, cancel stays on FE 67.
+    pub fn profile_name(default: &str) -> Self {
+        use crate::career::first_team_member::{PROFILE_NAME_CALLBACK, PROFILE_NAME_TITLE};
+        Self { title: PROFILE_NAME_TITLE.into(), default: default.into(), max_len: 0x10, allow_empty: false, mode: 1, callback: PROFILE_NAME_CALLBACK.into() }
+    }
+}
+
 /// The OK path's verdict (0x82639890).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EntryResult {
@@ -188,6 +209,14 @@ impl Keyboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_team_name_request_holds_16_characters_and_passes_an_empty_name_on() {
+        let r = TextEntryRequest::team_name("New Team");
+        assert_eq!((r.title.as_str(), r.default.as_str(), r.max_len, r.allow_empty, r.mode), (TEAM_NAME_TITLE, "New Team", 16, true, 1));
+        assert_eq!(finish(&r, "", "abc"), EntryResult::Accepted(String::new()));
+        assert_eq!(finish(&r, "aaaaaaaaaaaaaaaaaaaa", "a"), EntryResult::Accepted("a".repeat(16)));
+    }
 
     const ALLOWED: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',.?!@#$*()\"/_ -,.' ";
 

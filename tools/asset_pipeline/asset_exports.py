@@ -1,5 +1,6 @@
 """Owned-disc exports, separate from setup transaction orchestration."""
 import json
+import os
 import shutil
 from pathlib import Path
 from . import install as engine
@@ -15,6 +16,19 @@ def core(game_root, stage, work, report, log, converted=None):
     # Some disc banks are loose files rather than members of miscload.
     loose=game_root/'data/anim'
     if loose.is_dir():shutil.copytree(loose,stock/'data/anim',dirs_exist_ok=True)
+    # The disc's movies (docs/hails-additions/47-movie-player.md), played from the install by the movie player: hard
+    # links when the disc folder shares the drive (no extra space), copies otherwise (about 1 GB).
+    movies=game_root/'data/movies'
+    if movies.is_dir():
+        (stock/'data/movies').mkdir(parents=True,exist_ok=True)
+        for movie in sorted(movies.glob('*.vp6')):
+            target=stock/'data/movies'/movie.name
+            if target.exists():continue
+            try:os.link(movie,target)
+            except OSError:shutil.copy2(movie,target)
+    # Their subtitle cues, resolved to string labels (subtitles.py).
+    from .subtitles import export as export_subtitles
+    export_subtitles(game_root,stock)
     report('Converting physics and difficulty settings')
     database=work/'database'
     engine.extract(game_root/'data/big/db.big',database,lambda e:Path(e.path).name.lower() in {

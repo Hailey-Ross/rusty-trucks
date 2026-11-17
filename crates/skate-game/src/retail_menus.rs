@@ -297,8 +297,7 @@ const STORED_OWNER: &str = "settings";
 /// Rows with a retail rule whose effect the engine does not have yet (user, 2026-10-13: gray them like the other
 /// unported items). They get no stored layer, so they stay grayed and show retail's default; a mod's value layer
 /// still enables them. Remove an id here when its feature lands (doc 31 "Stored settings").
-const NO_EFFECT_YET: [&str; 8] = [
-    "ID_GAMESETTINGS_SUBTITLE_TOGGLE",
+const NO_EFFECT_YET: [&str; 7] = [
     "ID_GAMESETTINGS_CAM_MAN_TOGGLE",
     "ID_GAMESETTINGS_HOM_MODE_OPTIONS",
     "ID_GAMESETTINGS_TRANSPARENCY_TOGGLE",
@@ -358,7 +357,7 @@ pub(crate) fn imperial(menus: &RetailMenus) -> bool {
 
 /// Binds every stored row once the tables are in, then saves a row the menu changed (the engine layer's own
 /// value moved; a mod layer on top leaves it alone).
-fn sync_stored_values(menus: Option<ResMut<RetailMenus>>, stored: Option<ResMut<StoredSettings>>) {
+pub(crate) fn sync_stored_values(menus: Option<ResMut<RetailMenus>>, stored: Option<ResMut<StoredSettings>>) {
     let (Some(mut menus), Some(mut stored)) = (menus, stored) else { return };
     if !menus.loaded {
         return;
@@ -416,6 +415,15 @@ struct Binding {
     /// Apply a mod's value at runtime without saving (`Some`), or drop it again and go back to
     /// the user's own setting (`None`; the second argument is that setting's value).
     apply: fn(&mut World, Option<&SettingValue>, &SettingValue),
+}
+
+/// Writes an engine-bound settings row the way the Game Settings screen does (applied and saved); the menu row picks
+/// it up on its next sync. Used by the new career's welcome screen (difficulty, camera).
+pub(crate) fn write_setting(world: &mut World, row: &str, value: SettingValue) {
+    match BINDINGS.iter().find(|b| b.row == row) {
+        Some(b) => (b.write)(world, &value),
+        None => warn!("RETAIL_MENUS: no engine binding for {row}"),
+    }
 }
 
 fn number(value: &SettingValue) -> f64 {
@@ -1010,7 +1018,7 @@ mod tests {
     #[test]
     fn rows_without_an_effect_stay_greyed_until_a_mod_binds_them() {
         use skate_core::menus::Setting;
-        let row = "ID_GAMESETTINGS_SUBTITLE_TOGGLE";
+        let row = "ID_GAMESETTINGS_CAM_MAN_TOGGLE";
         let mut d = data();
         d.settings.push(Setting { id: row.into(), label: row.into(), widget: Widget::Selector, link: None });
         d.screens[6].push(row.into());

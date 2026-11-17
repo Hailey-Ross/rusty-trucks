@@ -932,6 +932,8 @@ pub(super) fn mixmap_tick(native: Option<ResMut<Native>>, inputs: Option<ResMut<
     if let (Some(player), Ok(mut runtime)) = (&mut native.player, super::timing::lock(&native.shared, &super::timing::GAME_LOCK)) {
         player.update(m, &s, &mut runtime, speed_scale, loose);
     }
+    // The movie player's gain (b955 2a, audio manager +0x468 = MixMap Master out4, copied every audio pass by 824D5868).
+    crate::movie_player::MASTER_OUT4.store(m.level(skate_audio::mixmap::keys::MASTER, 4), std::sync::atomic::Ordering::Relaxed);
     // SFXObj_Reverb's update (`sub_824DF220`): the FlangeSub returns' levels and the global env
     // scale (manager +104 = out4) from the Reverb owner.
     if let Ok(mut runtime) = super::timing::lock(&native.shared, &super::timing::GAME_LOCK) {

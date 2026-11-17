@@ -84,6 +84,8 @@ MENU_ROOTS = (
     'source/screens/unlock/unlockoverlay',
     'source/screens/unlock/unlock_milestone',
     'source/screens/unlock/unlock_teammate',
+    # The new career's FE 67 FirstTeamMember ("Start your team!", template 113; research b1004).
+    'source/screens/TeamSkater_Selection/team_management_boot',
     'source/screens/hudcomponents/endchallengeoptions',
     'source/screens/hudcomponents/endchallenge_small',
     'source/screens/hudcomponents/challengefailed_small',
@@ -101,9 +103,11 @@ MENU_ROOTS = (
     'source/screens/popup/small_popup',
 )
 # Movies only in fedynamic.big, extracted into their own cache (prefix-limited, so no movie above changes archive):
-# the Extras Credits row's screen (template 30 Credits, FE screen 25, host object FECredits; research b489).
-DYNAMIC_ROOTS = ('source/screens/extras/credits',)
-DYNAMIC_PREFIXES = ('data/fe/source/screens/extras/',)
+# the Extras Credits row's screen (template 30 Credits, FE screen 25, host object FECredits; research b489) and the
+# new career's boot flow screens (template 9 WelcomeFlow, FE 9 / 10; template 10 CoachFrank, FE 11; research b1007).
+DYNAMIC_ROOTS = ('source/screens/extras/credits', 'source/screens/bootflow/welcomescreen',
+                 'source/screens/bootflow/coachfrank')
+DYNAMIC_PREFIXES = ('data/fe/source/screens/extras/', 'data/fe/source/screens/bootflow/')
 # The credit lines the credits screen reads (cCreditsManager, `data\credits\credits.txt` in miscload.big), copied
 # into the set as `credits.txt` (retail_menu_stage.rs CREDITS_FILE).
 CREDITS_ARCHIVE = 'miscload.big'

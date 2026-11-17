@@ -159,6 +159,12 @@ const END_DIALOGS: [(&str, &str, &str); 3] = [
 ];
 /// The sign-up poster (FE 0x1B page 0, template 23; research b932, b935): movie key, path, template.
 const POSTER: (&str, &str, &str) = ("source/screens/challenge/challenge_signup", "challenge/challenge_signup.swf", "SignUp_Poster");
+/// FE 9 WelcomeFlow, the new career's difficulty / camera screen (template 9, fedynamic only; research b1007).
+const WELCOME: (&str, &str, &str) = ("source/screens/bootflow/welcomescreen", "bootflow/welcomescreen.swf", "WelcomeFlow");
+/// FE 11 Coach Frank's question (template 10, fedynamic only; research b1010).
+const COACH_FRANK: (&str, &str, &str) = ("source/screens/bootflow/coachfrank", "bootflow/coachfrank.swf", "CoachFrank");
+/// FE 67 FirstTeamMember, "Start your team!" (template 113; research b1004).
+const FIRST_TEAM_MEMBER: (&str, &str, &str) = ("source/screens/TeamSkater_Selection/team_management_boot", "TeamSkater_Selection/team_management_boot.swf", "FirstTeamMember");
 /// The end dialog and reward screens open on the stage, on by default (seen drawing 2026-11-14: the end dialog and the
 /// reward summary in game, the milestone / teammate cards on the stage tests). `SKATE_RETAIL_END_SCREENS=0` turns
 /// them off (the old continue / accept at once).
@@ -203,7 +209,7 @@ const CROSSBAR_ENUMS: [&str; 6] =
 const MENU_Z: f32 = 50.0;
 
 #[derive(Resource)]
-struct MenuStage {
+pub(crate) struct MenuStage {
     stage: Stage,
     /// The autosave layer's save tag while a save write is in flight (`save_tag`, b948).
     save_tag: crate::save_tag::SaveTag,
@@ -265,6 +271,21 @@ struct MenuStage {
     poster_open: bool,
     poster_shown: bool,
     poster_frames: u32,
+    /// FE 9 WelcomeFlow's AS id, whether it is open / shown, and updates since it opened.
+    welcome_id: Option<i32>,
+    welcome_open: bool,
+    welcome_shown: bool,
+    welcome_frames: u32,
+    /// FE 11 Coach Frank's AS id, whether it is open / shown, and updates since it opened.
+    coach_id: Option<i32>,
+    coach_open: bool,
+    coach_shown: bool,
+    coach_frames: u32,
+    /// FE 67 FirstTeamMember's AS id, whether it is open / shown, and updates since it opened.
+    ftm_id: Option<i32>,
+    ftm_open: bool,
+    ftm_shown: bool,
+    ftm_frames: u32,
     profile_generation: (u64, u64),
     /// The Extras screen's AS id and host (extras_host), the cheat table, and the text entry FE 46 opens next.
     extras_id: i32,
@@ -294,6 +315,8 @@ struct MenuStage {
     retail_lines: Option<skate_data::tips_loader::TipsLines>,
     /// Seconds the loading screen has stayed up past the load's own work (mods' holds, capped).
     load_after: f32,
+    /// The movie subtitle line last sent to the subtitle movie (movie_player::MovieSubtitle generation).
+    subtitle_generation: u32,
     load: skate_core::tips_loader::LoadScreen,
     load_up: bool,
     load_gone: bool,
@@ -785,6 +808,18 @@ fn setup(
                 poster_open: false,
                 poster_shown: false,
                 poster_frames: 0,
+                welcome_id: templates.iter().position(|n| n == WELCOME.2).filter(|_| movies.movies.contains_key(WELCOME.0)).map(|i| 600 + i as i32),
+                welcome_open: false,
+                welcome_shown: false,
+                welcome_frames: 0,
+                coach_id: templates.iter().position(|n| n == COACH_FRANK.2).filter(|_| movies.movies.contains_key(COACH_FRANK.0)).map(|i| 600 + i as i32),
+                coach_open: false,
+                coach_shown: false,
+                coach_frames: 0,
+                ftm_id: templates.iter().position(|n| n == FIRST_TEAM_MEMBER.2).filter(|_| movies.movies.contains_key(FIRST_TEAM_MEMBER.0)).map(|i| 600 + i as i32),
+                ftm_open: false,
+                ftm_shown: false,
+                ftm_frames: 0,
                 profile_generation: (0, 0),
                 extras_id: as_id(EXTRAS),
                 extras: Default::default(),
@@ -804,6 +839,7 @@ fn setup(
                 tips_loader_id: as_id(TIPS_LOADER),
                 retail_lines: None,
                 load_after: 0.0,
+        subtitle_generation: 0,
                 tips_loader: crate::tips_loader_host::TipsLoaderHost {
                     lines: skate_data::collections::Collections::load(&config.asset_root).map(|c| skate_data::tips_loader::read(&c)).unwrap_or_default(),
                     seed: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos() | 1),
@@ -883,12 +919,18 @@ fn update(
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry, mut marquee): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>, ResMut<crate::marquee_preview::MarqueeView>),
     // Popups; the instant replay feed and whether the retail replay screen shows (one parameter: Bevy's 16).
-    (mut popup_mods, replay_feed, mut replay_ui, mut look_screen, mut music_link): (
+    (mut popup_mods, replay_feed, mut replay_ui, mut look_screen, mut music_link, mut movie_chyron, movie_subtitle, mut welcome_screen, mut boot_entry, mut coach_screen, mut ftm_screen): (
         ResMut<crate::popup_host::PopupMods>,
         Option<Res<crate::replay::ReplayFeed>>,
         Option<ResMut<crate::replay::RetailReplayUi>>,
         Option<ResMut<crate::replay::ReplayLookScreen>>,
         ResMut<crate::music_player_host::MusicPlayerLink>,
+        Option<ResMut<crate::movie_player::MovieChyron>>,
+        Option<Res<crate::movie_player::MovieSubtitle>>,
+        Option<ResMut<crate::welcome_host::WelcomeScreen>>,
+        Option<ResMut<crate::welcome_host::BootTextEntry>>,
+        Option<ResMut<crate::welcome_host::CoachFrankScreen>>,
+        Option<ResMut<crate::welcome_host::FirstTeamMemberScreen>>,
     ),
     // Challenge Map travel; cheats out, typed text in and the zombie flag the cheat toggles; FE 62's characters and
     // its requests out.
@@ -953,6 +995,42 @@ fn update(
         fired.clear();
     }
     let mut fe = front_end(&menus, &ms.language, ms.crossbar.clone());
+    // The movie subtitle line: a new line refreshes the subtitle movie (gSubtitle) while subtitles show, as retail's
+    // HUD command 7 (825E0F60 / 825DF0A8 -> `ScreenManager.RefreshSubtitle`).
+    if let Some(line) = movie_subtitle.as_deref() {
+        fe.subtitle = line.label.clone();
+        fe.subtitles_shown = line.show;
+        if line.generation != ms.subtitle_generation {
+            ms.subtitle_generation = line.generation;
+            if line.show {
+                if let Err(e) = ms.stage.call_path("_global.ScreenManager.RefreshSubtitle", Vec::new(), &mut fe) {
+                    warn!("MOVIE subtitle refresh: {e}");
+                }
+            }
+        }
+    }
+    // The movie player's skip chyron (fmv_popup on _level3, FE 24 input 8260B240: ShowMovieSkip / HideMovieSkip).
+    if let Some(c) = movie_chyron.as_mut() {
+        // fmv_popup frame 0 runs `new fmv_popup(this)`, whose constructor keeps the level in the static
+        // fmv_popup.mScreen and defines _global.ShowMovieSkip / HideMovieSkip: they play the level's "start" / "end"
+        // labels, which fade mcChyron (placed at alpha 0) in and out. Until they exist the movie shows its own label.
+        c.live = matches!(ms.stage.vm.get(ms.stage.vm.global, "ShowMovieSkip"), Value::Object(_));
+        if c.live && c.want != c.applied {
+            let label = if c.want { "ShowMovieSkip" } else { "HideMovieSkip" };
+            let call = format!("_global.{label}");
+            match ms.stage.call_path(&call, Vec::new(), &mut fe) {
+                Ok(_) => {
+                    info!("MOVIE chyron {label}");
+                    c.applied = c.want;
+                }
+                Err(e) => {
+                    warn!("MOVIE chyron {call}: {e}");
+                    c.applied = c.want;
+                    c.live = false;
+                }
+            }
+        }
+    }
     fe.settings = std::mem::take(&mut ms.settings);
     fe.settings_titles = ms.settings_titles.clone();
     fe.settings.open = options.is_some() && ms.stack.top(Layer::Main) == options;
@@ -1122,12 +1200,76 @@ fn update(
             ms.poster_shown = false;
             ms.poster_frames = 0;
         }
+        // FE 9 WelcomeFlow: opened by the new career's boot flow, closed once the camera page is accepted.
+        let mut wanted_welcome = welcome_screen.as_ref().is_some_and(|w| w.open);
+        if wanted_welcome && ms.welcome_id.is_none() {
+            // An install exported before the bootflow movies: the step is skipped (closed without a result).
+            warn!("RETAIL_MENUS welcome screen not in this install (Refresh Game Files adds it): skipped");
+            if let Some(w) = welcome_screen.as_mut() {
+                w.open = false;
+            }
+            wanted_welcome = false;
+        }
+        if let Some(id) = ms.welcome_id.filter(|_| wanted_welcome != ms.welcome_open) {
+            if wanted_welcome {
+                info!("RETAIL_MENUS open {} (FE {})", WELCOME.2, if welcome_screen.as_ref().is_some_and(|w| w.logic.team_state() == 10) { 10 } else { 9 });
+                open_screen(&mut ms.stage, WELCOME.1, WELCOME.2, &mut fe)?;
+            } else {
+                close(&mut ms.stage, id, &mut fe)?;
+            }
+            ms.welcome_open = wanted_welcome;
+            ms.welcome_shown = false;
+            ms.welcome_frames = 0;
+        }
+        // FE 11 Coach Frank: opened by the boot flow, closed by its Yes / No pick.
+        let mut wanted_coach = coach_screen.as_ref().is_some_and(|c| c.open);
+        if wanted_coach && ms.coach_id.is_none() {
+            warn!("RETAIL_MENUS Coach Frank screen not in this install (Refresh Game Files adds it): skipped");
+            if let Some(c) = coach_screen.as_mut() {
+                c.open = false;
+            }
+            wanted_coach = false;
+        }
+        if let Some(id) = ms.coach_id.filter(|_| wanted_coach != ms.coach_open) {
+            if wanted_coach {
+                info!("RETAIL_MENUS open {} (FE 11)", COACH_FRANK.2);
+                open_screen(&mut ms.stage, COACH_FRANK.1, COACH_FRANK.2, &mut fe)?;
+            } else {
+                close(&mut ms.stage, id, &mut fe)?;
+            }
+            ms.coach_open = wanted_coach;
+            ms.coach_shown = false;
+            ms.coach_frames = 0;
+        }
+        // FE 67 FirstTeamMember: opened by the boot flow, closed by it once a row ran.
+        let mut wanted_ftm = ftm_screen.as_ref().is_some_and(|f| f.open);
+        if wanted_ftm && ms.ftm_id.is_none() {
+            warn!("RETAIL_MENUS FirstTeamMember screen not in this install (Refresh Game Files adds it): skipped");
+            if let Some(f) = ftm_screen.as_mut() {
+                f.open = false;
+            }
+            wanted_ftm = false;
+        }
+        if let Some(id) = ms.ftm_id.filter(|_| wanted_ftm != ms.ftm_open) {
+            if wanted_ftm {
+                info!("RETAIL_MENUS open {} (FE 67)", FIRST_TEAM_MEMBER.2);
+                open_screen(&mut ms.stage, FIRST_TEAM_MEMBER.1, FIRST_TEAM_MEMBER.2, &mut fe)?;
+            } else {
+                close(&mut ms.stage, id, &mut fe)?;
+            }
+            ms.ftm_open = wanted_ftm;
+            ms.ftm_shown = false;
+            ms.ftm_frames = 0;
+        }
+        fe.welcome.first_team_member = ftm_screen.as_ref().filter(|_| ms.ftm_open).map(|f| (f.team_name.clone(), f.profile_name.clone()));
+        fe.welcome.open = ms.welcome_open || ms.coach_open || ms.ftm_open;
+        fe.welcome.team_state = welcome_screen.as_ref().map_or(0, |w| w.logic.team_state());
         let auto =ms.auto_open && time.elapsed_secs() > 4.0;
         ms.auto_open &= !auto;
         if auto {
             fired.insert(0, (APT_START, 0));
         }
-        if ms.stack.input_target().is_some() || ms.end_open.is_some() || ms.reward_open.is_some() || ms.poster_open {
+        if ms.stack.input_target().is_some() || ms.end_open.is_some() || ms.reward_open.is_some() || ms.poster_open || ms.welcome_open || ms.coach_open || ms.ftm_open {
             fired.extend(ms.injected.pop_front().flatten().map(|k| (k, 0)));
         }
         for (key, controller) in fired {
@@ -1139,6 +1281,46 @@ fn update(
                     if let Some(action) = end_screen.as_mut().and_then(|e| e.press(slot)) {
                         info!("RETAIL_MENUS end dialog slot {slot}: {action:?}");
                     }
+                }
+                continue;
+            }
+            // The welcome screen (82609BA0): the camera pages take every key natively; the difficulty menu and the
+            // closing state pass keys on to the movie, whose menu picks through Game.OnMenuSelect.
+            if let (true, Some(id)) = (ms.welcome_open, ms.welcome_id) {
+                if ms.welcome_shown {
+                    match welcome_screen.as_mut().and_then(|w| w.logic.key(key)) {
+                        Some(effect) => apply_welcome(&mut ms.stage, id, effect, welcome_screen.as_deref_mut(), &mut sounds, &mut fe)?,
+                        None => {
+                            ms.stage.call_path(
+                                "_global.ScreenManager.UpdateInput",
+                                vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())],
+                                &mut fe,
+                            )?;
+                        }
+                    }
+                }
+                continue;
+            }
+            // FirstTeamMember (input 8274CA90 returns 0): every key goes to the movie's menu, unless the profile name
+            // keyboard is on top.
+            if let (true, Some(id), None) = (ms.ftm_open, ms.ftm_id, ms.stack.input_target()) {
+                if ms.ftm_shown {
+                    ms.stage.call_path(
+                        "_global.ScreenManager.UpdateInput",
+                        vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())],
+                        &mut fe,
+                    )?;
+                }
+                continue;
+            }
+            // Coach Frank (vtable 82303170 has no input of its own): every key goes to its picker.
+            if let (true, Some(id)) = (ms.coach_open, ms.coach_id) {
+                if ms.coach_shown {
+                    ms.stage.call_path(
+                        "_global.ScreenManager.UpdateInput",
+                        vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())],
+                        &mut fe,
+                    )?;
                 }
                 continue;
             }
@@ -1956,6 +2138,60 @@ fn update(
                 set_state(&mut ms.stage, id, skate_core::challenges::poster::STATE_SIGN_UP, &mut fe)?;
             }
         }
+        if let Some(id) = ms.welcome_id.filter(|_| ms.welcome_open) {
+            ms.welcome_frames += 1;
+            let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
+            let intro = take_call(&mut fe, &format!("Game.OnScreenIntroComplete({id})"));
+            if !ms.welcome_shown && (loaded || intro || ms.welcome_frames > SHOW_FALLBACK_FRAMES) {
+                info!("RETAIL_MENUS show welcome {id} (loaded {loaded}, intro {intro}, frames {})", ms.welcome_frames);
+                ms.welcome_shown = true;
+                ms.stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text(id.to_string()), Value::Text("true".into())], &mut fe)?;
+            }
+            // The difficulty menu's picks (82609D38).
+            for row in std::mem::take(&mut fe.welcome.picks) {
+                if let Some(effect) = welcome_screen.as_mut().and_then(|w| w.logic.pick(row)) {
+                    info!("RETAIL_MENUS welcome difficulty row {row}");
+                    apply_welcome(&mut ms.stage, id, effect, welcome_screen.as_deref_mut(), &mut sounds, &mut fe)?;
+                }
+            }
+        }
+        if let Some(id) = ms.ftm_id.filter(|_| ms.ftm_open) {
+            ms.ftm_frames += 1;
+            let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
+            let intro = take_call(&mut fe, &format!("Game.OnScreenIntroComplete({id})"));
+            if !ms.ftm_shown && (loaded || intro || ms.ftm_frames > SHOW_FALLBACK_FRAMES) {
+                info!("RETAIL_MENUS show FirstTeamMember {id} (loaded {loaded}, intro {intro}, frames {})", ms.ftm_frames);
+                ms.ftm_shown = true;
+                ms.stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text(id.to_string()), Value::Text("true".into())], &mut fe)?;
+                // 82650BA0 state 6: the menu shows with SetState(0) once the player photo is built (NOT RETAIL YET:
+                // no photo build, at once).
+                set_state(&mut ms.stage, id, 0, &mut fe)?;
+            }
+            if let Some(row) = std::mem::take(&mut fe.welcome.picks).into_iter().next() {
+                info!("RETAIL_MENUS FirstTeamMember row {row}");
+                if let Some(f) = ftm_screen.as_mut() {
+                    f.picked = Some(row);
+                }
+            }
+        }
+        if let Some(id) = ms.coach_id.filter(|_| ms.coach_open) {
+            ms.coach_frames += 1;
+            let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
+            let intro = take_call(&mut fe, &format!("Game.OnScreenIntroComplete({id})"));
+            if !ms.coach_shown && (loaded || intro || ms.coach_frames > SHOW_FALLBACK_FRAMES) {
+                info!("RETAIL_MENUS show Coach Frank {id} (loaded {loaded}, intro {intro}, frames {})", ms.coach_frames);
+                ms.coach_shown = true;
+                ms.stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text(id.to_string()), Value::Text("true".into())], &mut fe)?;
+            }
+            // The picker's row (8260A288): the screen closes on it.
+            if let Some(row) = std::mem::take(&mut fe.welcome.picks).into_iter().next() {
+                info!("RETAIL_MENUS Coach Frank row {row}");
+                if let Some(c) = coach_screen.as_mut() {
+                    c.answer = Some(row);
+                    c.open = false;
+                }
+            }
+        }
         if let Some(id) = ms.reward_open.and_then(|(s, _)| ms.reward_ids[s]) {
             ms.reward_frames += 1;
             let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
@@ -2229,6 +2465,22 @@ fn update(
                 }
             }
         }
+        // A keyboard the new career's boot flow asks for (the team name): push FE 46 with the localized default.
+        if let Some(b) = boot_entry.as_mut() {
+            if let Some(mut request) = b.request.take() {
+                if let Some(text) = request.default.starts_with("ID_").then(|| fe.language.get(&request.default).cloned()).flatten() {
+                    request.default = text;
+                }
+                b.default_text = request.default.clone();
+                match entry {
+                    Some(e) => {
+                        ms.pending_entry = Some(request);
+                        ms.stack.request(Layer::Main, Request::push(e));
+                    }
+                    None => b.result = Some(None),
+                }
+            }
+        }
         for action in std::mem::take(&mut fe.extras.selected) {
             use skate_core::extras::ExtrasAction;
             info!("RETAIL_MENUS extras select {action:?}");
@@ -2288,7 +2540,12 @@ fn update(
                         if let Some(e) = entry {
                             ms.stack.request(Layer::Main, Request::Close { screen: e });
                         }
-                        if r.callback == skate_core::text_entry::CHEAT_CALLBACK {
+                        if let Some(b) = boot_entry.as_mut().filter(|b| b.waiting && b.callback == r.callback) {
+                            // The boot flow's keyboards (team name, profile name). NOT RETAIL YET: an empty name keeps
+                            // the default (retail's team name shows popup 0x12E).
+                            info!("RETAIL_MENUS {} entered: {text:?}", r.callback);
+                            b.result = Some(Some(text.clone()).filter(|t| !t.trim().is_empty()));
+                        } else if r.callback == skate_core::text_entry::CHEAT_CALLBACK {
                             // The matcher (b304) on the current flags: entering a code toggles what is in effect.
                             let mut state = skate_core::cheats::CheatState::default();
                             if living.as_ref().is_some_and(|l| l.zombie) {
@@ -2325,6 +2582,11 @@ fn update(
                 }
             }
             skate_core::text_entry::KeyboardOutcome::Cancel => {
+                let callback = text_entry.keyboard.as_ref().map(|k| k.request.callback.clone());
+                if let Some(b) = boot_entry.as_mut().filter(|b| b.waiting && Some(&b.callback) == callback.as_ref()) {
+                    info!("RETAIL_MENUS {} canceled", b.callback);
+                    b.result = Some(None);
+                }
                 if let Some(e) = entry {
                     ms.stack.request(Layer::Main, Request::Close { screen: e });
                 }
@@ -2744,6 +3006,32 @@ fn flush_trick_guide(stage: &mut Stage, id: i32, fe: &mut FrontEnd) -> Result<()
 }
 
 /// The C++ SetScreenState through the facade: both as "%d" strings (sub_8263F320 index 10).
+/// One welcome screen effect: the movie state, the UI sound, and on close the result for the boot flow.
+fn apply_welcome(
+    stage: &mut Stage,
+    id: i32,
+    effect: skate_core::career::welcome::Effect,
+    screen: Option<&mut crate::welcome_host::WelcomeScreen>,
+    sounds: &mut MessageWriter<FrontendSound>,
+    fe: &mut FrontEnd,
+) -> Result<(), String> {
+    if let Some(key) = effect.sound {
+        sounds.write(FrontendSound { key });
+    }
+    if let Some(state) = effect.movie_state {
+        set_state(stage, id, state, fe)?;
+    }
+    if effect.close {
+        if let Some(w) = screen {
+            info!("RETAIL_MENUS welcome done: difficulty {:?} camera {:?}", w.logic.difficulty, w.logic.camera);
+            // FE 10's team page makes no choice: it only closes.
+            w.done = w.logic.difficulty.zip(w.logic.camera);
+            w.open = false;
+        }
+    }
+    Ok(())
+}
+
 fn set_state(stage: &mut Stage, id: i32, state: i32, fe: &mut FrontEnd) -> Result<(), String> {
     stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(id.to_string()), Value::Text(state.to_string())], fe)?;
     Ok(())

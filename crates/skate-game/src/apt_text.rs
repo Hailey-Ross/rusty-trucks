@@ -250,6 +250,75 @@ impl Font {
     }
 }
 
+/// Most inline button tags in one string; the text after the last one is dropped (82CA14D0).
+pub const MAX_BUTTON_TAGS: usize = 16;
+/// Longest tag name kept (82CA14D0 copies at most 48 characters).
+const MAX_TAG_NAME: usize = 48;
+
+/// Retail's inline button tags (SkateAptString 82CA14D0, research b491 §1): `<B:name>` becomes `||` (one icon, measured
+/// as two `|` glyphs) and `name` joins the list; one `~` before the name is skipped; `<` followed by any other
+/// character drops both and keeps the rest. Returns the text to measure and draw, and the icon names in order.
+pub fn button_tags(text: &str) -> (String, Vec<String>) {
+    let chars: Vec<char> = text.chars().collect();
+    let (mut out, mut names) = (String::with_capacity(text.len()), Vec::new());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '<' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        if chars.get(i + 1) != Some(&'B') {
+            i += 2;
+            continue;
+        }
+        i += 3;
+        if chars.get(i) == Some(&'~') {
+            i += 1;
+        }
+        let end = chars[i.min(chars.len())..].iter().position(|c| *c == '>').map_or(chars.len(), |p| i + p);
+        names.push(chars[i.min(end)..end].iter().take(MAX_TAG_NAME).collect());
+        out.push_str("||");
+        if names.len() == MAX_BUTTON_TAGS {
+            break;
+        }
+        i = end + 1;
+    }
+    (out, names)
+}
+
+#[cfg(test)]
+mod button_tag_tests {
+    use super::*;
+
+    #[test]
+    fn tags_become_bar_pairs_with_their_names() {
+        assert_eq!(button_tags("<B:A> Skip <B:B> Cancel"), ("|| Skip || Cancel".into(), vec!["A".into(), "B".into()]));
+        assert_eq!(button_tags("<B:~A_hud>Hold"), ("||Hold".into(), vec!["A_hud".into()]));
+        assert_eq!(button_tags("plain"), ("plain".into(), vec![]));
+    }
+
+    #[test]
+    fn other_tags_drop_two_characters_and_keep_the_rest() {
+        assert_eq!(button_tags("a<X>b"), ("a>b".into(), vec![]));
+        assert_eq!(button_tags("a<"), ("a".into(), vec![]));
+    }
+
+    #[test]
+    fn names_are_capped_and_the_text_after_the_sixteenth_tag_is_dropped() {
+        let long = "N".repeat(60);
+        assert_eq!(button_tags(&format!("<B:{long}>x")).1[0].len(), MAX_TAG_NAME);
+        let (text, names) = button_tags(&format!("{}tail", "<B:A>".repeat(16)));
+        assert_eq!(names.len(), MAX_BUTTON_TAGS);
+        assert_eq!(text, "||".repeat(MAX_BUTTON_TAGS));
+    }
+
+    #[test]
+    fn an_unclosed_tag_takes_the_rest_as_its_name() {
+        assert_eq!(button_tags("x<B:A"), ("x||".into(), vec!["A".into()]));
+    }
+}
+
 #[cfg(test)]
 mod font_pair_tests {
     use super::*;
