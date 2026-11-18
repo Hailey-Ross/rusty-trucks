@@ -169,6 +169,8 @@ const COACH_FRANK: (&str, &str, &str) = ("source/screens/bootflow/coachfrank", "
 const PHOTO_WAIT_FRAMES: u32 = 600;
 /// FE 63 TeamManagement (template 108; research b1011): hosted for the new career's forced logo pick.
 const TEAM_MANAGEMENT: (&str, &str, &str) = ("source/screens/TeamSkater_Selection/team_management", "TeamSkater_Selection/team_management.swf", "TeamManagement");
+/// FE 15 Create-a-Skater (template CreateASkater; research b1030).
+const CREATE_A_SKATER: (&str, &str, &str) = ("source/screens/cas/createskater", "cas/createskater.swf", "CreateASkater");
 /// FE 67 FirstTeamMember, "Start your team!" (template 113; research b1004).
 const FIRST_TEAM_MEMBER: (&str, &str, &str) = ("source/screens/TeamSkater_Selection/team_management_boot", "TeamSkater_Selection/team_management_boot.swf", "FirstTeamMember");
 /// The end dialog and reward screens open on the stage, on by default (seen drawing 2026-11-14: the end dialog and the
@@ -299,6 +301,10 @@ pub(crate) struct MenuStage {
     team_shown: bool,
     team_frames: u32,
     team_host: crate::team_management_host::TeamManagementHost,
+    /// FE 15 Create-a-Skater's AS id, whether it is open, and its natives (the menu table, kept between updates).
+    cas_id: Option<i32>,
+    cas_open: bool,
+    cas_host: crate::cas_host::CasHost,
     profile_generation: (u64, u64),
     /// The Extras screen's AS id and host (extras_host), the cheat table, and the text entry FE 46 opens next.
     extras_id: i32,
@@ -841,6 +847,11 @@ fn setup(
                     logos: crate::retail_menu_movies::team_logos(&crate::retail_menu_movies::set_root(&config)),
                     ..Default::default()
                 },
+                // Without the menu table (a set extracted before it) the boot flow keeps our customizer.
+                cas_id: templates.iter().position(|n| n == CREATE_A_SKATER.2).filter(|_| movies.movies.contains_key(CREATE_A_SKATER.0))
+                    .filter(|_| tables.as_ref().is_some_and(|t| t.cas_menus.len() > crate::cas_host::TOP_MENU)).map(|i| 600 + i as i32),
+                cas_open: false,
+                cas_host: crate::cas_host::CasHost::new(tables.as_ref().map(|t| t.cas_menus.clone()).unwrap_or_default()),
                 profile_generation: (0, 0),
                 extras_id: as_id(EXTRAS),
                 extras: Default::default(),
@@ -940,7 +951,7 @@ fn update(
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry, mut marquee): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>, ResMut<crate::marquee_preview::MarqueeView>),
     // Popups; the instant replay feed and whether the retail replay screen shows (one parameter: Bevy's 16).
-    (mut popup_mods, replay_feed, mut replay_ui, mut look_screen, mut music_link, mut movie_chyron, movie_subtitle, mut welcome_screen, mut boot_entry, mut coach_screen, mut ftm_screen, mut logo_screen, photo): (
+    (mut popup_mods, replay_feed, mut replay_ui, mut look_screen, mut music_link, mut movie_chyron, movie_subtitle, mut welcome_screen, mut boot_entry, mut coach_screen, mut ftm_screen, mut logo_screen, photo, mut cas_screen): (
         ResMut<crate::popup_host::PopupMods>,
         Option<Res<crate::replay::ReplayFeed>>,
         Option<ResMut<crate::replay::RetailReplayUi>>,
@@ -954,6 +965,7 @@ fn update(
         Option<ResMut<crate::welcome_host::FirstTeamMemberScreen>>,
         Option<ResMut<crate::team_management_host::TeamLogoScreen>>,
         Option<Res<crate::skater_photo::SkaterPhoto>>,
+        Option<ResMut<crate::cas_host::CasScreen>>,
     ),
     // Challenge Map travel; cheats out, typed text in and the zombie flag the cheat toggles; FE 62's characters and
     // its requests out.
@@ -1073,6 +1085,7 @@ fn update(
     fe.challenge_map = std::mem::take(&mut ms.challenge_map);
     fe.image_slots = std::mem::take(&mut ms.image_slots);
     fe.team = std::mem::take(&mut ms.team_host);
+    fe.cas = std::mem::take(&mut ms.cas_host);
     fe.challenge_map.open = map.is_some() && ms.stack.top(Layer::Main) == map;
     fe.offline_profile = std::mem::take(&mut ms.offline_profile);
     fe.reward_summary = std::mem::take(&mut ms.reward_summary);
@@ -1331,6 +1344,22 @@ fn update(
             ms.team_shown = false;
             ms.team_frames = 0;
         }
+        // FE 15 Create-a-Skater: opened by the boot flow's Customize row (826513E8), on the top menu.
+        let wanted_cas = cas_screen.as_ref().is_some_and(|s| s.open) && ms.cas_id.is_some();
+        if let Some(id) = ms.cas_id.filter(|_| wanted_cas != ms.cas_open) {
+            if wanted_cas {
+                info!("RETAIL_MENUS open {} (FE 15)", CREATE_A_SKATER.2);
+                fe.cas.begin();
+                open_screen(&mut ms.stage, CREATE_A_SKATER.1, CREATE_A_SKATER.2, &mut fe)?;
+            } else {
+                close(&mut ms.stage, id, &mut fe)?;
+                fe.cas.open = false;
+                if let Some(s) = cas_screen.as_mut() {
+                    s.done = true;
+                }
+            }
+            ms.cas_open = wanted_cas;
+        }
         fe.welcome.open = ms.welcome_open || ms.coach_open || ms.ftm_open;
         fe.welcome.team_state = welcome_screen.as_ref().map_or(0, |w| w.logic.team_state());
         let auto =ms.auto_open && time.elapsed_secs() > 4.0;
@@ -1338,7 +1367,7 @@ fn update(
         if auto {
             fired.insert(0, (APT_START, 0));
         }
-        if ms.stack.input_target().is_some() || ms.end_open.is_some() || ms.reward_open.is_some() || ms.poster_open || ms.welcome_open || ms.coach_open || ms.ftm_open || ms.team_open {
+        if ms.stack.input_target().is_some() || ms.end_open.is_some() || ms.reward_open.is_some() || ms.poster_open || ms.welcome_open || ms.coach_open || ms.ftm_open || ms.team_open || ms.cas_open {
             fired.extend(ms.injected.pop_front().flatten().map(|k| (k, 0)));
         }
         for (key, controller) in fired {
@@ -2752,6 +2781,7 @@ fn update(
     ms.tips_loader = std::mem::take(&mut fe.tips_loader);
     ms.image_slots = std::mem::take(&mut fe.image_slots);
     ms.team_host = std::mem::take(&mut fe.team);
+    ms.cas_host = std::mem::take(&mut fe.cas);
     ms.popup = std::mem::take(&mut fe.popup);
     // A Challenge Map leaf the player picked goes through the registry: the engine's teleport handler queues the
     // teleport and closes the map and the pause menu (retail fades out and closes the front end, sub_826494C8);

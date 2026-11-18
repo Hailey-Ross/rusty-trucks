@@ -107,9 +107,12 @@ MENU_ROOTS = (
 # Movies only in fedynamic.big, extracted into their own cache (prefix-limited, so no movie above changes archive):
 # the Extras Credits row's screen (template 30 Credits, FE screen 25, host object FECredits; research b489) and the
 # new career's boot flow screens (template 9 WelcomeFlow, FE 9 / 10; template 10 CoachFrank, FE 11; research b1007).
+# Also Create-a-Skater (`cas/createskater`, its textures only in fedynamic.big) and its purchase receipt
+# (`cas/receipt`); ask 697. Their prefixes name the two movies only, so spawnskater keeps its archive.
 DYNAMIC_ROOTS = ('source/screens/extras/credits', 'source/screens/bootflow/welcomescreen',
-                 'source/screens/bootflow/coachfrank')
-DYNAMIC_PREFIXES = ('data/fe/source/screens/extras/', 'data/fe/source/screens/bootflow/')
+                 'source/screens/bootflow/coachfrank', 'source/screens/cas/createskater', 'source/screens/cas/receipt')
+DYNAMIC_PREFIXES = ('data/fe/source/screens/extras/', 'data/fe/source/screens/bootflow/',
+                    'data/fe/source/screens/cas/createskater.', 'data/fe/source/screens/cas/receipt.')
 # The credit lines the credits screen reads (cCreditsManager, `data\credits\credits.txt` in miscload.big), copied
 # into the set as `credits.txt` (retail_menu_stage.rs CREDITS_FILE).
 CREDITS_ARCHIVE = 'miscload.big'

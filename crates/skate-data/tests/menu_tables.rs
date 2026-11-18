@@ -57,6 +57,16 @@ fn check_structure(t: &MenuTables) {
     assert_eq!((t.speakers[0].as_str(), t.speakers[30].as_str(), t.speakers[31].as_str(), t.speakers[40].as_str()),
         ("Player", "Reda", "SkateCoach", "CameraMan"));
     assert_eq!(t.speakers[103], "Teammate4");
+    // Create-a-Skater's menus (research b1030): EditSkaterMain = Body Mods, Merchandise, Edit Style, trucks, wheels;
+    // the shop list and the body modification menu.
+    let cas = &t.cas_menus;
+    assert_eq!(cas.len(), 37);
+    assert_eq!((cas[0].name.as_str(), cas[0].title.as_str()), ("Shops", "ID_CAC_SHOPS_TITLE"));
+    assert_eq!((cas[15].title.as_str(), cas[15].help_a, cas[15].help_b), ("ID_CAC_EDITSKATER_TITLE", 1, 1));
+    assert_eq!((cas[15].name.as_str(), cas[15].options.as_slice()), ("EditSkaterMain", &[0, 1, 46, 47, 48][..]));
+    assert_eq!(cas[0].options, [1, 0]);
+    assert_eq!(cas[1].options, [4, 5, 6, 7, 8, 9, 10, 11, 12, 2, 3]);
+    assert_eq!(cas[17].name, "BackAlleyPete");
     let screen = |i: usize| -> Vec<String> { t.to_menu_data().screens[i].iter().map(|s| s.trim_start_matches("ID_GAMESETTINGS_").to_owned()).collect() };
     assert_eq!(screen(1), ["DIFFICULTY_SETTINGS", "AUDIO_SETTINGS", "VIDEO_SETTINGS", "CONTROL_SETTINGS", "ONLINE_SETTINGS", "SKATEFEED_SETTINGS"]);
     assert_eq!(screen(3), ["SFXVOLUME", "DIALOGVOLUME", "MUSICVOLUME", "SFXPACK"]);

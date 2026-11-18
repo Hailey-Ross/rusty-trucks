@@ -159,6 +159,22 @@ pub struct TrickGuideTables {
     pub buttons: Vec<String>,
 }
 
+/// One Create-a-Skater menu (static table M, 48-byte records; research b1030 section 2): its name, title text id, panel
+/// kind, the field at +0xC (meaning open), the button help kinds (A: SELECT / ACCEPT ..., B: 1 EXIT, 2 BACK,
+/// 3 CHANGE_GRAPHIC), the initial highlight and window start, and its option ids (the -1 terminated list).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CasMenu {
+    pub name: String,
+    pub title: String,
+    pub panel: u32,
+    pub mode: u32,
+    pub help_a: u32,
+    pub help_b: u32,
+    pub index: u32,
+    pub window: u32,
+    pub options: Vec<i32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MenuTables {
     pub schema: u32,
@@ -211,6 +227,9 @@ pub struct MenuTables {
     pub dj_pieces: Vec<String>,
     #[serde(default)]
     pub dj_ids: Vec<u32>,
+    /// Create-a-Skater's (FE 15) menus with their option ids (research b1030; empty in a table from before them).
+    #[serde(default)]
+    pub cas_menus: Vec<CasMenu>,
     /// Table addresses in this build (diagnostics only).
     pub addresses: std::collections::BTreeMap<String, String>,
 }
@@ -637,6 +656,53 @@ fn modes(img: &Image, categories: &[Category], items: &[Item]) -> Vec<ModeMenu> 
     out
 }
 
+// ---------------------------------------------------------------- Create-a-Skater menus
+
+const CAS_MENU: u32 = 48;
+const CAS_LIST: u32 = 48;
+const CAS_LIST_WORDS: u32 = 12;
+/// The top menu (EditSkaterMain): its index in the table and its option list (Body Mods 0, Merchandise 1, Edit Style
+/// 46, trucks 47, wheels 48; research b1030 section 3), the anchors that find both tables in any build.
+const CAS_TOP: u32 = 15;
+const CAS_TOP_NAME: &str = "EditSkaterMain";
+const CAS_TOP_OPTIONS: [u32; 6] = [0, 1, 46, 47, 48, u32::MAX];
+
+fn cas_menu_head(img: &Image, at: u32) -> Option<(String, String, [u32; 6])> {
+    let text = |p: u32| if p == 0 { Some(String::new()) } else { img.cstr(p) };
+    let name = text(img.word(at)?)?;
+    let title = text(img.word(at + 4)?)?;
+    let words = [8, 12, 16, 20, 24, 28].map(|o| img.word(at + o).unwrap_or(u32::MAX));
+    let ident = |s: &str| s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    ((!name.is_empty() || title.starts_with("ID_")) && ident(&name) && ident(&title) && words.iter().all(|w| *w < 0x100))
+        .then_some((name, title, words))
+}
+
+/// Located by content: the record whose name is "EditSkaterMain", the records around it; the option lists by list
+/// 15's words (12-word lists, -1 terminated, list i for menu i).
+fn cas_menus(img: &Image) -> Result<(u32, u32, Vec<CasMenu>), String> {
+    let top = img.pointers_to_string(CAS_TOP_NAME).into_iter().find(|at| cas_menu_head(img, *at).is_some())
+        .ok_or("Create-a-Skater menu table not found")?;
+    let start = top - CAS_TOP * CAS_MENU;
+    if let Some(bad) = (0..CAS_TOP).find(|i| cas_menu_head(img, start + i * CAS_MENU).is_none()) {
+        return Err(format!("Create-a-Skater menu table: record {bad} before EditSkaterMain does not read"));
+    }
+    let needle: Vec<u8> = CAS_TOP_OPTIONS.iter().flat_map(|w| w.to_be_bytes()).collect();
+    let lists = (0..img.image.image.len().saturating_sub(needle.len())).step_by(4)
+        .filter(|&i| img.image.image[i..i + needle.len()] == needle[..])
+        .map(|i| img.image.base_address + i as u32 - CAS_TOP * CAS_LIST)
+        .find(|&at| img.word(at) == Some(1) && img.word(at + 4) == Some(0) && img.word(at + 8) == Some(u32::MAX))
+        .ok_or("Create-a-Skater option lists not found")?;
+    let mut menus = Vec::new();
+    let mut at = start;
+    while let Some((name, title, w)) = cas_menu_head(img, at) {
+        let list = lists + menus.len() as u32 * CAS_LIST;
+        let options = (0..CAS_LIST_WORDS).map_while(|k| img.word(list + k * 4).filter(|v| *v != u32::MAX)).map(|v| v as i32).collect();
+        menus.push(CasMenu { name, title, panel: w[0], mode: w[1], help_a: w[2], help_b: w[3], index: w[4], window: w[5], options });
+        at += CAS_MENU;
+    }
+    Ok((start, lists, menus))
+}
+
 // ---------------------------------------------------------------- screen templates
 
 fn template(img: &Image, at: u32) -> Option<ScreenTemplate> {
@@ -968,6 +1034,11 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
     let ipod_ids = enum_ids(&img, ipod_at, ipod_tracks.len());
     let (dj_at, dj_pieces) = dj_pieces(&img);
     let dj_ids = enum_ids(&img, dj_at, dj_pieces.len());
+    // Optional like the music tables: a build without them keeps the other screens.
+    let (cas_at, cas_lists_at, cas_menus) = cas_menus(&img).unwrap_or_else(|e| {
+        eprintln!("MENU_TABLES {e}");
+        (0, 0, Vec::new())
+    });
     if modes.is_empty() {
         return Err("no per-mode crossbar menus found".into());
     }
@@ -988,6 +1059,8 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         ("speakers", speakers_at),
         ("ipod_tracks", ipod_at),
         ("dj_pieces", dj_at),
+        ("cas_menus", cas_at),
+        ("cas_option_lists", cas_lists_at),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), hex(v)))
@@ -1012,6 +1085,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         ipod_ids,
         dj_pieces,
         dj_ids,
+        cas_menus,
         addresses,
     })
 }
