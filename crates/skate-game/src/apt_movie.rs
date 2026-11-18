@@ -918,7 +918,12 @@ impl Movie {
                         (frame as usize).saturating_sub(1)
                     }
                 };
-                self.seek(vm, id, frame, 0)?;
+                // A goto to the current frame only sets the play state; the frame's actions do not run again
+                // (Flash). fmv_popup's HideMovieSkip relies on it: gotoAndPlay("end") on the stopped "end" frame
+                // plays on to the frame that hides the chyron.
+                if self.instances[&id].frame != frame {
+                    self.seek(vm, id, frame, 0)?;
+                }
                 self.instances.get_mut(&id).unwrap().playing = method == "gotoAndPlay";
             }
             _ => return Ok(false),
@@ -1229,6 +1234,22 @@ mod clip_action_tests {
             out.push((p.offset, m.instances.contains_key(&p.object)));
         }
         out
+    }
+
+    #[test]
+    fn apt_goto_current_frame_runs_no_actions() {
+        let mut m = movie();
+        let mut vm = Vm::new();
+        m.initialize(&mut vm).unwrap();
+        drain(&mut m);
+        let root = m.root;
+        m.instances.get_mut(&root).unwrap().playing = false;
+        m.method(&mut vm, root, "gotoAndPlay", &[Value::Number(1.0)]).unwrap();
+        assert!(drain(&mut m).is_empty());
+        assert!(m.instances[&root].playing);
+        m.method(&mut vm, root, "gotoAndStop", &[Value::Number(2.0)]).unwrap();
+        assert_eq!(m.instances[&root].frame, 1);
+        assert_eq!(drain(&mut m), [(14, false)]);
     }
 
     #[test]

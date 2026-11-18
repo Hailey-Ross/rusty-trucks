@@ -57,6 +57,23 @@ and Challenges opt-in with the rest of the retail startup (off in automated runs
 `SKATE_MOVIE=<row key | file.vp6>`. Checked 2026-11-16: `SKATE_MOVIE=ea_intro` resolves through the row to the
 install's file and plays to its end with sound (428035 audio frames, 8.92 s); the rows test reads the disc's rows.
 
+### The skip prompt stays after Hide (2026-11-18)
+
+**Problem.** After B (or the prompt timing out) the skip prompt stayed on screen.
+
+**Root cause / retail.** fmv_popup's timeline: frame 2 `start` (`this._visible = true`, fade in), frame 19 `end`
+(alpha 255, `stop()`), frame 20 (`this._visible = false; stop()`) [data, fmv_popup export bytecode]. Show stops on
+frame 19, so Hide's `gotoAndPlay("end")` targets the frame the clip already shows. In Flash a goto to the current
+frame only sets the play state and the frame's actions do not run again; the clip then plays on to frame 20 and
+hides. Our APT VM re-ran frame 19's `stop()`, so the clip stayed on the visible frame.
+
+**Change.** `apt_movie.rs` `method`: `gotoAndPlay` / `gotoAndStop` to the current frame skip the seek and only set
+`playing`. Test `apt_goto_current_frame_runs_no_actions`.
+
+**Verification.** `movie-run.ps1 -Row intro_movie -PromptFor 25 -At 35` (diagnostic build, since removed): before the
+fix fmv_popup stayed on frame 19 after HideMovieSkip; after it, frame 20, and the 35 s frame shows no prompt. APT, menu
+and HUD tests pass, as does the full skate-game suite.
+
 `--mute` silences the movie's sound too (2026-11-16: it plays through its own Bevy audio player, not the native mix,
 so muted test runs were audible); `MOVIE_START` logs the gain.
 
