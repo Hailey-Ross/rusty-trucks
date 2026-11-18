@@ -67,6 +67,14 @@ fn check_structure(t: &MenuTables) {
     assert_eq!(cas[0].options, [1, 0]);
     assert_eq!(cas[1].options, [4, 5, 6, 7, 8, 9, 10, 11, 12, 2, 3]);
     assert_eq!(cas[17].name, "BackAlleyPete");
+    // The option records from the constructor's code (b1031): option 0 opens Body Modification (menu 17), 1 the
+    // merchandise list (menu 1); the leaves have target -1.
+    let o = &t.cas_options;
+    assert_eq!(o.len(), 115, "{:?}", o.last());
+    assert_eq!((o[0].text.as_str(), o[0].target), ("ID_CAC_BACKALLEY_PETES_TITLE", 17));
+    assert_eq!(o[1].target, 1);
+    assert!(o[4..13].iter().all(|r| r.target == 10), "{:?}", &o[4..13]);
+    eprintln!("cas options: {:?}", o.iter().enumerate().filter(|(i, _)| [0, 1, 46, 47, 48, 56, 59].contains(i)).collect::<Vec<_>>());
     let screen = |i: usize| -> Vec<String> { t.to_menu_data().screens[i].iter().map(|s| s.trim_start_matches("ID_GAMESETTINGS_").to_owned()).collect() };
     assert_eq!(screen(1), ["DIFFICULTY_SETTINGS", "AUDIO_SETTINGS", "VIDEO_SETTINGS", "CONTROL_SETTINGS", "ONLINE_SETTINGS", "SKATEFEED_SETTINGS"]);
     assert_eq!(screen(3), ["SFXVOLUME", "DIALOGVOLUME", "MUSICVOLUME", "SFXPACK"]);

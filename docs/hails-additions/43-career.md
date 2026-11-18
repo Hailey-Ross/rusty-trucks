@@ -513,13 +513,20 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   record, list 15's words), identical on the TU3 image and the disc build. Game: `cas_host.rs` answers the menu
   natives from that table (title, rows, indices, help texts); the stage opens FE 15 for the boot flow's Customize
   row (`CasScreen`) and the boot flow waits for it to close.
-- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): the panel opens
-  empty, because retail's C++ builds it by calling the movie's functions on menu entry (research b1032 running);
-  the option records (text ids) need a code-pattern extractor (b1031 has the pattern); navigation, the exit popup,
-  parts, colors, morphs, the stage and camera are not ported.
+- **Option records** (b1031): written by the constructor in code; `menu_tables::cas_options` finds the constructor
+  by the instructions that build the option lists' address and runs its stores through a register file (the last
+  store per field wins): 115 records with text, description, target menu and type, identical on TU3 and the disc
+  build (option 0 Back Alley Pete's -> menu 17, 1 Slappy's -> 1, 46 Skate Style -> 16, 47 / 48 sliders).
+- **Panel** (b1032): retail builds the panel with one call, `ScreenManager.SetScreenState(id, M+8)`, on every menu
+  entry; the movie's SetState runs InitMenuPicker / InitThumbBrowser / InitStyleMenu / InitMorphMenu itself. The
+  stage sends it once FE 15 is shown and whenever the menu or panel changes.
+- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): navigation (A,
+  B, the exit popup), the slider values (CAC_GetStringValue / GetIntegerValue), the info panel type (the top menu
+  shows the movie's placeholder text), refresh states 50 / 52 / 53, parts, colors, morphs, the stage and camera.
 - **Checked** (`career-boot-run.ps1 -From 5 -Keys "_x150,2,_x90,0"` with SKATE_RETAIL_CAS=1): FE 67 -> name entry
-  -> "RETAIL_MENUS open CreateASkater (FE 15)"; the panel frame, "A Select / B Back" and "LT RT Rotate Skater"
-  show over the world. Tests: skate-data `menu_tables` (TU3 and disc: 37 menus, Shops, EditSkaterMain's list,
+  -> "RETAIL_MENUS open CreateASkater (FE 15)" -> "menu / panel (15, 3)": "Edit Skater" with Body Mods,
+  Merchandise, Edit Style, Trucks and Wheels (sliders), "A Select / B Exit", "LT RT Rotate Skater", as in the PS3
+  recording's top menu (values "undefined", placeholder info text). Tests: skate-data `menu_tables` (TU3 and disc: 37 menus, Shops, EditSkaterMain's list,
   Slappy's list, BackAlleyPete), `cas_host` (the top menu from the table, sliders without A help, closed host).
 
 ## Verification

@@ -42,9 +42,26 @@ pub(crate) struct CasHost {
 }
 
 impl CasHost {
-    pub(crate) fn new(menus: Vec<CasMenu>) -> Self {
+    pub(crate) fn new(menus: Vec<CasMenu>, options: Vec<skate_data::menu_tables::CasOptionRow>) -> Self {
         let indices = menus.iter().map(|m| (m.index, m.window)).collect();
-        Self { menus, indices, ..Default::default() }
+        let options = options.into_iter().map(|o| CasOption {
+            text: o.text,
+            description: o.description,
+            target: usize::try_from(o.target).ok(),
+            kind: o.kind,
+        }).collect();
+        Self { menus, options, indices, ..Default::default() }
+    }
+
+    /// The current menu.
+    pub(crate) fn menu(&self) -> Option<usize> {
+        self.current()
+    }
+
+    /// The current menu's panel kind (M+8: the movie's SetState 0 list, 1 thumbnails, 2 style, 3 morph, 4 scale,
+    /// 5 tattoo, 6 custom thumbnails; research b1032).
+    pub(crate) fn panel(&self) -> Option<u32> {
+        self.current().map(|m| self.menus[m].panel)
     }
 
     /// Opens on the top menu with the table's initial highlights.
@@ -75,7 +92,7 @@ impl CasHost {
         Ok(Some(match method {
             "CAC_GetTitleText" => text(&self.menus[m].title),
             "CAC_GetNumItems" => Value::Number(self.menus[m].options.len() as f64),
-            // NOT RETAIL YET: the option records are not extracted yet (b1031), so a row shows its option id.
+            // A table without the option records (extracted before them) shows the option id.
             "CAC_GetItemText" => match self.option(row) {
                 Some((_, Some(o))) => text(&o.text),
                 Some((id, None)) => Value::Text(format!("#option {id}")),
@@ -131,8 +148,8 @@ mod tests {
     fn host() -> CasHost {
         let mut menus: Vec<CasMenu> = (0..16).map(|i| menu(&format!("m{i}"), "", (0, 0), &[])).collect();
         menus[TOP_MENU] = menu("EditSkaterMain", "ID_CAC_EDITSKATER_TITLE", (1, 1), &[0, 1, 46, 47, 48]);
-        let mut h = CasHost::new(menus);
-        h.options = vec![CasOption { text: "ID_BODY".into(), ..Default::default() }];
+        let mut h = CasHost::new(menus, vec![skate_data::menu_tables::CasOptionRow { text: "ID_BODY".into(),
+            description: String::new(), target: 17, kind: "option".into() }]);
         h.begin();
         h
     }
