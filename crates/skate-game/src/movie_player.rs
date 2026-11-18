@@ -406,8 +406,6 @@ pub(crate) struct MovieChyron {
     pub want: bool,
     pub applied: bool,
     pub live: bool,
-    /// Diagnostic updates left after a show / hide call (ask 695).
-    pub trace: u32,
 }
 
 /// The stage marks itself live each frame it runs.

@@ -1045,28 +1045,11 @@ fn update(
                 Ok(_) => {
                     info!("MOVIE chyron {label}");
                     c.applied = c.want;
-                    c.trace = 60;
                 }
                 Err(e) => {
                     warn!("MOVIE chyron {call}: {e}");
                     c.applied = c.want;
                     c.live = false;
-                }
-            }
-        }
-        // Diagnostic (ask 695): the level's frame and the chyron clip's alpha / visibility for a second after a call.
-        if c.trace > 0 {
-            c.trace -= 1;
-            if c.trace % 10 == 0 {
-                for level in ms.stage.levels().iter().filter(|l| l.key.contains("fmv_popup")) {
-                    let m = &level.movie;
-                    let root = m.instances.get(&m.root);
-                    let chyron = match ms.stage.vm.get(m.root, "mcChyron") {
-                        Value::Object(id) => m.instances.get(&id).map(|i| (i.frame, i.playing, i.placement.is_some())),
-                        _ => None,
-                    };
-                    info!("MOVIE chyron trace {} root frame={:?} playing={:?} mcChyron={chyron:?}", level.key,
-                        root.map(|r| r.frame), root.map(|r| r.playing));
                 }
             }
         }
