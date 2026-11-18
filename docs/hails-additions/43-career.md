@@ -413,6 +413,65 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   screen, unknown key), `welcome_host` (FE 67 logo), `tools/test_prepare_menu_movies.py` (names from textures, hash
   order, brands left out).
 
+<a id="nis-scenes"></a>
+
+## Change: NIS scenes (lesson demos), step 1: the data (2026-11-18)
+
+- **Problem.** Accepting a Skate School lesson plays a demo in retail: a fisheye scene of Benny Fairfax doing the
+  lesson's move (PS3 recording 2026-11-16, 10:40, about 22 s). Ours skipped it (the presentation's NIS event is a
+  logged stub, doc 42 "Tutorial presentation"), so the lesson looked like it had not started (ask 698).
+- **Retail data** [data]. Every lesson's intro and restart lists play NIS `tut_sksc_NN` (challenges.json). The scene
+  table `data/scene/scene_000.bin` (miscboot.big, big-endian): header {tag, version, 503 records, 1282 actors};
+  104-byte records {name hash, kind, 7 floats (the last is the length in seconds), actor count, first actor,
+  name[64]}; 180-byte actors {character[32], type[16] (`marquee`, `livingworld`), clip[64], scene[64], u32}. The
+  name hash is h = 0xFFFFFFFF, h = h * 33 + byte, and it is also the scene's ICE camera block id in
+  `ice_000.bin` (laptop job 3, 2026-11-06). tut_sksc_01: one actor, `benny_fairfax` (marquee), clip
+  `scene/anim/tut_sksc_011.abin` (133 bones, 22.33 s at 30 fps), length 22.3 s, five camera tracks of 22.3 s;
+  tut_sksc_04 has no actor. The actors name 751 clips; 712 are in scene.big (417 MB), the other 39 are cut or test
+  scenes (`crowdtest_*`, `arrivalofmikey_*`, `corex_spotfilm*`).
+- **Change.** Setup (`scene_clips.py` `export_nis`, hud group) writes `private/hud/scene/scene_000.bin` and every
+  named clip into `private/hud/scene/anim/` (1.1 s on the desktop). `skate_data::scene_table` (`parse`,
+  `scene_hash`, `Scene::length`). Scenes are looked up by name from this data, so a mod can replace a scene's clip
+  or table.
+- **Tests.** `scene_table` (hash = the ICE ids, records and actors, a short file is an error); data-gated with
+  `SKATE3_SCENE_DIR`: the disc table (503 scenes, tut_sksc_01's actor, clip and length), its 5 ICE tracks and the
+  clip decode.
+
+### Step 2: the NIS player (2026-11-18)
+
+- **Retail** (research b1020, partial): the presentation's NIS event and Lua `NIS.EnterBasicNIS` (82849618) both call
+  the NIS manager (`*(830CFD94)+200`) vt+0x10(name, mode, 0, 1, 0, 0) [code]. The scene ends in 8285F720, which posts
+  cMsgNISChallengeNotify with +0x10 = 1 (that ends the event), cMsgNISComplete and pops input mode 8 [code]. Marquee
+  actors are queued loads of their character (82824610); `current_player` / `dynamic` actors are the local skater
+  (82823F88) [code, function heads only].
+- **Camera cuts** [data; meaning inferred]: a scene's camera takes are its ICE tracks. One track without camera keys
+  holds group 35 per segment: TAKE_START (16 bits, as a fraction of the scene length) and TAKE_NUMBER. For
+  tut_sksc_01 the cuts are 0.56 s take 2, 3.92 s take 3, 9.21 s take 0, 12.97 s take 0, 18.79 s take 1 (the last
+  segment is empty). The takes' own keys fit this: take 1 holds still until 17.06 s and moves from 18.15 s, take 2
+  moves from 0.56 s. Takes are sampled on scene time. Every key of the lesson scene is SPACE 1, a point fixed in the
+  scene frame (828F36B0 has no case for it). The clip's hips at t = 0 (-32.5, 0.76, -15.6) and take 0's first look
+  point (-34.2, 0.93, -14.9) are in the same frame, and in game that frame is the map's: the demo plays on the
+  Skate School road as in the PS3 recording. The scene has no FISHEYE keys; the lens is 24.4 mm (wide).
+- **Change.** `presentation_run::NisHandler` (NIS is no longer a stub): start asks the player for the scene, the event
+  holds its group until the player reports the end, stop ends the running scene. `nis_player.rs`: the scene table
+  by name, the first actor with a clip wears its character on the player rig (`CustomModels::request_preview`, as
+  FE 62's preview does; put back at the end), poses with the clip in map space, the gameplay camera shows the take
+  the cut list names (`ice_camera::scene_cuts`, `take_at`) with the take's lens; the scene ends after its length;
+  the gameplay HUD hides while it runs (`nis_player::playing`). A scene missing from the table, or without an
+  actor clip on disk, ends at once (logged), so no group waits forever.
+- **Mods.** Scenes, actors, clips, cuts and lengths are data (scene table + ICE file); a mod's presentation group
+  plays any scene by name through the NIS event, and a mod can override the NIS handler by name (registry).
+- **NOT RETAIL YET / open.** Skip (cMsgNISSkip / cMsgNISKill exist; the button and prompt are not read); whether
+  the end is the scene length or the clip end (equal for the lessons); scenes with several actors (only the first
+  plays; the others need their own rigs); the player is not frozen or moved (retail pushes input mode 8); what
+  makes the retail demo look fisheye; NIS speech and subtitles inside scenes.
+- **Checked** (`.local/poc-tests/nis-run.ps1 -At 8 / -At 30`, SKATE_VERIFY_TUTORIAL=tut_sksc_01, muted): at 8 s
+  Benny Fairfax pushes down the road seen from low behind (the recording's shot), no HUD; the scene ends at
+  22.30 s, the player's own skater stands on the start pad and the Coach Frank tip "3 pushes = Max speed" shows.
+  Tests: `presentation_run` (NIS holds its group until the end report, removal stops it), skate-data `scene_table`
+  data-gated (cut list of tut_sksc_01, `take_at`).
+- **Next (step 3).** The objective HUD texts (doc 42 "Tutorial HUD").
+
 ## Verification
 
 - `python -m unittest tools.asset_pipeline.test_progression tools.asset_pipeline.test_progression_lua`: OK.

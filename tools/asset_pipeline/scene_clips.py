@@ -9,6 +9,9 @@ from tools.owned_game.big import BigArchive
 
 PREFIX = 'data/scene/trickguide/'
 ICE = 'data/scene/ice_000.bin'
+SCENE_TABLE = 'data/scene/scene_000.bin'
+SCENE_RECORD = 104
+SCENE_ACTOR = 180
 SET_MODEL = 'world/models/DIST_TrickGuide'
 SET_TEXTURES = 'world/models/DIST_TrickGuide_Textures'
 # FE 62's preview stage (MarqueeViewer): the Create-a-Skater set, modeled in world space around (-4..0, 200, -15..0)
@@ -45,7 +48,44 @@ def extract(game_root, assets, work):
     export_sky(read(SET_MODEL), read(SET_TEXTURES), assets)
     if not export_set(read(STAGE_MODEL), read(STAGE_TEXTURES), assets/'private/hud/scene/MarqueeStage.skate', STAGE_SHADERS):
         raise RuntimeError('The FE 62 preview stage has no exportable meshes')
-    return len(entries)
+    return len(entries) + export_nis(game_root, archive, assets)
+
+
+def export_nis(game_root, archive, assets):
+    """The NIS scenes (in-engine cutscenes: lesson demos, story scenes): the scene table scene_000.bin from
+    miscboot.big and every clip its actors name (scene/anim/*.abin) from scene.big, into private/hud/scene."""
+    boot = BigArchive(game_root/'data/big/miscboot.big')
+    table = [e for e in boot.entries if e.path.lower() == SCENE_TABLE]
+    if len(table) != 1:
+        raise RuntimeError('miscboot.big has no ' + SCENE_TABLE)
+    raw = boot.read(table[0])
+    output = assets/'private/hud/scene'
+    (output/'scene_000.bin').write_bytes(raw)
+    wanted = {'data/' + path.lower() for path in scene_actor_clips(raw)}
+    clips = [e for e in archive.entries if e.path.lower() in wanted]
+    anim = output/'anim'
+    if anim.exists():
+        shutil.rmtree(anim)
+    anim.mkdir(parents=True)
+    for e in clips:
+        (anim/e.path.rsplit('/', 1)[1]).write_bytes(archive.read(e))
+    return len(clips)
+
+
+def scene_actor_clips(raw):
+    """The clip paths of scene_000.bin's actor table (big-endian; header {tag, version, records, actors}, 104-byte
+    records, then 180-byte actors {character[32], type[16], clip[64], scene[64], u32})."""
+    import struct
+    _, _, records, actors = struct.unpack_from('>4I', raw, 0)
+    base = 16 + records * SCENE_RECORD
+    if base + actors * SCENE_ACTOR != len(raw):
+        raise RuntimeError('scene_000.bin: unexpected size %d for %d records, %d actors' % (len(raw), records, actors))
+    clips = []
+    for i in range(actors):
+        clip = raw[base + i * SCENE_ACTOR + 48:base + i * SCENE_ACTOR + 112].split(b'\0')[0].decode('latin1')
+        if clip:
+            clips.append(clip)
+    return clips
 
 
 def export_sky(raw, texture_raw, assets):

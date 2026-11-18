@@ -776,7 +776,8 @@ fn render(
     let started = std::time::Instant::now();
     // A movie (FE 24) hides the gameplay HUD; only fmv_popup's chyron draws over the video.
     // A movie or a new career's boot flow screens hide the gameplay HUD.
-    let movie_playing = movie.is_some_and(|m| m.playing()) || crate::career::boot_flow_covers();
+    // An NIS scene hides it too (the PS3 recording's lesson demo shows no HUD).
+    let movie_playing = movie.is_some_and(|m| m.playing()) || crate::career::boot_flow_covers() || crate::nis_player::playing();
     render_hud(commands, hud, meshes, materials, fe_hud, overlay, menus, &mut was_showing, &heading, &icons, movie_playing, prompts);
     crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_HUD_RENDER, started);
 }
