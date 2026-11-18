@@ -111,6 +111,10 @@ pub(crate) struct ChallengeHudState {
     pub dpo: [DpoSlot; 2],
     pub two_dpos: bool,
     pub objectives: Vec<ObjectiveRow>,
+    /// The objective HUD's activity name line (a text id the movie localizes): the tutorial's title ("Riding On 4
+    /// Wheels" in the PS3 recording); none for own the spot (its 3-argument SetupObjectiveHUDData, b844).
+    #[serde(default)]
+    pub activity_title: Option<String>,
     /// Whole seconds left on the race countdown (`Countdown_GetCountdownTime` "#%d"; 0 draws GO).
     #[serde(default)]
     pub countdown: i32,
@@ -423,9 +427,12 @@ impl Host for Bindings {
                 }))
             }
             ("HUDComponents", "Objective_GetObjectiveValue") => Ok(Value::Text(row(0).value)),
-            // Own the spot sets up its objective HUD without the activity line (b844: 3-argument SetupObjectiveHUDData).
-            ("HUDComponents", "Objective_GetActivityTitle" | "Objective_GetActivityType") => Ok(Value::Text(String::new())),
-            ("HUDComponents", "Objective_GetActivityTypeVisibility" | "Objective_GetActivityNameVisibility") => Ok(Value::Bool(false)),
+            // Own the spot sets up its objective HUD without the activity line (b844: 3-argument SetupObjectiveHUDData);
+            // a tutorial shows its title there and no activity type (PS3 recording).
+            ("HUDComponents", "Objective_GetActivityTitle") => Ok(Value::Text(s.activity_title.clone().unwrap_or_default())),
+            ("HUDComponents", "Objective_GetActivityType") => Ok(Value::Text(String::new())),
+            ("HUDComponents", "Objective_GetActivityNameVisibility") => Ok(Value::Bool(s.activity_title.is_some())),
+            ("HUDComponents", "Objective_GetActivityTypeVisibility") => Ok(Value::Bool(false)),
             ("FELanguage", "GetLanguage") => Ok(Value::Text("english".into())),
             ("FELanguage", "GetLocalizedFormatStringCustom") => {
                 let id = args.first().map(|v| v.text()).unwrap_or_default();

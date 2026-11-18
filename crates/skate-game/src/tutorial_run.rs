@@ -148,6 +148,14 @@ pub(crate) struct TutorialRun {
 }
 
 impl TutorialRun {
+    /// The objective HUD's rows (the rows with DisplayInHUD, as follow the leader's, b947): empty until the
+    /// objectives are made on arrival.
+    pub(crate) fn objective_rows(&self) -> Vec<crate::hud_challenge::ObjectiveRow> {
+        self.objectives.as_ref()
+            .map(|o| crate::ftl_host::objective_rows(&self.data.objectives, &o.states()))
+            .unwrap_or_default()
+    }
+
     pub(crate) fn new(data: TutorialData, trick_groups: crate::challenge_objectives::TrickGroups) -> Self {
         let params = Params { intro: !data.presentation.intro.is_empty(), outro: !data.presentation.outro.is_empty(),
             restart: !data.presentation.restart.is_empty(), ignore_initial_reposition: data.ignore_initial_reposition,

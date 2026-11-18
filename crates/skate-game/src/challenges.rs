@@ -891,11 +891,16 @@ fn update(
                         d.choice = Some(skate_core::challenges::end_dialog::Action::Continue);
                     }
                 }
-                // The owned it banner (hud2/ownthespot's banner movie) shows as in own the spot. NOT RETAIL YET: the
-                // objective HUD's row texts for tutorials are not known (doc 42 "Tutorial HUD"), so it stays hidden.
+                // The owned it banner (hud2/ownthespot's banner movie) shows as in own the spot; the objective HUD
+                // lists the rows with DisplayInHUD by their titles (doc 42 "Tutorial HUD").
                 crate::tutorial_run::Action::ShowHud(skate_core::challenges::tutorial::Hud::OwnedIt, shown) => hud.show(Component::OwnedIt, shown),
                 crate::tutorial_run::Action::ShowHud(skate_core::challenges::tutorial::Hud::Objective, shown) => {
-                    info!("SKATE_TUTORIAL objective HUD {shown} NOT RETAIL YET: row texts unknown, not shown");
+                    info!("SKATE_TUTORIAL objective HUD {shown}");
+                    hud.show(Component::Objective, shown);
+                    if !shown {
+                        hud.activity_title = None;
+                        hud.objectives.clear();
+                    }
                 }
                 crate::tutorial_run::Action::Finished(completion) => {
                     career.write(crate::career::ChallengeResult { challenge: tutorial.data.id.clone(), completion, reactivate: tutorial.data.persistent });
@@ -904,6 +909,15 @@ fn update(
             }
         }
         if !finished {
+            if hud.is_shown(Component::Objective) {
+                let rows = tutorial.objective_rows();
+                if hud.objectives != rows {
+                    hud.objectives = rows;
+                }
+                if hud.activity_title != tutorial.data.title_id {
+                    hud.activity_title = tutorial.data.title_id.clone();
+                }
+            }
             challenges.tutorial = Some(tutorial);
         } else if end_dialog.open {
             end_dialog.open = false;
