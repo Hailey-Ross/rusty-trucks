@@ -13,6 +13,21 @@ pub(crate) struct CasScreen {
     pub done: bool,
 }
 
+/// The exit confirmation's callback (82603290 -> 82604748).
+pub(crate) const EXIT_POPUP: &str = "engine:cas.exit";
+
+/// B on the top menu (82603290, research b1033): Yes (0) / No (1).
+pub(crate) fn exit_popup() -> skate_core::fe_popup::PopupRequest {
+    skate_core::fe_popup::PopupRequest {
+        title: "ID_COMMON_WARNING_TITLE".into(),
+        description: "ID_CAC_EXIT_CAC_CONFIRMATION".into(),
+        options: vec!["ID_COMMON_YES".into(), "ID_COMMON_NO".into()],
+        callback: EXIT_POPUP.into(),
+        cancelable: true,
+        ..Default::default()
+    }
+}
+
 /// NOT RETAIL YET: the retail screen opens only with `SKATE_RETAIL_CAS=1` until its navigation (menu push / pop, B,
 /// the exit popup; research b1031) is ported; otherwise the boot flow keeps our customizer.
 pub(crate) fn retail_enabled() -> bool {

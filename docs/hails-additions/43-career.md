@@ -529,8 +529,12 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   +0x2004 / +0x2008). Exit popup: ID_COMMON_WARNING_TITLE, ID_CAC_EXIT_CAC_CONFIRMATION, Yes / No.
 - **Change (navigation).** `cas_host`: OnMenuSelect pushes, B pops (the stage closes FE 15 on the top menu), the
   shop mode per menu, the slider values and labels, Left / Right on the sliders with state 50.
-- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): the exit popup
-  (B on the top menu closes at once), X / Y, selectors / stance / colors / morphs / part cycles on Left / Right,
+- **Change (exit).** B on the top menu opens the confirmation (`cas_host::exit_popup`, an engine popup on Sk8Popup);
+  Yes closes FE 15 and the boot flow goes on (coach_frank_intro, as in the PS3 recording), No re-enters the top
+  menu. Checked: the popup text, Yes / No and "B Cancel / A Select" draw; behind it the sliders read "Medium" and
+  the info panel shows "Body Mods has all your plastic surgery needs."
+- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): Yes does not
+  commit / save the look yet (82539790), no 250 ms close countdown or fade, X / Y, selectors / stance / colors / morphs / part cycles on Left / Right,
   825FE3C0's menu and leaf branches, the values' profile storage and defaults (0.5 meanwhile), refresh states 52 /
   53, parts and thumbnails, the stage and camera.
 - **Checked** (`career-boot-run.ps1 -From 5 -Keys "_x150,2,_x90,0"` with SKATE_RETAIL_CAS=1): FE 67 -> name entry
