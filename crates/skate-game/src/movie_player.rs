@@ -406,6 +406,8 @@ pub(crate) struct MovieChyron {
     pub want: bool,
     pub applied: bool,
     pub live: bool,
+    /// Diagnostic updates left after a show / hide call (ask 695).
+    pub trace: u32,
 }
 
 /// The stage marks itself live each frame it runs.
@@ -496,9 +498,12 @@ fn advance(mut player: ResMut<MoviePlayer>, mut upload: ResMut<MovieUpload>, mut
     if matches!(step, SkipStep::ShowPrompt | SkipStep::HidePrompt) {
         p.prompt = step == SkipStep::ShowPrompt;
     }
-    // Test aid (no simulated input): SKATE_MOVIE_PROMPT=1 shows the prompt from the start.
-    if std::env::var("SKATE_MOVIE_PROMPT").is_ok_and(|v| v == "1") {
-        p.prompt = true;
+    // Test aid (no simulated input): SKATE_MOVIE_PROMPT=1 shows the prompt from the start; =<seconds> (above 1) shows
+    // it until then and hides it (as B does).
+    match std::env::var("SKATE_MOVIE_PROMPT").ok().and_then(|v| v.parse::<f32>().ok()) {
+        Some(s) if s == 1.0 => p.prompt = true,
+        Some(s) if s > 1.0 => p.prompt = p.elapsed_ms < s * 1000.0,
+        _ => {}
     }
     chyron.want = p.prompt;
     // Retail's chyron through the menu stage; our label only when no stage runs.

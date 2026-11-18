@@ -114,11 +114,13 @@ const FREE_SKATE_PATH: &str = "main/freeskate_options.swf";
 /// AptMisc (X) and AptOption (Y) key indices.
 const APT_MISC: u32 = 5;
 const APT_OPTION: u32 = 4;
-/// The on-screen keyboard's directions: pad / D-pad / left stick (ours; FE 46 had the system keyboard).
-const KEYS_UP: [u32; 3] = [12, 16, 24];
-const KEYS_DOWN: [u32; 3] = [13, 17, 25];
-const KEYS_LEFT: [u32; 3] = [14, 18, 26];
-const KEYS_RIGHT: [u32; 3] = [15, 19, 27];
+/// The on-screen keyboard's directions (ours; FE 46 had the system keyboard): AptUp / Down / Left / Right only. They
+/// already fire for the stick and the D-pad (input.cfg `AptUp = LStickU.repeat || DPadU.repeat`); the stick- and
+/// D-pad-only keys fire in the same press, so taking them too moved the cursor twice per press.
+const KEYS_UP: [u32; 1] = [12];
+const KEYS_DOWN: [u32; 1] = [13];
+const KEYS_LEFT: [u32; 1] = [14];
+const KEYS_RIGHT: [u32; 1] = [15];
 /// The text viewer template (record 28) and its path; FE screen 3's init opens it (0x8263A190, b322).
 const TEXT_VIEWER: &str = "ToSScreen";
 const TEXT_VIEWER_PATH: &str = "nucleus/nucleus_tos.swf";
@@ -163,6 +165,10 @@ const POSTER: (&str, &str, &str) = ("source/screens/challenge/challenge_signup",
 const WELCOME: (&str, &str, &str) = ("source/screens/bootflow/welcomescreen", "bootflow/welcomescreen.swf", "WelcomeFlow");
 /// FE 11 Coach Frank's question (template 10, fedynamic only; research b1010).
 const COACH_FRANK: (&str, &str, &str) = ("source/screens/bootflow/coachfrank", "bootflow/coachfrank.swf", "CoachFrank");
+/// Updates FE 67 waits for the player's photo before it opens.
+const PHOTO_WAIT_FRAMES: u32 = 600;
+/// FE 63 TeamManagement (template 108; research b1011): hosted for the new career's forced logo pick.
+const TEAM_MANAGEMENT: (&str, &str, &str) = ("source/screens/TeamSkater_Selection/team_management", "TeamSkater_Selection/team_management.swf", "TeamManagement");
 /// FE 67 FirstTeamMember, "Start your team!" (template 113; research b1004).
 const FIRST_TEAM_MEMBER: (&str, &str, &str) = ("source/screens/TeamSkater_Selection/team_management_boot", "TeamSkater_Selection/team_management_boot.swf", "FirstTeamMember");
 /// The end dialog and reward screens open on the stage, on by default (seen drawing 2026-11-14: the end dialog and the
@@ -286,6 +292,13 @@ pub(crate) struct MenuStage {
     ftm_open: bool,
     ftm_shown: bool,
     ftm_frames: u32,
+    /// FE 63 TeamManagement's AS id, whether it is open / shown, updates since it opened, and its natives (with the
+    /// logo rows, kept between updates).
+    team_id: Option<i32>,
+    team_open: bool,
+    team_shown: bool,
+    team_frames: u32,
+    team_host: crate::team_management_host::TeamManagementHost,
     profile_generation: (u64, u64),
     /// The Extras screen's AS id and host (extras_host), the cheat table, and the text entry FE 46 opens next.
     extras_id: i32,
@@ -820,6 +833,14 @@ fn setup(
                 ftm_open: false,
                 ftm_shown: false,
                 ftm_frames: 0,
+                team_id: templates.iter().position(|n| n == TEAM_MANAGEMENT.2).filter(|_| movies.movies.contains_key(TEAM_MANAGEMENT.0)).map(|i| 600 + i as i32),
+                team_open: false,
+                team_shown: false,
+                team_frames: 0,
+                team_host: crate::team_management_host::TeamManagementHost {
+                    logos: crate::retail_menu_movies::team_logos(&crate::retail_menu_movies::set_root(&config)),
+                    ..Default::default()
+                },
                 profile_generation: (0, 0),
                 extras_id: as_id(EXTRAS),
                 extras: Default::default(),
@@ -919,7 +940,7 @@ fn update(
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry, mut marquee): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>, ResMut<crate::marquee_preview::MarqueeView>),
     // Popups; the instant replay feed and whether the retail replay screen shows (one parameter: Bevy's 16).
-    (mut popup_mods, replay_feed, mut replay_ui, mut look_screen, mut music_link, mut movie_chyron, movie_subtitle, mut welcome_screen, mut boot_entry, mut coach_screen, mut ftm_screen): (
+    (mut popup_mods, replay_feed, mut replay_ui, mut look_screen, mut music_link, mut movie_chyron, movie_subtitle, mut welcome_screen, mut boot_entry, mut coach_screen, mut ftm_screen, mut logo_screen, photo): (
         ResMut<crate::popup_host::PopupMods>,
         Option<Res<crate::replay::ReplayFeed>>,
         Option<ResMut<crate::replay::RetailReplayUi>>,
@@ -931,6 +952,8 @@ fn update(
         Option<ResMut<crate::welcome_host::BootTextEntry>>,
         Option<ResMut<crate::welcome_host::CoachFrankScreen>>,
         Option<ResMut<crate::welcome_host::FirstTeamMemberScreen>>,
+        Option<ResMut<crate::team_management_host::TeamLogoScreen>>,
+        Option<Res<crate::skater_photo::SkaterPhoto>>,
     ),
     // Challenge Map travel; cheats out, typed text in and the zombie flag the cheat toggles; FE 62's characters and
     // its requests out.
@@ -1022,11 +1045,28 @@ fn update(
                 Ok(_) => {
                     info!("MOVIE chyron {label}");
                     c.applied = c.want;
+                    c.trace = 60;
                 }
                 Err(e) => {
                     warn!("MOVIE chyron {call}: {e}");
                     c.applied = c.want;
                     c.live = false;
+                }
+            }
+        }
+        // Diagnostic (ask 695): the level's frame and the chyron clip's alpha / visibility for a second after a call.
+        if c.trace > 0 {
+            c.trace -= 1;
+            if c.trace % 10 == 0 {
+                for level in ms.stage.levels().iter().filter(|l| l.key.contains("fmv_popup")) {
+                    let m = &level.movie;
+                    let root = m.instances.get(&m.root);
+                    let chyron = match ms.stage.vm.get(m.root, "mcChyron") {
+                        Value::Object(id) => m.instances.get(&id).map(|i| (i.frame, i.playing, i.placement.is_some())),
+                        _ => None,
+                    };
+                    info!("MOVIE chyron trace {} root frame={:?} playing={:?} mcChyron={chyron:?}", level.key,
+                        root.map(|r| r.frame), root.map(|r| r.playing));
                 }
             }
         }
@@ -1049,6 +1089,7 @@ fn update(
     fe.trick_guide.open = trick.is_some() && ms.stack.top(Layer::Main) == trick;
     fe.challenge_map = std::mem::take(&mut ms.challenge_map);
     fe.image_slots = std::mem::take(&mut ms.image_slots);
+    fe.team = std::mem::take(&mut ms.team_host);
     fe.challenge_map.open = map.is_some() && ms.stack.top(Layer::Main) == map;
     fe.offline_profile = std::mem::take(&mut ms.offline_profile);
     fe.reward_summary = std::mem::take(&mut ms.reward_summary);
@@ -1250,7 +1291,12 @@ fn update(
             }
             wanted_ftm = false;
         }
-        if let Some(id) = ms.ftm_id.filter(|_| wanted_ftm != ms.ftm_open) {
+        // 82650BA0 states 1..6: the player's photo is built before the screen shows (at most PHOTO_WAIT_FRAMES).
+        let photo_pending = wanted_ftm && !ms.ftm_open && photo.as_ref().is_some_and(|p| !p.ready) && ms.ftm_frames < PHOTO_WAIT_FRAMES;
+        if photo_pending {
+            ms.ftm_frames += 1;
+        }
+        if let Some(id) = ms.ftm_id.filter(|_| wanted_ftm != ms.ftm_open && !photo_pending) {
             if wanted_ftm {
                 info!("RETAIL_MENUS open {} (FE 67)", FIRST_TEAM_MEMBER.2);
                 open_screen(&mut ms.stage, FIRST_TEAM_MEMBER.1, FIRST_TEAM_MEMBER.2, &mut fe)?;
@@ -1261,7 +1307,47 @@ fn update(
             ms.ftm_shown = false;
             ms.ftm_frames = 0;
         }
-        fe.welcome.first_team_member = ftm_screen.as_ref().filter(|_| ms.ftm_open).map(|f| (f.team_name.clone(), f.profile_name.clone()));
+        // The photo under its asset name for the card (GetTeamData()[3], the image slot's LoadAsset).
+        fe.welcome.photo = String::new();
+        if let Some(handle) = photo.as_ref().filter(|p| p.ready).and_then(|p| p.image.clone()) {
+            // By asset name (LoadAsset / LoadAssetByName) and by image request (ImageRenderer_Load).
+            for prefix in [crate::image_renderer_host::ASSET_TEXTURE_PREFIX, crate::retail_menu_movies::NAMED_IMAGE_PREFIX] {
+                ms.textures.insert(format!("{prefix}{}", crate::skater_photo::PHOTO_ASSET), handle.clone());
+            }
+            fe.welcome.photo = crate::skater_photo::PHOTO_ASSET.to_owned();
+        }
+        fe.welcome.first_team_member = ftm_screen.as_ref().filter(|_| ms.ftm_open).map(|f| {
+            (f.team_name.clone(), f.profile_name.clone(), crate::team_management_host::team_logo_asset(&fe.team.logos, f.logo.as_deref()))
+        });
+        // FE 63 TeamManagement, the new career's forced logo pick: opened by the boot flow, closed on the pick.
+        let mut wanted_team = logo_screen.as_ref().is_some_and(|s| s.open);
+        if wanted_team && (ms.team_id.is_none() || fe.team.logos.is_empty()) {
+            warn!("RETAIL_MENUS TeamManagement screen or team logos not in this install (Refresh Game Files adds them): skipped");
+            if let Some(s) = logo_screen.as_mut() {
+                s.open = false;
+            }
+            wanted_team = false;
+        }
+        if let Some(id) = ms.team_id.filter(|_| wanted_team != ms.team_open) {
+            if wanted_team {
+                info!("RETAIL_MENUS open {} (FE 63, forced logo pick)", TEAM_MANAGEMENT.2);
+                if let Some(s) = logo_screen.as_ref() {
+                    fe.team.team_name = s.team_name.clone();
+                    fe.team.logo = s.logo.clone();
+                }
+                fe.team.open = true;
+                fe.team.preview = None;
+                fe.team.chosen = None;
+                fe.team.states.clear();
+                open_screen(&mut ms.stage, TEAM_MANAGEMENT.1, TEAM_MANAGEMENT.2, &mut fe)?;
+            } else {
+                close(&mut ms.stage, id, &mut fe)?;
+                fe.team.open = false;
+            }
+            ms.team_open = wanted_team;
+            ms.team_shown = false;
+            ms.team_frames = 0;
+        }
         fe.welcome.open = ms.welcome_open || ms.coach_open || ms.ftm_open;
         fe.welcome.team_state = welcome_screen.as_ref().map_or(0, |w| w.logic.team_state());
         let auto =ms.auto_open && time.elapsed_secs() > 4.0;
@@ -1269,7 +1355,7 @@ fn update(
         if auto {
             fired.insert(0, (APT_START, 0));
         }
-        if ms.stack.input_target().is_some() || ms.end_open.is_some() || ms.reward_open.is_some() || ms.poster_open || ms.welcome_open || ms.coach_open || ms.ftm_open {
+        if ms.stack.input_target().is_some() || ms.end_open.is_some() || ms.reward_open.is_some() || ms.poster_open || ms.welcome_open || ms.coach_open || ms.ftm_open || ms.team_open {
             fired.extend(ms.injected.pop_front().flatten().map(|k| (k, 0)));
         }
         for (key, controller) in fired {
@@ -1305,6 +1391,17 @@ fn update(
             // keyboard is on top.
             if let (true, Some(id), None) = (ms.ftm_open, ms.ftm_id, ms.stack.input_target()) {
                 if ms.ftm_shown {
+                    ms.stage.call_path(
+                        "_global.ScreenManager.UpdateInput",
+                        vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())],
+                        &mut fe,
+                    )?;
+                }
+                continue;
+            }
+            // TeamManagement in the forced logo pick (82651EE0 returns 0 for every key in mode 2): all keys to the movie.
+            if let (true, Some(id)) = (ms.team_open, ms.team_id) {
+                if ms.team_shown {
                     ms.stage.call_path(
                         "_global.ScreenManager.UpdateInput",
                         vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())],
@@ -2174,6 +2271,27 @@ fn update(
                 }
             }
         }
+        if let Some(id) = ms.team_id.filter(|_| ms.team_open) {
+            ms.team_frames += 1;
+            let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
+            let intro = take_call(&mut fe, &format!("Game.OnScreenIntroComplete({id})"));
+            if !ms.team_shown && (loaded || intro || ms.team_frames > SHOW_FALLBACK_FRAMES) {
+                info!("RETAIL_MENUS show TeamManagement {id} (loaded {loaded}, intro {intro}, frames {})", ms.team_frames);
+                ms.team_shown = true;
+                ms.stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text(id.to_string()), Value::Text("true".into())], &mut fe)?;
+                // 82651A48: a new career (profile +0x68) opens the forced pick, mode 2, SetState 0x1E.
+                set_state(&mut ms.stage, id, 0x1E, &mut fe)?;
+            }
+            for state in std::mem::take(&mut fe.team.states) {
+                set_state(&mut ms.stage, id, state, &mut fe)?;
+            }
+            if let Some(key) = fe.team.chosen.take() {
+                info!("RETAIL_MENUS TeamManagement logo {key}");
+                if let Some(s) = logo_screen.as_mut() {
+                    s.chosen = Some(key);
+                }
+            }
+        }
         if let Some(id) = ms.coach_id.filter(|_| ms.coach_open) {
             ms.coach_frames += 1;
             let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
@@ -2650,6 +2768,7 @@ fn update(
     ms.music_player = std::mem::take(&mut fe.music_player);
     ms.tips_loader = std::mem::take(&mut fe.tips_loader);
     ms.image_slots = std::mem::take(&mut fe.image_slots);
+    ms.team_host = std::mem::take(&mut fe.team);
     ms.popup = std::mem::take(&mut fe.popup);
     // A Challenge Map leaf the player picked goes through the registry: the engine's teleport handler queues the
     // teleport and closes the map and the pause menu (retail fades out and closes the front end, sub_826494C8);
@@ -3152,7 +3271,7 @@ fn render(
         let named = [crate::image_renderer_host::SLOT_TEXTURE_PREFIX, crate::image_renderer_host::ASSET_TEXTURE_PREFIX, crate::retail_menu_movies::NAMED_IMAGE_PREFIX]
             .iter()
             .any(|p| d.texture.starts_with(p));
-        !named || movies.image(&d.texture).is_some()
+        !named || movies.image(&d.texture).is_some() || ms.textures.contains_key(&d.texture)
     });
     // The loading screen hides the world behind it (black under the movie) from black until it fades back in.
     if ms.load.covered() {

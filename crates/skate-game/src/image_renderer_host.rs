@@ -36,6 +36,9 @@ impl ImageSlots {
     /// One `Game.ImageRenderer_*` native; None = not ours.
     pub fn call(&mut self, object: &str, method: &str, args: &[Value]) -> Option<Value> {
         let method = method.strip_prefix("ImageRenderer_").filter(|_| object == "Game")?;
+        if std::env::var_os("SKATE3_RETAIL_MENUS_TRACE").is_some() {
+            bevy::log::info!("RETAIL_MENUS image renderer {method}({:?})", args);
+        }
         let index = |i: usize| args.get(i).map(to_integer).filter(|n| (0..SLOTS as i64).contains(&(*n as i64))).map(|n| n as usize);
         let text = |i: usize| match args.get(i) {
             Some(Value::Text(t)) => Some(t.clone()),
@@ -63,8 +66,9 @@ impl ImageSlots {
                     self.slots[i].lock = false;
                 }
             }
-            // 825A59B8: a resident texture by name; no file is requested.
-            "LoadAssetByName" => {
+            // 825A59B8: a resident texture by name; no file is requested. LoadTeamLogo / LoadAsset with a name (the team
+            // logos' asset names, research b1011 section 3) resolve the same way.
+            "LoadAssetByName" | "LoadTeamLogo" | "LoadAsset" => {
                 if let (Some(name), Some(i)) = (text(0), index(1)) {
                     self.slots[i].image = Some(format!("{ASSET_TEXTURE_PREFIX}{name}"));
                     self.slots[i].lock = false;
@@ -84,8 +88,7 @@ impl ImageSlots {
                     }
                 }
             }
-            // LoadAsset / MemcardLoad / OnlineLoad / LoadTeamLogo: online and memory card sources, not ported; the
-            // slot keeps what it has (draws nothing new).
+            // MemcardLoad / OnlineLoad: memory card and online sources, not ported; the slot keeps what it has.
             _ => {}
         }
         Some(Value::Undefined)

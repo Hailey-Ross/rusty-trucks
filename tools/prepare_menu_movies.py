@@ -86,6 +86,8 @@ MENU_ROOTS = (
     'source/screens/unlock/unlock_teammate',
     # The new career's FE 67 FirstTeamMember ("Start your team!", template 113; research b1004).
     'source/screens/TeamSkater_Selection/team_management_boot',
+    # FE 63 TeamManagement (template 108: team view, logo picker, the new career's forced logo pick; research b1011).
+    'source/screens/TeamSkater_Selection/team_management',
     'source/screens/hudcomponents/endchallengeoptions',
     'source/screens/hudcomponents/endchallenge_small',
     'source/screens/hudcomponents/challengefailed_small',
@@ -121,7 +123,11 @@ DLC_ROOTS = (
 )
 MAX_MOVIES = 256  # apt_imports.rs MAX_MOVIES
 # Runtime images the movies load by name (Game.ImageRenderer_Load, research b257 / b258): only in fedynamic.big.
-IMAGE_PREFIXES_DYNAMIC = ('data/fe/source/images/map/',)
+IMAGE_PREFIXES_DYNAMIC = ('data/fe/source/images/map/',
+                          # Team logos (FE 63 / FE 67 / team pages, research b1011 section 3).
+                          'data/fe/cas/logos/logo_object_team_logo_',
+                          # Team member photo backdrops (research b1013).
+                          'data/fe/source/images/photo/')
 # Texture packs whose textures the engine draws by texture name (retail looks them up as FNV-1 64 of "<name>.Texture"
 # in the texture manager, research b263): the Challenge Map marker icons. Key: texture/<name>.
 TEXTURE_PACKS_DYNAMIC = ('data/fe/source/images/icons/minimap',)
@@ -230,6 +236,33 @@ def pack_textures(cache_root, runtime, packs):
             key = 'texture/' + texture['name'].lower().removesuffix('.texture')
             out[key] = {'rgba': relative, 'width': texture['width'], 'height': texture['height']}
     return out
+
+
+TEAM_LOGO_IMAGE = 'fe/cas/logos/logo_object_team_logo_'
+
+
+def team_logos(collections, images):
+    """The team logo picker's rows (research b1011 section 3, b974): the `predefined` children of the logo class
+    `challenge_team_logos`, in ascending hash64 of the row key, the order retail's picker shows them (all 42 checked
+    against the PS3 recording). The vault keys are hashed: row `logo_<x>` is named from its texture
+    `logo_object_team_logo_<x>_mat`. [{'key', 'text' (localized name id), 'image' (named image key)}]."""
+    from asset_pipeline.vlt import hash64
+    names = {}
+    for key in images:
+        if key.startswith(TEAM_LOGO_IMAGE) and key.endswith('_mat'):
+            name = 'logo_' + key[len(TEAM_LOGO_IMAGE):-len('_mat')]
+            names[f'Hash_{hash64(name):016X}'] = (name, key)
+    logo_class = f'Hash_{hash64("challenge_team_logos"):016X}'
+    predefined = f'Hash_{hash64("predefined"):016X}'
+    rows = []
+    for row in json.loads(Path(collections).read_text(encoding='utf-8'))['collections']:
+        if row['class'] != logo_class or row.get('parent') != predefined or row['key'] not in names:
+            continue
+        name, image = names[row['key']]
+        text = next((v.get('data') for k, v in row['fields'].items() if v.get('type') == 'EA::Reflection::Text'), None)
+        rows.append({'key': name, 'hash': int(row['key'][5:], 16), 'text': text, 'image': image})
+    rows.sort(key=lambda r: r['hash'])
+    return [{k: v for k, v in r.items() if k != 'hash'} for r in rows]
 
 
 def named_images(cache_root, runtime, prefixes):
@@ -417,12 +450,14 @@ def prepare(game, output, collections, roots=MENU_ROOTS, dlc=None):
         if family not in mappings and fallback:
             mappings[family] = dict(mappings[fallback], fallback_of=fallback)
             fonts[family] = cache.font_asset(fallback)
-    language = {row['label'].strip(): row['value'] for row in json.loads(
-        (cache_root / 'metadata/languages/english_global.json').read_text(encoding='utf-8'))['entries']}
+    disc_language = json.loads((cache_root / 'metadata/languages/english_global.json').read_text(encoding='utf-8'))
+    language = {row['label'].strip(): row['value'] for row in disc_language['entries']}
     # DLC text (the creator pack's replay editor labels, the map packs' location and world names) adds to the disc's;
     # a disc label keeps its text. Text comes from every pack with language tables, movies only from `extras`.
+    # The packs' own character tables are empty, so their bytes go through the disc's.
+    table = tuple(disc_language['character_table']) if disc_language.get('character_table') else None
     for archive in dlc_text_archives(dlc, output / 'dlc') if dlc else []:
-        for label, value in packages.language(archive).items():
+        for label, value in packages.language(archive, table=table).items():
             language.setdefault(label, value)
     # Script-made text fields name fonts at run time (sk8popup's createTextField body: "Futura Std Heavy"); the
     # runtime resolves names without a row to the same fallback, so it is exported with its font.
@@ -487,7 +522,7 @@ def prepare(game, output, collections, roots=MENU_ROOTS, dlc=None):
                 'missing_movies': missing, 'shared': 'shared.json',
                 'unresolved_fonts': [f for f, a in fonts.items() if a is None],
                 'images': dict(sorted(images.items())), 'world_maps': dict(sorted(maps.items())),
-                'files': files}
+                'team_logos': team_logos(collections, images), 'files': files}
     if missing_images:
         manifest['missing_images'] = missing_images
     (runtime / 'manifest.json').write_text(json.dumps(manifest, indent=1) + '\n', encoding='utf-8')
@@ -524,7 +559,17 @@ def install(assets, runtime):
     runtime_files(staging)
     if destination.exists():
         shutil.rmtree(destination)
-    staging.rename(destination)
+    # Windows can hold the fresh folder for a moment (indexer, antivirus): the rename then fails with access denied
+    # and the install was left without menu movies (2026-11-17). Retry for up to 10 s.
+    import time
+    for attempt in range(40):
+        try:
+            staging.rename(destination)
+            break
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.25)
     return {f'private/menu-movies/{relative}': sha for relative, sha in files.items()}
 
 

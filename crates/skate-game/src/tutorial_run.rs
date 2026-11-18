@@ -32,6 +32,9 @@ pub(crate) struct TutorialData {
     pub map: String,
     #[serde(default)]
     pub title_id: Option<String>,
+    /// The row's Description (the sign-up card's text).
+    #[serde(default)]
+    pub description_id: Option<String>,
     pub start: Start,
     pub location: Start,
     pub sign_up_radius: f32,
@@ -364,7 +367,7 @@ mod tests {
         gate[12] = true;
         let m = [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [50., 0., 0., 1.]];
         TutorialData {
-            id: "tut_test".into(), map: "SkateSchool".into(), title_id: None,
+            id: "tut_test".into(), map: "SkateSchool".into(), title_id: None, description_id: None,
             start: Start { locator: "s".into(), matrix: m }, location: Start { locator: "l".into(), matrix: m },
             sign_up_radius: 4.0, spawn_offboard: true, persistent: false, ignore_initial_reposition: None,
             presentation: PresentationCounts { intro: EventList::Count(2), outro: EventList::Count(0), restart: EventList::Count(3) },

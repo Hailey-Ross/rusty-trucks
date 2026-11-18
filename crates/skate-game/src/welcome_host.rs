@@ -43,6 +43,8 @@ pub(crate) struct FirstTeamMemberScreen {
     pub open: bool,
     pub team_name: String,
     pub profile_name: String,
+    /// The team's logo row key (the header shows it).
+    pub logo: Option<String>,
     /// A row picked on the movie, not handled yet.
     pub picked: Option<i64>,
     /// The choice waiting for the profile name keyboard.
@@ -76,8 +78,10 @@ impl BootTextEntry {
 pub(crate) struct WelcomeHost {
     pub open: bool,
     pub team_state: i32,
-    /// FE 67 is open: its names.
-    pub first_team_member: Option<(String, String)>,
+    /// FE 67 is open: its team name, profile name and the team logo's asset name.
+    pub first_team_member: Option<(String, String, String)>,
+    /// The player's photo asset name (empty until it is taken).
+    pub photo: String,
     /// Rows picked this update (`Game.OnMenuSelect`).
     pub picks: Vec<i64>,
 }
@@ -87,12 +91,11 @@ impl WelcomeHost {
         if (object, method) == ("TeamManagement", "GetNewTeamState") {
             return Ok(Some(Value::Number(f64::from(self.team_state))));
         }
-        if let Some((team, profile)) = &self.first_team_member {
+        if let Some((team, profile, logo)) = &self.first_team_member {
             match (object, method) {
-                // [count, team name, logo asset, member photo assets...]: the player alone; no logo or photo assets
-                // yet (NOT RETAIL YET: logos FE 63 and the player photo build are not ported).
+                // [count, team name, logo asset, member photo assets...]: the player alone, with their photo.
                 ("TeamManagement", "GetTeamData") => {
-                    let items = vec![Value::Number(1.0), Value::Text(format!("#{team}")), Value::Text(String::new()), Value::Text(String::new())];
+                    let items = vec![Value::Number(1.0), Value::Text(format!("#{team}")), Value::Text(logo.clone()), Value::Text(self.photo.clone())];
                     return Ok(Some(Value::Object(vm.array(items)?)));
                 }
                 ("Game", "GetProfileName") => return Ok(Some(Value::Text(format!("#{profile}")))),
@@ -134,9 +137,10 @@ mod tests {
         let mut vm = Vm::new();
         let mut h = WelcomeHost::default();
         assert_eq!(h.call(&mut vm, "Game", "GetProfileName", &[]).unwrap(), None);
-        h.first_team_member = Some(("mtnbound".into(), "The Legend".into()));
+        h.first_team_member = Some(("mtnbound".into(), "The Legend".into(), "logo_object_team_logo_cat_skate_mat".into()));
         assert_eq!(h.call(&mut vm, "Game", "GetProfileName", &[]).unwrap(), Some(Value::Text("#The Legend".into())));
         let Some(Value::Object(list)) = h.call(&mut vm, "TeamManagement", "GetTeamData", &[]).unwrap() else { panic!("array") };
         assert_eq!(vm.get(list, "1"), Value::Text("#mtnbound".into()));
+        assert_eq!(vm.get(list, "2"), Value::Text("logo_object_team_logo_cat_skate_mat".into()));
     }
 }

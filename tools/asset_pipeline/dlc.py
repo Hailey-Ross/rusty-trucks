@@ -257,14 +257,18 @@ def merged(base: dict, dlc_vaults: list[dict]) -> dict:
     return {**base, 'collections': rows}
 
 
-def _strings(data: bytes) -> list[str]:
+def _strings(data: bytes, table=None) -> list[str]:
     # Same layout as vendor/skate3_ui/language.py: count at 8, header 28, pool descriptor (8 bytes) at the offset at
     # 16, then NUL-separated strings. The DLC label tables end with one NUL where the disc's end with two, so the
     # last (empty) string is padded here instead of rejecting the table (and extra empty padding is dropped).
     count, header, pool = struct.unpack_from('<III', data, 8)
     if header != 28 or pool + 8 > len(data):
         raise ValueError('unsupported language table')
-    strings = [s.decode('latin-1') for s in data[pool + 8:].split(b'\0')]
+    try:
+        from vendor.skate3_ui.language import decode_text
+    except ImportError:
+        from tools.vendor.skate3_ui.language import decode_text
+    strings = [decode_text(s, table) for s in data[pool + 8:].split(b'\0')]
     while len(strings) < count + 2:
         strings.append('')
     # Some DLC tables carry one more trailing NUL instead: drop empty padding past the declared count.
@@ -275,9 +279,10 @@ def _strings(data: bytes) -> list[str]:
     return strings
 
 
-def language(archive, language_name: str = 'english') -> dict[str, str]:
+def language(archive, language_name: str = 'english', table=None) -> dict[str, str]:
     """Label -> text from every labels / <language> table pair in a DLC BIG (e.g. the creator pack's
-    LANGUAGE_Labels_creator_* + LANGUAGE_English_creator_*); HISTOGRAM tables are skipped."""
+    LANGUAGE_Labels_creator_* + LANGUAGE_English_creator_*); the packs' HISTOGRAM tables are empty and skipped:
+    `table` is the disc's character table (vendor/skate3_ui/language.py), None = Latin-1."""
     tables = {}
     for entry in archive.entries:
         path = entry.path.replace('\\', '/')
@@ -292,7 +297,7 @@ def language(archive, language_name: str = 'english') -> dict[str, str]:
     for pair in tables.values():
         if 'labels' in pair and language_name in pair:
             labels = _strings(archive.read(pair['labels']))
-            values = _strings(archive.read(pair[language_name]))
+            values = _strings(archive.read(pair[language_name]), table)
             if len(labels) == len(values):
                 for label, value in zip(labels, values):
                     if label:

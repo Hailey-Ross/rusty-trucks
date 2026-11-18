@@ -917,11 +917,13 @@ fn run_boot_flow(
         Res<Time>,
         Res<crate::config::Config>,
     ),
-    // FE 67 FirstTeamMember and what its rows lead to (the customizer, the player's name).
-    (mut ftm, mut customiser, mut net): (
+    // FE 67 FirstTeamMember and what its rows lead to (the customizer, the player's name); FE 63's forced logo pick.
+    (mut ftm, mut customiser, mut net, mut logo_pick, mut photo): (
         Option<ResMut<crate::welcome_host::FirstTeamMemberScreen>>,
         Option<ResMut<crate::customiser::Customiser>>,
         Option<ResMut<crate::multiplayer::Multiplayer>>,
+        Option<ResMut<crate::team_management_host::TeamLogoScreen>>,
+        Option<ResMut<crate::skater_photo::SkaterPhoto>>,
     ),
 ) {
     use skate_core::career::boot_flow::{Step, COACH_FRANK, FIRST_TEAM_MEMBER, PROGRESS_FIRST_TEAM_MEMBER};
@@ -1023,6 +1025,16 @@ fn run_boot_flow(
         info!("SKATE_CAREER boot flow customizer closed");
         run.waiting_customiser = false;
     }
+    // FE 63's forced logo pick (826524B8 mode 2): the picked logo is written and saved, the screen closes, the step
+    // is done.
+    if let Some(l) = logo_pick.as_mut().filter(|l| l.open) {
+        let Some(key) = l.chosen.take() else { return };
+        info!("SKATE_CAREER boot flow team logo {key}");
+        state.career.team.logo = Some(key);
+        state.capture();
+        state.save_in_background();
+        l.open = false;
+    }
     if let Some(f) = ftm.as_mut().filter(|f| f.open) {
         if let Some(row) = f.picked.take() {
             match ftm_rules::select(row, state.file.boot.progress) {
@@ -1079,6 +1091,17 @@ fn run_boot_flow(
                 w.start_team_prompt();
             }
         }
+        Step::Screen(skate_core::career::boot_flow::TEAM_LOGO) if menu_stage.is_some() && logo_pick.is_some() => {
+            info!("SKATE_CAREER boot flow screen FE 63 (team logo)");
+            if let Some(l) = logo_pick.as_mut() {
+                **l = crate::team_management_host::TeamLogoScreen {
+                    open: true,
+                    team_name: state.career.team.name.clone(),
+                    logo: state.career.team.logo.clone(),
+                    chosen: None,
+                };
+            }
+        }
         Step::Screen(id) => {
             if id == FIRST_TEAM_MEMBER && state.file.boot.progress & PROGRESS_FIRST_TEAM_MEMBER == 0 {
                 state.file.boot.progress |= PROGRESS_FIRST_TEAM_MEMBER;
@@ -1087,8 +1110,19 @@ fn run_boot_flow(
             if id == FIRST_TEAM_MEMBER && menu_stage.is_some() {
                 if let Some(f) = ftm.as_mut() {
                     info!("SKATE_CAREER boot flow screen FE 67 (first team member)");
+                    // 82651020: the player's photo is taken for the first card (research b1013).
+                    if let Some(p) = photo.as_mut() {
+                        p.request = true;
+                        p.ready = false;
+                    }
                     let profile = net.as_ref().map(|n| n.player_name.clone()).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "The Legend".into());
-                    **f = crate::welcome_host::FirstTeamMemberScreen { open: true, team_name: state.career.team.name.clone(), profile_name: profile, ..default() };
+                    **f = crate::welcome_host::FirstTeamMemberScreen {
+                        open: true,
+                        team_name: state.career.team.name.clone(),
+                        profile_name: profile,
+                        logo: state.career.team.logo.clone(),
+                        ..default()
+                    };
                     return;
                 }
             }
@@ -1125,7 +1159,7 @@ fn queue_first_challenge(
     mut state: ResMut<CareerState>,
     map: Res<crate::map_transition::CurrentMap>,
     mut seen: Local<Option<u64>>,
-    mut signed: MessageWriter<crate::challenges::ChallengeSignUp>,
+    mut offered: MessageWriter<crate::challenges::ChallengeOffer>,
     boot_flow: Res<BootFlowRun>,
 ) {
     // Retail signs up after the boot flow and its world load: wait while the flow runs.
@@ -1140,7 +1174,8 @@ fn queue_first_challenge(
         .map(|(_, district)| district.as_str()));
     let challenge = state.first_challenge.pick(world).to_owned();
     info!("SKATE_CAREER new career: first challenge {challenge} (world {world:?})");
-    signed.write(crate::challenges::ChallengeSignUp { body: crate::trigger_volumes::PLAYER.into(), challenge });
+    // Its sign-up card first (each skate.School lesson starts on its card in the PS3 recording, 11:10).
+    offered.write(crate::challenges::ChallengeOffer { challenge });
     state.file.boot.pending = false;
     state.save_in_background();
 }
@@ -1154,6 +1189,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<crate::welcome_host::BootTextEntry>()
         .init_resource::<crate::welcome_host::CoachFrankScreen>()
         .init_resource::<crate::welcome_host::FirstTeamMemberScreen>()
+        .init_resource::<crate::team_management_host::TeamLogoScreen>()
         .add_message::<ChallengeResult>()
         .add_message::<ChallengeDiscovered>()
         .add_systems(Update, update.after(crate::challenges::CareerResultSet).run_if(crate::challenges::opted_in))

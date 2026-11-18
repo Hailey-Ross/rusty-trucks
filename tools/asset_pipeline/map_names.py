@@ -67,7 +67,8 @@ def disc_language(game_root: Path, work: Path) -> dict[str, str]:
     from vendor.skate3_ui.language import pair_language_tables
     from vendor.skate3_ui.project import CORE_ARCHIVES
     wanted = {'data/fe/languages/labels/language_labels_global_skate3ng.bin': 'labels.bin',
-              'data/fe/languages/english/language_english_global_skate3ng.bin': 'english.bin'}
+              'data/fe/languages/english/language_english_global_skate3ng.bin': 'english.bin',
+              'data/fe/languages/english/language_english_histogram_skate3ng.bin': 'histogram.bin'}
     work.mkdir(parents=True, exist_ok=True)
     for name in CORE_ARCHIVES:
         archive = BigArchive(Path(game_root) / 'data/big' / name)
@@ -75,5 +76,6 @@ def disc_language(game_root: Path, work: Path) -> dict[str, str]:
             target = wanted.get(entry.path.replace('\\', '/').lower())
             if target:
                 (work / target).write_bytes(archive.read(entry))
-    pair = pair_language_tables(work / 'labels.bin', work / 'english.bin')
+    histogram = work / 'histogram.bin'
+    pair = pair_language_tables(work / 'labels.bin', work / 'english.bin', histogram if histogram.is_file() else None)
     return {row['label'].strip(): row['value'] for row in pair['entries'] if row['label']}
