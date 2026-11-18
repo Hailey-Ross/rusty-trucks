@@ -717,10 +717,20 @@ course from the split centers).
 - Ours: the tutorial's ShowHud commands (only logged before; the user saw no tutorial HUD in the desktop run) are now
   `tutorial_run::Action::ShowHud`; `challenges.rs` shows / hides `Component::OwnedIt` from them. Tests:
   `tutorial_run` (objective HUD requested on arrival, owned it banner at the end).
-- NOT RETAIL YET / open: the objective HUD stays hidden for tutorials: its row texts (Objective_GetObjectiveTitle,
-  objective data +0xd0) are not known. The objective records carry only key, activation mode and definition (the
-  definition's second u32 is 0, not a description: checked on the disc 2026-11-10); own the spot sets its row with
-  Objectives.ChangeObjectiveText, so a tutorial's texts come from Objectives.MakeObjectives / its HUD hookup (to read).
+- Superseded 2026-11-18: the row texts are the objective definitions' title words (b947, already exported by
+  `challenges.py` `objective_rows`; the dev install's challenges.json predated that code, a Refresh Game Files
+  brought `title_id` / `display_in_hud`). tut_sksc_01 shows two of its 22 rows, in row order: `tut_sksc_01_33`
+  ID_CHALLENGE_TUT_SCHOOL_03_OBJ_04 "Cross the finish line" (retail reuses lesson 3's string) and `tut_sksc_01_0`
+  ID_CHALLENGE_TUT_SCHOOL_01_OBJ_01 "Skate through the gates" [data], as in the PS3 recording (2026-11-16, 11:40).
+- Change (2026-11-18): the tutorial's ShowHud(Objective) shows the objective component; while shown, the rows come
+  from `TutorialRun::objective_rows` (follow the leader's `ftl_host::objective_rows`: DisplayInHUD rows, title id,
+  state) and the activity name line is the tutorial's title (`ChallengeHudState.activity_title`, answered by
+  Objective_GetActivityTitle / NameVisibility; the recording shows "Riding On 4 Wheels" and no activity type line).
+  Hiding the component clears both. Own the spot keeps no activity line.
+- Checked (`.local/poc-tests/nis-run.ps1 -At 32`): after the lesson demo the panel shows "Riding On 4 Wheels",
+  "Cross the finish line", "Skate through the gates" bottom right. NOT RETAIL YET / open: the rows' check boxes do
+  not draw while the skater stands on the start pad (rows not active yet; the recording's frame is mid-ride, not
+  checked in a ride).
 
 <a id="presentation-speech"></a>
 
