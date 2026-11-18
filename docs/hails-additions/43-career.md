@@ -520,9 +520,19 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
 - **Panel** (b1032): retail builds the panel with one call, `ScreenManager.SetScreenState(id, M+8)`, on every menu
   entry; the movie's SetState runs InitMenuPicker / InitThumbBrowser / InitStyleMenu / InitMorphMenu itself. The
   stage sends it once FE 15 is shown and whenever the menu or panel changes.
-- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): navigation (A,
-  B, the exit popup), the slider values (CAC_GetStringValue / GetIntegerValue), the info panel type (the top menu
-  shows the movie's placeholder text), refresh states 50 / 52 / 53, parts, colors, morphs, the stage and camera.
+- **Input** (b1033, agent-derived): the movie owns Up / Down and A (its A posts `Game.OnMenuSelect`, whose
+  handler 825FE3C0 pushes a row's target menu; leaves with target -1 do nothing); the C++ handler 825FC7E8 owns B
+  (pop one menu, the exit popup on the top menu) and Left / Right (trucks / wheels move 0.1 within 0..1, then
+  SetScreenState 50). Entering a menu sets the shop mode S+0x177C (menu 15 = 2 "blurb": the info panel shows the
+  highlighted row's description; 17 = 1 "petes"; 1 = 0 "slappys"). Slider values: CAC_GetIntegerValue =
+  round(value * 10), CAC_GetStringValue LOOSE / SOFT below 0.35, TIGHT / HARD above 0.75, else MEDIUM (look record
+  +0x2004 / +0x2008). Exit popup: ID_COMMON_WARNING_TITLE, ID_CAC_EXIT_CAC_CONFIRMATION, Yes / No.
+- **Change (navigation).** `cas_host`: OnMenuSelect pushes, B pops (the stage closes FE 15 on the top menu), the
+  shop mode per menu, the slider values and labels, Left / Right on the sliders with state 50.
+- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): the exit popup
+  (B on the top menu closes at once), X / Y, selectors / stance / colors / morphs / part cycles on Left / Right,
+  825FE3C0's menu and leaf branches, the values' profile storage and defaults (0.5 meanwhile), refresh states 52 /
+  53, parts and thumbnails, the stage and camera.
 - **Checked** (`career-boot-run.ps1 -From 5 -Keys "_x150,2,_x90,0"` with SKATE_RETAIL_CAS=1): FE 67 -> name entry
   -> "RETAIL_MENUS open CreateASkater (FE 15)" -> "menu / panel (15, 3)": "Edit Skater" with Body Mods,
   Merchandise, Edit Style, Trucks and Wheels (sliders), "A Select / B Exit", "LT RT Rotate Skater", as in the PS3

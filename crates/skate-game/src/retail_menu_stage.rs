@@ -1410,6 +1410,34 @@ fn update(
                 }
                 continue;
             }
+            // FE 15 Create-a-Skater (research b1033): the C++ handler 825FC7E8 takes B (pop one menu, 825FC768) and
+            // Left / Right (slider values, then refresh state 50); Up / Down and A go to the movie (its A posts
+            // Game.OnMenuSelect, which pushes the row's menu). NOT RETAIL YET: B on the top menu closes at once
+            // (retail asks first, 82603290), X / Y.
+            if let (true, Some(id)) = (ms.cas_open, ms.cas_id) {
+                if ms.cas_shown {
+                    match key {
+                        APT_LEFT | APT_RIGHT => {
+                            if fe.cas.left_right(key == APT_RIGHT) {
+                                set_state(&mut ms.stage, id, 50, &mut fe)?;
+                            }
+                        }
+                        APT_PREVIOUS => {
+                            if !fe.cas.back() {
+                                info!("RETAIL_MENUS CreateASkater exit (no confirmation popup yet)");
+                                if let Some(s) = cas_screen.as_mut() {
+                                    s.open = false;
+                                }
+                            }
+                        }
+                        _ => {
+                            ms.stage.call_path("_global.ScreenManager.UpdateInput",
+                                vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())], &mut fe)?;
+                        }
+                    }
+                }
+                continue;
+            }
             // FirstTeamMember (input 8274CA90 returns 0): every key goes to the movie's menu, unless the profile name
             // keyboard is on top.
             if let (true, Some(id), None) = (ms.ftm_open, ms.ftm_id, ms.stack.input_target()) {
