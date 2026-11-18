@@ -35,7 +35,23 @@ struct Running {
     cuts: Vec<(f32, usize)>,
     /// The gameplay camera's field of view before the scene.
     fov: Option<f32>,
+    /// The start allowed skipping (retail +0x4D, arg5 of the basic NIS start 8285E968: 1 from the presentation
+    /// event and Lua EnterBasicNIS, research b1021).
+    skippable: bool,
 }
+
+/// Record kinds whose skip also waits for a minimum clip time (82820068: 0x0C, 0x0F, 0x12; research b1021).
+const TIMED_SKIP_KINDS: [u32; 3] = [0x0C, 0x0F, 0x12];
+/// That minimum (float 82060C50 = 2.0, research b1022; read as seconds of clip time).
+const SKIP_MIN_SECONDS: f32 = 2.0;
+
+/// Whether a skip request ends the running scene: skippable at its start, and past the minimum time for the timed
+/// kinds. NOT RETAIL YET: the scene table's own "can skip" answer (vt+0x14) is not read.
+fn may_skip(skippable: bool, kind: u32, time: f32) -> bool {
+    skippable && (!TIMED_SKIP_KINDS.contains(&(kind >> 24)) || time >= SKIP_MIN_SECONDS)
+}
+
+const PAD_A: u16 = 0x1000;
 
 /// The scene's camera takes and cuts from `ice_000.bin` (none: the gameplay camera stays).
 fn cameras(root: &std::path::Path, scene: &Scene) -> (Vec<skate_core::camera_track::CameraTrack>, Vec<(f32, usize)>) {
@@ -49,8 +65,22 @@ fn cameras(root: &std::path::Path, scene: &Scene) -> (Vec<skate_core::camera_tra
 pub(crate) struct NisPlayerPlugin;
 impl Plugin for NisPlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, drive.after(crate::app::FrameSet::Animation).after(crate::camera::present)
+        app.add_systems(Update, (skip_input, drive).chain().after(crate::app::FrameSet::Animation).after(crate::camera::present)
             .before(crate::app::FrameSet::Verification));
+    }
+}
+
+/// A (AptNext, key 2) on FE screen 1's key handler 825EFF98 asks for the skip while a scene plays (research b1022);
+/// Enter on the keyboard.
+fn skip_input(keys: Res<ButtonInput<KeyCode>>, pads: Option<Res<crate::input::ControllerInput>>, presenter: Option<Res<Presenter>>,
+              mut previous: Local<u16>) {
+    let buttons = pads.map_or(0, |c| c.raw_input().buttons);
+    let pressed = buttons & PAD_A != 0 && *previous & PAD_A == 0;
+    *previous = buttons;
+    if playing() && (pressed || keys.just_pressed(KeyCode::Enter)) {
+        if let Some(Ok(mut h)) = presenter.as_ref().map(|p| p.nis.lock()) {
+            h.skip = true;
+        }
     }
 }
 
@@ -84,12 +114,20 @@ fn report_finished(world: &World) {
 
 fn drive(world: &mut World, mut player: Local<Player>) {
     let Some(rig) = world.query_filtered::<Entity, With<PlayerRoot>>().iter(world).next() else { return };
-    let (request, stop) = match world.get_resource::<Presenter>().and_then(|p| p.nis.lock().ok().map(|mut h| (h.request.take(), std::mem::take(&mut h.stop)))) {
+    let (request, stop, skip) = match world.get_resource::<Presenter>().and_then(|p| p.nis.lock().ok()
+        .map(|mut h| (h.request.take(), std::mem::take(&mut h.stop), std::mem::take(&mut h.skip)))) {
         Some(v) => v,
         None => return,
     };
     if stop && player.running.is_some() {
         end(world, &mut player, "stopped");
+    }
+    if skip {
+        match player.running.as_ref().map(|r| may_skip(r.skippable, r.scene.kind, r.time)) {
+            Some(true) => end(world, &mut player, "skipped"),
+            Some(false) => info!("NIS skip refused"),
+            None => {}
+        }
     }
     if let Some(name) = request {
         if player.running.is_some() {
@@ -109,7 +147,7 @@ fn drive(world: &mut World, mut player: Local<Player>) {
                 let (tracks, cuts) = cameras(&root, scene);
                 info!("NIS {name} camera: {} takes, cuts {cuts:?}", tracks.len());
                 let mut running = Running { scene: scene.clone(), clip, time: 0.0, saved: None, swapped: false, bindings: None,
-                    skins: 0, tracks, cuts, fov: None };
+                    skins: 0, tracks, cuts, fov: None, skippable: true };
                 // `current_player` keeps the player's own character.
                 if character != "current_player" {
                     if let Some(mut models) = world.get_resource_mut::<crate::custom_models::CustomModels>() {
@@ -144,6 +182,15 @@ fn drive(world: &mut World, mut player: Local<Player>) {
         running.skins = skins;
     }
     running.time += world.resource::<Time>().delta_secs();
+    // Test aid (no simulated input): SKATE_NIS_SKIP_AT=<seconds> sends a skip request at that scene time.
+    if let Some(at) = std::env::var("SKATE_NIS_SKIP_AT").ok().and_then(|v| v.parse::<f32>().ok()) {
+        if running.time >= at && running.time - world.resource::<Time>().delta_secs() < at {
+            if let Ok(mut h) = world.resource::<Presenter>().nis.lock() {
+                h.skip = true;
+            }
+        }
+    }
+    let Some(running) = player.running.as_mut() else { return };
     if running.time >= running.scene.length() {
         end(world, &mut player, "ended");
         return;
@@ -208,4 +255,19 @@ fn end(world: &mut World, player: &mut Player, why: &str) {
         }
     }
     report_finished(world);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skippable_starts_skip_except_the_timed_kinds() {
+        assert!(may_skip(true, 0x1300_0000, 0.0));
+        assert!(!may_skip(false, 0x1300_0000, 5.0));
+        for kind in TIMED_SKIP_KINDS {
+            assert!(!may_skip(true, kind << 24, 1.9));
+            assert!(may_skip(true, kind << 24, 2.0));
+        }
+    }
 }
