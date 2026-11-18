@@ -127,8 +127,10 @@ DLC_ROOTS = (
 MAX_MOVIES = 256  # apt_imports.rs MAX_MOVIES
 # Runtime images the movies load by name (Game.ImageRenderer_Load, research b257 / b258): only in fedynamic.big.
 IMAGE_PREFIXES_DYNAMIC = ('data/fe/source/images/map/',
-                          # Team logos (FE 63 / FE 67 / team pages, research b1011 section 3).
-                          'data/fe/cas/logos/logo_object_team_logo_',
+                          # Create-a-Skater: the part thumbnails (fe\cas\<male|female>\<slot>\<model>_<material>,
+                          # boards, wheels, tattoos, research b1034), brand logos and the team logos (FE 63 / FE 67 /
+                          # team pages, research b1011 section 3).
+                          'data/fe/cas/',
                           # Team member photo backdrops (research b1013).
                           'data/fe/source/images/photo/')
 # Texture packs whose textures the engine draws by texture name (retail looks them up as FNV-1 64 of "<name>.Texture"
