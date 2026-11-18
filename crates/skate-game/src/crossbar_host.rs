@@ -241,6 +241,8 @@ pub struct FrontEnd<'a> {
     pub welcome: crate::welcome_host::WelcomeHost,
     /// FE 63 TeamManagement (the new career's forced logo pick).
     pub team: crate::team_management_host::TeamManagementHost,
+    /// FE 15 Create-a-Skater (cas_host).
+    pub cas: crate::cas_host::CasHost,
 }
 
 impl<'a> FrontEnd<'a> {
@@ -283,6 +285,7 @@ impl<'a> FrontEnd<'a> {
             subtitles_shown: false,
             welcome: Default::default(),
             team: Default::default(),
+            cas: Default::default(),
         }
     }
 }
@@ -309,6 +312,9 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
             return Ok(value);
         }
         if let Some(value) = self.team.call(vm, object, method, &args)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.cas.call(vm, object, method, &args)? {
             return Ok(value);
         }
         if let Some(value) = self.welcome.call(vm, object, method, &args)? {

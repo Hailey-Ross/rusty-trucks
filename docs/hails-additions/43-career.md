@@ -439,7 +439,7 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
 
 ### Step 2: the NIS player (2026-11-18)
 
-- **Retail** (research b1020, partial): the presentation's NIS event and Lua `NIS.EnterBasicNIS` (82849618) both call
+- **Retail** (research b1027, partial): the presentation's NIS event and Lua `NIS.EnterBasicNIS` (82849618) both call
   the NIS manager (`*(830CFD94)+200`) vt+0x10(name, mode, 0, 1, 0, 0) [code]. The scene ends in 8285F720, which posts
   cMsgNISChallengeNotify with +0x10 = 1 (that ends the event), cMsgNISComplete and pops input mode 8 [code]. Marquee
   actors are queued loads of their character (82824610); `current_player` / `dynamic` actors are the local skater
@@ -474,7 +474,7 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
 
 ### Step 4: skip (2026-11-18)
 
-- **Retail** (research b1021; claims from the agent's Ghidra reads, not re-checked by main): PostMsg_NISSkip 8285F0E8
+- **Retail** (research b1028; claims from the agent's Ghidra reads, not re-checked by main): PostMsg_NISSkip 8285F0E8
   posts cMsgNISSkip only while a scene runs (+0x46) and it is skippable (+0x4D) or the skip is forced; it marks the
   run skipped (+0x260). The basic NIS start 8285E968 stores +0x4D from its fifth argument, 1 from the presentation
   event and Lua EnterBasicNIS, so the lessons can be skipped. The skip handler 82822D88 also needs no online
@@ -485,7 +485,7 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
 - **Change.** `NisHost.skip` is a skip request (the button or a mod); the player ends a skippable scene
   ("skipped"); kinds 0x0C / 0x0F / 0x12 wait for 2.0 s of clip time. The request comes from one A press (pad) or
   Enter while a scene plays; no prompt.
-- **Retail button** (research b1022, agent-derived; our key numbers checked: `retail_menu_stage.rs` APT_NEXT 2,
+- **Retail button** (research b1029, agent-derived; our key numbers checked: `retail_menu_stage.rs` APT_NEXT 2,
   APT_PREVIOUS 3, APT_START 0): FE screen 1's key handler 825EFF98 (vtable 82302A10) posts the skip for APT key 2
   (AptNext = A) only, on the first press, with no prompt (ShowMovieSkip / HideMovieSkip are FE 24's). The minimum
   time float 82060C50 is 2.0 (read as seconds).
@@ -494,6 +494,33 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   timed kinds before / after 2 s).
 - **Open.** Whether Start opens the pause menu during a scene (825EB998 not followed); the scene table's "can skip"
   field (vt+0x14); what input mode 12 does to the skater (not frozen in ours); the skip key as a mod setting.
+
+<a id="create-a-skater"></a>
+
+## Change: the retail Create-a-Skater (FE 15), step 1 (2026-11-18, ask 697)
+
+- **Problem.** "Customize Skater" opened our own compact customizer, not retail's Create-a-Skater.
+- **Retail** (research b1030 / b1031, agent-derived; main checked the template rows and the extracted tables):
+  FE 15 is template `CreateASkater` (`cas/createskater.swf`), FE 16 `Receipt` (`cas/receipt.swf`); FE 67's
+  Customize row asks for the player's name first, then opens FE 15 (PS3 recording 2026-11-16, 3:00). The movie
+  calls about 22 `Game.CAC_*` natives (registered in 825A3070) over a static menu table (37 records of 48 bytes:
+  name, title id, panel kind, a mode field, help A / B kinds, initial highlight and window) with option lists
+  (12-word lists, -1 terminated); EditSkaterMain (menu 15) lists Body Mods 0, Merchandise 1, Edit Style 46, trucks
+  47, wheels 48. The 115 option records (text, description, target menu, action, type) are written by the
+  constructor 825F4B98 in code, not a table. B pops a menu; on the top menu it opens the exit popup.
+- **Change.** Setup: `prepare_menu_movies.py` exports `cas/createskater` and `cas/receipt` (fedynamic.big, with
+  their four control libraries); `skate_data::menu_tables` extracts `cas_menus` by content (the "EditSkaterMain"
+  record, list 15's words), identical on the TU3 image and the disc build. Game: `cas_host.rs` answers the menu
+  natives from that table (title, rows, indices, help texts); the stage opens FE 15 for the boot flow's Customize
+  row (`CasScreen`) and the boot flow waits for it to close.
+- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): the panel opens
+  empty, because retail's C++ builds it by calling the movie's functions on menu entry (research b1032 running);
+  the option records (text ids) need a code-pattern extractor (b1031 has the pattern); navigation, the exit popup,
+  parts, colors, morphs, the stage and camera are not ported.
+- **Checked** (`career-boot-run.ps1 -From 5 -Keys "_x150,2,_x90,0"` with SKATE_RETAIL_CAS=1): FE 67 -> name entry
+  -> "RETAIL_MENUS open CreateASkater (FE 15)"; the panel frame, "A Select / B Back" and "LT RT Rotate Skater"
+  show over the world. Tests: skate-data `menu_tables` (TU3 and disc: 37 menus, Shops, EditSkaterMain's list,
+  Slappy's list, BackAlleyPete), `cas_host` (the top menu from the table, sliders without A help, closed host).
 
 ## Verification
 

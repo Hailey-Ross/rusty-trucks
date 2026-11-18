@@ -66,6 +66,7 @@ mod graphics_menu;
 mod fe_backdrop;
 mod trick_guide_scene;
 mod nis_player;
+mod cas_host;
 mod marquee_preview;
 mod retail_menus;
 mod prompt_glyphs;

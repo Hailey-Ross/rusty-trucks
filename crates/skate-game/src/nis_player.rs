@@ -36,13 +36,13 @@ struct Running {
     /// The gameplay camera's field of view before the scene.
     fov: Option<f32>,
     /// The start allowed skipping (retail +0x4D, arg5 of the basic NIS start 8285E968: 1 from the presentation
-    /// event and Lua EnterBasicNIS, research b1021).
+    /// event and Lua EnterBasicNIS, research b1028).
     skippable: bool,
 }
 
-/// Record kinds whose skip also waits for a minimum clip time (82820068: 0x0C, 0x0F, 0x12; research b1021).
+/// Record kinds whose skip also waits for a minimum clip time (82820068: 0x0C, 0x0F, 0x12; research b1028).
 const TIMED_SKIP_KINDS: [u32; 3] = [0x0C, 0x0F, 0x12];
-/// That minimum (float 82060C50 = 2.0, research b1022; read as seconds of clip time).
+/// That minimum (float 82060C50 = 2.0, research b1029; read as seconds of clip time).
 const SKIP_MIN_SECONDS: f32 = 2.0;
 
 /// Whether a skip request ends the running scene: skippable at its start, and past the minimum time for the timed
@@ -70,7 +70,7 @@ impl Plugin for NisPlayerPlugin {
     }
 }
 
-/// A (AptNext, key 2) on FE screen 1's key handler 825EFF98 asks for the skip while a scene plays (research b1022);
+/// A (AptNext, key 2) on FE screen 1's key handler 825EFF98 asks for the skip while a scene plays (research b1029);
 /// Enter on the keyboard.
 fn skip_input(keys: Res<ButtonInput<KeyCode>>, pads: Option<Res<crate::input::ControllerInput>>, presenter: Option<Res<Presenter>>,
               mut previous: Local<u16>) {
@@ -198,7 +198,7 @@ fn drive(world: &mut World, mut player: Local<Player>) {
     camera(world, player.running.as_mut().unwrap());
     let Some(running) = player.running.as_ref() else { return };
     let Some(globals) = crate::trick_guide_scene::pose(&running.clip, running.time.min(running.clip.duration())) else { return };
-    // NOT RETAIL YET (research b1020 open): the clip is taken as world space, drawn through the player rig.
+    // NOT RETAIL YET (research b1027 open): the clip is taken as world space, drawn through the player rig.
     let root = world.get::<GlobalTransform>(rig).copied().unwrap_or_default().to_matrix();
     let place = root.inverse();
     if let Some(bindings) = &running.bindings {

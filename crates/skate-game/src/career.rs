@@ -918,12 +918,13 @@ fn run_boot_flow(
         Res<crate::config::Config>,
     ),
     // FE 67 FirstTeamMember and what its rows lead to (the customizer, the player's name); FE 63's forced logo pick.
-    (mut ftm, mut customiser, mut net, mut logo_pick, mut photo): (
+    (mut ftm, mut customiser, mut net, mut logo_pick, mut photo, mut cas): (
         Option<ResMut<crate::welcome_host::FirstTeamMemberScreen>>,
         Option<ResMut<crate::customiser::Customiser>>,
         Option<ResMut<crate::multiplayer::Multiplayer>>,
         Option<ResMut<crate::team_management_host::TeamLogoScreen>>,
         Option<ResMut<crate::skater_photo::SkaterPhoto>>,
+        Option<ResMut<crate::cas_host::CasScreen>>,
     ),
 ) {
     use skate_core::career::boot_flow::{Step, COACH_FRANK, FIRST_TEAM_MEMBER, PROGRESS_FIRST_TEAM_MEMBER};
@@ -1002,7 +1003,7 @@ fn run_boot_flow(
                 state.save_in_background();
                 if let Some(f) = ftm.as_mut() {
                     if let Some(choice) = f.pending.take() {
-                        run_first_team_member(choice, f, customiser.as_deref_mut(), &mut run);
+                        run_first_team_member(choice, f, customiser.as_deref_mut(), cas.as_deref_mut(), &mut run);
                     }
                 }
             }
@@ -1019,7 +1020,7 @@ fn run_boot_flow(
     // The customizer opened from FE 67: the step is done when it closes (retail re-opens FE 67, which closes itself
     // and posts 0x8F).
     if run.waiting_customiser {
-        if customiser.as_ref().is_some_and(|c| c.open) {
+        if customiser.as_ref().is_some_and(|c| c.open) || cas.as_ref().is_some_and(|s| s.open) {
             return;
         }
         info!("SKATE_CAREER boot flow customizer closed");
@@ -1044,7 +1045,7 @@ fn run_boot_flow(
                         b.ask(skate_core::text_entry::TextEntryRequest::profile_name(ftm_rules::PROFILE_NAME_DEFAULT));
                     }
                 }
-                Some(Next::Run(choice)) => run_first_team_member(choice, f, customiser.as_deref_mut(), &mut run),
+                Some(Next::Run(choice)) => run_first_team_member(choice, f, customiser.as_deref_mut(), cas.as_deref_mut(), &mut run),
                 None => {}
             }
         }
@@ -1137,12 +1138,21 @@ fn run_first_team_member(
     choice: skate_core::career::first_team_member::Choice,
     screen: &mut crate::welcome_host::FirstTeamMemberScreen,
     customiser: Option<&mut crate::customiser::Customiser>,
+    cas: Option<&mut crate::cas_host::CasScreen>,
     run: &mut BootFlowRun,
 ) {
     use skate_core::career::first_team_member::Choice;
     info!("SKATE_CAREER boot flow first team member: {choice:?}");
     screen.open = false;
     match (choice, customiser) {
+        // The retail FE 15 (opt-in until its navigation is ported, cas_host::retail_enabled).
+        (Choice::Customize, _) if crate::cas_host::retail_enabled() && cas.is_some() => {
+            if let Some(s) = cas {
+                s.open = true;
+                s.done = false;
+            }
+            run.waiting_customiser = true;
+        }
         (Choice::Customize, Some(c)) => {
             c.begin();
             run.waiting_customiser = true;
@@ -1190,6 +1200,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<crate::welcome_host::CoachFrankScreen>()
         .init_resource::<crate::welcome_host::FirstTeamMemberScreen>()
         .init_resource::<crate::team_management_host::TeamLogoScreen>()
+        .init_resource::<crate::cas_host::CasScreen>()
         .add_message::<ChallengeResult>()
         .add_message::<ChallengeDiscovered>()
         .add_systems(Update, update.after(crate::challenges::CareerResultSet).run_if(crate::challenges::opted_in))
