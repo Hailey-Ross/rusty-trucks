@@ -1424,10 +1424,8 @@ fn update(
                         }
                         APT_PREVIOUS => {
                             if !fe.cas.back() {
-                                info!("RETAIL_MENUS CreateASkater exit (no confirmation popup yet)");
-                                if let Some(s) = cas_screen.as_mut() {
-                                    s.open = false;
-                                }
+                                info!("RETAIL_MENUS CreateASkater exit confirmation");
+                                popup_mods.engine_requests.push(crate::cas_host::exit_popup());
                             }
                         }
                         _ => {
@@ -2320,6 +2318,24 @@ fn update(
                 if let Some(f) = ftm_screen.as_mut() {
                     f.picked = Some(row);
                 }
+            }
+        }
+        // The exit confirmation's answer (82604748): Yes closes FE 15 (NOT RETAIL YET: the look is not committed /
+        // saved, the 250 ms close countdown and fade are not ported); No re-enters the top menu.
+        let cas_answers: Vec<i64> = {
+            let (ours, others) = std::mem::take(&mut popup_mods.engine_choices).into_iter()
+                .partition::<Vec<_>, _>(|(callback, _)| callback == crate::cas_host::EXIT_POPUP);
+            popup_mods.engine_choices = others;
+            ours.into_iter().map(|(_, choice)| choice as i64).collect()
+        };
+        for choice in cas_answers {
+            info!("RETAIL_MENUS CreateASkater exit answer {choice}");
+            if choice == 0 {
+                if let Some(s) = cas_screen.as_mut() {
+                    s.open = false;
+                }
+            } else {
+                fe.cas.begin();
             }
         }
         // FE 15: shown once loaded; the panel follows the current menu's panel kind (SetScreenState; the movie's
