@@ -98,6 +98,29 @@ pub(crate) struct ChallengeSignUp {
     pub challenge: String,
 }
 
+/// A challenge offered to the local skater without a sign-up sphere (the career's queued start): the sign-up card
+/// opens for it as for a sphere's press, and its Accept signs up. Without the card it signs up at once.
+#[derive(Message, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ChallengeOffer {
+    pub challenge: String,
+}
+
+/// The sign-up card of a tutorial: its title and description; no objectives, killed it or co-op.
+fn tutorial_poster_view(t: &crate::tutorial_run::TutorialData, saved: &crate::challenge_records::Saved,
+    progression: Option<&skate_core::career::Progression>) -> PosterView {
+    let rewards = progression.and_then(|p| p.challenge_rewards.get(&t.id));
+    PosterView {
+        challenge_id: t.id.clone(),
+        title_id: t.title_id.clone(),
+        description: t.description_id.clone().map(|id| Title { id, arg: None }),
+        owned: saved.completion.as_deref() == Some("owned"),
+        rewards: rewards.map_or((0, 0, 0), |r| (r.owned.sales as i32, 0, 0)),
+        rewards_shown: rewards.is_some(),
+        can_sign_up: true,
+        ..PosterView::default()
+    }
+}
+
 /// eChallengeTypes of own the spot.
 const OWN_THE_SPOT_TYPE: i32 = 9;
 
@@ -573,8 +596,9 @@ fn sign_up(
     lines: Query<Entity, With<SignUpLine>>,
     mut entered: MessageReader<crate::trigger_volumes::TriggerEntered>,
     time: Res<Time>,
-    (mut poster, career, ftl, races, contests): (ResMut<crate::poster_host::PosterScreen>, Option<Res<crate::career::CareerState>>,
-        Option<Res<crate::ftl_host::FollowTheLeader>>, Option<Res<crate::race_host::Races>>, Option<Res<crate::contest_host::Contests>>),
+    (mut poster, career, ftl, races, contests, mut offered): (ResMut<crate::poster_host::PosterScreen>, Option<Res<crate::career::CareerState>>,
+        Option<Res<crate::ftl_host::FollowTheLeader>>, Option<Res<crate::race_host::Races>>, Option<Res<crate::contest_host::Contests>>,
+        MessageReader<ChallengeOffer>),
 ) {
     // The poster's answer (825ED410): A starts the challenge (825EE188 -> 82D52B60), B cancels the pending sign-up.
     match poster.outcome.take() {
@@ -587,6 +611,34 @@ fn sign_up(
             challenges.prompt_age = 0.;
         }
         _ => {}
+    }
+    // A challenge offered without a sphere (the career's queued start; the PS3 recording shows each skate.School
+    // lesson's card first): its card, else a sign-up at once.
+    for offer in offered.read() {
+        let id = &offer.challenge;
+        let saved = challenges.records.get(id);
+        let progression = career.as_ref().and_then(|c| c.data.as_ref()).map(|d| &d.progression);
+        let path = map.path.as_deref();
+        let view = if let Some(c) = challenges.retail.iter().find(|r| &r.id == id) {
+            Some(poster_view(c, &saved, progression))
+        } else if let Some(t) = challenges.tutorials.iter().find(|t| &t.id == id) {
+            Some(tutorial_poster_view(t, &saved, progression))
+        } else {
+            let mut offers: Vec<Offer> = ftl.as_deref().into_iter().flat_map(|f| f.offers(path)).collect();
+            offers.extend(races.as_deref().into_iter().flat_map(|r| r.offers(path)));
+            offers.extend(contests.as_deref().into_iter().flat_map(|c| c.offers(path)));
+            offers.iter().find(|o| &o.id == id).map(|o| offer_poster_view(o, &saved, progression))
+        };
+        match view.filter(|_| poster.available && poster.poster.is_none()) {
+            Some(view) => {
+                info!("SKATE_CHALLENGE poster {id} (offered)");
+                poster.poster = Some(Poster::new(view));
+            }
+            None => {
+                info!("SKATE_CHALLENGE sign-up {id} (offered)");
+                signed.write(ChallengeSignUp { body: crate::trigger_volumes::PLAYER.into(), challenge: id.clone() });
+            }
+        }
     }
     let gameplay = crate::graphics_menu::gameplay_active(menu) && !replay.active && poster.poster.is_none();
     let feet = crate::trigger_volumes::player_points(&skater)[0];
@@ -1047,6 +1099,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<crate::poster_host::PosterScreen>()
         .init_resource::<ChallengeHudState>()
         .add_message::<ChallengeSignUp>()
+        .add_message::<ChallengeOffer>()
         .add_systems(PreUpdate, arm.after(crate::map_transition::MapTransitionSet).run_if(opted_in))
         .add_systems(Update, switch_off.run_if(not(opted_in)))
         .add_systems(Update, (sign_up.after(crate::teleporters::prompt).before(crate::retail_menu_stage::MenuStageSet), update.after(crate::trigger_volumes::TriggerSet).in_set(CareerResultSet)).chain().run_if(opted_in))

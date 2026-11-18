@@ -2729,6 +2729,32 @@ is now set on every open frame (`stage_camera`), the swap frames included.
 - **Tests:** `challenge_map` (tabs in career and free skate, folder counts), `menus` (IsDebug listings hidden without
   the fact), overlay rows. Not play-tested by the user.
 
+## Language text: the character table (2026-11-17)
+
+- **Problem:** menu and HUD text lost its apostrophes and quotes ("your skaters appearance" on FE 67, retail "your
+  skater's appearance"). The export read the language tables as Latin-1, so byte 0x81 became U+0081, which no font
+  has; the fonts carry the real codes (U+2019 and the other typographic marks, 7 fonts).
+- **Retail data:** `data/fe/languages/<language>/language_<language>_histogram_skate3ng.bin` (miscboot.big): header
+  {u32 0x39001, u32 payload length, u32 count = 271}, then one little-endian UTF-16 code per entry. English: entries
+  0..0x7F empty (ASCII as is), 0x81 U+2019, 0x82 U+2026, 0x83 U+201D, 0x84 U+201C, 0x85 U+2018, 0x86 U+2122, then
+  Central European letters, Latin-1 with a few slots replaced (0xA8 U+0158, 0xB4 U+0159, 0xB7 U+015A, 0xB9 U+015B,
+  0xF7 U+0164), and 0x100..0x10E (U+0165 .. U+20AC). A byte maps to table[byte]; 0x80 followed by n maps to
+  table[0x100 + n - 0x80] (the text-entry keyboard rows: "Tt" F7 80 80 = T t T-caron t-caron; "Zz" 80 86 80 87 =
+  Z z Z-acute z-acute). Use counts in the English table fit: 0x81 162 times, 0x83 / 0x84 109 / 107 (open and close
+  quotes in pairs). The DLC packs' histograms are all zero (Dumbad's DLC builder writes them empty too), so pack text
+  goes through the disc's table. Evidence: data and the keyboard rows; the runtime decode function is not read in
+  Ghidra yet.
+- **Change:** `tools/vendor/skate3_ui/language.py` `character_table` / `decode_text` (no table = Latin-1 as before);
+  `project.py` extracts the English histogram with the pair (cache version 4) and `english_global.json` carries
+  `character_table`; `prepare_menu_movies.py` passes it to the packs' text (`asset_pipeline/dlc.py language(table=)`);
+  `map_names.disc_language` reads it too. `teleports.py` keeps Latin-1 for the pack location names it encodes back to
+  bytes. A Refresh Game Files picks it up (menus and HUD).
+- **Also:** the menu movies' install renames the new folder over the old one; Windows can hold the fresh folder for a
+  moment (access denied), which left the dev install without menu movies once. It retries for up to 10 s.
+- **Tests:** `tools/test_language_charset.py` (table, escape, Latin-1 fallback, bad header); menu, DLC and teleport
+  tests unchanged and passing. Checked on the dev install: no raw 0x80-0x9F code left in the menu and HUD exports,
+  FE 67 shows "skater's".
+
 ## Code reference: apt_stage.rs
 
 Detail moved out of the code comments of `crates/skate-game/src/apt_stage.rs`; each comment there links its section here.

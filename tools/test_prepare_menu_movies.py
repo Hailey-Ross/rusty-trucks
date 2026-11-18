@@ -30,6 +30,23 @@ def main_checkout():
 
 
 class MenuMovieRules(unittest.TestCase):
+    def test_team_logos_are_named_from_their_textures_in_hash_order(self):
+        from asset_pipeline.vlt import hash64
+        h = lambda name: f'Hash_{hash64(name):016X}'
+        names = ['logo_turtle', 'logo_mongo', 'logo_team_blue_1']
+        rows = [{'class': h('challenge_team_logos'), 'key': h(n), 'parent': h('predefined'),
+                 'fields': {'Hash_C25F26D48CEABD7C': {'type': 'EA::Reflection::Text', 'data': f'0x{i}'}}}
+                for i, n in enumerate(names)]
+        rows.append({'class': h('challenge_team_logos'), 'key': h('logo_hesh'), 'parent': h('brands'), 'fields': {}})
+        images = {f'fe/cas/logos/logo_object_team_logo_{n[5:]}_mat': {} for n in names + ['logo_hesh']}
+        with tempfile.TemporaryDirectory() as tmp:
+            collections = Path(tmp) / 'collections.json'
+            collections.write_text(json.dumps({'collections': rows}), encoding='utf-8')
+            logos = menus.team_logos(collections, images)
+        # Retail lists them by ascending hash64 of the key: mongo, team_blue_1, ..., turtle (PS3 recording).
+        self.assertEqual([l['key'] for l in logos], ['logo_mongo', 'logo_team_blue_1', 'logo_turtle'])
+        self.assertEqual(logos[0], {'key': 'logo_mongo', 'text': '0x1', 'image': 'fe/cas/logos/logo_object_team_logo_mongo_mat'})
+
     def test_library_key_matches_the_engine(self):
         self.assertEqual(menus.library_key('data\\fe\\source\\controls\\panel.apt'), 'source/controls/panel')
         self.assertEqual(menus.library_key('source/controls/panel'), 'source/controls/panel')

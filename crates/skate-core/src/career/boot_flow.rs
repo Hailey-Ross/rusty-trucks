@@ -12,6 +12,8 @@ pub enum Step {
 pub const TEXT_ENTRY: u16 = 46;
 /// FE 11 Coach Frank's question (template 10 `bootflow/coachfrank`; select 8260A288).
 pub const COACH_FRANK: u16 = 11;
+/// FE 63 TeamManagement, the forced logo pick (82704F30; research b1011).
+pub const TEAM_LOGO: u16 = 63;
 
 /// Where Coach Frank's answer starts the career (8260A288: row 0 Yes -> `schoolstart`, else `gamestart`), as our
 /// teleport destination ids: retail's rows carry the same labels (`ID_LOCATION_SKATESCHOOL` / `ID_LOT_UN_07`).
@@ -54,7 +56,7 @@ impl Default for BootFlow {
                 movie("intro_movie"),
                 Step::Screen(10),
                 Step::Screen(TEXT_ENTRY),
-                Step::Screen(63),
+                Step::Screen(TEAM_LOGO),
                 Step::Screen(FIRST_TEAM_MEMBER),
                 movie("coach_frank_intro"),
                 Step::Screen(COACH_FRANK),

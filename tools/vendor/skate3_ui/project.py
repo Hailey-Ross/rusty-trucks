@@ -33,9 +33,10 @@ UI_EXTENSIONS = {
 SUPPORT_PATHS = {
     "data/fe/languages/english/language_english_global_skate3ng.bin",
     "data/fe/languages/labels/language_labels_global_skate3ng.bin",
+    "data/fe/languages/english/language_english_histogram_skate3ng.bin",
 }
 SUPPORT_PREFIXES = ("data/fe/fonts/",)
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -336,7 +337,8 @@ def extract_project(
     if labels_key in extracted and english_key in extracted:
         try:
             language_data = pair_language_tables(
-                extracted[labels_key], extracted[english_key]
+                extracted[labels_key], extracted[english_key],
+                extracted.get("data/fe/languages/english/language_english_histogram_skate3ng.bin"),
             )
             language_target = output / "metadata" / "languages" / "english_global.json"
             _write_json(language_target, language_data, force)

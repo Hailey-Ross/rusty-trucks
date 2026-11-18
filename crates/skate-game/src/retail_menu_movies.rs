@@ -116,6 +116,8 @@ pub struct RetailMenuMovies {
     mod_bitmaps: Vec<(String, String, i32, ModBitmap)>,
     /// Named runtime images (manifest `images`, version 7): image key -> payload path, size.
     named_images: BTreeMap<String, (String, [u32; 2])>,
+    /// Named image keys by their last path segment (asset name -> image key), for loads by asset name.
+    image_names: BTreeMap<String, String>,
     /// Mod named images, newest last: (owner, image key, image). A mod replaces a retail name or adds its own.
     mod_images: Vec<(String, String, ModBitmap)>,
     /// Linked movies by key (retail layered with mod movies).
@@ -171,7 +173,11 @@ impl RetailMenuMovies {
                 return Err(format!("menu image path escapes its folder: {path}"));
             }
             let size = [image["width"].as_u64().unwrap_or(0) as u32, image["height"].as_u64().unwrap_or(0) as u32];
-            out.named_images.insert(image_key(key), (path.to_owned(), size));
+            let key = image_key(key);
+            if let Some(name) = key.rsplit('/').next() {
+                out.image_names.entry(name.to_owned()).or_insert_with(|| key.clone());
+            }
+            out.named_images.insert(key, (path.to_owned(), size));
         }
         out.relink();
         Ok(out)
@@ -375,7 +381,12 @@ impl RetailMenuMovies {
             if let Some((.., image)) = self.mod_images.iter().rev().find(|(_, k, _)| k == key) {
                 return Some(MenuImage::Mod(image));
             }
-            let (path, size) = self.named_images.get(key)?;
+            let (path, size) = self.named_images.get(key).or_else(|| self.image_by_name(key))?;
+            return Some(MenuImage::Retail { path, width: size[0], height: size[1] });
+        }
+        // A resident texture by its asset name (`ImageRenderer_LoadAssetByName`, the team logos' asset names).
+        if let Some(name) = texture.strip_prefix(crate::image_renderer_host::ASSET_TEXTURE_PREFIX) {
+            let (path, size) = self.image_by_name(&name.to_ascii_lowercase())?;
             return Some(MenuImage::Retail { path, width: size[0], height: size[1] });
         }
         if let Some(rest) = texture.strip_prefix(MOD_TEXTURE_PREFIX) {
@@ -392,6 +403,10 @@ impl RetailMenuMovies {
         }
         let (path, size) = self.retail_images.get_key_value(texture)?;
         Some(MenuImage::Retail { path, width: size[0], height: size[1] })
+    }
+
+    fn image_by_name(&self, name: &str) -> Option<&(String, [u32; 2])> {
+        self.named_images.get(self.image_names.get(name)?)
     }
 
     /// Removes everything `owner` supplied (mod disabled or stopped).
@@ -505,6 +520,24 @@ pub fn valid_movie_name(key: &str) -> bool {
         && key.split('/').all(|s| {
             !s.is_empty() && s != "." && s != ".." && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         })
+}
+
+/// A team logo picker row (manifest `team_logos`, research b1011 section 3): the stable row key, the localized name
+/// id and the named image key of its texture.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct TeamLogo {
+    pub key: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    pub image: String,
+}
+
+/// The team logo rows in the picker's order (empty for sets exported before them).
+pub(crate) fn team_logos(root: &Path) -> Vec<TeamLogo> {
+    read_json(&root.join("manifest.json"))
+        .ok()
+        .and_then(|m| serde_json::from_value(m["team_logos"].clone()).ok())
+        .unwrap_or_default()
 }
 
 /// The exported set: `SKATE3_MENU_MOVIES` (a dev export) or the installed `private/menu-movies`.

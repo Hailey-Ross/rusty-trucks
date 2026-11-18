@@ -350,12 +350,68 @@ it = not pending, so existing careers are untouched); a new career sets pending;
 flag (the sign-up starts it when it is on that map; follow the leader is not ported yet, so on other maps only the
 flag clears, as retail clears it either way). The rule is data (`FirstChallenge`, retail defaults) a mod can replace.
 The rest of the boot flow (welcome, intro movie, team name, forced logo pick, first teammate, Coach Frank) is mapped in
-research b1000 / b1001 and not ported yet. FE 49 "Marketing" owns the skip-intro path 825F2C98 (career wipe, teleport,
+research b1000 / b1001; the forced logo pick is in "Change: the team logo (FE 63)" below. FE 49 "Marketing" owns the skip-intro path 825F2C98 (career wipe, teleport,
 photo_univ_05); no player path opens it, so `SKATE_CAREER_SKIP_START` stays a developer / mod option. A new
 profile's settings follow the reset 824FFAB0 (research b1008): difficulty Normal (+0xB4 = 1) and camera Low (+0xBC
 = 0), so `Difficulty` and `CameraAngle` default to those (they were Easy and High); a saved setting is kept.
 Vibration (ours off by the user's decision) and units (retail Imperial, Metric on PAL; ours Metric) stay as they are. Tests:
 `career::boot` (the rule), `career_save` (old careers are not pending, the flag round-trips).
+
+## Change: the first lesson starts on its card (2026-11-17)
+
+- Retail (PS3 recording 11:10): after the skate.School load the first lesson's sign-up card shows (title, description,
+  B Decline / A Accept) before the demo and the lesson; ours started the lesson at once.
+- Change: the career's queued first challenge sends `ChallengeOffer` (`challenges.rs`): the sign-up card opens for any kind
+  (tutorial rows now keep `description_id`, `tutorial_poster_view`), Accept signs up as a sphere's press does; without the
+  card it signs up at once. Checked: career-boot-run -From 7, `tut_sksc_01` card as in the recording.
+- Open: Decline on the first lesson (what retail offers next is not read).
+
+## Change: the skater photo (2026-11-17)
+
+- Retail (research b1013): FE 67 builds the player's photo before its menu shows (82650BA0 states 1..6, request
+  0x577F33D8): a live render of the member's skater, 128 x 256, FOV 45, near 0.01, far 200, over the slot's fixed backdrop
+  `fe/source/images/photo/team_profile_background_N` (class 569B02CE038D028A `team_profile_00..04`), in the slot's pose
+  clip (`CAS_Single_Pose_5/2/3/7/8`). `GetTeamData()[3+i]` names the photo; the card loads it with `LoadAsset`.
+- Change: `skater_photo.rs` renders the player's meshes (on layer 25 for the photo, with the character light's 28) and a
+  backdrop quad into a 128 x 256 target, after the start's loading (before, the pipelines were still compiling and the
+  picture stayed empty); FE 67 waits for it; `GetTeamData()[3]` = `skater_photo_0`, which the stage maps to the picture.
+  The backdrops export with the menus (`prepare_menu_movies.py`).
+- NOT RETAIL YET: the pose clip is not loaded (the skater stands as in the world) and the setup's camera vectors are not
+  decoded (b1013 open 1): a fixed full-body framing. Teammate slots 1..4 and the re-render on a logo change come with
+  the team view.
+- Checked: career-boot-run -From 5, the skater on the teal backdrop in the first card.
+
+## Change: the team logo (FE 63)
+
+- **Retail** (research b1011, b974, b970): the new career's boot flow opens FE 63 TeamManagement (template 108) after
+  the team name keyboard in mode 2, the forced logo pick: SetState 0x1E, every key goes to the movie (82651EE0 returns
+  0 in mode 2, no Back). The movie's 3 x 3 grid lists `GetNumTeamLogos` thumbs through `GetLogoAssetID(i)`; moving
+  calls `SelectLogo(i, true)` (header preview, SetState 0x15), A calls `SelectLogo(i, false)` (826524B8: write the
+  logo, commit, close, post 0x8E). The list is the 42 `predefined` children of the logo class `challenge_team_logos`;
+  the `usergen` profile-picture rows and the `brands` rows are not in it.
+- **Order:** the picker shows the rows in ascending hash64 of the row key: all 42 checked against the PS3 recording of
+  a new profile (2:06 to 2:40: mongo, team_blue_1, checker_bones ... team_blue_3, shoe, turtle). The vault's storage
+  order is different. The header follows the hovered logo in the recording (b1011 open 4 settled).
+- **Setup:** `prepare_menu_movies.py` exports the movie (`TeamSkater_Selection/team_management`), the 45 team logo
+  textures (`data/fe/cas/logos/logo_object_team_logo_*`, named images) and the manifest's `team_logos`
+  ([{key, text, image}] in picker order). The vault keys are hashed; a row `logo_<x>` is named from its texture
+  `logo_object_team_logo_<x>_mat` (all 42 match). Needs a Refresh Game Files.
+- **Engine:** `team_management_host.rs` answers `GetTeamData` / `GetNumTeamLogos` / `GetLogoAssetID` / `SelectLogo`
+  while FE 63 is open; the asset name given to the movie is the texture name, which the menu images resolve by name
+  (`ImageRenderer_Load`, `LoadAssetByName`, `LoadTeamLogo` / `LoadAsset` with a name). `career.rs` runs the step
+  (`boot_flow::TEAM_LOGO`), saves the pick in `career.json` `team.logo` (the stable row key) and goes on to FE 67,
+  whose header now shows the logo. A saved key that no longer resolves shows no picture (retail falls back to the
+  `default` row, which has none).
+- **Mods:** the rows are data (the manifest list); a mod-facing way to add logos (`sdk.career` team logos with their
+  own bitmaps) is not there yet.
+- **Not hosted yet:** FE 63's team view and the pause menu's logo picker (modes 0 / 1: teammate cards, rename, B / X /
+  Y), member photos. FE 67's logo sits on a dark square that retail does not show (the logo clip's empty backing,
+  not checked yet).
+- **Checked** (desktop, `.local/poc-tests/career-boot-run.ps1 -From 4`, keys D-right, D-right, D-down, A): the grid
+  in retail order, the cursor on the sixth logo with the header previewing it, the pick saved
+  (`team.logo = logo_sv_crest_alan`) and shown on FE 67. Tests: `team_management_host` (list, preview, pick, closed
+  screen, unknown key), `welcome_host` (FE 67 logo), `tools/test_prepare_menu_movies.py` (names from textures, hash
+  order, brands left out).
 
 ## Verification
 
