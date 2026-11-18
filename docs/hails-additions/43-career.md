@@ -470,7 +470,30 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   22.30 s, the player's own skater stands on the start pad and the Coach Frank tip "3 pushes = Max speed" shows.
   Tests: `presentation_run` (NIS holds its group until the end report, removal stops it), skate-data `scene_table`
   data-gated (cut list of tut_sksc_01, `take_at`).
-- **Next (step 3).** The objective HUD texts (doc 42 "Tutorial HUD").
+- **Step 3, done 2026-11-18:** the objective HUD texts (doc 42 "Tutorial HUD").
+
+### Step 4: skip (2026-11-18)
+
+- **Retail** (research b1021; claims from the agent's Ghidra reads, not re-checked by main): PostMsg_NISSkip 8285F0E8
+  posts cMsgNISSkip only while a scene runs (+0x46) and it is skippable (+0x4D) or the skip is forced; it marks the
+  run skipped (+0x260). The basic NIS start 8285E968 stores +0x4D from its fifth argument, 1 from the presentation
+  event and Lua EnterBasicNIS, so the lessons can be skipped. The skip handler 82822D88 also needs no online
+  session, a current clip and the scene table's yes (vt+0x14); record kinds 0x0C / 0x0F / 0x12 also wait for a
+  minimum clip time (float 82060C50), kind 0x13 (the lessons) does not. A kill (82822E58: Lua KillNIS, the post
+  challenge quit, the next activity, an online join) has no gate. Both end through the normal completion
+  (notify 1); cMsgNISComplete carries skipped for a skip only.
+- **Change.** `NisHost.skip` is a skip request (the button or a mod); the player ends a skippable scene
+  ("skipped"); kinds 0x0C / 0x0F / 0x12 wait for 2.0 s of clip time. The request comes from one A press (pad) or
+  Enter while a scene plays; no prompt.
+- **Retail button** (research b1022, agent-derived; our key numbers checked: `retail_menu_stage.rs` APT_NEXT 2,
+  APT_PREVIOUS 3, APT_START 0): FE screen 1's key handler 825EFF98 (vtable 82302A10) posts the skip for APT key 2
+  (AptNext = A) only, on the first press, with no prompt (ShowMovieSkip / HideMovieSkip are FE 24's). The minimum
+  time float 82060C50 is 2.0 (read as seconds).
+- **Checked** (`nis-run.ps1 -SkipAt 4 -At 10`): "NIS tut_sksc_01 skipped at 4.00 s", the lesson goes on (start pad,
+  objective panel, Coach Frank tip). Test aid `SKATE_NIS_SKIP_AT=<seconds>`. Test: `nis_player` (skippable starts,
+  timed kinds before / after 2 s).
+- **Open.** Whether Start opens the pause menu during a scene (825EB998 not followed); the scene table's "can skip"
+  field (vt+0x14); what input mode 12 does to the skater (not frozen in ours); the skip key as a mod setting.
 
 ## Verification
 

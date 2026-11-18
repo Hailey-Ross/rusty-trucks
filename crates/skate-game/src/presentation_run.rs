@@ -516,6 +516,9 @@ pub struct NisHost {
     pub stop: bool,
     /// The running scene ended (retail cMsgNISChallengeNotify with +0x10 == 1, 8257AE30).
     pub finished: bool,
+    /// A skip request (retail PostMsg_NISSkip 8285F0E8: the skip button, or a mod); the player decides whether the
+    /// running scene may be skipped.
+    pub skip: bool,
 }
 
 /// NIS (type 5, start 8257ACA0, research b874): plays scene arg1; done when the player reports the scene's end; stop
