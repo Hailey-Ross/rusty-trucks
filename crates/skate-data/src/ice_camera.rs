@@ -156,6 +156,66 @@ fn track(b: &[u8], s: usize) -> Result<(CameraTrack, usize), String> {
     Ok((CameraTrack { length, keys: out, segments }, end))
 }
 
+/// A scene's camera cuts (doc 43 "NIS scenes"): the track whose group 35 holds TAKE_START / TAKE_NUMBER (a track
+/// without camera keys) lists, per segment, the scene time (TAKE_START / 65535 * length) at which the camera
+/// switches to take (track) TAKE_NUMBER [data; meaning inferred from the takes' own keys]. The last segment is
+/// empty (0, 0). Sorted by time; empty when the scene has no cut list.
+pub fn scene_cuts(b: &[u8], scene_hash: u32) -> Result<Vec<(f32, usize)>, String> {
+    let tracks = scene_tracks(b, scene_hash)?;
+    let starts = raw_element(b, scene_hash, "TAKE_START")?;
+    let numbers = raw_element(b, scene_hash, "TAKE_NUMBER")?;
+    let Some(i) = starts.iter().position(|(_, _, v)| !v.is_empty()) else { return Ok(Vec::new()) };
+    let length = tracks[i].length;
+    let mut cuts: Vec<(f32, usize)> = starts[i].2.iter().zip(&numbers[i].2)
+        .filter(|&(&s, &n)| s != 0 || n != 0)
+        .map(|(&s, &n)| (s as f32 / 65535.0 * length, n as usize)).collect();
+    cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(cuts)
+}
+
+/// The take shown at scene time `t`: the last cut at or before `t`, the first cut's take before it.
+pub fn take_at(cuts: &[(f32, usize)], t: f32) -> Option<usize> {
+    cuts.iter().rev().find(|c| c.0 <= t).or(cuts.first()).map(|c| c.1)
+}
+
+/// Raw values of one element per track of a scene block (research aid): per track the element's group
+/// (segments, keys) pair, the group's interior time words (u16) and the element's raw bit values.
+pub fn raw_element(b: &[u8], scene_hash: u32, name: &str) -> Result<Vec<((usize, usize), Vec<u16>, Vec<u32>)>, String> {
+    let id = ELEMENTS.iter().position(|e| e.0 == name).ok_or_else(|| format!("no element {name}"))?;
+    let (_, group, per_segment, bits) = ELEMENTS[id];
+    let block = (0..b.len().saturating_sub(16)).step_by(4)
+        .find(|&o| u32_at(b, o) == Ok(1) && u32_at(b, o + 8) == Ok(scene_hash))
+        .ok_or_else(|| format!("no ICE scene block {scene_hash:#010x}"))?;
+    let count = u32_at(b, block + 12)? as usize;
+    let mut at = block + 16;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let s = at;
+        let pairs: Vec<(usize, usize)> = (0..GROUPS)
+            .map(|k| Ok((u16_at(b, s + 20 + 4 * k)? as usize, u16_at(b, s + 22 + 4 * k)? as usize)))
+            .collect::<Result<_, String>>()?;
+        let n2: usize = pairs.iter().map(|(seg, _)| seg.saturating_sub(2)).sum();
+        let n1: usize = pairs.iter().map(|(seg, _)| seg.saturating_sub(1)).sum();
+        let times_at = s + ((2 * n2 + VALUES + 1) & !1);
+        let values_at = s + ((times_at - s + 2 * n1 + 3) & !3);
+        let before: usize = pairs[..group as usize].iter().map(|(seg, _)| seg.saturating_sub(2)).sum();
+        let (seg, _) = pairs[group as usize];
+        let times = (0..seg.saturating_sub(2)).map(|i| u16_at(b, times_at + 2 * (before + i))).collect::<Result<_, _>>()?;
+        let mut offset = values_at;
+        let mut values = Vec::new();
+        for (i, &(_, g, per_seg, n)) in ELEMENTS.iter().enumerate() {
+            let (segments, keys) = pairs[g as usize];
+            if i == id {
+                values = bit_values(b, offset, bits, if per_segment { segments } else { keys })?;
+            }
+            offset += ((n as usize * if per_seg { segments } else { keys } + 31) >> 3) & !3;
+        }
+        out.push((pairs[group as usize], times, values));
+        at = track(b, s)?.1;
+    }
+    Ok(out)
+}
+
 /// The tracks of the scene block with `scene_hash`, in file order (track index = position).
 pub fn scene_tracks(b: &[u8], scene_hash: u32) -> Result<Vec<CameraTrack>, String> {
     let block = (0..b.len().saturating_sub(16)).step_by(4)

@@ -27,6 +27,8 @@ pub struct Presenter {
     pub speech_out: Arc<Mutex<Vec<SpeechPlay>>>,
     /// Cast lines the Speech events asked for (ids under 5000), for the world speech's main cast to play.
     pub cast_out: Arc<Mutex<Vec<CastSpeech>>>,
+    /// The NIS player's requests and its end report (`nis_player`).
+    pub nis: Arc<Mutex<NisHost>>,
     /// Groups that finished or were removed (`presentationeventgroupfinished`), for owners that wait on a group
     /// (the career's Execute); the newest 64 kept.
     finished: Vec<String>,
@@ -54,7 +56,9 @@ impl Default for Presenter {
         for (kind, wait) in [("Speech", true), ("SpeechNoWait", false)] {
             handlers.set_engine(kind, Box::new(SpeechHandler { lines: speech.clone(), out: speech_out.clone(), cast: cast_out.clone(), wait, left: 0.0 }));
         }
-        Self { manager: Manager::default(), handlers, fade, callout, sim, grants, speech, speech_out, cast_out, finished: Vec::new(), driven: false }
+        let nis = Arc::new(Mutex::new(NisHost::default()));
+        handlers.set_engine("NIS", Box::new(NisHandler { host: nis.clone() }));
+        Self { manager: Manager::default(), handlers, fade, callout, sim, grants, speech, speech_out, cast_out, nis, finished: Vec::new(), driven: false }
     }
 }
 
@@ -503,6 +507,44 @@ pub trait Handler: Send + Sync {
     fn stop(&mut self, _event: &Event) {}
 }
 
+/// Between the NIS events and the NIS player (`nis_player`): the scene to play, a stop, and the end report.
+#[derive(Default, Debug)]
+pub struct NisHost {
+    /// A scene the player has not taken yet.
+    pub request: Option<String>,
+    /// The player should end the running scene (the event's stop: skip / group removal).
+    pub stop: bool,
+    /// The running scene ended (retail cMsgNISChallengeNotify with +0x10 == 1, 8257AE30).
+    pub finished: bool,
+}
+
+/// NIS (type 5, start 8257ACA0, research b874): plays scene arg1; done when the player reports the scene's end; stop
+/// (8257AE68) stops the player; undo does nothing.
+pub struct NisHandler {
+    host: Arc<Mutex<NisHost>>,
+}
+
+impl Handler for NisHandler {
+    fn start(&mut self, event: &Event) {
+        let scene = event.args[0].clone().unwrap_or_default();
+        info!("PRESENTATION NIS {scene}");
+        if let Ok(mut h) = self.host.lock() {
+            h.request = Some(scene);
+            h.stop = false;
+            h.finished = false;
+        }
+    }
+    fn is_done(&mut self, _event: &Event) -> bool {
+        self.host.lock().map(|h| h.finished).unwrap_or(true)
+    }
+    fn stop(&mut self, _event: &Event) {
+        if let Ok(mut h) = self.host.lock() {
+            h.request = None;
+            h.stop = true;
+        }
+    }
+}
+
 /// A type whose host is not ported yet: logged, done at once (NOT RETAIL YET for the waiting types such as NIS, FMV,
 /// Speech, which retail holds until their end message).
 pub struct Stub;
@@ -639,6 +681,22 @@ mod tests {
         let mut m = Manager::default();
         m.start(group("a", vec![ev("NIS", Some("intro")), ev("NoSuchType", None), ev("CentralMessage", Some("ID_X"))]));
         assert_eq!(m.update(0.016, &mut r), [Out::GroupFinished("a".into())]);
+    }
+
+    #[test]
+    fn nis_holds_its_group_until_the_player_reports_the_end() {
+        let mut p = Presenter::default();
+        p.manager.start(group("a", vec![ev("NIS", Some("tut_sksc_01"))]));
+        assert!(p.update(0.016).is_empty());
+        assert_eq!(p.nis.lock().unwrap().request.take().as_deref(), Some("tut_sksc_01"));
+        assert!(p.update(0.016).is_empty());
+        p.nis.lock().unwrap().finished = true;
+        assert_eq!(p.update(0.016), [Out::GroupFinished("a".into())]);
+        // A removed group stops the running scene.
+        p.manager.start(group("b", vec![ev("NIS", Some("tut_sksc_02"))]));
+        p.update(0.016);
+        p.manager.remove_owner("t", &mut p.handlers);
+        assert!(p.nis.lock().unwrap().stop);
     }
 
     /// Retail's id table (8224F1B8): the follow the leader lines 308 / 309 / 310 are main-cast events 7 / 8 / 9.

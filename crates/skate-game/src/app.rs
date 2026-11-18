@@ -237,6 +237,7 @@ pub(crate) fn build(
     app.add_plugins(crate::retail_menu_stage::RetailMenuStagePlugin);
     app.add_plugins(crate::fe_backdrop::FeBackdropPlugin);
     app.add_plugins(crate::trick_guide_scene::TrickGuideScenePlugin);
+    app.add_plugins(crate::nis_player::NisPlayerPlugin);
     app.add_plugins(crate::skater_photo::SkaterPhotoPlugin);
     app.add_plugins(crate::marquee_preview::MarqueePreviewPlugin);
     app.add_plugins(crate::rumble::RumblePlugin);
