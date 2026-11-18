@@ -42,10 +42,67 @@ pub(crate) struct CasOption {
     pub description: String,
     pub target: Option<usize>,
     pub kind: String,
+    /// The part filter's catalog category and payload (research b1035).
+    pub category: Option<u32>,
+    pub payload: String,
 }
+
+/// One catalog part as setup lists it (`cas-parts.json`, tools/asset_pipeline/cas_grid.py): a model with one of
+/// its material instances and the cas fields the filters, thumbnails and info panel read.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub(crate) struct CasPart {
+    pub slot: String,
+    pub model_id: String,
+    pub model: String,
+    pub material_id: String,
+    pub material: String,
+    #[serde(default)]
+    pub gender: String,
+    #[serde(default)]
+    pub toptype: String,
+    #[serde(default)]
+    pub sockstyle: String,
+    #[serde(default)]
+    pub location: String,
+    #[serde(default)]
+    pub manufacturerid: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CasPartsFile {
+    parts: Vec<CasPart>,
+}
+
+/// The part list next to the catalog (none in a set prepared before it).
+pub(crate) fn load_parts(asset_root: &std::path::Path) -> Vec<CasPart> {
+    std::fs::read(crate::customiser_parts::asset_directory(asset_root).join("cas-parts.json")).ok()
+        .and_then(|b| serde_json::from_slice::<CasPartsFile>(&b).ok()).map(|f| f.parts).unwrap_or_default()
+}
+
+/// The part thumbnail grid (menu 10, PartThumbnails).
+pub(crate) const PART_GRID: usize = 10;
+/// Record tests of the part filters (research b1035, retail values; data a mod can change): t-shirts keep these
+/// TopTypes, the other OuterTorso categories their payload; socks drop this SockStyle; piercing slots keep their
+/// payload as Location.
+const TSHIRT_TOPTYPES: [&str; 2] = ["tshirt", "ls_tshirt"];
+const OUTER_TORSO: &str = "OuterTorso";
+const SOCK: &str = "Sock";
+const SOCK_EXCLUDED: &str = "tiny";
+const PIERCINGS: &str = "Piercings";
+/// The brands the post-pass (826035F0) sorts after the others.
+const LAST_BRANDS: [&str; 2] = ["skate", "no_brand"];
+/// Board slots: their thumbnails have no gender folder.
+const BOARD_SLOTS: [&str; 3] = ["SkateBoard", "SkateTruck", "SkateWheel"];
 
 #[derive(Default)]
 pub(crate) struct CasHost {
+    /// The catalog parts and the slot names by category number (menu-tables.json cas_slots).
+    pub parts: Vec<CasPart>,
+    pub slots: Vec<String>,
+    /// The skater is male (the gender filter, [db+0x54]+0x2030). NOT RETAIL YET: not read from the profile.
+    pub male: bool,
+    /// The open grid: None = the Remove entry, else an index into `parts`.
+    pub grid: Vec<Option<usize>>,
     pub open: bool,
     pub menus: Vec<CasMenu>,
     pub options: Vec<CasOption>,
@@ -78,8 +135,41 @@ impl CasHost {
             description: o.description,
             target: usize::try_from(o.target).ok(),
             kind: o.kind,
+            category: o.category,
+            payload: o.payload,
         }).collect();
-        Self { menus, options, indices, trucks: 0.5, wheels: 0.5, ..Default::default() }
+        Self { menus, options, indices, trucks: 0.5, wheels: 0.5, male: true, ..Default::default() }
+    }
+
+    /// The grid for a part category option (82603480): the Remove entry, then the parts of the option's slot that
+    /// pass the gender filter and the category's record test, branded parts before "skate" / "no_brand" (826035F0).
+    /// NOT RETAIL YET: the hidden byte (+0x44), the pack / DLC helper filters, the unlock-group check.
+    fn build_grid(&mut self, option: usize) {
+        self.grid = vec![None];
+        let Some(row) = self.options.get(option) else { return };
+        let Some(slot) = row.category.and_then(|c| self.slots.get(c as usize)).cloned() else { return };
+        let payload = row.payload.clone();
+        let gender_ok = |p: &CasPart| if self.male { p.gender != "female" } else { p.gender != "male" };
+        let test = |p: &CasPart| match slot.as_str() {
+            OUTER_TORSO if payload.is_empty() => TSHIRT_TOPTYPES.contains(&p.toptype.as_str()),
+            OUTER_TORSO => p.toptype == payload,
+            SOCK => p.sockstyle != SOCK_EXCLUDED,
+            PIERCINGS if !payload.is_empty() => p.location == payload,
+            _ => true,
+        };
+        let mut listed: Vec<usize> = self.parts.iter().enumerate()
+            .filter(|(_, p)| p.slot == slot && gender_ok(p) && test(p)).map(|(i, _)| i).collect();
+        listed.sort_by_key(|&i| LAST_BRANDS.contains(&self.parts[i].manufacturerid.as_str()));
+        self.grid.extend(listed.into_iter().map(Some));
+    }
+
+    /// A grid entry's thumbnail (825FF7D0): `fe\cas\<gender>\<slot>\<model>_<material>`, the Remove entry's icon.
+    /// The gender folder is the skater's for clothing, none for board parts [inferred from the files].
+    fn thumbnail(&self, entry: Option<usize>) -> String {
+        let Some(p) = entry.and_then(|i| self.parts.get(i)) else { return "fe\\cas\\general\\remove".into() };
+        let folder = if BOARD_SLOTS.contains(&p.slot.as_str()) { String::new() }
+            else if self.male { "male\\".into() } else { "female\\".into() };
+        format!("fe\\cas\\{folder}{}\\{}_{}", p.slot.to_ascii_lowercase(), p.model, p.material)
     }
 
     /// Entering a menu (82600AF8): the shop mode it sets.
@@ -128,8 +218,12 @@ impl CasHost {
     /// menu. NOT RETAIL YET: the menu / leaf branches of 825FE3C0 (menus 4, 5, 6, 31..33, options 56, 96..114) and
     /// the part list setup before menu 10.
     pub(crate) fn select(&mut self, row: usize) -> Option<usize> {
-        let (_, option) = self.option(row)?;
+        let (id, option) = self.option(row)?;
         let target = option?.target.filter(|t| *t < self.menus.len())?;
+        if target == PART_GRID {
+            self.build_grid(id as usize);
+            bevy::log::info!("RETAIL_MENUS CreateASkater grid for option {id}: {} entries", self.grid.len());
+        }
         self.stack.push(target);
         self.indices[target] = (0, 0);
         self.enter(target);
@@ -195,6 +289,26 @@ impl CasHost {
         }
         let row = args.first().map(|v| v.number().max(0.0) as usize).unwrap_or(0);
         let text = |s: &str| Value::Text(if s.is_empty() { "#".into() } else { s.into() });
+        // The part grid (menu 10) answers from its entries.
+        if m == PART_GRID {
+            match method {
+                "CAC_GetNumItems" => return Ok(Some(Value::Number(self.grid.len() as f64))),
+                "CAC_GetThumbnailFileName" => {
+                    return Ok(Some(Value::Text(self.grid.get(row).map_or("no_image".into(), |e| self.thumbnail(*e)))));
+                }
+                // The Remove entry's type is "none" (b1034); NOT RETAIL YET: the parts' own info type (825FF5E8).
+                "CAC_GetOptionType" => {
+                    return Ok(Some(Value::Text(if self.grid.get(row) == Some(&None) { "none" } else { "option" }.into())));
+                }
+                // NOT RETAIL YET: the pick is logged, not applied (825FD9F0: lock check, then 82603CB0 equips it).
+                "CAC_OnThumbnailSelect" => {
+                    let entry = self.grid.get(row).copied().flatten().and_then(|i| self.parts.get(i));
+                    bevy::log::info!("RETAIL_MENUS CreateASkater pick {row}: {:?}", entry.map(|p| (&p.slot, &p.model, &p.material)));
+                    return Ok(Some(Value::Undefined));
+                }
+                _ => {}
+            }
+        }
         Ok(Some(match method {
             "CAC_GetTitleText" => text(&self.menus[m].title),
             "CAC_GetNumItems" => Value::Number(self.menus[m].options.len() as f64),
@@ -272,7 +386,7 @@ mod tests {
         let mut menus: Vec<CasMenu> = (0..16).map(|i| menu(&format!("m{i}"), "", (0, 0), &[])).collect();
         menus[TOP_MENU] = menu("EditSkaterMain", "ID_CAC_EDITSKATER_TITLE", (1, 1), &[0, 1, 46, 47, 48]);
         let mut h = CasHost::new(menus, vec![skate_data::menu_tables::CasOptionRow { text: "ID_BODY".into(),
-            description: String::new(), target: 17, kind: "option".into() }]);
+            description: String::new(), target: 17, kind: "option".into(), ..Default::default() }]);
         h.begin();
         h
     }
@@ -299,7 +413,7 @@ mod tests {
         menus[TOP_MENU] = menu("EditSkaterMain", "ID_CAC_EDITSKATER_TITLE", (1, 1), &[0]);
         menus[17] = menu("BackAlleyPete", "ID_CAC_BODY_MODIFICATION_TITLE", (1, 2), &[]);
         let mut h = CasHost::new(menus, vec![skate_data::menu_tables::CasOptionRow { text: "ID_BODY".into(),
-            description: String::new(), target: 17, kind: "option".into() }]);
+            description: String::new(), target: 17, kind: "option".into(), ..Default::default() }]);
         h.begin();
         assert_eq!(h.shop, 2);
         let mut vm = Vm::new();
@@ -328,6 +442,33 @@ mod tests {
         assert!(!h.left_right(false));
         assert_eq!(h.call(&mut vm, "Game", "CAC_GetStringValue", &[Value::Number(4.0)]).unwrap(),
             Some(Value::Text("ID_CAC_EDIT_WHEELS_MEDIUM".into())));
+    }
+
+    #[test]
+    fn a_category_lists_its_slots_parts_for_the_skater() {
+        let part = |slot: &str, model: &str, gender: &str, toptype: &str, brand: &str| CasPart { slot: slot.into(),
+            model: model.into(), material: format!("{model}_mat"), gender: gender.into(), toptype: toptype.into(),
+            manufacturerid: brand.into(), ..Default::default() };
+        let mut h = host();
+        h.slots = ["Arm", "Leg", "Hair", "Rostral", "Torso", "Feet", "Accessory", "Equipment", "Skeleton", "Organ", "Misc",
+            "SkateBoard", "SkateTruck", "SkateWheel", "Beard", "Pants", "Underwear", "Sock", "Hat", "Belt", "Glasses",
+            "WristItem", "InnerTorso", "OuterTorso", "Piercings", "Jewellery"].map(String::from).to_vec();
+        h.parts = vec![part("Hat", "cap_a", "male", "", "skate"), part("Hat", "cap_b", "female", "", "dc"),
+            part("Hat", "cap_c", "unisex", "", "dc"), part("OuterTorso", "tee", "male", "tshirt", "dc"),
+            part("OuterTorso", "hood", "male", "hoody", "dc"), part("SkateBoard", "skateboard", "unisex", "", "dc")];
+        let row = |category: u32, payload: &str| CasOption { category: Some(category), payload: payload.into(), ..Default::default() };
+        h.options = vec![row(18, ""), row(23, ""), row(23, "hoody"), row(11, "")];
+        h.build_grid(0);
+        // Remove first, then the male and unisex hats, branded before "skate".
+        assert_eq!(h.grid, vec![None, Some(2), Some(0)]);
+        assert_eq!(h.thumbnail(None), "fe\\cas\\general\\remove");
+        assert_eq!(h.thumbnail(Some(0)), "fe\\cas\\male\\hat\\cap_a_cap_a_mat");
+        h.build_grid(1);
+        assert_eq!(h.grid, vec![None, Some(3)]);
+        h.build_grid(2);
+        assert_eq!(h.grid, vec![None, Some(4)]);
+        h.build_grid(3);
+        assert_eq!(h.thumbnail(h.grid[1]), "fe\\cas\\skateboard\\skateboard_skateboard_mat");
     }
 
     #[test]

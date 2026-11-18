@@ -533,7 +533,22 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   Yes closes FE 15 and the boot flow goes on (coach_frank_intro, as in the PS3 recording), No re-enters the top
   menu. Checked: the popup text, Yes / No and "B Cancel / A Select" draw; behind it the sliders read "Medium" and
   the info panel shows "Body Mods has all your plastic surgery needs."
-- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): Yes does not
+- **Part grid** (research b1034 / b1035, agent-derived; main checked the categories, slot names and thumbnail
+  keys against the data): a merchandise category's filter object names one catalog slot (its vt+0x14 returns the
+  slot number; the slot names are the enum at 0x82FCA0A0, the same names our catalog uses) and a record test
+  (t-shirts: TopType tshirt / ls_tshirt; button shirt / hoody / jacket / sweater: TopType = the option's payload;
+  socks: SockStyle not "tiny"; piercing slots: Location = payload); the gender filter keeps the skater's gender
+  and unisex parts; the list is sorted with the "skate" / "no_brand" parts last; Remove comes first.
+  Thumbnails: `fe\cas\<male|female>\<slot>\<model>_<material>` (no gender folder for boards, trucks, wheels).
+- **Change (part grid).** `menu_tables` keeps each option's action object (vtable, payload) and its slot number,
+  and extracts the 26 slot names (TU3 = disc build). Setup: `cas_grid.py` writes `cas-parts.json` (4595 model /
+  material pairs with Gender, TopType, SockStyle, Location, Unlock, ManufacturerID, Cost, DlcID) in the customizer's
+  menu stage; the menu set exports every `data/fe/cas/` texture as a named image (2274; the set is 0.2 GB).
+  `cas_host`: A on a category builds its grid; menu 10 answers CAC_GetNumItems / GetThumbnailFileName /
+  GetOptionType / OnThumbnailSelect (logged, not applied yet). Test `a_category_lists_its_slots_parts_for_the_skater`.
+- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): picks are not
+  applied, the skater's gender is taken as male, the hidden field (+0x44; wear-style and "_d" variants list),
+  the pack / DLC helper filters and the unlock check are not ported, piercings have no catalog data; Yes does not
   commit / save the look yet (82539790), no 250 ms close countdown or fade, X / Y, selectors / stance / colors / morphs / part cycles on Left / Right,
   825FE3C0's menu and leaf branches, the values' profile storage and defaults (0.5 meanwhile), refresh states 52 /
   53, parts and thumbnails, the stage and camera.

@@ -233,6 +233,9 @@ pub struct MenuTables {
     /// Its option records by option id (research b1031).
     #[serde(default)]
     pub cas_options: Vec<CasOptionRow>,
+    /// The catalog slot names by category number (the part filters' categories; research b1035).
+    #[serde(default)]
+    pub cas_slots: Vec<String>,
     /// Table addresses in this build (diagnostics only).
     pub addresses: std::collections::BTreeMap<String, String>,
 }
@@ -709,12 +712,58 @@ fn cas_menus(img: &Image) -> Result<(u32, u32, Vec<CasMenu>), String> {
 /// One Create-a-Skater option record (S+0x40 + id * 0x30, written by the CAS constructor; research b1031): text id,
 /// description id, target menu (-1 = a leaf), type ("option", "slider", "category", "selector", "color", "morph" or
 /// empty).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CasOptionRow {
     pub text: String,
     pub description: String,
     pub target: i32,
     pub kind: String,
+    /// The action object at +0xC (research b1031 / b1035): its vtable, its payload name (a slot such as "hoody",
+    /// "ear_left"; empty when none) and the catalog category its filter accepts (vt+0x14 returns it; the slot enum
+    /// at 0x82FCA0A0: 5 Feet, 15 Pants, 18 Hat, 23 OuterTorso ...), none for options without a part filter.
+    #[serde(default)]
+    pub action: u32,
+    #[serde(default)]
+    pub payload: String,
+    #[serde(default)]
+    pub category: Option<u32>,
+}
+
+/// The category number a filter vtable's slot 5 (vt+0x14) returns: `li r3,N` then `blr`; the slot count (26, the
+/// plain action object) means no part filter.
+fn filter_category(img: &Image, vtable: u32, slots: usize) -> Option<u32> {
+    let function = img.word(vtable.checked_add(0x14)?)?;
+    let first = img.word(function)?;
+    (first >> 16 == 0x3860 && img.word(function + 4)? == 0x4e80_0020).then_some(first & 0xffff)
+        .filter(|n| (*n as usize) < slots)
+}
+
+/// The catalog slot names in enum order (0x82FCA0A0 in TU3: Arm, Leg, Hair ... SkateTruck 12 ... Jewellery 25), the
+/// db categories the part filters name; located by "SkateTruck" at index 12 with "Arm" at 0; the run ends where
+/// the next name's string is not packed right after the previous one (other tables' names follow in the pointer
+/// run, their strings elsewhere).
+const CAS_SLOT_ANCHOR: (&str, u32, &str) = ("SkateTruck", 12, "Arm");
+fn cas_slots(img: &Image) -> Option<(u32, Vec<String>)> {
+    img.pointers_to_string(CAS_SLOT_ANCHOR.0).into_iter().find_map(|at| {
+        let start = at.checked_sub(CAS_SLOT_ANCHOR.1 * 4)?;
+        if img.string_at(start).as_deref() != Some(CAS_SLOT_ANCHOR.2) {
+            return None;
+        }
+        let mut names = Vec::new();
+        let mut previous: Option<(u32, usize)> = None;
+        for i in 0.. {
+            let Some(p) = img.word(start + i * 4) else { break };
+            let Some(name) = img.cstr(p).filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric())) else { break };
+            if let Some((q, len)) = previous {
+                if p <= q || p > q + len as u32 + 1 + 8 {
+                    break;
+                }
+            }
+            previous = Some((p, name.len()));
+            names.push(name);
+        }
+        Some((start, names))
+    })
 }
 
 const CAS_OPTION_BASE: i32 = 64;
@@ -726,7 +775,7 @@ const CAS_TYPES: [&str; 6] = ["option", "slider", "category", "selector", "color
 /// instructions that build the option lists' address (`lis` hi + `addi` lo), then a linear scan to `blr` with a
 /// register file; the records' base register is the one the first `stw` of an "ID_CAC_" text at +64 uses; the last
 /// store to a field wins.
-fn cas_options(img: &Image, lists: u32, count: usize) -> Result<Vec<CasOptionRow>, String> {
+fn cas_options(img: &Image, lists: u32, count: usize, slots: usize) -> Result<Vec<CasOptionRow>, String> {
     let lo = lists as u16 as i16 as i32;
     let hi = (lists.wrapping_sub(lo as u32)) >> 16;
     let words = img.image.image.len() as u32 / 4;
@@ -740,6 +789,11 @@ fn cas_options(img: &Image, lists: u32, count: usize) -> Result<Vec<CasOptionRow
         (1..8).filter_map(|d| word(k + d)).any(|v| v >> 26 == 14 && (v >> 16) & 31 == ra && v as u16 as i16 as i32 == lo)
     }).ok_or("Create-a-Skater constructor not found")?;
     let mut regs: [Option<u32>; 32] = [None; 32];
+    // A register holding the object the last call returned (a heap action object), and that object's vtable and
+    // payload stores until the record's +0xC store takes it.
+    let mut marks = [false; 32];
+    let mut pending: (Option<u32>, Option<u32>) = (None, None);
+    let mut actions: Vec<(Option<u32>, Option<u32>)> = vec![(None, None); count];
     let mut base: Option<usize> = None;
     let mut fields: Vec<[Option<u32>; 5]> = vec![[None; 5]; count];
     for k in anchor..(anchor + CAS_CTOR_LIMIT).min(words) {
@@ -751,12 +805,19 @@ fn cas_options(img: &Image, lists: u32, count: usize) -> Result<Vec<CasOptionRow
         let simm = (w & 0xffff) as u16 as i16 as i32;
         let src = |regs: &[Option<u32>; 32]| if ra == 0 { Some(0) } else { regs[ra] };
         match op {
-            14 => regs[rd] = src(&regs).map(|v| v.wrapping_add(simm as u32)),
-            15 => regs[rd] = src(&regs).map(|v| v.wrapping_add((simm as u32) << 16)),
+            14 => { regs[rd] = src(&regs).map(|v| v.wrapping_add(simm as u32)); marks[rd] = false; }
+            15 => { regs[rd] = src(&regs).map(|v| v.wrapping_add((simm as u32) << 16)); marks[rd] = false; }
             24 => regs[ra] = regs[rd].map(|v| v | (w & 0xffff)),
             25 => regs[ra] = regs[rd].map(|v| v | ((w & 0xffff) << 16)),
             36 => {
                 let value = regs[rd];
+                if marks[ra] {
+                    match simm {
+                        0 => pending.0 = value,
+                        4 => pending.1 = value,
+                        _ => {}
+                    }
+                }
                 let text = value.and_then(|p| img.cstr(p));
                 if base.is_none() && simm == CAS_OPTION_BASE && text.as_deref().is_some_and(|t| t.starts_with("ID_CAC_")) {
                     base = Some(ra);
@@ -765,23 +826,29 @@ fn cas_options(img: &Image, lists: u32, count: usize) -> Result<Vec<CasOptionRow
                     let (id, field) = (((simm - CAS_OPTION_BASE) / CAS_OPTION) as usize, (simm - CAS_OPTION_BASE) % CAS_OPTION);
                     if id < count && field % 4 == 0 && field <= 16 {
                         fields[id][(field / 4) as usize] = value;
+                        if field == 12 {
+                            actions[id] = std::mem::take(&mut pending);
+                        }
                     }
                 }
             }
             // Other stores, compares, branches without link, floating point and vector: no general register written.
             37..=39 | 44 | 45 | 47 | 62 | 10 | 11 | 16 | 4 | 59 | 63 | 52..=55 => {}
             18 | 19 => {
-                // bl / bctrl clobber the volatile registers.
+                // bl / bctrl clobber the volatile registers; r3 holds the new object.
                 if w & 1 == 1 {
                     for r in [0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] {
                         regs[r] = None;
+                        marks[r] = false;
                     }
+                    marks[3] = true;
+                    pending = (None, None);
                 }
             }
             // Rotates and logical immediates write rA.
-            20 | 21 | 23 | 26..=30 => regs[ra] = None,
+            20 | 21 | 23 | 26..=30 => { regs[ra] = None; marks[ra] = false; }
             31 => match (w >> 1) & 1023 {
-                444 if rd == rb => regs[ra] = regs[rd],
+                444 if rd == rb => { regs[ra] = regs[rd]; marks[ra] = marks[rd]; }
                 // Logical / shift forms write rA; stores, compares and moves to special registers write nothing.
                 28 | 60 | 124 | 284 | 316 | 412 | 444 | 476 | 24 | 536 | 792 | 824 | 26 | 922 | 954 | 986 | 27 | 539 | 794 | 58 => regs[ra] = None,
                 0 | 32 | 144 | 467 | 149 | 151 | 181 | 183 | 215 | 247 | 407 | 439 | 661 | 662 | 663 | 695 | 727 | 759 | 918 | 983 => {}
@@ -794,11 +861,14 @@ fn cas_options(img: &Image, lists: u32, count: usize) -> Result<Vec<CasOptionRow
         return Err("Create-a-Skater option records not found".into());
     }
     let text = |p: Option<u32>| p.filter(|p| *p != 0).and_then(|p| img.cstr(p)).unwrap_or_default();
-    let rows: Vec<CasOptionRow> = fields.iter().map(|f| CasOptionRow {
+    let rows: Vec<CasOptionRow> = fields.iter().zip(&actions).map(|(f, (vtable, payload))| CasOptionRow {
         text: text(f[0]),
         description: text(f[1]),
         target: f[2].map_or(-1, |v| v as i32),
         kind: text(f[4]),
+        action: vtable.unwrap_or(0),
+        payload: text(*payload),
+        category: vtable.and_then(|v| filter_category(img, v, slots)),
     }).collect();
     // Every record has a text (the gesture slots 49..52 carry "0".."3", not text ids), a target menu and a known type;
     // record 0 is Back Alley Pete's.
@@ -1149,8 +1219,9 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         (0, 0, Vec::new())
     });
     let option_count = cas_menus.iter().flat_map(|m| m.options.iter()).copied().max().map_or(0, |m| m as usize + 1);
-    let cas_options = if cas_menus.is_empty() { Vec::new() } else {
-        cas_options(&img, cas_lists_at, option_count).unwrap_or_else(|e| {
+    let (cas_slots_at, cas_slots) = cas_slots(&img).unwrap_or_default();
+    let cas_options = if cas_menus.is_empty() || cas_slots.is_empty() { Vec::new() } else {
+        cas_options(&img, cas_lists_at, option_count, cas_slots.len()).unwrap_or_else(|e| {
             eprintln!("MENU_TABLES {e}");
             Vec::new()
         })
@@ -1177,6 +1248,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         ("dj_pieces", dj_at),
         ("cas_menus", cas_at),
         ("cas_option_lists", cas_lists_at),
+        ("cas_slots", cas_slots_at),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), hex(v)))
@@ -1203,6 +1275,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         dj_ids,
         cas_menus,
         cas_options,
+        cas_slots,
         addresses,
     })
 }

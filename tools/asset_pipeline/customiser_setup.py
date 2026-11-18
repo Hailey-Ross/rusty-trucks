@@ -142,7 +142,12 @@ def _prepare(game, assets, report=print):
                 if selection['asset_id'] not in data['models'] or selection['material_id'] not in data['materials']:
                     raise RuntimeError('Incomplete default character outfit')
     run_stage('library', build_library)
-    run_stage('menu', lambda: (directory/'extra-menu.json').write_text(json.dumps(generate(json.loads((directory/'native.json').read_text())))))
+    def build_menu():
+        (directory/'extra-menu.json').write_text(json.dumps(generate(json.loads((directory/'native.json').read_text()))))
+        # The retail Create-a-Skater's part grids (cas_grid.py, doc 43 "Create-a-Skater").
+        from .cas_grid import write as write_cas_parts
+        write_cas_parts(directory)
+    run_stage('menu', build_menu)
     report('Preparing authored clothing lighting for custom and pro skaters')
     run_stage('lighting', lambda: lighting(game, assets, directory, json.loads((directory/'library-base.json').read_text())))
     report('Preparing all owned pro and special character models')

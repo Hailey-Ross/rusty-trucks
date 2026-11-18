@@ -858,8 +858,12 @@ fn setup(
                 cas_shown: false,
                 cas_frames: 0,
                 cas_state: None,
-                cas_host: crate::cas_host::CasHost::new(tables.as_ref().map(|t| t.cas_menus.clone()).unwrap_or_default(),
-                    tables.as_ref().map(|t| t.cas_options.clone()).unwrap_or_default()),
+                cas_host: crate::cas_host::CasHost {
+                    parts: crate::cas_host::load_parts(&config.asset_root),
+                    slots: tables.as_ref().map(|t| t.cas_slots.clone()).unwrap_or_default(),
+                    ..crate::cas_host::CasHost::new(tables.as_ref().map(|t| t.cas_menus.clone()).unwrap_or_default(),
+                        tables.as_ref().map(|t| t.cas_options.clone()).unwrap_or_default())
+                },
                 profile_generation: (0, 0),
                 extras_id: as_id(EXTRAS),
                 extras: Default::default(),

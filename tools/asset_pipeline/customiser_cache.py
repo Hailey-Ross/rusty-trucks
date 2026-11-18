@@ -17,7 +17,7 @@ SOURCES = {
     'catalog': ('asset_pipeline/customisation_catalog.py', 'asset_pipeline/customisation_native.py',
                 'asset_pipeline/vlt.py', 'asset_pipeline/names.txt'),
     'library': GEOMETRY + ('asset_pipeline/customisation_library.py', 'asset_pipeline/customisation_worker.py'),
-    'menu': ('asset_pipeline/customisation_profiles.py',),
+    'menu': ('asset_pipeline/customisation_profiles.py', 'asset_pipeline/cas_grid.py'),
     'lighting': ('asset_pipeline/customiser_lighting.py', 'asset_pipeline/environment.py',
                  'asset_pipeline/native_roster.py', 'asset_pipeline/marquee_assets.py', 'extract_default_skater.py'),
     'roster': GEOMETRY + ('asset_pipeline/native_roster.py', 'asset_pipeline/marquee_assets.py', 'mixamo_to_skate/*.py'),
@@ -25,7 +25,7 @@ SOURCES = {
 OUTPUTS = {
     'catalog': ('catalog.json', 'native.json', 'database', 'source/data/content/recipe'),
     'library': ('library', 'decoded', 'source/data/content/createacharacter', 'library-base.json'),
-    'menu': ('extra-menu.json',),
+    'menu': ('extra-menu.json', 'cas-parts.json'),
     'lighting': ('specular', 'native-lighting.json', 'library-v3.json', 'lighting-availability.json'),
     'roster': ('native-roster',),
 }

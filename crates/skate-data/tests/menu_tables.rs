@@ -74,7 +74,17 @@ fn check_structure(t: &MenuTables) {
     assert_eq!((o[0].text.as_str(), o[0].target), ("ID_CAC_BACKALLEY_PETES_TITLE", 17));
     assert_eq!(o[1].target, 1);
     assert!(o[4..13].iter().all(|r| r.target == 10), "{:?}", &o[4..13]);
-    eprintln!("cas options: {:?}", o.iter().enumerate().filter(|(i, _)| [0, 1, 46, 47, 48, 56, 59].contains(i)).collect::<Vec<_>>());
+    // The part filters (b1035): hats -> category 18 (Hat), shoes 5 (Feet), hoodies 23 (OuterTorso) with payload
+    // "hoody", the left ear piercing 24 with "ear_left".
+    assert_eq!(t.cas_slots.len(), 26, "{:?}", t.cas_slots);
+    assert_eq!((t.cas_slots[0].as_str(), t.cas_slots[5].as_str(), t.cas_slots[18].as_str(), t.cas_slots[23].as_str()),
+        ("Arm", "Feet", "Hat", "OuterTorso"));
+    // 25 merchandise categories plus hair (65, Hair) and two face parts (67, 80, Rostral).
+    assert_eq!(o.iter().filter(|r| r.category.is_some()).count(), 28, "{:?}",
+        o.iter().enumerate().filter(|(_, r)| r.category.is_some()).map(|(i, r)| (i, r.category)).collect::<Vec<_>>());
+    assert_eq!((o[0].category, o[4].category, o[11].category), (None, Some(18), Some(5)));
+    assert_eq!((o[7].category, o[7].payload.as_str()), (Some(23), "hoody"));
+    assert_eq!((o[35].category, o[35].payload.as_str()), (Some(24), "ear_left"));
     let screen = |i: usize| -> Vec<String> { t.to_menu_data().screens[i].iter().map(|s| s.trim_start_matches("ID_GAMESETTINGS_").to_owned()).collect() };
     assert_eq!(screen(1), ["DIFFICULTY_SETTINGS", "AUDIO_SETTINGS", "VIDEO_SETTINGS", "CONTROL_SETTINGS", "ONLINE_SETTINGS", "SKATEFEED_SETTINGS"]);
     assert_eq!(screen(3), ["SFXVOLUME", "DIALOGVOLUME", "MUSICVOLUME", "SFXPACK"]);
