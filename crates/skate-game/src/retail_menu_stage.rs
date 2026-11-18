@@ -304,6 +304,10 @@ pub(crate) struct MenuStage {
     /// FE 15 Create-a-Skater's AS id, whether it is open, and its natives (the menu table, kept between updates).
     cas_id: Option<i32>,
     cas_open: bool,
+    cas_shown: bool,
+    cas_frames: u32,
+    /// The menu and panel state last sent (SetScreenState: the menu's panel kind, research b1032).
+    cas_state: Option<(usize, u32)>,
     cas_host: crate::cas_host::CasHost,
     profile_generation: (u64, u64),
     /// The Extras screen's AS id and host (extras_host), the cheat table, and the text entry FE 46 opens next.
@@ -851,7 +855,11 @@ fn setup(
                 cas_id: templates.iter().position(|n| n == CREATE_A_SKATER.2).filter(|_| movies.movies.contains_key(CREATE_A_SKATER.0))
                     .filter(|_| tables.as_ref().is_some_and(|t| t.cas_menus.len() > crate::cas_host::TOP_MENU)).map(|i| 600 + i as i32),
                 cas_open: false,
-                cas_host: crate::cas_host::CasHost::new(tables.as_ref().map(|t| t.cas_menus.clone()).unwrap_or_default()),
+                cas_shown: false,
+                cas_frames: 0,
+                cas_state: None,
+                cas_host: crate::cas_host::CasHost::new(tables.as_ref().map(|t| t.cas_menus.clone()).unwrap_or_default(),
+                    tables.as_ref().map(|t| t.cas_options.clone()).unwrap_or_default()),
                 profile_generation: (0, 0),
                 extras_id: as_id(EXTRAS),
                 extras: Default::default(),
@@ -1359,6 +1367,9 @@ fn update(
                 }
             }
             ms.cas_open = wanted_cas;
+            ms.cas_shown = false;
+            ms.cas_frames = 0;
+            ms.cas_state = None;
         }
         fe.welcome.open = ms.welcome_open || ms.coach_open || ms.ftm_open;
         fe.welcome.team_state = welcome_screen.as_ref().map_or(0, |w| w.logic.team_state());
@@ -1394,6 +1405,34 @@ fn update(
                                 vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())],
                                 &mut fe,
                             )?;
+                        }
+                    }
+                }
+                continue;
+            }
+            // FE 15 Create-a-Skater (research b1033): the C++ handler 825FC7E8 takes B (pop one menu, 825FC768) and
+            // Left / Right (slider values, then refresh state 50); Up / Down and A go to the movie (its A posts
+            // Game.OnMenuSelect, which pushes the row's menu). NOT RETAIL YET: B on the top menu closes at once
+            // (retail asks first, 82603290), X / Y.
+            if let (true, Some(id)) = (ms.cas_open, ms.cas_id) {
+                if ms.cas_shown {
+                    match key {
+                        APT_LEFT | APT_RIGHT => {
+                            if fe.cas.left_right(key == APT_RIGHT) {
+                                set_state(&mut ms.stage, id, 50, &mut fe)?;
+                            }
+                        }
+                        APT_PREVIOUS => {
+                            if !fe.cas.back() {
+                                info!("RETAIL_MENUS CreateASkater exit (no confirmation popup yet)");
+                                if let Some(s) = cas_screen.as_mut() {
+                                    s.open = false;
+                                }
+                            }
+                        }
+                        _ => {
+                            ms.stage.call_path("_global.ScreenManager.UpdateInput",
+                                vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())], &mut fe)?;
                         }
                     }
                 }
@@ -2281,6 +2320,24 @@ fn update(
                 if let Some(f) = ftm_screen.as_mut() {
                     f.picked = Some(row);
                 }
+            }
+        }
+        // FE 15: shown once loaded; the panel follows the current menu's panel kind (SetScreenState; the movie's
+        // SetState builds the list, thumbnails, style, morph ... panels itself, research b1032).
+        if let Some(id) = ms.cas_id.filter(|_| ms.cas_open) {
+            ms.cas_frames += 1;
+            let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
+            let intro = take_call(&mut fe, &format!("Game.OnScreenIntroComplete({id})"));
+            if !ms.cas_shown && (loaded || intro || ms.cas_frames > SHOW_FALLBACK_FRAMES) {
+                info!("RETAIL_MENUS show CreateASkater {id} (loaded {loaded}, intro {intro}, frames {})", ms.cas_frames);
+                ms.cas_shown = true;
+                ms.stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text(id.to_string()), Value::Text("true".into())], &mut fe)?;
+            }
+            let shown = fe.cas.menu().zip(fe.cas.panel());
+            if ms.cas_shown && shown.is_some() && shown != ms.cas_state {
+                info!("RETAIL_MENUS CreateASkater menu / panel {shown:?}");
+                set_state(&mut ms.stage, id, shown.map_or(0, |s| s.1 as i32), &mut fe)?;
+                ms.cas_state = shown;
             }
         }
         if let Some(id) = ms.team_id.filter(|_| ms.team_open) {

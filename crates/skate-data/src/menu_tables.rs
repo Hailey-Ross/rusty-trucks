@@ -230,6 +230,9 @@ pub struct MenuTables {
     /// Create-a-Skater's (FE 15) menus with their option ids (research b1030; empty in a table from before them).
     #[serde(default)]
     pub cas_menus: Vec<CasMenu>,
+    /// Its option records by option id (research b1031).
+    #[serde(default)]
+    pub cas_options: Vec<CasOptionRow>,
     /// Table addresses in this build (diagnostics only).
     pub addresses: std::collections::BTreeMap<String, String>,
 }
@@ -703,6 +706,112 @@ fn cas_menus(img: &Image) -> Result<(u32, u32, Vec<CasMenu>), String> {
     Ok((start, lists, menus))
 }
 
+/// One Create-a-Skater option record (S+0x40 + id * 0x30, written by the CAS constructor; research b1031): text id,
+/// description id, target menu (-1 = a leaf), type ("option", "slider", "category", "selector", "color", "morph" or
+/// empty).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CasOptionRow {
+    pub text: String,
+    pub description: String,
+    pub target: i32,
+    pub kind: String,
+}
+
+const CAS_OPTION_BASE: i32 = 64;
+const CAS_OPTION: i32 = 48;
+const CAS_CTOR_LIMIT: u32 = 8000;
+const CAS_TYPES: [&str; 6] = ["option", "slider", "category", "selector", "color", "morph"];
+
+/// The option records, read from the constructor's code (they are stores, not a table): located by the
+/// instructions that build the option lists' address (`lis` hi + `addi` lo), then a linear scan to `blr` with a
+/// register file; the records' base register is the one the first `stw` of an "ID_CAC_" text at +64 uses; the last
+/// store to a field wins.
+fn cas_options(img: &Image, lists: u32, count: usize) -> Result<Vec<CasOptionRow>, String> {
+    let lo = lists as u16 as i16 as i32;
+    let hi = (lists.wrapping_sub(lo as u32)) >> 16;
+    let words = img.image.image.len() as u32 / 4;
+    let word = |k: u32| img.word(img.image.base_address + k * 4);
+    let anchor = (0..words).find(|&k| {
+        let Some(w) = word(k) else { return false };
+        if w >> 26 != 15 || (w >> 16) & 31 != 0 || w & 0xffff != hi & 0xffff {
+            return false;
+        }
+        let ra = (w >> 21) & 31;
+        (1..8).filter_map(|d| word(k + d)).any(|v| v >> 26 == 14 && (v >> 16) & 31 == ra && v as u16 as i16 as i32 == lo)
+    }).ok_or("Create-a-Skater constructor not found")?;
+    let mut regs: [Option<u32>; 32] = [None; 32];
+    let mut base: Option<usize> = None;
+    let mut fields: Vec<[Option<u32>; 5]> = vec![[None; 5]; count];
+    for k in anchor..(anchor + CAS_CTOR_LIMIT).min(words) {
+        let Some(w) = word(k) else { break };
+        if w == 0x4e80_0020 {
+            break;
+        }
+        let (op, rd, ra, rb) = (w >> 26, ((w >> 21) & 31) as usize, ((w >> 16) & 31) as usize, ((w >> 11) & 31) as usize);
+        let simm = (w & 0xffff) as u16 as i16 as i32;
+        let src = |regs: &[Option<u32>; 32]| if ra == 0 { Some(0) } else { regs[ra] };
+        match op {
+            14 => regs[rd] = src(&regs).map(|v| v.wrapping_add(simm as u32)),
+            15 => regs[rd] = src(&regs).map(|v| v.wrapping_add((simm as u32) << 16)),
+            24 => regs[ra] = regs[rd].map(|v| v | (w & 0xffff)),
+            25 => regs[ra] = regs[rd].map(|v| v | ((w & 0xffff) << 16)),
+            36 => {
+                let value = regs[rd];
+                let text = value.and_then(|p| img.cstr(p));
+                if base.is_none() && simm == CAS_OPTION_BASE && text.as_deref().is_some_and(|t| t.starts_with("ID_CAC_")) {
+                    base = Some(ra);
+                }
+                if Some(ra) == base && simm >= CAS_OPTION_BASE {
+                    let (id, field) = (((simm - CAS_OPTION_BASE) / CAS_OPTION) as usize, (simm - CAS_OPTION_BASE) % CAS_OPTION);
+                    if id < count && field % 4 == 0 && field <= 16 {
+                        fields[id][(field / 4) as usize] = value;
+                    }
+                }
+            }
+            // Other stores, compares, branches without link, floating point and vector: no general register written.
+            37..=39 | 44 | 45 | 47 | 62 | 10 | 11 | 16 | 4 | 59 | 63 | 52..=55 => {}
+            18 | 19 => {
+                // bl / bctrl clobber the volatile registers.
+                if w & 1 == 1 {
+                    for r in [0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] {
+                        regs[r] = None;
+                    }
+                }
+            }
+            // Rotates and logical immediates write rA.
+            20 | 21 | 23 | 26..=30 => regs[ra] = None,
+            31 => match (w >> 1) & 1023 {
+                444 if rd == rb => regs[ra] = regs[rd],
+                // Logical / shift forms write rA; stores, compares and moves to special registers write nothing.
+                28 | 60 | 124 | 284 | 316 | 412 | 444 | 476 | 24 | 536 | 792 | 824 | 26 | 922 | 954 | 986 | 27 | 539 | 794 | 58 => regs[ra] = None,
+                0 | 32 | 144 | 467 | 149 | 151 | 181 | 183 | 215 | 247 | 407 | 439 | 661 | 662 | 663 | 695 | 727 | 759 | 918 | 983 => {}
+                _ => regs[rd] = None,
+            },
+            _ => regs[rd] = None,
+        }
+    }
+    if base.is_none() {
+        return Err("Create-a-Skater option records not found".into());
+    }
+    let text = |p: Option<u32>| p.filter(|p| *p != 0).and_then(|p| img.cstr(p)).unwrap_or_default();
+    let rows: Vec<CasOptionRow> = fields.iter().map(|f| CasOptionRow {
+        text: text(f[0]),
+        description: text(f[1]),
+        target: f[2].map_or(-1, |v| v as i32),
+        kind: text(f[4]),
+    }).collect();
+    // Every record has a text (the gesture slots 49..52 carry "0".."3", not text ids), a target menu and a known type;
+    // record 0 is Back Alley Pete's.
+    if rows.first().is_none_or(|r| r.text != "ID_CAC_BACKALLEY_PETES_TITLE") {
+        return Err(format!("Create-a-Skater option 0 does not read: {:?}", rows.first()));
+    }
+    if let Some((id, _)) = rows.iter().enumerate().find(|(_, r)| r.text.is_empty() || !(-1..37).contains(&r.target)
+        || !(r.kind.is_empty() || CAS_TYPES.contains(&r.kind.as_str()))) {
+        return Err(format!("Create-a-Skater option {id} does not read: {:?}", rows[id]));
+    }
+    Ok(rows)
+}
+
 // ---------------------------------------------------------------- screen templates
 
 fn template(img: &Image, at: u32) -> Option<ScreenTemplate> {
@@ -1039,6 +1148,13 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         eprintln!("MENU_TABLES {e}");
         (0, 0, Vec::new())
     });
+    let option_count = cas_menus.iter().flat_map(|m| m.options.iter()).copied().max().map_or(0, |m| m as usize + 1);
+    let cas_options = if cas_menus.is_empty() { Vec::new() } else {
+        cas_options(&img, cas_lists_at, option_count).unwrap_or_else(|e| {
+            eprintln!("MENU_TABLES {e}");
+            Vec::new()
+        })
+    };
     if modes.is_empty() {
         return Err("no per-mode crossbar menus found".into());
     }
@@ -1086,6 +1202,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         dj_pieces,
         dj_ids,
         cas_menus,
+        cas_options,
         addresses,
     })
 }
