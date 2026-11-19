@@ -634,6 +634,31 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   logos", not forced; test `the_splash_names_what_stays_off_until_a_refresh`). Dev install re-exported with
   `.local/tools/menus-reexport.py` (with the DLC packages; diff: 96 images added, nothing removed or changed).
   Checked in game (run caslogo1): the VOX logo next to "Trademark Mesh".
+- **Turntable** (2026-11-18; Ghidra `.local/research/ghidra/cas-rotate*.txt`, research b1036 section 4):
+  - Input [code, high]: the CAS tick 825FBAE8 (only while no screen is pushed over FE 15 and no part load is
+    pending) evaluates two input queries every frame; a value at or past 0.02 (821E9580) posts
+    cMsgPresCASCharacterRotate(+value) for one and (-value) for the other, relative (msg+0x10 = 0). Which query is
+    LT and which RT is [inferred]: ours turns positive with RT.
+  - Handler 8253B618 [code, high]: angle (CAS animation manager +0x64) += rate (+0x60) * value; the angle is added to
+    the character's yaw (825325D8), the camera stays. Every cMsgPresCASCameraTarget is followed by
+    CharacterRotate(0, absolute): a new camera target resets the angle.
+  - The rate [code + data]: 82532800 (CreateAnimator, run for each body target) copies the body target row's float
+    at record +0x24 into +0x60 and the float at +0x28 times pi/180 (8206D110 = 0x3C8EFA35) into the base yaw +0x40.
+    Class 0x95E142284549717F has two floats: 0.1 in all 69 rows (field 0x165367CDE7FF6727) and 260 in 61 rows (field
+    0x4591287983616615; 84 / 189 / 335 / 149 / 348 in the others). The 0.1 is the rate and the 260 the base yaw
+    [inferred from the pi/180 scale: a 0.1 degree yaw or a 260 rad-per-frame rate make no sense; the record offsets
+    of the two fields are not read]. So a full trigger turns the skater 0.1 rad per FE frame, 3 rad/s at the
+    console's 30 Hz.
+  - Change: `CasHost::rotate` (rate a field, 0.1; frames counted at 30 Hz from the frame time, so the speed is the
+    same at any frame rate), `post_camera` resets the angle, `cas_look` feeds the pad's triggers while FE 15 is up
+    with no popup, `MarqueeView::turntable` turns the character on the set. Test aid: `SKATE3_RETAIL_MENUS_KEYS`
+    takes `lt` / `rt` / `rtxN` (a held trigger for N frames). Test
+    `the_triggers_turn_the_skater_frame_rate_independent_and_a_new_camera_resets_it`. NOT RETAIL YET: the base yaw
+    and pose per body target (the next step).
+- **Camera targets of the other menus** [code]: the tables 83044528 / 83044548 / 83044568 / 83044588 / 830445A8
+  that 82600AF8 posts from belong to the tattoo / graphic adjust menus (7, 8, 34, 35, 36: indexed by the tattoo's
+  location) and menu 11 (board graphics: the camera key comes from a vault record). They come with those features;
+  every menu we have already posts its camera (whole body or the option's +0x20).
 - **Seen, open:** back on
   Merchandise after a pick no row is highlighted (seen once, run cas11); on the exit popup an A right away answered
   No and Up + A answered Yes (which row retail highlights first is not checked). Tests `a_grid_keeps_one_part_per_wear_style_group_and_hides_in_game_materials`,

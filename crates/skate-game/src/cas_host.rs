@@ -258,6 +258,12 @@ const WEAR_STYLES: usize = 30;
 const WEAR_STYLE_OPTION: i32 = 99;
 /// 825FBAE8: `cmpwi r11,500` on the milliseconds the highlight rested.
 const PREVIEW_DELAY: f32 = 0.5;
+/// The turntable (825FBAE8 posts cMsgPresCASCharacterRotate per frame, 8253B618 turns the character): a trigger
+/// past 0.02 (821E9580) adds rate * value to the angle each frame; the rate is the body target row's float at +0x24
+/// (0.1 in all 69 rows of class 0x95E142284549717F). Frames at the console's 30 Hz FE cadence.
+const TURNTABLE_DEADZONE: f32 = 0.02;
+const TURNTABLE_RATE: f32 = 0.1;
+const FE_HZ: f32 = 30.0;
 
 #[derive(Default)]
 pub(crate) struct CasHost {
@@ -280,6 +286,10 @@ pub(crate) struct CasHost {
     pub preview_wait: Option<f32>,
     /// The rest the highlight needs before the preview (retail 500 ms, 825FBAE8; a mod can change it).
     pub preview_delay: f32,
+    /// The character's turntable angle in radians (CAS animation manager +0x64) and its rate per 30 Hz frame at a
+    /// full trigger (+0x60; a mod can change it).
+    pub turntable: f32,
+    pub turntable_rate: f32,
     /// The slot defaults per gender (customiser_parts Library `defaults`), for a Remove the look cannot do without.
     pub defaults: std::collections::HashMap<String, serde_json::Value>,
     /// The part name ids the language table has (ID_CAC_PART_*), for the info panel's name (82605528).
@@ -333,7 +343,25 @@ impl CasHost {
             payload: o.payload,
             camera: o.camera,
         }).collect();
-        Self { menus, options, indices, trucks: 0.5, wheels: 0.5, male: true, preview_delay: PREVIEW_DELAY, ..Default::default() }
+        Self { menus, options, indices, trucks: 0.5, wheels: 0.5, male: true, preview_delay: PREVIEW_DELAY,
+            turntable_rate: TURNTABLE_RATE, ..Default::default() }
+    }
+
+    /// LT / RT (825FBAE8: one query turns the character one way, the other the other way [which trigger is which:
+    /// inferred]); `seconds` of frames at the 30 Hz FE cadence.
+    pub(crate) fn rotate(&mut self, triggers: [f32; 2], seconds: f32) {
+        let frames = seconds * FE_HZ;
+        for (value, sign) in [(triggers[1], 1.0), (triggers[0], -1.0)] {
+            if value >= TURNTABLE_DEADZONE {
+                self.turntable += sign * self.turntable_rate * value * frames;
+            }
+        }
+    }
+
+    /// cMsgPresCASCameraTarget; retail always follows it with CharacterRotate(0, absolute): the turntable resets.
+    fn post_camera(&mut self, key: String) {
+        self.camera = key;
+        self.turntable = 0.0;
     }
 
     /// The CAS OnMenuHilight (vt+0x44 = 825FEDB8) on the part grid: the row is kept and the preview waits again.
@@ -596,7 +624,7 @@ impl CasHost {
             self.end_preview();
         }
         if matches!(menu, TOP_MENU | MERCHANDISE) {
-            self.camera = WHOLE_BODY.into();
+            self.post_camera(WHOLE_BODY.into());
         }
         self.shop = match menu {
             TOP_MENU => 2,
@@ -658,7 +686,7 @@ impl CasHost {
         let (title, camera) = (option.text.clone(), option.camera.clone());
         // 825FE3C0 posts the option's camera target with the push.
         if !camera.is_empty() {
-            self.camera = camera;
+            self.post_camera(camera);
         }
         if target == PART_GRID {
             // CAC_GetTitleText on menu 10 is the part list's title S+0x1788: the category's text (the PS3 recording
@@ -1033,6 +1061,27 @@ mod tests {
         h.call(&mut vm, "Game", "CAC_OnThumbnailSelect", &[Value::Number(0.0)]).unwrap();
         assert!(h.look["selections"]["Hat"].is_null());
         assert_eq!(h.menu(), Some(MERCHANDISE));
+    }
+
+    #[test]
+    fn the_triggers_turn_the_skater_frame_rate_independent_and_a_new_camera_resets_it() {
+        let mut h = grid_host();
+        // A full trigger for one second: 0.1 rad per 30 Hz frame, the same at 30, 60 and 240 fps.
+        for fps in [30.0f32, 60.0, 240.0] {
+            h.turntable = 0.0;
+            for _ in 0..fps as usize {
+                h.rotate([0.0, 1.0], 1.0 / fps);
+            }
+            assert!((h.turntable - 3.0).abs() < 1e-3, "{fps} fps: {}", h.turntable);
+        }
+        // The other trigger turns back; under the dead zone nothing moves.
+        h.rotate([0.5, 0.0], 1.0 / 30.0);
+        assert!((h.turntable - 2.95).abs() < 1e-4);
+        h.rotate([0.01, 0.019], 1.0);
+        assert!((h.turntable - 2.95).abs() < 1e-4);
+        // Entering a category posts its camera: back to 0.
+        open_grid(&mut h, 0);
+        assert_eq!(h.turntable, 0.0);
     }
 
     #[test]
