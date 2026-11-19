@@ -131,6 +131,9 @@ IMAGE_PREFIXES_DYNAMIC = ('data/fe/source/images/map/',
                           # boards, wheels, tattoos, research b1034), brand logos and the team logos (FE 63 / FE 67 /
                           # team pages, research b1011 section 3).
                           'data/fe/cas/',
+                          # The Create-a-Skater info panel's brand logos (CAC_GetSponsorLogoFileName: the logo record's
+                          # fe\source\images\sponsor_logos\<brand>).
+                          'data/fe/source/images/sponsor_logos/',
                           # Team member photo backdrops (research b1013).
                           'data/fe/source/images/photo/')
 # Texture packs whose textures the engine draws by texture name (retail looks them up as FNV-1 64 of "<name>.Texture"

@@ -116,6 +116,11 @@ fn hud_features(assets: &Path) -> Vec<Finding> {
     if hud.join("trickdisplay.json").is_file() && !assets.join("private/hud/replay-shake/replay_shake.json").is_file() {
         out.push(finding("hud", "replay shake clips missing"));
     }
+    // The menu export got the Create-a-Skater brand logos after the part thumbnails.
+    let images = assets.join("private/menu-movies/assets/data/fe");
+    if images.join("cas").is_dir() && !images.join("source/images/sponsor_logos").is_dir() {
+        out.push(finding("hud", "Create-a-Skater brand logos missing"));
+    }
     out
 }
 
@@ -139,6 +144,7 @@ pub(crate) fn feature_name(f: &Finding) -> String {
         "central message HUD missing" => "chase messages (ZAP!, BAM!)".into(),
         "ped chase alert textures missing" => "ped chase alerts".into(),
         "replay shake clips missing" => "replay camera shake".into(),
+        "Create-a-Skater brand logos missing" => "Create-a-Skater brand logos".into(),
         r if r.starts_with("hand prop") => "ped hand props".into(),
         r if r.starts_with("menu") => "menus".into(),
         _ => format!("{} files", f.group),
@@ -439,6 +445,13 @@ mod tests {
         std::fs::create_dir_all(dir.join("private/hud/replay-shake")).unwrap();
         std::fs::write(dir.join("private/hud/replay-shake/replay_shake.json"), "{}").unwrap();
         assert_eq!(splash_warning(&quick_check(&dir)), None, "current files: no warning");
+        // Menu images with the part thumbnails but no brand logos (an export from before them).
+        let fe = dir.join("private/menu-movies/assets/data/fe");
+        std::fs::create_dir_all(fe.join("cas")).unwrap();
+        let text = splash_warning(&quick_check(&dir)).expect("logos off");
+        assert!(text.contains("Create-a-Skater brand logos"), "{text}");
+        std::fs::create_dir_all(fe.join("source/images/sponsor_logos")).unwrap();
+        assert_eq!(splash_warning(&quick_check(&dir)), None, "logos there: no warning");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

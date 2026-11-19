@@ -626,8 +626,15 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     other menu and every committed change (`set_slot`) end it, and `sync_look` resolves `preview` into the draft the
     skater wears (the committed look again when it ends; a save always writes the committed look). Test
     `a_rested_highlight_previews_its_part_and_leaving_the_grid_takes_it_off`.
-- **Seen, open:** the brand logo box stays empty (no `sponsor_logos` images in our menu
-  export: the disc's archives have no entries under that folder, where the images live is open); back on
+- **Brand logos** (2026-11-18): the images are in fedynamic.big under `data/fe/source/images/sponsor_logos/`
+  (96 single-texture .rx2, one per brand plus `default`; an earlier note here said the disc had none, which was
+  wrong). `prepare_menu_movies.py` exports that folder as named images with the CAS thumbnails
+  (IMAGE_PREFIXES_DYNAMIC), so CAC_GetSponsorLogoFileName's `fe\source\images\sponsor_logos\<brand>` draws. An
+  install exported before this keeps an empty box: the asset check offers Refresh Game Files ("Create-a-Skater brand
+  logos", not forced; test `the_splash_names_what_stays_off_until_a_refresh`). Dev install re-exported with
+  `.local/tools/menus-reexport.py` (with the DLC packages; diff: 96 images added, nothing removed or changed).
+  Checked in game (run caslogo1): the VOX logo next to "Trademark Mesh".
+- **Seen, open:** back on
   Merchandise after a pick no row is highlighted (seen once, run cas11); on the exit popup an A right away answered
   No and Up + A answered Yes (which row retail highlights first is not checked). Tests `a_grid_keeps_one_part_per_wear_style_group_and_hides_in_game_materials`,
   `the_info_panel_names_the_part_its_brand_and_unlock_and_marks_the_worn_one`,
