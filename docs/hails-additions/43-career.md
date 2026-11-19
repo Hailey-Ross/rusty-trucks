@@ -674,6 +674,17 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   `an_options_body_target_poses_the_skater_and_merchandise_puts_the_whole_body_back`, the vault test (69 rows).
   NOT RETAIL YET: the rows' other fields (the second vector, two Bools) and the gesture clips (cac_male_spock ...,
   in miscload.big's gesture bank, not exported) for Edit Style.
+- **Locks** (2026-11-18; Ghidra `.local/research/ghidra/cas-lock*.txt`) [code, high]: 825FD9F0's lock test is the
+  predicate object with vtable 823046E0, test 825F46C8: a part with an Unlock name (record +0xF0) or a SponsorUnlock
+  name (+0xDC) is locked unless the unlock manager has the Unlock under kind 5 (clothing unlock) or the SponsorUnlock
+  under kind 6 (clothing sponsor); a part with neither is open. A locked pick plays sound 0x47F720222F2CAED4 and stays
+  on the grid; only when entry mode S+0x1780 is not 1, the part's DLC numbers parse (825F4500 on record +0x64) and
+  825F45B0 does not count it as owned does it open the purchase popup 0x11E. 825FF5E8 returns "owned" before
+  "locked" (82202428) before "dlc" before "none". Change: `CasHost::locked` (the career's `Unlocks`, copied in by
+  `cas_look` while the screen is open; with the career's gating off, the default, nothing is locked), "locked" in
+  the option / info types, a locked pick stays on the grid. The highlight preview still shows a locked part
+  (825FEEA0 has no lock test). Test `a_part_with_an_ungranted_unlock_is_locked_and_cannot_be_picked`. NOT RETAIL YET:
+  the error sound (its name is not known, only the hash) and the DLC purchase popup 0x11E.
 - **Fix: the list pickers' rows are enabled** (2026-11-18): the CAS screen's OnMenuGetItemEnabled (vtable slot 0x48,
   word at 82303988) is 8281DD70, which returns 1 [code]. Our host did not answer the call, so the Merchandise /
   Accessories / Skateboards lists (panel 0, the movie's menu picker) showed no highlight and ignored Up / Down; only
