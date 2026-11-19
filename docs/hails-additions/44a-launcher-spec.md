@@ -340,7 +340,8 @@ Parity checklist (one line per behavior):
 **Change.** `tools/skate-launcher/src/patch.rs`. A patch (`skate-patch/1`) is a stored zip with `manifest.json`, the
 new `release.json` and one zstd frame per changed file: made against the old file as its reference (zstd "patch
 from", long matching, level 19), or of the new file alone when that is smaller or the file is new; unchanged files are
-listed as `same`, removed release files as `delete`. The release carries `skate3rust-<target>.patches.json`: the
+listed as `same`, removed release files as `delete`. The patches release (`<release>-patches`, see "Patches on their
+own release" below) carries `skate3rust-<target>.patches.json`: the
 links (from / to revision and build, file, sha256, size), newest first, the newest 5 kept, and the full package's size.
 - `ensure_release`: when the installed `release.json` revision differs from the release's, it looks for a chain of
   links from the installed revision to the new one (each link's `from` = the previous link's `to`); a chain under 80 %
@@ -396,6 +397,16 @@ order, then prunes old links.
 build) is under 80 % of the package, runs `skate-launcher release-patch <folder> <release url> <package> <revision>`
 (exit 0 = updated, 3 = take the full download). The Rust launcher is a windowed program: PowerShell waits for it and
 gets its exit code only when its output is piped, so every call pipes it.
+
+**Patches on their own release (2026-11-18).** The rolling release had grown to 42 assets, 18 of them patches and
+their indexes that only the launchers read. They now live on the prerelease `hails-additions-patches` (`<release>-patches`,
+created by the first publish that needs it, never "latest"); the player release keeps the packages, launchers,
+`release.json` files and `.sha256` sidecars, all of which installed launchers download by name. Both launchers look for
+`<pkg>.patches.json` and its links at `<release url>-patches` first and at the release itself second (`try_patches`,
+Try-ReleasePatch); a launcher from before the move finds no index on the release and takes the full download once,
+until it updates itself. Both workflows read the previous index from and upload and prune links on the patches
+release. Also removed by hand: `skate-launcher-windows.zip` (+ `.sha256`, replaced by `skate-launcher.zip`) and the
+standalone `PLAY-WITH-LOG.bat` (it is in the Windows ZIP). The release went from 42 to 21 assets.
 
 **Verification (both launchers).** `.local/tools/release-patch-check.ps1`: two stand-in Windows packages and a
 `file://` release; `release-patch` PASS, the classic Try-ReleasePatch (helper download, chain, apply) PASS, an

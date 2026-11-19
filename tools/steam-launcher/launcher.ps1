@@ -245,7 +245,9 @@ function Write-ReleasePlay([string]$Dir) {
 # them. $true = updated; $false = take the full download (nothing changed, or put back).
 function Try-ReleasePatch([string]$Dir, [string]$Base, $Cur, $Meta, [string]$Tmp) {
     $pkg = 'skate3rust-windows-x64'
-    try { Get-Url "$Base/$pkg.patches.json" (Join-Path $Tmp 'patches.json') } catch { return $false }
+    try { Get-Url "$Base-patches/$pkg.patches.json" (Join-Path $Tmp 'patches.json') } catch {
+        try { Get-Url "$Base/$pkg.patches.json" (Join-Path $Tmp 'patches.json') } catch { return $false }
+    }
     $index = $(try { Read-Json (Join-Path $Tmp 'patches.json') } catch { $null })
     if (-not $index -or $index.format -ne 'skate-patches/1' -or -not $index.package_size) { return $false }
     $at = "$($Cur.revision)"; $bytes = 0; $hops = 0

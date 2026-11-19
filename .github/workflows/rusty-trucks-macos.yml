@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    if: github.repository == 'Hailey-Ross/rusty-trucks' && (github.event_name != 'release' || github.event.release.tag_name != 'experimental')
+    if: github.repository == 'Hailey-Ross/rusty-trucks' && (github.event_name != 'release' || (github.event.release.tag_name != 'experimental' && !endsWith(github.event.release.tag_name, '-patches')))
     uses: ./.github/workflows/rusty-trucks-unix-build.yml
     with:
       os: macos-latest

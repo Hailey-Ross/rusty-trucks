@@ -27,8 +27,9 @@ $disc = "$HOME\Downloads\Skate 3.iso"   # your Skate 3 ISO, or an extracted disc
    $rel = 'https://github.com/Hailey-Ross/rusty-trucks/releases/download/hails-additions'
    New-Item -ItemType Directory -Force $game | Out-Null
    Invoke-WebRequest -UseBasicParsing "$rel/skate3rust-windows-x64.zip" -OutFile "$game\skate3rust.zip"
-   Expand-Archive "$game\skate3rust.zip" $game -Force; Remove-Item "$game\skate3rust.zip"
-   Invoke-WebRequest -UseBasicParsing "$rel/PLAY-WITH-LOG.bat" -OutFile "$game\PLAY-WITH-LOG.bat"
+   Expand-Archive "$game\skate3rust.zip" "$game\_unzip" -Force
+   Copy-Item "$game\_unzip\skate3rust-windows-x64\*" $game -Recurse -Force   # the ZIP's folder holds PLAY-WITH-LOG.bat too
+   Remove-Item "$game\_unzip", "$game\skate3rust.zip" -Recurse -Force
    ```
 2. Game files: start `"$game\PLAY-WITH-LOG.bat"` and pick `$disc`. Setup converts the game files into `$game\data`
    (4.7 GB and about 6 minutes measured on a fresh laptop setup; opting in to Ped Speech later adds about 3.4 GB).

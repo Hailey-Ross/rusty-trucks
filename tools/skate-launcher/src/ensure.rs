@@ -261,12 +261,13 @@ fn copy_tree(src: &Path, dst: &Path, skip: &str) -> std::io::Result<()> {
 
 /// Patch updates (patch.rs): when the release lists a chain of patches from the installed revision that is smaller
 /// than the package, download and apply them link by link. False (nothing changed, or put back) = take the full
-/// download.
-fn try_patches(base: &str, pkg: &str, d: &Path, tmp: &Path, cur: &Value, meta: &Value) -> bool {
+/// download. The patches live on the release's own `<release>-patches` release (doc 44a "Patch updates"); the main
+/// release is the fallback for builds published before the move.
+fn try_patches(release_base: &str, pkg: &str, d: &Path, tmp: &Path, cur: &Value, meta: &Value) -> bool {
     let index_path = tmp.join("patches.json");
-    if download(&format!("{base}/{pkg}.patches.json"), &index_path).is_err() {
-        return false;
-    }
+    let patches_base = format!("{release_base}-patches");
+    let Some(base) = [patches_base.as_str(), release_base].into_iter()
+        .find(|b| download(&format!("{b}/{pkg}.patches.json"), &index_path).is_ok()) else { return false };
     let Some(index) = read_json(&index_path) else { return false };
     let Some((links, bytes)) = crate::patch::chain(&index, &text(cur, "revision"), &text(meta, "revision")) else { return false };
     println!("  Updating with {} patch{} ({:.1} MB instead of the full download)...", links.len(),
