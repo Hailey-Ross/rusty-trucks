@@ -52,6 +52,8 @@ pub(crate) struct MarqueeView {
     pub own: bool,
     /// FE 15's camera row (cas_host::CasCamera, stage space); None keeps the stage's own camera.
     pub camera: Option<crate::cas_host::CasCamera>,
+    /// FE 15's turntable angle in radians, added to the character's yaw (8253B618 -> 825325D8).
+    pub turntable: f32,
 }
 
 #[derive(Resource, Default)]
@@ -95,7 +97,7 @@ fn wanted(mut requests: MessageReader<SpawnSkaterRequest>, mut wanted: ResMut<Wa
 }
 
 fn drive(world: &mut World, mut viewer: Local<Viewer>) {
-    let MarqueeView { open, own, camera } = world.resource::<MarqueeView>().clone();
+    let MarqueeView { open, own, camera, turntable } = world.resource::<MarqueeView>().clone();
     let Some(player) = world.query_filtered::<Entity, With<PlayerRoot>>().iter(world).next() else { return };
     // The first highlight is posted in the frame FE 62 opens, before the stage reports it open: keep it.
     if !open {
@@ -161,7 +163,7 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
     let Some(globals) = crate::trick_guide_scene::pose(&clip, viewer.time) else { return };
     // The character's world transform is translate(position) * rotY(heading) (b578), drawn through the player rig.
     let root = world.get::<GlobalTransform>(player).copied().unwrap_or_default().to_matrix();
-    let place = root.inverse() * Mat4::from_rotation_translation(facing(stage.heading_degrees), stage.position);
+    let place = root.inverse() * Mat4::from_rotation_translation(facing(stage.heading_degrees) * Quat::from_rotation_y(turntable), stage.position);
     if let Some(bindings) = &viewer.bindings {
         let matrices: Vec<Mat4> = globals.iter().map(|g| place * crate::animation::native_matrix(*g)).collect();
         for (entity, transform) in bindings.pose_transforms(&matrices) {

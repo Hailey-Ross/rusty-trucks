@@ -381,6 +381,8 @@ pub(crate) struct MenuStage {
     /// screen takes input; `_` is a frame without a key (lets a screen load before the next key, e.g.
     /// `15,15,2,_x60,13`: `_xN` = N frames).
     injected: std::collections::VecDeque<Option<u32>>,
+    /// The triggers an injected `lt` / `rt` holds this frame (the CAS turntable takes them with the pad's).
+    injected_triggers: [f32; 2],
 }
 
 /// The retail menus are wanted: on unless `SKATE3_RETAIL_MENUS=0`.
@@ -918,22 +920,31 @@ fn setup(
                 pads: Default::default(),
                 repeat: RepeatRule::RETAIL,
                 injected: injected_keys(&std::env::var("SKATE3_RETAIL_MENUS_KEYS").unwrap_or_default()),
+                injected_triggers: [0.0; 2],
             });
         }
         Err(e) => error!("RETAIL_MENUS stage failed: {e}"),
     }
 }
 
-/// `SKATE3_RETAIL_MENUS_KEYS` tokens: a key index, `_` (one empty frame) or `_xN` (N empty frames).
+/// Injected "keys" from here on are a fully held trigger for one frame (LT, RT), not Apt keys.
+const INJECTED_LT: u32 = 1000;
+const INJECTED_RT: u32 = 1001;
+
+/// `SKATE3_RETAIL_MENUS_KEYS` tokens: a key index, `_` (one empty frame), `_xN` (N empty frames), `lt` / `rt` (a held
+/// trigger for one frame) or `ltxN` / `rtxN` (N frames).
 fn injected_keys(list: &str) -> std::collections::VecDeque<Option<u32>> {
     let mut out = std::collections::VecDeque::new();
     for token in list.split(',').map(str::trim) {
-        match token.strip_prefix('_') {
-            Some(rest) => {
-                let frames = rest.strip_prefix('x').and_then(|n| n.parse().ok()).unwrap_or(1);
-                out.extend(std::iter::repeat_n(None, frames));
-            }
-            None => out.extend(token.parse().ok().map(Some)),
+        let frames = |rest: &str| rest.strip_prefix('x').and_then(|n| n.parse().ok()).unwrap_or(1);
+        if let Some(rest) = token.strip_prefix('_') {
+            out.extend(std::iter::repeat_n(None, frames(rest)));
+        } else if let Some(rest) = token.strip_prefix("lt") {
+            out.extend(std::iter::repeat_n(Some(INJECTED_LT), frames(rest)));
+        } else if let Some(rest) = token.strip_prefix("rt") {
+            out.extend(std::iter::repeat_n(Some(INJECTED_RT), frames(rest)));
+        } else {
+            out.extend(token.parse().ok().map(Some));
         }
     }
     out
@@ -1388,8 +1399,12 @@ fn update(
         if auto {
             fired.insert(0, (APT_START, 0));
         }
+        ms.injected_triggers = [0.0; 2];
         if ms.stack.input_target().is_some() || ms.end_open.is_some() || ms.reward_open.is_some() || ms.poster_open || ms.welcome_open || ms.coach_open || ms.ftm_open || ms.team_open || ms.cas_open {
-            fired.extend(ms.injected.pop_front().flatten().map(|k| (k, 0)));
+            match ms.injected.pop_front().flatten() {
+                Some(k @ (INJECTED_LT | INJECTED_RT)) => ms.injected_triggers[(k - INJECTED_LT) as usize] = 1.0,
+                k => fired.extend(k.map(|k| (k, 0))),
+            }
         }
         for (key, controller) in fired {
             // Session log: every key the menus took, by retail's Apt key name (the user's play tests).
@@ -2898,7 +2913,8 @@ fn update(
     // shows the player's own skater on the same set (DIST_CreateSakter).
     let cas = ms.cas_open && ms.cas_shown;
     marquee.set_if_neq(crate::marquee_preview::MarqueeView { open: preview_open || cas, own: cas && !preview_open,
-        camera: if cas && !preview_open { ms.cas_host.view() } else { None } });
+        camera: if cas && !preview_open { ms.cas_host.view() } else { None },
+        turntable: if cas && !preview_open { ms.cas_host.turntable } else { 0.0 } });
     for (owner, event) in mod_events {
         menus.send_event(&owner, event);
     }
@@ -3264,8 +3280,14 @@ fn set_state(stage: &mut Stage, id: i32, state: i32, fe: &mut FrontEnd) -> Resul
 /// Whether the movie made this call this frame (removes it).
 /// FE 15's look on the skater and its save (cas_host::sync_look).
 fn cas_look(stage: Option<ResMut<MenuStage>>, customiser: Option<ResMut<crate::customiser::Customiser>>,
-    parts: Option<Res<crate::customiser_parts::Parts>>, time: Res<Time>) {
+    parts: Option<Res<crate::customiser_parts::Parts>>, time: Res<Time>, input: Option<Res<crate::input::ControllerInput>>) {
     let (Some(mut ms), Some(mut customiser), Some(parts)) = (stage, customiser, parts) else { return };
+    // The turntable turns only while FE 15 is the top screen (825FBAE8 returns while a screen is pushed over it).
+    if ms.cas_host.open && ms.cas_open && ms.cas_shown && ms.popups.is_empty() {
+        let pad = input.map_or([0.0; 2], |i| i.raw_input().triggers);
+        let held = ms.injected_triggers;
+        ms.cas_host.rotate([pad[0].max(held[0]), pad[1].max(held[1])], time.delta_secs());
+    }
     if ms.cas_host.preview_wait.is_some() {
         ms.cas_host.tick(time.delta_secs());
     }
