@@ -191,18 +191,18 @@ pub(crate) fn sync_look(host: &mut CasHost, customiser: &mut crate::customiser::
         host.look = customiser.draft.clone();
         host.male = host.look["gender"].as_str() != Some("female");
     }
+    let resolve = |look: &serde_json::Value| parts.resolve(look).or_else(|first| {
+        let gender = look["gender"].as_str().unwrap_or("male");
+        let mut look = look.clone();
+        let empty: Vec<String> = look["selections"].as_object().into_iter().flatten()
+            .filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect();
+        for slot in empty {
+            look["selections"][&slot] = host.defaults.get(gender).map_or(serde_json::Value::Null, |d| d["selections"][&slot].clone());
+        }
+        parts.resolve(&look).map_err(|_| first)
+    });
     if std::mem::take(&mut host.look_changed) {
-        let resolved = parts.resolve(&host.look).or_else(|first| {
-            let gender = host.look["gender"].as_str().unwrap_or("male");
-            let mut look = host.look.clone();
-            let empty: Vec<String> = look["selections"].as_object().into_iter().flatten()
-                .filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect();
-            for slot in empty {
-                look["selections"][&slot] = host.defaults.get(gender).map_or(serde_json::Value::Null, |d| d["selections"][&slot].clone());
-            }
-            parts.resolve(&look).map_err(|_| first)
-        });
-        match resolved {
+        match resolve(&host.look) {
             Ok(look) => {
                 customiser.draft = look.clone();
                 customiser.enabled = true;
@@ -212,6 +212,17 @@ pub(crate) fn sync_look(host: &mut CasHost, customiser: &mut crate::customiser::
                 bevy::log::warn!("RETAIL_MENUS CreateASkater look not applied: {e}");
                 host.look = customiser.draft.clone();
             }
+        }
+    }
+    // The highlight preview is shown, never saved: the draft gets the committed look back before a save.
+    if std::mem::take(&mut host.preview_changed) || host.save_requested && host.preview.take().is_some() {
+        match host.preview.as_ref().map(resolve) {
+            Some(Ok(look)) => {
+                customiser.draft = look;
+                customiser.enabled = true;
+            }
+            Some(Err(e)) => bevy::log::warn!("RETAIL_MENUS CreateASkater preview not shown: {e}"),
+            None => customiser.draft = host.look.clone(),
         }
     }
     if std::mem::take(&mut host.save_requested) {
@@ -245,6 +256,8 @@ const MERCHANDISE: usize = 1;
 const WEAR_STYLES: usize = 30;
 /// Option 99 of menu 30: Left / Right cycles the picked part's wear styles.
 const WEAR_STYLE_OPTION: i32 = 99;
+/// 825FBAE8: `cmpwi r11,500` on the milliseconds the highlight rested.
+const PREVIEW_DELAY: f32 = 0.5;
 
 #[derive(Default)]
 pub(crate) struct CasHost {
@@ -257,6 +270,16 @@ pub(crate) struct CasHost {
     /// {asset_id, material_id}). `sync_look` brings it in on open and puts picks on the skater.
     pub look: serde_json::Value,
     pub look_changed: bool,
+    /// The highlight preview (825FEDB8 / 825FBAE8 / 825FEEA0): the look with the highlighted grid part on, shown on
+    /// the skater only; None = the skater shows `look`.
+    pub preview: Option<serde_json::Value>,
+    pub preview_changed: bool,
+    /// The highlighted grid row (S+0x17A8) and the time since it was highlighted while the preview waits (S+0x1C40 /
+    /// +0x1C44).
+    pub preview_row: usize,
+    pub preview_wait: Option<f32>,
+    /// The rest the highlight needs before the preview (retail 500 ms, 825FBAE8; a mod can change it).
+    pub preview_delay: f32,
     /// The slot defaults per gender (customiser_parts Library `defaults`), for a Remove the look cannot do without.
     pub defaults: std::collections::HashMap<String, serde_json::Value>,
     /// The part name ids the language table has (ID_CAC_PART_*), for the info panel's name (82605528).
@@ -310,7 +333,49 @@ impl CasHost {
             payload: o.payload,
             camera: o.camera,
         }).collect();
-        Self { menus, options, indices, trucks: 0.5, wheels: 0.5, male: true, ..Default::default() }
+        Self { menus, options, indices, trucks: 0.5, wheels: 0.5, male: true, preview_delay: PREVIEW_DELAY, ..Default::default() }
+    }
+
+    /// The CAS OnMenuHilight (vt+0x44 = 825FEDB8) on the part grid: the row is kept and the preview waits again.
+    fn hilight(&mut self, row: usize) {
+        if self.current() == Some(PART_GRID) && row < self.grid.len() {
+            self.preview_row = row;
+            self.preview_wait = Some(0.0);
+        }
+    }
+
+    /// Per frame (825FBAE8 on menu 10): once the highlight rested `preview_delay`, the skater shows the highlighted
+    /// part (825FEEA0: NewAssetRequest), or the committed look for the Remove entry or a part it wears already (one of
+    /// its wear styles included; 82537268).
+    pub(crate) fn tick(&mut self, seconds: f32) {
+        let Some(waited) = self.preview_wait.as_mut() else { return };
+        *waited += seconds;
+        if *waited <= self.preview_delay {
+            return;
+        }
+        self.preview_wait = None;
+        match self.grid.get(self.preview_row).copied().flatten() {
+            Some(i) if self.part_type(i) != "owned" => {
+                let p = self.parts[i].clone();
+                let mut look = self.look.clone();
+                if !look["selections"].is_object() {
+                    look["selections"] = serde_json::json!({});
+                }
+                look["selections"][&p.slot] = serde_json::json!({ "asset_id": p.model_id, "material_id": p.material_id });
+                bevy::log::info!("RETAIL_MENUS CreateASkater preview {} {} / {}", p.slot, p.model, p.material);
+                self.preview = Some(look);
+                self.preview_changed = true;
+            }
+            _ => self.end_preview(),
+        }
+    }
+
+    /// The skater shows the committed look again (826008C0 leaving menu 10, 82537268).
+    fn end_preview(&mut self) {
+        self.preview_wait = None;
+        if self.preview.take().is_some() {
+            self.preview_changed = true;
+        }
     }
 
     /// The grid for a part category option (82603480): the Remove entry, then the parts of the option's slot that
@@ -435,6 +500,10 @@ impl CasHost {
             None => serde_json::Value::Null,
         };
         self.look_changed = true;
+        // The committed look goes on (sync_look); a pending preview is dropped with it.
+        self.preview = None;
+        self.preview_changed = false;
+        self.preview_wait = None;
     }
 
     fn equip(&mut self, i: usize) {
@@ -523,6 +592,9 @@ impl CasHost {
     /// Entering a menu (82600AF8): the shop mode it sets; the top and Merchandise menus post the whole-body camera.
     /// NOT RETAIL YET: the other menus' targets (tables 83044528 / 83044548: the head, face and tattoo rows).
     fn enter(&mut self, menu: usize) {
+        if menu != PART_GRID {
+            self.end_preview();
+        }
         if matches!(menu, TOP_MENU | MERCHANDISE) {
             self.camera = WHOLE_BODY.into();
         }
@@ -631,6 +703,9 @@ impl CasHost {
         self.open = true;
         self.look = serde_json::Value::Null;
         self.look_changed = false;
+        self.preview = None;
+        self.preview_changed = false;
+        self.preview_wait = None;
         self.wear_styles.clear();
         self.stack = vec![TOP_MENU];
         self.indices = self.menus.iter().map(|m| (m.index, m.window)).collect();
@@ -649,10 +724,18 @@ impl CasHost {
 
     pub(crate) fn call(&mut self, vm: &mut Vm, object: &str, method: &str, args: &[Value]) -> Result<Option<Value>, String> {
         let _ = vm;
-        if !self.open || object != "Game" || !(method.starts_with("CAC_") || method == "OnMenuSelect") {
+        if !self.open || object != "Game" || !(method.starts_with("CAC_") || method == "OnMenuSelect" || method == "OnMenuHilight") {
             return Ok(None);
         }
         let Some(m) = self.current() else { return Ok(None) };
+        if method == "OnMenuHilight" {
+            // (menu id, row, text), as on the other screens (825FEDB8 reads the row).
+            let row = args.get(1).map_or(-1, |v| crate::apt_vm::to_integer(v));
+            if let Ok(row) = usize::try_from(row) {
+                self.hilight(row);
+            }
+            return Ok(Some(Value::Undefined));
+        }
         if method == "OnMenuSelect" {
             // (screen id, row).
             let row = args.get(1).map_or(-1, |v| crate::apt_vm::to_integer(v));
@@ -950,6 +1033,43 @@ mod tests {
         h.call(&mut vm, "Game", "CAC_OnThumbnailSelect", &[Value::Number(0.0)]).unwrap();
         assert!(h.look["selections"]["Hat"].is_null());
         assert_eq!(h.menu(), Some(MERCHANDISE));
+    }
+
+    #[test]
+    fn a_rested_highlight_previews_its_part_and_leaving_the_grid_takes_it_off() {
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        open_grid(&mut h, 0);
+        let mut hilight = |h: &mut CasHost, row: f64| h.call(&mut vm, "Game", "OnMenuHilight", &[Value::Number(0.0), Value::Number(row), Value::Text(String::new())]).unwrap();
+        let red = h.look.clone();
+        // The blue cap: nothing before the highlight rested 500 ms, then the skater wears it; the look stays.
+        hilight(&mut h, 2.0);
+        h.tick(0.3);
+        assert!(h.preview.is_none());
+        h.tick(0.3);
+        assert_eq!(h.preview.as_ref().unwrap()["selections"]["Hat"], serde_json::json!({ "asset_id": "cap#", "material_id": "blue#" }));
+        assert!(h.preview_changed);
+        assert_eq!(h.look, red);
+        // Moving on restarts the wait; the worn red cap shows the look again.
+        h.preview_changed = false;
+        hilight(&mut h, 1.0);
+        h.tick(0.4);
+        assert!(h.preview.is_some());
+        h.tick(0.2);
+        assert!(h.preview.is_none() && h.preview_changed);
+        // B off the grid takes a preview off.
+        hilight(&mut h, 2.0);
+        h.tick(0.6);
+        assert!(h.preview.is_some());
+        h.back();
+        assert!(h.preview.is_none() && h.preview_wait.is_none());
+        // A pick commits it.
+        h.select(0);
+        hilight(&mut h, 2.0);
+        h.tick(0.6);
+        h.call(&mut vm, "Game", "CAC_OnThumbnailSelect", &[Value::Number(2.0)]).unwrap();
+        assert!(h.preview.is_none());
+        assert_eq!(h.look["selections"]["Hat"], serde_json::json!({ "asset_id": "cap#", "material_id": "blue#" }));
     }
 
     #[test]

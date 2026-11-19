@@ -3264,10 +3264,14 @@ fn set_state(stage: &mut Stage, id: i32, state: i32, fe: &mut FrontEnd) -> Resul
 /// Whether the movie made this call this frame (removes it).
 /// FE 15's look on the skater and its save (cas_host::sync_look).
 fn cas_look(stage: Option<ResMut<MenuStage>>, customiser: Option<ResMut<crate::customiser::Customiser>>,
-    parts: Option<Res<crate::customiser_parts::Parts>>) {
+    parts: Option<Res<crate::customiser_parts::Parts>>, time: Res<Time>) {
     let (Some(mut ms), Some(mut customiser), Some(parts)) = (stage, customiser, parts) else { return };
+    if ms.cas_host.preview_wait.is_some() {
+        ms.cas_host.tick(time.delta_secs());
+    }
     let host = &ms.cas_host;
-    if host.open && !host.look.is_null() && !host.look_changed || !host.open && !host.save_requested && !host.look_changed {
+    let idle = !host.look_changed && !host.preview_changed;
+    if host.open && !host.look.is_null() && idle || !host.open && !host.save_requested && idle {
         return;
     }
     crate::cas_host::sync_look(&mut ms.cas_host, &mut customiser, &parts);
