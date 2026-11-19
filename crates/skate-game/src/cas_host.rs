@@ -47,6 +47,8 @@ pub(crate) struct CasOption {
     pub payload: String,
     /// The camera target the option posts (+0x20, research b1036).
     pub camera: String,
+    /// The body target the option posts (+0x28: the pose and yaw row).
+    pub body: String,
 }
 
 /// One catalog part as setup lists it (`cas-parts.json`, tools/asset_pipeline/cas_grid.py): a model with one of
@@ -142,11 +144,38 @@ pub(crate) const WHOLE_BODY: &str = "AD454A0ECD0E2EDF";
 const LOGO_CLASS: &str = "Hash_548B58B0C27C9564";
 const LOGO_IMAGE: &str = "Hash_FF4850A86FD9E4C9";
 
-/// The vault data FE 15 reads: every CAS camera row by key (16 hex digits) and the brand logo image by brand name,
-/// inheritance resolved; empty without the vault export.
-pub(crate) fn load_vault(asset_root: &std::path::Path)
-    -> (std::collections::HashMap<String, CasCamera>, std::collections::HashMap<String, String>) {
+/// A body target row (class 0x95E142284549717F, read by 82532800 CreateAnimator when cMsgPresCASBodyTarget names it):
+/// the character's clip, its yaw on the set in degrees (record +0x28 times pi/180) and its position relative to the
+/// stage origin (+0x10).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CasBody {
+    pub clip: String,
+    pub yaw_degrees: f32,
+    pub position: [f32; 3],
+}
+
+const BODY_CLASS: &str = "Hash_95E142284549717F";
+const BODY_CLIP: &str = "Hash_249D0D4624998D68";
+const BODY_YAW: &str = "Hash_4591287983616615";
+const BODY_POSITION: &str = "Hash_6D2BEA1EFEA33425";
+
+/// The vault data FE 15 reads: every CAS camera row by key (16 hex digits), the brand logo image by brand name and
+/// every body target row by key, inheritance resolved; empty without the vault export.
+pub(crate) fn load_vault(asset_root: &std::path::Path) -> (std::collections::HashMap<String, CasCamera>,
+    std::collections::HashMap<String, String>, std::collections::HashMap<String, CasBody>) {
     let Ok(data) = skate_data::collections::Collections::load(asset_root) else { return Default::default() };
+    let bodies = data.entries().iter()
+        .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == BODY_CLASS)
+        .filter_map(|c| {
+            let position = data.words::<4>(BODY_CLASS, &c.key, BODY_POSITION).ok().map(|w| [w[0], w[1], w[2]].map(f32::from_bits))?;
+            let body = CasBody {
+                clip: data.field(BODY_CLASS, &c.key, BODY_CLIP).ok()?.data.clone(),
+                yaw_degrees: data.float(BODY_CLASS, &c.key, BODY_YAW).ok()?,
+                position,
+            };
+            Some((skate_data::attrib_hash::numeric_name(&c.key).trim_start_matches("Hash_").to_owned(), body))
+        })
+        .collect();
     let text = |class: &str, key: &str, field: &str| data.field(class, key, field).ok().map(|f| f.data.clone());
     let logos = data.entries().iter()
         .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == LOGO_CLASS)
@@ -157,7 +186,7 @@ pub(crate) fn load_vault(asset_root: &std::path::Path)
     for (name, image) in logos {
         by_brand.entry(name).or_insert(image);
     }
-    (load_cameras(&data), by_brand)
+    (load_cameras(&data), by_brand, bodies)
 }
 
 fn load_cameras(data: &skate_data::collections::Collections) -> std::collections::HashMap<String, CasCamera> {
@@ -303,6 +332,9 @@ pub(crate) struct CasHost {
     /// The camera rows by key and the target the screen last posted (cMsgPresCASCameraTarget).
     pub cameras: std::collections::HashMap<String, CasCamera>,
     pub camera: String,
+    /// The body target rows by key and the target last posted (cMsgPresCASBodyTarget).
+    pub bodies: std::collections::HashMap<String, CasBody>,
+    pub body: String,
     /// The open grid: None = the Remove entry, else an index into `parts`; its slot.
     pub grid: Vec<Option<usize>>,
     pub grid_slot: Option<String>,
@@ -342,6 +374,7 @@ impl CasHost {
             category: o.category,
             payload: o.payload,
             camera: o.camera,
+            body: o.body,
         }).collect();
         Self { menus, options, indices, trucks: 0.5, wheels: 0.5, male: true, preview_delay: PREVIEW_DELAY,
             turntable_rate: TURNTABLE_RATE, ..Default::default() }
@@ -617,6 +650,11 @@ impl CasHost {
         self.cameras.get(&self.camera).or_else(|| self.cameras.get(WHOLE_BODY)).copied()
     }
 
+    /// The character's pose and place now: the posted body target's row (None: no rows exported).
+    pub(crate) fn pose(&self) -> Option<CasBody> {
+        self.bodies.get(&self.body).or_else(|| self.bodies.get(WHOLE_BODY)).cloned()
+    }
+
     /// Entering a menu (82600AF8): the shop mode it sets; the top and Merchandise menus post the whole-body camera.
     /// NOT RETAIL YET: the other menus' targets (tables 83044528 / 83044548: the head, face and tattoo rows).
     fn enter(&mut self, menu: usize) {
@@ -625,6 +663,7 @@ impl CasHost {
         }
         if matches!(menu, TOP_MENU | MERCHANDISE) {
             self.post_camera(WHOLE_BODY.into());
+            self.body = WHOLE_BODY.into();
         }
         self.shop = match menu {
             TOP_MENU => 2,
@@ -683,10 +722,13 @@ impl CasHost {
         let (id, option) = self.option(row)?;
         let option = option?;
         let target = option.target.filter(|t| *t < self.menus.len())?;
-        let (title, camera) = (option.text.clone(), option.camera.clone());
-        // 825FE3C0 posts the option's camera target with the push.
+        let (title, camera, body) = (option.text.clone(), option.camera.clone(), option.body.clone());
+        // 825FE3C0 posts the option's camera target with the push, and its body target (+0x28) when set.
         if !camera.is_empty() {
             self.post_camera(camera);
+        }
+        if !body.is_empty() {
+            self.body = body;
         }
         if target == PART_GRID {
             // CAC_GetTitleText on menu 10 is the part list's title S+0x1788: the category's text (the PS3 recording
@@ -752,8 +794,14 @@ impl CasHost {
 
     pub(crate) fn call(&mut self, vm: &mut Vm, object: &str, method: &str, args: &[Value]) -> Result<Option<Value>, String> {
         let _ = vm;
-        if !self.open || object != "Game" || !(method.starts_with("CAC_") || method == "OnMenuSelect" || method == "OnMenuHilight") {
+        if !self.open || object != "Game"
+            || !(method.starts_with("CAC_") || matches!(method, "OnMenuSelect" | "OnMenuHilight" | "OnMenuGetItemEnabled")) {
             return Ok(None);
+        }
+        // The CAS vt+0x48 is 8281DD70 (returns 1): every row of the list pickers is enabled. Unanswered, the
+        // Merchandise picker had no highlight and ignored Up / Down.
+        if method == "OnMenuGetItemEnabled" {
+            return Ok(Some(Value::Bool(true)));
         }
         let Some(m) = self.current() else { return Ok(None) };
         if method == "OnMenuHilight" {
@@ -1064,6 +1112,31 @@ mod tests {
     }
 
     #[test]
+    fn every_picker_row_is_enabled() {
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        h.select(0);
+        assert_eq!(h.call(&mut vm, "Game", "OnMenuGetItemEnabled", &[Value::Number(0.0), Value::Number(9.0)]).unwrap(), Some(Value::Bool(true)));
+    }
+
+    #[test]
+    fn an_options_body_target_poses_the_skater_and_merchandise_puts_the_whole_body_back() {
+        let mut h = grid_host();
+        let body = |yaw: f32| CasBody { clip: "CAS_Stand".into(), yaw_degrees: yaw, position: [-1.0, 0.0, -7.05] };
+        h.bodies = [(WHOLE_BODY.to_string(), body(260.0)), ("91098B2B2461D2DC".to_string(), body(149.25))].into_iter().collect();
+        h.options[2].body = "91098B2B2461D2DC".into();
+        h.select(0);
+        assert_eq!(h.pose().unwrap().yaw_degrees, 260.0);
+        h.select(1);
+        assert_eq!(h.pose().unwrap().yaw_degrees, 149.25);
+        h.back();
+        assert_eq!(h.pose().unwrap().yaw_degrees, 260.0);
+        // Without the row the whole-body one stands in.
+        h.body = "0000000000000000".into();
+        assert_eq!(h.pose().unwrap().yaw_degrees, 260.0);
+    }
+
+    #[test]
     fn the_triggers_turn_the_skater_frame_rate_independent_and_a_new_camera_resets_it() {
         let mut h = grid_host();
         // A full trigger for one second: 0.1 rad per 30 Hz frame, the same at 30, 60 and 240 fps.
@@ -1167,7 +1240,11 @@ mod tests {
     #[ignore = "requires the converted vault (SKATE3_ASSET_ROOT with private/stock/skater-collections.json)"]
     fn the_vault_gives_the_camera_rows_and_logos() {
         let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT") else { return };
-        let (cameras, logos) = load_vault(std::path::Path::new(&root));
+        let (cameras, logos, bodies) = load_vault(std::path::Path::new(&root));
+        // The body rows: 69, the whole body at 260 degrees, the wrist row (keyed "wrist") at 149.25.
+        assert_eq!(bodies.len(), 69);
+        assert_eq!(bodies[WHOLE_BODY], CasBody { clip: "CAS_Stand".into(), yaw_degrees: 260.0, position: [-1.0, 0.0, -7.05] });
+        assert!((bodies["91098B2B2461D2DC"].yaw_degrees - 149.25).abs() < 0.01);
         assert_eq!(cameras.len(), 47);
         let body = cameras[WHOLE_BODY];
         assert_eq!((body.fov_degrees, body.eye, body.target), (35.0, [-3.8, 0.88, -7.6], [49.0, 0.7, -9.0]));

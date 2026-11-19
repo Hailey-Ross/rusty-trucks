@@ -655,6 +655,30 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     takes `lt` / `rt` / `rtxN` (a held trigger for N frames). Test
     `the_triggers_turn_the_skater_frame_rate_independent_and_a_new_camera_resets_it`. NOT RETAIL YET: the base yaw
     and pose per body target (the next step).
+- **Body targets** (2026-11-18): cMsgPresCASBodyTarget (8253B7B0) -> 82532800 CreateAnimator opens the row of class
+  0x95E142284549717F named by the option's +0x28 key (the top and Merchandise menus post the whole body
+  0xAD454A0ECD0E2EDF with their camera, 82600AF8 lines 190-239) and sets the character from it [code]: the clip name
+  (field 0x249D0D4624998D68, record +0x20), the yaw (0x4591287983616615 in degrees, +0x28) and the place relative to
+  the stage origin (0x6D2BEA1EFEA33425, +0x10). The options we have post four rows [data]: whole body (hats, shirts,
+  pants, shoes ...: CAS_Stand, 260 degrees), wheels 335.13, rings 189.09, wrist (`wrist`, key 0x91098B2B2461D2DC)
+  149.25; all at (-1, 0, -7.05) = our FE 62 stage place (and 260 = its -100 degree heading), so only the yaw and the
+  clip change. Clips [data]: CAS_STAND is only in the per-gender `cac_viewer_<male|female>.abin`, CAS_SINGLE_POSE_1..8
+  only in `sk83_marquee_viewer.abin`. Playing cac_viewer's CAS_STAND (run casbody5) showed the skater with her arms
+  down and no board, while the PS3 recording (5:30, Body Modification) shows her holding the board, as our FE 62
+  MARQUEE_STAND does; so CAS_Stand keeps MARQUEE_STAND and which clip / bank retail's animator plays (or whether the
+  board is a separate hand prop there) is OPEN (CASCharacterAnimator_New's bank arguments, 82532800 pcVar2 +0x24 /
+  +0x54, not read).
+  Change: `cas_host::load_vault` reads the 69 rows (inheritance resolved), `CasHost::body` is posted with the camera
+  (option +0x28; whole body on the top / Merchandise menus), `MarqueeView::body` gives the stage the clip, yaw and
+  place, `marquee_preview` reloads the clip when its bank / clip change. Tests
+  `an_options_body_target_poses_the_skater_and_merchandise_puts_the_whole_body_back`, the vault test (69 rows).
+  NOT RETAIL YET: the rows' other fields (the second vector, two Bools) and the gesture clips (cac_male_spock ...,
+  in miscload.big's gesture bank, not exported) for Edit Style.
+- **Fix: the list pickers' rows are enabled** (2026-11-18): the CAS screen's OnMenuGetItemEnabled (vtable slot 0x48,
+  word at 82303988) is 8281DD70, which returns 1 [code]. Our host did not answer the call, so the Merchandise /
+  Accessories / Skateboards lists (panel 0, the movie's menu picker) showed no highlight and ignored Up / Down; only
+  their first row (Hats) could be opened (seen while scripting a run to Accessories > Wrist; the "no row highlighted"
+  note below). Now answered `true`; test `every_picker_row_is_enabled`.
 - **Camera targets of the other menus** [code]: the tables 83044528 / 83044548 / 83044568 / 83044588 / 830445A8
   that 82600AF8 posts from belong to the tattoo / graphic adjust menus (7, 8, 34, 35, 36: indexed by the tattoo's
   location) and menu 11 (board graphics: the camera key comes from a vault record). They come with those features;

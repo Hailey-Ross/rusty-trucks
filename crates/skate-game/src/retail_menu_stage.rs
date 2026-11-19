@@ -869,6 +869,7 @@ fn setup(
                     names: cas_names,
                     logos: cas_vault.1,
                     cameras: cas_vault.0,
+                    bodies: cas_vault.2,
                     ..crate::cas_host::CasHost::new(tables.as_ref().map(|t| t.cas_menus.clone()).unwrap_or_default(),
                         tables.as_ref().map(|t| t.cas_options.clone()).unwrap_or_default())
                 },
@@ -2914,7 +2915,8 @@ fn update(
     let cas = ms.cas_open && ms.cas_shown;
     marquee.set_if_neq(crate::marquee_preview::MarqueeView { open: preview_open || cas, own: cas && !preview_open,
         camera: if cas && !preview_open { ms.cas_host.view() } else { None },
-        turntable: if cas && !preview_open { ms.cas_host.turntable } else { 0.0 } });
+        turntable: if cas && !preview_open { ms.cas_host.turntable } else { 0.0 },
+        body: if cas && !preview_open { ms.cas_host.pose() } else { None }, male: ms.cas_host.male });
     for (owner, event) in mod_events {
         menus.send_event(&owner, event);
     }
