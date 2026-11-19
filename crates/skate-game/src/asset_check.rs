@@ -72,6 +72,8 @@ fn hud(assets: &Path, movies: &Path) -> Vec<Finding> {
                     (t.settings_titles.is_empty(), "settings titles"),
                     (t.sub_options.is_empty(), "sub-option tables"),
                     (t.templates.is_empty(), "screen templates"),
+                    // Create-a-Skater's option records from before the camera targets (+0x20, research b1036).
+                    (!t.cas_options.is_empty() && t.cas_options.iter().all(|o| o.camera.is_empty()), "Create-a-Skater camera targets"),
                 ] {
                     if empty {
                         out.push(finding("hud", format!("menu tables lack the {what}")));

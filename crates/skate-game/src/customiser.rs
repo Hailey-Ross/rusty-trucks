@@ -77,6 +77,11 @@ impl Customiser {
         fields.insert("worn".into(), Value::Bool(false));
         write_outfit(&self.settings, &saved)
     }
+    /// Wears the draft and saves it as the outfit (the retail Create-a-Skater's Yes on exit).
+    pub(crate) fn save_look(&mut self) -> Result<(), String> {
+        self.enabled = true;
+        write_outfit(&self.settings, &self.draft)
+    }
     fn page(&self) -> &Entry {
         let mut page = &self.index;
         for &i in &self.path {

@@ -423,7 +423,7 @@ impl Plugin for RetailMenuStagePlugin {
         if !enabled() {
             return;
         }
-        app.add_systems(PostStartup, setup).add_systems(Update, (update, restart_failed_stage, render).chain().in_set(MenuStageSet));
+        app.add_systems(PostStartup, setup).add_systems(Update, (update, cas_look, restart_failed_stage, render).chain().in_set(MenuStageSet));
     }
 }
 
@@ -777,6 +777,9 @@ fn setup(
                 .iter()
                 .position(|r| movies.movies.contains_key(r.movie) && templates.iter().any(|n| n == r.template))
                 .unwrap_or(usize::MAX);
+            let cas_names = language.keys().filter(|k| k.starts_with("ID_CAC_PART_")).cloned().collect();
+            let cas_screen_exists = templates.iter().any(|n| n == CREATE_A_SKATER.2) && movies.movies.contains_key(CREATE_A_SKATER.0);
+            let cas_vault = if cas_screen_exists { crate::cas_host::load_vault(&config.asset_root) } else { Default::default() };
             commands.insert_resource(MenuStage {
                 save_tag: Default::default(),
                 stage,
@@ -861,6 +864,9 @@ fn setup(
                 cas_host: crate::cas_host::CasHost {
                     parts: crate::cas_host::load_parts(&config.asset_root),
                     slots: tables.as_ref().map(|t| t.cas_slots.clone()).unwrap_or_default(),
+                    names: cas_names,
+                    logos: cas_vault.1,
+                    cameras: cas_vault.0,
                     ..crate::cas_host::CasHost::new(tables.as_ref().map(|t| t.cas_menus.clone()).unwrap_or_default(),
                         tables.as_ref().map(|t| t.cas_options.clone()).unwrap_or_default())
                 },
@@ -1424,6 +1430,11 @@ fn update(
                         APT_LEFT | APT_RIGHT => {
                             if fe.cas.left_right(key == APT_RIGHT) {
                                 set_state(&mut ms.stage, id, 50, &mut fe)?;
+                            } else if fe.cas.menu() == Some(crate::cas_host::PART_GRID) {
+                                // The thumbnail grid moves its cursor in the movie [inferred: 825FC7E8 takes Left /
+                                // Right for values only].
+                                ms.stage.call_path("_global.ScreenManager.UpdateInput",
+                                    vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())], &mut fe)?;
                             }
                         }
                         APT_PREVIOUS => {
@@ -2324,8 +2335,8 @@ fn update(
                 }
             }
         }
-        // The exit confirmation's answer (82604748): Yes closes FE 15 (NOT RETAIL YET: the look is not committed /
-        // saved, the 250 ms close countdown and fade are not ported); No re-enters the top menu.
+        // The exit confirmation's answer (82604748): Yes saves the look (cas_host::sync_look) and closes FE 15 (NOT
+        // RETAIL YET: the 250 ms close countdown and fade); No re-enters the top menu.
         let cas_answers: Vec<i64> = {
             let (ours, others) = std::mem::take(&mut popup_mods.engine_choices).into_iter()
                 .partition::<Vec<_>, _>(|(callback, _)| callback == crate::cas_host::EXIT_POPUP);
@@ -2335,6 +2346,7 @@ fn update(
         for choice in cas_answers {
             info!("RETAIL_MENUS CreateASkater exit answer {choice}");
             if choice == 0 {
+                fe.cas.save_requested = true;
                 if let Some(s) = cas_screen.as_mut() {
                     s.open = false;
                 }
@@ -2882,8 +2894,11 @@ fn update(
         animation: ms.trick_guide.state.animation.clone(),
         camera_track: ms.trick_guide.state.camera_track,
     });
-    // FE 62's preview (marquee_preview.rs): the screen on top in a mode that previews (not Call Skater, b575).
-    marquee.set_if_neq(crate::marquee_preview::MarqueeView { open: preview_open });
+    // FE 62's preview (marquee_preview.rs): the screen on top in a mode that previews (not Call Skater, b575). FE 15
+    // shows the player's own skater on the same set (DIST_CreateSakter).
+    let cas = ms.cas_open && ms.cas_shown;
+    marquee.set_if_neq(crate::marquee_preview::MarqueeView { open: preview_open || cas, own: cas && !preview_open,
+        camera: if cas && !preview_open { ms.cas_host.view() } else { None } });
     for (owner, event) in mod_events {
         menus.send_event(&owner, event);
     }
@@ -3247,6 +3262,17 @@ fn set_state(stage: &mut Stage, id: i32, state: i32, fe: &mut FrontEnd) -> Resul
 }
 
 /// Whether the movie made this call this frame (removes it).
+/// FE 15's look on the skater and its save (cas_host::sync_look).
+fn cas_look(stage: Option<ResMut<MenuStage>>, customiser: Option<ResMut<crate::customiser::Customiser>>,
+    parts: Option<Res<crate::customiser_parts::Parts>>) {
+    let (Some(mut ms), Some(mut customiser), Some(parts)) = (stage, customiser, parts) else { return };
+    let host = &ms.cas_host;
+    if host.open && !host.look.is_null() && !host.look_changed || !host.open && !host.save_requested && !host.look_changed {
+        return;
+    }
+    crate::cas_host::sync_look(&mut ms.cas_host, &mut customiser, &parts);
+}
+
 fn take_call(fe: &mut FrontEnd, call: &str) -> bool {
     let before = fe.calls.len();
     fe.calls.retain(|c| c != call);

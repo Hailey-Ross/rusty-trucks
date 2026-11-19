@@ -4,10 +4,12 @@ catalog.json. The game lists a category's parts from it by slot and flags (data 
 import json
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2
 # cas.* fields the part filters, the list sort and the info panel use (b1035: Gender, TopType, SockStyle,
-# Location; b1034: Unlock, SponsorUnlock, ManufacturerID (brand), Cost, DlcID).
-FIELDS = ('Gender', 'TopType', 'SockStyle', 'Location', 'Unlock', 'SponsorUnlock', 'ManufacturerID', 'Cost', 'DlcID')
+# Location; b1034: Unlock, SponsorUnlock, ManufacturerID (brand), Cost, DlcID; the hidden flag IsUsedInGame and the
+# wear style groups StyleSubcategory / IsDefaultWearStyle, docs/hails-additions/43-career.md#create-a-skater).
+FIELDS = ('Gender', 'TopType', 'SockStyle', 'Location', 'Unlock', 'SponsorUnlock', 'ManufacturerID', 'Cost', 'DlcID',
+          'IsUsedInGame', 'IsDefaultWearStyle', 'StyleSubcategory')
 
 
 def parts(catalog: dict) -> list:

@@ -727,6 +727,12 @@ pub struct CasOptionRow {
     pub payload: String,
     #[serde(default)]
     pub category: Option<u32>,
+    /// The camera and body target hashes at +0x20 / +0x28 (16 hex digits, empty when 0): the keys of the CAS camera
+    /// rows (Attrib class 0x0F21DD698DF85813) and pose rows the screen posts on entering the option (research b1036).
+    #[serde(default)]
+    pub camera: String,
+    #[serde(default)]
+    pub body: String,
 }
 
 /// The category number a filter vtable's slot 5 (vt+0x14) returns: `li r3,N` then `blr`; the slot count (26, the
@@ -796,6 +802,10 @@ fn cas_options(img: &Image, lists: u32, count: usize, slots: usize) -> Result<Ve
     let mut actions: Vec<(Option<u32>, Option<u32>)> = vec![(None, None); count];
     let mut base: Option<usize> = None;
     let mut fields: Vec<[Option<u32>; 5]> = vec![[None; 5]; count];
+    // 64-bit values built by `rldimi rA,rS,32,0` (rS the high word), valid while rA still holds the low word; the
+    // records' camera and body target hashes (+0x20 / +0x28) are stored from them with `std`.
+    let mut wide: [Option<(u64, u32)>; 32] = [None; 32];
+    let mut targets: Vec<[u64; 2]> = vec![[0; 2]; count];
     for k in anchor..(anchor + CAS_CTOR_LIMIT).min(words) {
         let Some(w) = word(k) else { break };
         if w == 0x4e80_0020 {
@@ -832,6 +842,22 @@ fn cas_options(img: &Image, lists: u32, count: usize, slots: usize) -> Result<Ve
                     }
                 }
             }
+            30 if (w >> 2) & 7 == 3 && ((w >> 11) & 31) | (((w >> 1) & 1) << 5) == 32 && (w >> 5) & 63 == 0 => {
+                wide[ra] = match (regs[ra], regs[rd]) {
+                    (Some(lo), Some(hi)) => Some(((hi as u64) << 32 | lo as u64, lo)),
+                    _ => None,
+                };
+            }
+            62 if w & 3 == 0 => {
+                let ds = (w & 0xfffc) as u16 as i16 as i32;
+                if Some(ra) == base && ds >= CAS_OPTION_BASE {
+                    let (id, field) = (((ds - CAS_OPTION_BASE) / CAS_OPTION) as usize, (ds - CAS_OPTION_BASE) % CAS_OPTION);
+                    let value = wide[rd].filter(|(_, lo)| regs[rd] == Some(*lo)).map(|(v, _)| v).or(regs[rd].map(u64::from));
+                    if let (true, Some(v), Some(slot)) = (id < count, value, [32, 40].iter().position(|f| *f == field)) {
+                        targets[id][slot] = v;
+                    }
+                }
+            }
             // Other stores, compares, branches without link, floating point and vector: no general register written.
             37..=39 | 44 | 45 | 47 | 62 | 10 | 11 | 16 | 4 | 59 | 63 | 52..=55 => {}
             18 | 19 => {
@@ -861,7 +887,10 @@ fn cas_options(img: &Image, lists: u32, count: usize, slots: usize) -> Result<Ve
         return Err("Create-a-Skater option records not found".into());
     }
     let text = |p: Option<u32>| p.filter(|p| *p != 0).and_then(|p| img.cstr(p)).unwrap_or_default();
-    let rows: Vec<CasOptionRow> = fields.iter().zip(&actions).map(|(f, (vtable, payload))| CasOptionRow {
+    let hash = |v: u64| if v == 0 { String::new() } else { format!("{v:016X}") };
+    let rows: Vec<CasOptionRow> = fields.iter().zip(&actions).zip(&targets).map(|((f, (vtable, payload)), t)| CasOptionRow {
+        camera: hash(t[0]),
+        body: hash(t[1]),
         text: text(f[0]),
         description: text(f[1]),
         target: f[2].map_or(-1, |v| v as i32),
