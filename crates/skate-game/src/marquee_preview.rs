@@ -21,6 +21,10 @@ pub(crate) struct MarqueeStage {
     pub clip: String,
     /// The set around the stage, `private/hud/scene/<set>` (setup's export of DIST_CreateSakter, modeled in place).
     pub set: String,
+    /// The camera up vector, and the stage origin the CAS camera rows are relative to (82531868 adds it; (0, 200, 0)
+    /// from the b585 trace: eye y 200.48 = the freeskate row's 0.48 + 200, research b1036).
+    pub up: Vec3,
+    pub origin: Vec3,
 }
 
 impl Default for MarqueeStage {
@@ -34,14 +38,20 @@ impl Default for MarqueeStage {
             bank: "sk83_marquee_viewer.abin".into(),
             clip: "MARQUEE_STAND".into(),
             set: "MarqueeStage.skate".into(),
+            up: Vec3::Y,
+            origin: Vec3::new(0.0, 200.0, 0.0),
         }
     }
 }
 
-/// Set by the retail menu stage: FE 62 is the top screen in a mode that previews (Free Play, Demo; not Call Skater).
+/// Set by the retail menu stage: FE 62 is the top screen in a mode that previews (Free Play, Demo; not Call Skater),
+/// or FE 15 Create-a-Skater is open (`own`: the player's own skater in its outfit stands on the set).
 #[derive(Resource, Default, Clone, Debug, PartialEq)]
 pub(crate) struct MarqueeView {
     pub open: bool,
+    pub own: bool,
+    /// FE 15's camera row (cas_host::CasCamera, stage space); None keeps the stage's own camera.
+    pub camera: Option<crate::cas_host::CasCamera>,
 }
 
 #[derive(Resource, Default)]
@@ -85,7 +95,7 @@ fn wanted(mut requests: MessageReader<SpawnSkaterRequest>, mut wanted: ResMut<Wa
 }
 
 fn drive(world: &mut World, mut viewer: Local<Viewer>) {
-    let open = world.resource::<MarqueeView>().open;
+    let MarqueeView { open, own, camera } = world.resource::<MarqueeView>().clone();
     let Some(player) = world.query_filtered::<Entity, With<PlayerRoot>>().iter(world).next() else { return };
     // The first highlight is posted in the frame FE 62 opens, before the stage reports it open: keep it.
     if !open {
@@ -104,7 +114,7 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
     }
     let stage = world.resource::<MarqueeStage>().clone();
     // A new highlight swaps the character (retail unloads the external character and streams the previewed one).
-    let wanted = world.resource::<Wanted>().0.clone();
+    let wanted = if own { Some(Skater::Own) } else { world.resource::<Wanted>().0.clone() };
     if wanted.is_some() && wanted != viewer.shown {
         let id = match &wanted {
             Some(Skater::Character(id)) => Some(id.as_str()),
@@ -121,6 +131,14 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
         viewer.time = 0.0;
     }
     // Every open frame, the swap frames included: the gameplay camera (`camera::present`) would show the map.
+    let mut stage = stage;
+    if let Some(c) = camera {
+        let at = |v: [f32; 3]| stage.origin + Vec3::from_array(v);
+        stage.eye = at(c.eye);
+        stage.forward = (at(c.target) - stage.eye).normalize_or(stage.forward);
+        stage.up = Vec3::from_array(c.up).normalize_or(Vec3::Y);
+        stage.fov_degrees = c.fov_degrees;
+    }
     stage_camera(world, &mut viewer, &stage);
     if world.resource::<crate::custom_models::CustomModels>().swapping() || viewer.shown.is_none() {
         return;
@@ -158,7 +176,7 @@ fn stage_camera(world: &mut World, viewer: &mut Viewer, stage: &MarqueeStage) {
     let camera = world.query_filtered::<Entity, With<crate::camera::GameplayCamera>>().iter(world).next();
     if let Some(camera) = camera {
         if let Some(mut transform) = world.get_mut::<Transform>(camera) {
-            *transform = Transform::from_translation(stage.eye).looking_to(stage.forward, Vec3::Y);
+            *transform = Transform::from_translation(stage.eye).looking_to(stage.forward, stage.up);
         }
         if let Some(mut projection) = world.get_mut::<Projection>(camera) {
             if let Projection::Perspective(p) = &mut *projection {

@@ -85,6 +85,10 @@ fn check_structure(t: &MenuTables) {
     assert_eq!((o[0].category, o[4].category, o[11].category), (None, Some(18), Some(5)));
     assert_eq!((o[7].category, o[7].payload.as_str()), (Some(23), "hoody"));
     assert_eq!((o[35].category, o[35].payload.as_str()), (Some(24), "ear_left"));
+    // The camera / body target hashes at +0x20 / +0x28 (b1031, b1036): hats, t-shirts and wheels.
+    assert_eq!((o[4].camera.as_str(), o[4].body.as_str()), ("256799DCA03F926D", "AD454A0ECD0E2EDF"));
+    assert_eq!(o[5].camera, "1CDBC33D837B77BF");
+    assert_eq!((o[17].camera.as_str(), o[17].body.as_str()), ("CC37C25A08447470", "03B710C80E1AC13E"));
     let screen = |i: usize| -> Vec<String> { t.to_menu_data().screens[i].iter().map(|s| s.trim_start_matches("ID_GAMESETTINGS_").to_owned()).collect() };
     assert_eq!(screen(1), ["DIFFICULTY_SETTINGS", "AUDIO_SETTINGS", "VIDEO_SETTINGS", "CONTROL_SETTINGS", "ONLINE_SETTINGS", "SKATEFEED_SETTINGS"]);
     assert_eq!(screen(3), ["SFXVOLUME", "DIALOGVOLUME", "MUSICVOLUME", "SFXPACK"]);

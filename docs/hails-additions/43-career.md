@@ -546,12 +546,82 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   menu stage; the menu set exports every `data/fe/cas/` texture as a named image (2274; the set is 0.2 GB).
   `cas_host`: A on a category builds its grid; menu 10 answers CAC_GetNumItems / GetThumbnailFileName /
   GetOptionType / OnThumbnailSelect (logged, not applied yet). Test `a_category_lists_its_slots_parts_for_the_skater`.
-- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): picks are not
-  applied, the skater's gender is taken as male, the hidden field (+0x44; wear-style and "_d" variants list),
-  the pack / DLC helper filters and the unlock check are not ported, piercings have no catalog data; Yes does not
-  commit / save the look yet (82539790), no 250 ms close countdown or fade, X / Y, selectors / stance / colors / morphs / part cycles on Left / Right,
-  825FE3C0's menu and leaf branches, the values' profile storage and defaults (0.5 meanwhile), refresh states 52 /
-  53, parts and thumbnails, the stage and camera.
+- **Picks, wear styles, info panel, save** (main's own Ghidra reads, 2026-11-18; pseudocode
+  `.local/research/ghidra/cas-next*.txt`):
+  - Hidden parts [data]: the hidden byte (rec+0x44, listed only when clear) matches `cas.IsUsedInGame`. Every part
+    flagged with it is a dirty in-game material (`*_material_d`, 84 of the 88 male shoes without a retail thumbnail;
+    none of the parts with a thumbnail has it).
+  - Wear style groups [code + data]: 82539188 (the list query's sort for slot types 11 SkateBoard, 15 Pants, 18 Hat,
+    23 OuterTorso) keeps one part per group key (rec+0xE0; hats fall back to rec+0xB0 when it is unset). The first
+    part of a group with the default flag (rec+0x2C) stays in place; a group without one keeps its first part, moved
+    to the end. By data the key is `cas.StyleSubcategory` (hats: the material name) and the flag is
+    `cas.IsDefaultWearStyle`. Simulated over the whole catalog (male and female), every listed hat, pant and board
+    has a retail thumbnail (male hats 625 -> 131); of the shirts only the 16 bare torsos (no TopType, dropped by the
+    record test anyway) and `windbreaker_closed_male` have none.
+  - Pick 825FD9F0 [code]: the variants of the part (82538D38: same slot, gender and group; 82603CB0 sorts them by
+    model name). More than one opens menu 30 WearStyles (82600780(S, 0x1E)) and keeps the worn part when it is one
+    of them. One goes on unless worn, then 82600820(S, 1) pops back to Merchandise (menu 1). Remove clears the slot
+    (825377E0 with no part sets the slot key to none) and also returns to Merchandise.
+  - Info panel [code]: CAC_GetInfoPanelType = "petes" / "blurb" by the shop mode, else on menu 10 Remove "blurb" and
+    a part its type 825FF5E8: **"owned" when the part or one of its wear styles is worn** (the check mark), else
+    "locked", "dlc" (the DlcID gate) or "none"; CAC_GetOptionType the same, Remove "none".
+    CAC_GetDescriptionText (825FF160 -> 82605528): Remove ID_CAC_REMOVE_PART, a part the first
+    `ID_CAC_PART_<MODEL>_<MATERIAL>` the language table has over its wear styles, else `ID_CAC_COMPONENT_TYPE_<SLOT>`
+    [data: 3136 part ids in the table, e.g. ID_CAC_UNLOCK_BS_GROUP2_UNLOCK = "Sell 15,000 boards"].
+    CAC_GetItemUnlockHALID 825FF3E0: `ID_<Unlock, else SponsorUnlock>_UNLOCK`, "#" without. CAC_GetSponsorLogoFileName
+    825FFA38: the brand's logo record (82604070, vault class 0x548B58B0C27C9564), "no_image" for Remove or no logo.
+  - Exit Yes 82604748 [code]: sets profile flag +0x6C bit 0, builds the apply record from the look (82539790),
+    starts a 250 ms close countdown and the fade.
+  - Camera [code]: the screen posts cMsgPresCASCameraTarget(hash): 0xAD454A0ECD0E2EDF (whole body) on the top and
+    Merchandise menus, the option's +0x20 hash per category, plus cMsgPresCASBodyTarget (the option's +0x28 hash:
+    the pose) and cMsgPresCASCharacterRotate(0, absolute: the turntable back to 0). Research b1036 (agent-derived;
+    main checked the class, the row keys, the field values of the default / whole-body rows and the ctor's hash
+    stores in the recomp text): the only C++ subscriber, PresCACMan (82539F38 -> 8253B7F0 -> 82531868), snaps the
+    camera with no blend to the row of Attrib class 0x0F21DD698DF85813 with that key (47 rows in
+    skatercollections.vlt, already in our stock export): eye (field 0xF323B5D55CA55A89) and look-at
+    (0xF0FC2B540F11109E) in stage space plus a stage offset, up (0x513070D9CBBE801A, optional), FOV
+    (0xEFB7F7EF35801C19; whole body 35, hats 45, tops 42). The offset is (0, 200, 0) by the b585 trace (eye y 200.48
+    = the freeskate row's 0.48 + 200) [inferred; the .bss offset's init value 820D063C not dumped]. The ctor builds
+    each hash with lis / ori / rldimi and stores it with std at the record's +0x20 / +0x28.
+- **Change (picks).** Setup: `cas-parts.json` v2 adds IsUsedInGame, IsDefaultWearStyle, StyleSubcategory.
+  `cas_host`: hidden parts left out, one part per wear style group, the pick / Remove / menu 30 flow above, Left /
+  Right on menu 30's Style row cycles the wear styles, A there returns to Merchandise [inferred: help kind
+  "Accept"; 825FE3C0's menu 30 branch not read], the info panel natives, thumbnail names lowercased (the disc's
+  names). The look: `cas_host::sync_look` brings the customizer's draft in on open (the gender filter follows its
+  gender), resolves every pick through the parts library into the draft the skater wears, and Yes saves it
+  (`Customiser::save_look`, settings/character.json). A removed slot the look cannot do without gets the body's
+  default part. The skater stands on the Create-a-Skater set (`marquee_preview` with `own`: the player's own
+  skater on FE 62's stage and pose). Camera: `menu_tables` extracts each option's camera / body hash (`camera`,
+  `body`; TU3 = disc), `cas_host::load_cameras` reads the 47 rows from the stock collections (inheritance
+  resolved), the host posts the whole-body target on the top / Merchandise menus and the option's target on A, and
+  the stage camera takes that row (eye, look-at, up, FOV over `MarqueeStage::origin`). Old tables without the
+  targets force a Refresh Game Files (asset check "menu tables lack the Create-a-Skater camera targets").
+  The grid's title is its category's text (CAC_GetTitleText on menu 10 = S+0x1788; the PS3 recording titles the
+  hat grid "Hats"). The logo: the record of class 0x548B58B0C27C9564 named like the brand, its image path field
+  0xFF4850A86FD9E4C9 (`fe\source\images\sponsor_logos\<brand>`; "no_brand" -> the skate logo) [inferred: which of
+  the record's fields 825FFA38 returns]. Left / Right on the grid go to the movie (its cursor) [inferred].
+- **Checked in game** (`career-boot-run.ps1 -From 5` with SKATE_RETAIL_CAS=1, the dev install's saved outfit is
+  female): Merchandise -> Hats lists 128 entries (Remove + 127 female hats); Right then A puts the trucker cap on
+  (the skater rebinds, the cap shows on the set) and opens Wear Styles (the cap has styles); A returns to
+  Merchandise; B, B opens the exit confirmation, Up + A = Yes saves the look ("look saved"), FE 15 closes and the
+  boot flow plays coach_frank_intro (runs cas11..cas15). The skater stands on the concrete-wall set with the
+  board; entering Hats snaps the camera to the head close-up, which matches the PS3 recording's hat framing.
+  The info box shows the part name ("Trademark Mesh").
+- **Seen, open:** the PS3 recording shows the highlighted hat on the skater while the grid is open (a highlight
+  preview; OnMenuHilight -> not ported); the brand logo box stays empty (no `sponsor_logos` images in our menu
+  export: the disc's archives have no entries under that folder, where the images live is open); back on
+  Merchandise after a pick no row is highlighted (seen once, run cas11); on the exit popup an A right away answered
+  No and Up + A answered Yes (which row retail highlights first is not checked). Tests `a_grid_keeps_one_part_per_wear_style_group_and_hides_in_game_materials`,
+  `the_info_panel_names_the_part_its_brand_and_unlock_and_marks_the_worn_one`,
+  `a_pick_wears_the_part_and_remove_clears_the_slot`, `a_part_with_wear_styles_opens_menu_30_and_left_right_cycles_them`.
+- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): the lock check and
+  the purchase popup 0x11E, the pack / DLC helper filters, the rec+0x24 / +0x34 flags that also open menu 30, the
+  board graphic special case, the two "#Bryant" parts, retail's OuterTorso fallback on Remove (825377E0), the logo
+  record walk (the logo name follows the disc's file names), menu 30's color row, the camera targets of the menus
+  other than top / Merchandise / part categories (tables 83044528 / 83044548: head, face, tattoos), the body target
+  (pose) rows, the turntable and the camera row's exposure, the 250 ms close countdown and fade; piercings have no catalog
+  data; X / Y, selectors / stance / colors / morphs on Left / Right, 825FE3C0's other menu and leaf branches, the
+  slider values' profile storage and defaults (0.5 meanwhile), refresh states 52 / 53.
 - **Checked** (`career-boot-run.ps1 -From 5 -Keys "_x150,2,_x90,0"` with SKATE_RETAIL_CAS=1): FE 67 -> name entry
   -> "RETAIL_MENUS open CreateASkater (FE 15)" -> "menu / panel (15, 3)": "Edit Skater" with Body Mods,
   Merchandise, Edit Style, Trucks and Wheels (sliders), "A Select / B Exit", "LT RT Rotate Skater", as in the PS3

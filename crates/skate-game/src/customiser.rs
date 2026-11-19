@@ -63,6 +63,18 @@ impl Customiser {
         self.status.clear();
         self.redraw = true;
     }
+    /// Writes the draft to `settings/character.json` through a temporary file, so a failed write leaves the old one.
+    fn write_draft(&self) -> Result<(), String> {
+        std::fs::create_dir_all(self.settings.parent().unwrap()).map_err(|e| e.to_string())?;
+        let tmp = self.settings.with_extension("pending.json");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&self.draft).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        std::fs::rename(tmp, &self.settings).map_err(|e| e.to_string())
+    }
+    /// Wears the draft and saves it as the outfit (the retail Create-a-Skater's Yes on exit).
+    pub(crate) fn save_look(&mut self) -> Result<(), String> {
+        self.enabled = true;
+        self.write_draft()
+    }
     fn page(&self) -> &Entry {
         let mut page = &self.index;
         for &i in &self.path {
@@ -910,18 +922,7 @@ fn interact(
         if let Some(i) = state.path.pop() {
             state.selected = state.visible().iter().position(|v| *v == i).unwrap_or(0);
         } else {
-            let save = (|| -> Result<(), String> {
-                std::fs::create_dir_all(state.settings.parent().unwrap())
-                    .map_err(|e| e.to_string())?;
-                let tmp = state.settings.with_extension("pending.json");
-                std::fs::write(
-                    &tmp,
-                    serde_json::to_vec_pretty(&state.draft).map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())?;
-                std::fs::rename(tmp, &state.settings).map_err(|e| e.to_string())
-            })();
-            match save {
+            match state.write_draft() {
                 Ok(()) => {
                     state.open = false;
                     pause.open = false;
