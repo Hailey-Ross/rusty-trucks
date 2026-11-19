@@ -315,6 +315,8 @@ pub(crate) struct CasHost {
     pub preview_wait: Option<f32>,
     /// The rest the highlight needs before the preview (retail 500 ms, 825FBAE8; a mod can change it).
     pub preview_delay: f32,
+    /// The career's unlock store (kinds 5 / 6 decide the parts' locks), copied in while the screen is open.
+    pub unlocks: skate_core::career::unlocks::Unlocks,
     /// The character's turntable angle in radians (CAS animation manager +0x64) and its rate per 30 Hz frame at a
     /// full trigger (+0x60; a mod can change it).
     pub turntable: f32,
@@ -512,12 +514,24 @@ impl CasHost {
         self.parts.get(i).is_some_and(|p| self.worn(&p.slot) == Some((p.model_id.as_str(), p.material_id.as_str())))
     }
 
+    /// 825F46C8 (the lock test of 825FD9F0 and 825FF5E8): a part with an Unlock (kind 5) or SponsorUnlock (kind 6)
+    /// name is locked unless one of them is granted; a part with neither is open. With the career's gating off
+    /// (`unlock_all`, the default) nothing is locked.
+    fn locked(&self, i: usize) -> bool {
+        use skate_core::career::unlocks::kind;
+        let Some(p) = self.parts.get(i) else { return false };
+        let names = [(kind::CLOTHING_UNLOCK, &p.unlock), (kind::CLOTHING_SPONSOR, &p.sponsorunlock)];
+        let named: Vec<_> = names.iter().filter(|(_, n)| !n.is_empty()).collect();
+        !named.is_empty() && !named.iter().any(|(k, n)| self.unlocks.is_unlocked(*k, n))
+    }
+
     /// The part's info / option type (825FF5E8): "owned" when it or one of its wear styles is the slot's worn part
-    /// (the check mark), "locked", "dlc", else "none". NOT RETAIL YET: no part is locked (the unlock manager's
-    /// kind 5 / 6 names are not tracked).
+    /// (the check mark), "locked" (825F46C8), "dlc", else "none".
     fn part_type(&self, i: usize) -> &'static str {
         if self.wears(i) || self.variants(i).into_iter().any(|v| self.wears(v)) {
             "owned"
+        } else if self.locked(i) {
+            "locked"
         } else if self.parts.get(i).is_some_and(CasPart::dlc) {
             "dlc"
         } else {
@@ -603,6 +617,12 @@ impl CasHost {
             }
             return;
         };
+        // A locked part stays on the grid, not put on (the highlight preview still shows it: 825FEEA0 has no lock
+        // test). NOT RETAIL YET: the error sound 0x47F720222F2CAED4 and the DLC purchase popup 0x11E.
+        if self.locked(i) {
+            bevy::log::info!("RETAIL_MENUS CreateASkater locked {}", self.parts[i].model);
+            return;
+        }
         let variants = self.variants(i);
         if variants.len() > 1 {
             let worn = variants.iter().any(|&v| self.wears(v));
@@ -1109,6 +1129,26 @@ mod tests {
         h.call(&mut vm, "Game", "CAC_OnThumbnailSelect", &[Value::Number(0.0)]).unwrap();
         assert!(h.look["selections"]["Hat"].is_null());
         assert_eq!(h.menu(), Some(MERCHANDISE));
+    }
+
+    #[test]
+    fn a_part_with_an_ungranted_unlock_is_locked_and_cannot_be_picked() {
+        use skate_core::career::unlocks::kind;
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        open_grid(&mut h, 1);
+        let mut call = |h: &mut CasHost, m: &str, row: f64| h.call(&mut vm, "Game", m, &[Value::Number(row)]).unwrap().unwrap();
+        // Gating off (the default): open.
+        assert_eq!(call(&mut h, "CAC_GetOptionType", 1.0), Value::Text("none".into()));
+        h.unlocks.unlock_all = false;
+        assert_eq!(call(&mut h, "CAC_GetOptionType", 1.0), Value::Text("locked".into()));
+        call(&mut h, "CAC_OnThumbnailSelect", 1.0);
+        assert!(h.look["selections"]["Feet"].is_null(), "not put on");
+        assert_eq!(h.menu(), Some(PART_GRID), "stays on the grid");
+        h.unlocks.grant(kind::CLOTHING_UNLOCK, "cac_unlock_bs_group2");
+        assert_eq!(call(&mut h, "CAC_GetOptionType", 1.0), Value::Text("none".into()));
+        call(&mut h, "CAC_OnThumbnailSelect", 1.0);
+        assert_eq!(h.look["selections"]["Feet"], serde_json::json!({ "asset_id": "shoe#", "material_id": "white#" }));
     }
 
     #[test]

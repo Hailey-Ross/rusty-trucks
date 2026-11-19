@@ -3282,8 +3282,15 @@ fn set_state(stage: &mut Stage, id: i32, state: i32, fe: &mut FrontEnd) -> Resul
 /// Whether the movie made this call this frame (removes it).
 /// FE 15's look on the skater and its save (cas_host::sync_look).
 fn cas_look(stage: Option<ResMut<MenuStage>>, customiser: Option<ResMut<crate::customiser::Customiser>>,
-    parts: Option<Res<crate::customiser_parts::Parts>>, time: Res<Time>, input: Option<Res<crate::input::ControllerInput>>) {
+    parts: Option<Res<crate::customiser_parts::Parts>>, time: Res<Time>, input: Option<Res<crate::input::ControllerInput>>,
+    career: Option<Res<crate::career::CareerState>>) {
     let (Some(mut ms), Some(mut customiser), Some(parts)) = (stage, customiser, parts) else { return };
+    // The parts' locks follow the career's unlocks (825F46C8).
+    if let Some(career) = career {
+        if ms.cas_host.open && ms.cas_host.unlocks != career.career.unlocks {
+            ms.cas_host.unlocks = career.career.unlocks.clone();
+        }
+    }
     // The turntable turns only while FE 15 is the top screen (825FBAE8 returns while a screen is pushed over it).
     if ms.cas_host.open && ms.cas_open && ms.cas_shown && ms.popups.is_empty() {
         let pad = input.map_or([0.0; 2], |i| i.raw_input().triggers);
