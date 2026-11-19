@@ -54,6 +54,17 @@ pub(crate) struct MarqueeView {
     pub camera: Option<crate::cas_host::CasCamera>,
     /// FE 15's turntable angle in radians, added to the character's yaw (8253B618 -> 825325D8).
     pub turntable: f32,
+    /// FE 15's body target row (clip, yaw, place) and the skater's gender (the CAS_Stand bank is per gender).
+    pub body: Option<crate::cas_host::CasBody>,
+    pub male: bool,
+}
+
+/// The bank a body target's clip is in, None = the stage's own clip. CAS_Stand keeps the stage's MARQUEE_STAND: the
+/// PS3 recording (3:00-10:15) shows the skater holding the board on the whole-body rows, and the only clip named
+/// CAS_STAND (cac_viewer_<male|female>.abin) stands without it, so which clip retail's animator plays for CAS_Stand
+/// is open. CAS_SINGLE_POSE_1..8 are only in sk83_marquee_viewer [inferred]; gestures are not exported.
+fn body_bank(clip: &str, _male: bool) -> Option<String> {
+    clip.to_ascii_uppercase().starts_with("CAS_SINGLE_POSE_").then(|| "sk83_marquee_viewer.abin".into())
 }
 
 #[derive(Resource, Default)]
@@ -66,6 +77,8 @@ struct Viewer {
     saved: Option<Option<String>>,
     shown: Option<Skater>,
     clip: Option<Option<Arc<SceneClip>>>,
+    /// The bank and clip `clip` was loaded for (FE 15's body targets change it).
+    clip_key: Option<(String, String)>,
     bindings: Option<AnimationStatus>,
     /// Bound after the swap for `shown` finished, with the skinned mesh count then (outfit parts spawn later).
     bound_for: Option<Skater>,
@@ -97,7 +110,7 @@ fn wanted(mut requests: MessageReader<SpawnSkaterRequest>, mut wanted: ResMut<Wa
 }
 
 fn drive(world: &mut World, mut viewer: Local<Viewer>) {
-    let MarqueeView { open, own, camera, turntable } = world.resource::<MarqueeView>().clone();
+    let MarqueeView { open, own, camera, turntable, body, male } = world.resource::<MarqueeView>().clone();
     let Some(player) = world.query_filtered::<Entity, With<PlayerRoot>>().iter(world).next() else { return };
     // The first highlight is posted in the frame FE 62 opens, before the stage reports it open: keep it.
     if !open {
@@ -142,6 +155,21 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
         stage.fov_degrees = c.fov_degrees;
     }
     stage_camera(world, &mut viewer, &stage);
+    // FE 15's body target: the row's clip, yaw and place (82532800).
+    if let Some(body) = &body {
+        if let Some(bank) = body_bank(&body.clip, male) {
+            stage.bank = bank;
+            stage.clip = body.clip.clone();
+        }
+        stage.heading_degrees = body.yaw_degrees;
+        stage.position = stage.origin + Vec3::from_array(body.position);
+    }
+    if viewer.clip_key.as_ref() != Some(&(stage.bank.clone(), stage.clip.clone())) {
+        viewer.clip_key = Some((stage.bank.clone(), stage.clip.clone()));
+        viewer.clip = None;
+        viewer.bound_for = None;
+        viewer.time = 0.0;
+    }
     if world.resource::<crate::custom_models::CustomModels>().swapping() || viewer.shown.is_none() {
         return;
     }
