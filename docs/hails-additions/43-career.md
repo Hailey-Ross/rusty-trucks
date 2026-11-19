@@ -607,13 +607,32 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   boot flow plays coach_frank_intro (runs cas11..cas15). The skater stands on the concrete-wall set with the
   board; entering Hats snaps the camera to the head close-up, which matches the PS3 recording's hat framing.
   The info box shows the part name ("Trademark Mesh").
-- **Seen, open:** the PS3 recording shows the highlighted hat on the skater while the grid is open (a highlight
-  preview; OnMenuHilight -> not ported); the brand logo box stays empty (no `sponsor_logos` images in our menu
+- **Highlight preview** (2026-11-18; main's own Ghidra reads `.local/research/ghidra/cas-hilight*.txt`, recomp
+  `skate3_recomp.21.cpp` 49120-49160 / 56088-56182 / 60061):
+  - The CAS OnMenuHilight [code, high]: CAS vtable 0x82303940 slot 0x44 (word at 82303984) = 825FEDB8. On menu 10
+    it stores the highlighted grid record (S+0x17A8 = list[row]), calls 82604A78 (formats the thumbnail name; nothing
+    for us) unless it is the Remove entry, sets S+0x1C44 = 0 and S+0x1C40 = 1. Menu 16 has its own branch (not
+    ported).
+  - The tick 825FBAE8 [code, high]: on menu 10 with S+0x1C40 set it adds the frame time to S+0x1C44; past 500 ms
+    the Remove entry calls 82537268 (the skater's pending request back to the committed look), a part 825FEEA0, and
+    the flag clears. 825FEEA0 collects the part's wear styles and checks the slot's worn part: worn already ->
+    82537268, else guess_HudCASEditor_NewAssetRequest(db, record) (the part on the skater as a request, the look record
+    unchanged).
+  - Leaving the grid [code, high]: the menu pop 826008C0 (from Back 825FC768 and OnMenuSelect 825FE3C0) calls
+    82536778 (camera) and 82537268 when the menu it leaves is 10. A pick 825FD9F0 commits (CasCtrl_ApplyAsset).
+  - Change: `cas_host` answers `Game.OnMenuHilight(menu, row, text)` on the grid (`hilight`: row kept, wait
+    restarted), `tick` (from `cas_look`, per frame) puts the look with the highlighted part into `preview` after
+    `preview_delay` (0.5 s, a field a mod can change) or ends the preview for Remove / a worn part, `enter` of any
+    other menu and every committed change (`set_slot`) end it, and `sync_look` resolves `preview` into the draft the
+    skater wears (the committed look again when it ends; a save always writes the committed look). Test
+    `a_rested_highlight_previews_its_part_and_leaving_the_grid_takes_it_off`.
+- **Seen, open:** the brand logo box stays empty (no `sponsor_logos` images in our menu
   export: the disc's archives have no entries under that folder, where the images live is open); back on
   Merchandise after a pick no row is highlighted (seen once, run cas11); on the exit popup an A right away answered
   No and Up + A answered Yes (which row retail highlights first is not checked). Tests `a_grid_keeps_one_part_per_wear_style_group_and_hides_in_game_materials`,
   `the_info_panel_names_the_part_its_brand_and_unlock_and_marks_the_worn_one`,
-  `a_pick_wears_the_part_and_remove_clears_the_slot`, `a_part_with_wear_styles_opens_menu_30_and_left_right_cycles_them`.
+  `a_pick_wears_the_part_and_remove_clears_the_slot`, `a_part_with_wear_styles_opens_menu_30_and_left_right_cycles_them`,
+  `a_rested_highlight_previews_its_part_and_leaving_the_grid_takes_it_off`.
 - **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): the lock check and
   the purchase popup 0x11E, the pack / DLC helper filters, the rec+0x24 / +0x34 flags that also open menu 30, the
   board graphic special case, the two "#Bryant" parts, retail's OuterTorso fallback on Remove (825377E0), the logo
