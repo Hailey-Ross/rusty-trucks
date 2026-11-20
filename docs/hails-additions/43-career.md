@@ -870,7 +870,7 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     `sl` / `sr` (`slxN` / `srxN`) keys. Tests `morph_rows_step_per_frame_clamped_and_the_body_row_splits_fat_and_thin`,
     the vault test (19 morphs, eye width, settings), the menu table data test (option 64 / 78 hashes).
   - A face row edit sets the face preset row to Custom (825FBAE8 after the morph post; the body row does not).
-  - NOT RETAIL YET: the looping move sound (FE sound 0x119E9CE644D5A9E1), the morph Undo rows 96 / 97.
+  - NOT RETAIL YET: the looping move sound (FE sound 0x119E9CE644D5A9E1). Undo: see "Undo Changes" below.
 - **Face presets** (2026-11-19; Ghidra 825FC7E8 option 95, 82604208, 82539048, 825FBAE8; recomp asm of 82538E78's
   callers; the PS3 recording at 3:32 shows "< Custom >" on entering Facial Presets):
   - [data] Class 0x3269B4F0F5E38E09 (b1038): the Custom row (index 0, ID_CAC_PRESET_CUSTOM) and ten rows per gender
@@ -881,15 +881,20 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     +/- 1; below 0 goes to the last, 0 or past the last is Custom. A preset (82604208) posts each morph's value through
     82536B10, which takes the 0..1 value (the morph rows' own edit posts its normalized value the same way), skipping
     fat and thin, then applies its colors in one CAS_ColorPickerApply. Custom restores the look from the copy at
-    +0x5DF0 (82539048: CharacterSlot_Deserialize), which 82538E78 writes when CASScreen_EnterMenu changes the shop
-    mode (entering the screen). The row shows the pick's text field (825FFE08).
-  - Ours: `load_face_presets` (vault), `step_face_preset`, the screen keeps the look it was opened with
-    (`entry_look`); a preset sets `morphs.<target>` and picks its colors like the color rows (skin texture, eye
-    material). Unset reads as Custom [video; the ctor leaves the pick empty]. Test
+    +0x5DF0 (82539048: CharacterSlot_Deserialize). 82538E78 writes that copy in CASScreen_EnterMenu (82600AF8) when
+    the shop mode changes and on every menu entry while the mode is Body Mods (1), so Custom goes back to the look
+    as it was on entering Facial Presets. The row shows the pick's text field (825FFE08).
+  - Ours: `load_face_presets` (vault), `step_face_preset`, `enter` keeps the copy (`look_copy`) by the same rule; a
+    preset sets `morphs.<target>` and picks its colors like the color rows (skin texture, eye material). Unset reads as Custom [video; the ctor leaves the pick empty]. Test
     `the_face_preset_row_steps_the_gender_s_presets_through_custom` and the vault test (21 rows, male last 10, eye /
     skin color keys in their zones, 19 morphs 0..1).
-  - NOT RETAIL YET: the row's own sounds; whether Custom should also undo picks made outside the face menus is
-    retail's behavior as read (the whole look is restored), not seen in a recording.
+  - NOT RETAIL YET: the row's own sounds.
+- **Undo Changes** (2026-11-19; Ghidra 825FE3C0, 82538F60, 82542D38): option 96 (Skin, Hair, Facial Hair, Eyes,
+  Brow, Nose, Jaw, Mouth, Chin) restores the whole look from the copy above (82539048, the skater reloads); option
+  97 (Body Shape only) copies the copy's 19 morph values back into the look, posts each (82538F60 / 82542D38) and
+  re-enters the menu, which takes a new copy [code]. Ours: `cas_host` `undo` from A on the row. Test
+  `undo_rows_put_back_the_look_from_entering_the_menu`. NOT RETAIL YET: the menu's other rows show the restored
+  values when highlighted (retail's redraw after the reload is not read).
 - **Hair style selector** (2026-11-19; research b1039 from the recomp, main verified the filter's setter (vtable
   82304518 +0x10 = 825F3C70) and its string 8230224C = "full", and the enter remap's 82202A78 = "full"):
   - [code] The "Hair Style Filter" (S+0xC7C) keeps the parts whose kind-2 index (82DDC998: the HairModelType at record

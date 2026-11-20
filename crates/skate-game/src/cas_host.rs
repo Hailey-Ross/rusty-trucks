@@ -618,7 +618,7 @@ pub(crate) fn sync_look(host: &mut CasHost, customiser: &mut crate::customiser::
     }
     if host.open && host.look.is_null() {
         host.look = customiser.draft.clone();
-        host.entry_look = host.look.clone();
+        host.look_copy = host.look.clone();
         host.face_preset = None;
         host.male = host.look["gender"].as_str() != Some("female");
         // The sliders start from the profile (customiser::apply's defaults when unset).
@@ -733,8 +733,11 @@ const HAIR_FULL: &str = "full";
 const COLOUR_ROWS: [(i32, u32); 4] = [(62, 2), (66, 1), (68, 8), (76, 6)];
 const EYE_ZONE: u32 = 6;
 const SKIN_ZONE: u32 = 2;
-/// The Facial Presets row (menu table option 95).
+/// The Facial Presets row (menu table option 95) and the Undo Changes rows: 96 on the face, hair and skin menus,
+/// 97 on Body Shape.
 const FACE_PRESET: i32 = 95;
+const UNDO_LOOK: i32 = 96;
+const UNDO_MORPHS: i32 = 97;
 const EYE_SLOT: &str = "Organ";
 
 #[derive(Clone, Debug, Default)]
@@ -834,11 +837,11 @@ pub(crate) struct CasHost {
     /// The morph rows by vault key hash and the row settings (vault); without settings the morph rows do not move.
     pub morphs: std::collections::HashMap<String, CasMorph>,
     pub morph_settings: Option<MorphSettings>,
-    /// The face presets (vault), the face preset row's pick (S+0x1C20; None until set) and the look the screen was
-    /// entered with (82538E78's copy), which Custom puts back.
+    /// The face presets (vault), the face preset row's pick (S+0x1C20; None until set) and the look copy (+0x5DF0,
+    /// 82538E78: on opening, a shop mode change and every Body Mods menu entry) that Custom and Undo put back.
     pub face_presets: Vec<CasFacePreset>,
     pub face_preset: Option<usize>,
-    pub entry_look: serde_json::Value,
+    pub look_copy: serde_json::Value,
     /// A held morph step changed the highlighted row: the stage refreshes it (SetState 50).
     pub value_refresh: bool,
     /// The tattoo categories (vault order) and the designs (library id, category), id order.
@@ -1229,8 +1232,8 @@ impl CasHost {
 
     /// Left / Right on the face preset row (825FC7E8 option 95): the next index among the skater's gender's presets;
     /// Left from Custom goes to the last, past the last or onto index 0 is Custom. A preset sets its morphs and colors
-    /// (82604208); Custom puts back the look the screen was entered with (82539048 restores the copy 82538E78 wrote on
-    /// entry). NOT RETAIL YET: the sounds.
+    /// (82604208); Custom puts back the look as it was on entering the menu (82539048, the copy `enter` keeps).
+    /// NOT RETAIL YET: the sounds.
     fn step_face_preset(&mut self, right: bool) -> bool {
         let male = self.male;
         let last = self.face_presets.iter().filter(|p| p.male == male).map(|p| p.index).max().unwrap_or(0);
@@ -1259,16 +1262,50 @@ impl CasHost {
             }
             None => {
                 self.face_preset = self.custom_preset();
-                if !self.entry_look.is_null() {
-                    self.look = self.entry_look.clone();
-                    self.male = self.look["gender"].as_str() != Some("female");
-                    self.trucks = self.look["truck"].as_f64().unwrap_or(PROFILE_TRUCK_DEFAULT) as f32;
-                    self.wheels = self.look["wheel"].as_f64().unwrap_or(PROFILE_TRUCK_DEFAULT) as f32;
-                }
+                self.restore_look_copy();
             }
         }
         bevy::log::info!("RETAIL_MENUS CreateASkater face preset {}", self.face_preset_text());
         self.look_changed = true;
+        true
+    }
+
+    /// 82539048: the whole look back from the copy (CharacterSlot_Deserialize), the skater reloaded.
+    fn restore_look_copy(&mut self) {
+        if self.look_copy.is_null() {
+            return;
+        }
+        self.look = self.look_copy.clone();
+        self.male = self.look["gender"].as_str() != Some("female");
+        self.trucks = self.look["truck"].as_f64().unwrap_or(PROFILE_TRUCK_DEFAULT) as f32;
+        self.wheels = self.look["wheel"].as_f64().unwrap_or(PROFILE_TRUCK_DEFAULT) as f32;
+        self.look_changed = true;
+    }
+
+    /// A on Undo Changes (825FE3C0): row 96 restores the whole look from the copy; row 97 (Body Shape) copies the
+    /// copy's 19 morph values back (82538F60 / 82542D38) and re-enters the menu, which copies the look again. NOT
+    /// RETAIL YET: the menu's other rows show the restored values when highlighted (retail's redraw after the reload,
+    /// state 5, is not read).
+    fn undo(&mut self, id: i32) -> bool {
+        match id {
+            UNDO_LOOK => {
+                self.restore_look_copy();
+                self.value_refresh = true;
+            }
+            UNDO_MORPHS => {
+                if self.look_copy.is_null() {
+                    return false;
+                }
+                self.look["morphs"] = self.look_copy["morphs"].clone();
+                self.look_changed = true;
+                self.value_refresh = true;
+                if let Some(m) = self.current() {
+                    self.enter(m);
+                }
+            }
+            _ => return false,
+        }
+        bevy::log::info!("RETAIL_MENUS CreateASkater undo {id}");
         true
     }
 
@@ -1691,12 +1728,17 @@ impl CasHost {
             self.post_camera(WHOLE_BODY.into());
             self.body = WHOLE_BODY.into();
         }
-        self.shop = match menu {
+        let shop = match menu {
             TOP_MENU => 2,
             17 => 1,
             1 => 0,
             _ => self.shop,
         };
+        // 82538E78 copies the look when the shop mode changes and on every menu entry in Body Mods (mode 1).
+        if (shop != self.shop || shop == 1) && !self.look.is_null() {
+            self.look_copy = self.look.clone();
+        }
+        self.shop = shop;
     }
 
     /// The highlighted row's option id.
@@ -1759,7 +1801,7 @@ impl CasHost {
 
     /// The movie's A (Game.OnMenuSelect -> 825FE3C0): a row with a target menu pushes it (82600780: its highlight and
     /// window start at 0); a leaf (target -1: sliders, selectors, colors, morphs) does nothing. Returns the pushed
-    /// menu. NOT RETAIL YET: the menu / leaf branches of 825FE3C0 (menus 4, 5, 6, 31..33, options 56, 96..114) and
+    /// menu. NOT RETAIL YET: the menu / leaf branches of 825FE3C0 (menus 4, 5, 6, 31..33, options 56, 98..114) and
     /// the part list setup before menu 10.
     pub(crate) fn select(&mut self, row: usize) -> Option<usize> {
         // Menu 30's A is "Accept" (help kind 2): back to Merchandise with the worn style [inferred: the menu 30 branch
@@ -1772,6 +1814,9 @@ impl CasHost {
         let id = self.option(row)?.0;
         if let Some(menu) = self.tattoo_select(id) {
             return Some(menu);
+        }
+        if self.undo(id) {
+            return None;
         }
         let option = self.option(row)?.1?;
         let target = option.target.filter(|t| *t < self.menus.len())?;
@@ -2634,7 +2679,7 @@ mod tests {
             preset(1, false, "ID_CAC_PRESET_01F", "B"), preset(2, true, "ID_CAC_PRESET_02", "A"), preset(3, false, "ID_CAC_PRESET_03F", "A")];
         h.begin();
         h.look = serde_json::json!({ "gender": "male", "selections": {}, "morphs": { "local_eye_width": 0.1 } });
-        h.entry_look = h.look.clone();
+        h.look_copy = h.look.clone();
         h.select(0);
         let mut vm = Vm::new();
         let text = |h: &mut CasHost, vm: &mut Vm| h.call(vm, "Game", "CAC_GetStringValue", &[Value::Number(0.0)]).unwrap().unwrap();
@@ -2649,13 +2694,46 @@ mod tests {
         assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_PRESET_02".into()), "the female preset 3 is not counted");
         assert!(h.left_right(true));
         assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_PRESET_CUSTOM".into()), "past the last");
-        assert_eq!(h.look, h.entry_look, "Custom puts back the entry look");
+        assert_eq!(h.look, h.look_copy, "Custom puts back the entry look");
         assert!(h.left_right(false));
         assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_PRESET_02".into()), "Left from Custom: the last");
         h.indices[HAIR_MENU].0 = 1;
         assert!(h.left_right(true));
         h.indices[HAIR_MENU].0 = 0;
         assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_PRESET_CUSTOM".into()), "a skin pick drops to Custom");
+    }
+
+    #[test]
+    fn undo_rows_put_back_the_look_from_entering_the_menu() {
+        let mut h = grid_host();
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        h.menus[BODY_MODS] = menu("BodyMods", "", (0, 0), &[3, 4]);
+        h.menus[HAIR_MENU] = menu("Eyes", "", (0, 0), &[76, 96]);
+        h.menus[19] = menu("BodyShape", "", (0, 0), &[97]);
+        h.options[0].target = Some(BODY_MODS);
+        h.options[3].target = Some(HAIR_MENU);
+        h.options[4].target = Some(19);
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": {}, "morphs": { "a": 0.1 } });
+        h.select(0);
+        h.look["morphs"]["a"] = serde_json::json!(0.2);
+        h.select(0);
+        assert_eq!(h.look_copy["morphs"]["a"], 0.2, "every Body Mods menu entry copies the look");
+        h.look["skin"] = serde_json::json!("dark");
+        h.look["morphs"]["a"] = serde_json::json!(0.4);
+        h.indices[HAIR_MENU].0 = 1;
+        assert_eq!(h.select(1), None);
+        assert_eq!(h.look, h.look_copy, "96 puts back the whole look");
+        assert!(h.look["skin"].is_null());
+        assert!(h.back());
+        h.look["skin"] = serde_json::json!("dark");
+        h.look["morphs"]["a"] = serde_json::json!(0.3);
+        h.indices[BODY_MODS].0 = 1;
+        h.select(1);
+        h.look["morphs"]["a"] = serde_json::json!(0.5);
+        h.select(0);
+        assert_eq!(h.look["morphs"]["a"], 0.3, "97 puts back the morphs");
+        assert_eq!(h.look["skin"], "dark", "97 leaves the rest");
     }
 
     #[test]
