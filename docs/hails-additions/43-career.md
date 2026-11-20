@@ -772,7 +772,7 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     part's material with that `EyeColour` flag (our data: slot `Organ`, one eye model per gender with five
     materials). Ours: `cas_host` keeps the eye models (`eye_models`) and wears the worn (else the gender's) eye
     model with the matching material. Test `an_eye_color_pick_wears_the_eye_material_with_that_color_and_no_tint`.
-    The face preset row switching to Custom on an eye / skin pick waits for the presets port.
+    An eye or skin pick sets the face preset row to Custom (see "Face presets" below).
   - Hairline, stubble and brows follow the hair color (2026-11-19): every hair color's match text is one of the
     three `HairlineShadowColour` values the male head materials come in (blonde; black for black, gray and medium
     brown; medium brown for light brown, red and the dye colors) [data, vault + library]. A hair pick sets the look's
@@ -869,8 +869,27 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     [inferred]), and the look's `morphs.<target>` drive the existing morph apply. Scripted runs hold the stick with
     `sl` / `sr` (`slxN` / `srxN`) keys. Tests `morph_rows_step_per_frame_clamped_and_the_body_row_splits_fat_and_thin`,
     the vault test (19 morphs, eye width, settings), the menu table data test (option 64 / 78 hashes).
-  - NOT RETAIL YET: the looping move sound (FE sound 0x119E9CE644D5A9E1), the face preset row switching to Custom
-    on a face row edit, the morph Undo rows 96 / 97.
+  - A face row edit sets the face preset row to Custom (825FBAE8 after the morph post; the body row does not).
+  - NOT RETAIL YET: the looping move sound (FE sound 0x119E9CE644D5A9E1), the morph Undo rows 96 / 97.
+- **Face presets** (2026-11-19; Ghidra 825FC7E8 option 95, 82604208, 82539048, 825FBAE8; recomp asm of 82538E78's
+  callers; the PS3 recording at 3:32 shows "< Custom >" on entering Facial Presets):
+  - [data] Class 0x3269B4F0F5E38E09 (b1038): the Custom row (index 0, ID_CAC_PRESET_CUSTOM) and ten rows per gender
+    under `male` / `female` (bool field `male`), each with a text id (ID_CAC_PRESET_01..10), an index 1..10, a color
+    list of two (eye zone 0x1A5E3EA9A0A82591 = slot 6, skin zone 0x3AA5050BEDEFDDFA = slot 2, each with a
+    `cac_colour` key) and a morph list of all 19 morph rows with a value 0..1.
+  - [code] Left / Right (825FC7E8): the largest index among the skater's gender's rows is the last; the pick's index
+    +/- 1; below 0 goes to the last, 0 or past the last is Custom. A preset (82604208) posts each morph's value through
+    82536B10, which takes the 0..1 value (the morph rows' own edit posts its normalized value the same way), skipping
+    fat and thin, then applies its colors in one CAS_ColorPickerApply. Custom restores the look from the copy at
+    +0x5DF0 (82539048: CharacterSlot_Deserialize), which 82538E78 writes when CASScreen_EnterMenu changes the shop
+    mode (entering the screen). The row shows the pick's text field (825FFE08).
+  - Ours: `load_face_presets` (vault), `step_face_preset`, the screen keeps the look it was opened with
+    (`entry_look`); a preset sets `morphs.<target>` and picks its colors like the color rows (skin texture, eye
+    material). Unset reads as Custom [video; the ctor leaves the pick empty]. Test
+    `the_face_preset_row_steps_the_gender_s_presets_through_custom` and the vault test (21 rows, male last 10, eye /
+    skin color keys in their zones, 19 morphs 0..1).
+  - NOT RETAIL YET: the row's own sounds; whether Custom should also undo picks made outside the face menus is
+    retail's behavior as read (the whole look is restored), not seen in a recording.
 - **Hair style selector** (2026-11-19; research b1039 from the recomp, main verified the filter's setter (vtable
   82304518 +0x10 = 825F3C70) and its string 8230224C = "full", and the enter remap's 82202A78 = "full"):
   - [code] The "Hair Style Filter" (S+0xC7C) keeps the parts whose kind-2 index (82DDC998: the HairModelType at record
