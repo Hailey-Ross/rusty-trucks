@@ -879,6 +879,7 @@ fn setup(
                     morphs: cas_vault.4.0,
                     morph_settings: cas_vault.4.1,
                     tattoo_categories: cas_vault.5,
+                    face_presets: cas_vault.6,
                     ..crate::cas_host::CasHost::new(tables.as_ref().map(|t| t.cas_menus.clone()).unwrap_or_default(),
                         tables.as_ref().map(|t| t.cas_options.clone()).unwrap_or_default())
                 },

@@ -5929,7 +5929,7 @@
 82538D38	guess_CAC_CollectPartsForSlot	guess: builds a filter object (vtable 822FE954) from the slot record and runs guess_CasAssetDb_CollectFiltered into the output list.
 82538E78	guess_CasMgr_WriteLookCopy	Guess: Deep copy write of the look (part pairs, slots, saveable) into a pool block (b983).
 82538F60	guess_CAS_UpdateBlendWeights	Guess: runs the CAS math body then updates 19 blend weights from the skeleton table +0x5CE4
-82539048	guess_FE_TeammateCas_StepPartB	Guess: CAS step by the record +0x5DF0.
+82539048	guess_CAS_RestoreEntryLook	Guess: CharacterSlot_Deserialize of the look copy at +0x5DF0 (written by 82538E78 on screen entry) back into the look, then reloads the skater; the face preset row's Custom.
 82539188	guess_CasAssetDb_FilterList	Guess: appends and erases entries while filtering.
 82539510	guess_FE_TeammateCas_ApplyPartB	Guess: Second CAS part apply when +0x5DD8 is set.
 82539688	PostMsg_PresCASBodyTarget	Small function (264 bytes) that builds and posts cMsgPresCASBodyTarget (0x3AEBDAE5) through MsgBus_Post.
@@ -8510,8 +8510,8 @@
 825E7AD0	guess_FE_MusicPlayerScreen_DeletingDtor	Guess: research/fe-id-templates.md:50 (FE 26, template MusicPlayer, high); class tag fixed from the placeholder vtable 82303418, slot meaning kept
 825E7B40	AttribRef_GetField03ACC9F200807B87	Structural: returns Attrib_GetField(ref, 0x03ACC9F200807B87, index) or the shared default 830D0850; field name unknown.
 825E7B98	AttribRef_GetField3B71EA27	Returns the Attrib field 0x3B71EA27D53D7C4F of the record, or the empty record 830D0850 when absent.
-825E7BF0	guess_FE_TeammateCas_GetField9CCD	Guess: Returns the Attrib field 0x9CCD17F0DC1001FC or the empty default.
-825E7C48	guess_FE_TeammateCas_GetField0DF6	Guess: Returns the Attrib field 0x0DF636FBCE4D41B0 or the empty default.
+825E7BF0	guess_FacePreset_GetMale	Guess: the face preset's bool field male (0x9CCD17F0DC1001FC) or the empty default.
+825E7C48	guess_FacePreset_GetIndex	Guess: the face preset's Int32 index field (0x0DF636FBCE4D41B0) or the empty default.
 825E7CA0	guess_String_LessThan	Guess: compares two strings and returns true when the first is smaller.
 825E7CD0	guess_FE_CasPartList_Dtor	Guess: class tag: RebuildList 82605368 collects CAC parts for a slot (guess_CAC_CollectPartsForSlot) and formats them with guess_FE_TeammateCas_FormatPartName (b10)
 825E7DA0	guess_FE_CasPartList_SetC0	Guess: class tag: RebuildList 82605368 collects CAC parts for a slot (guess_CAC_CollectPartsForSlot) and formats them with guess_FE_TeammateCas_FormatPartName (b10)
@@ -8749,7 +8749,7 @@
 82603F38	guess_CAC_CountColourEntries	Guess: picks the colour channel from a char and counts its entries.
 82604070	guess_CAC_FindSponsorLogo	Walks the logo keys +0x17F0 and finds the collection of class 0x548B58B0C27C9564 matching a name
 82604188	guess_CasPartList_FindByKeyPair	Guess: Index of the entry whose two 64 bit keys match
-82604208	guess_FE_TeammateCas_BuildPartList	Guess: Builds the part list +0x1C20 when empty.
+82604208	guess_CAS_ApplyFacePreset	Guess: applies the face preset at S+0x1C20: posts each MorphPreset value (0..1, skipping fat and thin) through 82536B10, then its ColourPreset zones / colors in one CAS_ColorPickerApply; index 0 uses the morph defaults and zone defaults.
 82604550	guess_FE_StoreFirstEntryAndPush0E	Guess: Reads a list into a temp vector, stores its first 8 bytes at +0x17D8 and pushes command 0xE.
 82604618	guess_CASScreen_UpperTattooReplaceCallback	Guess: the replace popup callback of an occupied upper tattoo location (button 0 continues the region pick)
 82604658	guess_CASScreen_LowerTattooReplaceCallback	Guess: the replace popup callback of an occupied lower tattoo location (button 0 continues the region pick)

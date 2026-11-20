@@ -5928,7 +5928,7 @@ guess_CAC_QueueThumbnailRequest 0x82538C00 f
 guess_CAC_CollectPartsForSlot 0x82538D38 f
 guess_CasMgr_WriteLookCopy 0x82538E78 f
 guess_CAS_UpdateBlendWeights 0x82538F60 f
-guess_FE_TeammateCas_StepPartB 0x82539048 f
+guess_CAS_RestoreEntryLook 0x82539048 f
 guess_CasAssetDb_FilterList 0x82539188 f
 guess_FE_TeammateCas_ApplyPartB 0x82539510 f
 PostMsg_PresCASBodyTarget 0x82539688 f
@@ -8509,8 +8509,8 @@ TipsRng_DeletingDtor 0x825E7A70 f
 guess_FE_MusicPlayerScreen_DeletingDtor 0x825E7AD0 f
 AttribRef_GetField03ACC9F200807B87 0x825E7B40 f
 AttribRef_GetField3B71EA27 0x825E7B98 f
-guess_FE_TeammateCas_GetField9CCD 0x825E7BF0 f
-guess_FE_TeammateCas_GetField0DF6 0x825E7C48 f
+guess_FacePreset_GetMale 0x825E7BF0 f
+guess_FacePreset_GetIndex 0x825E7C48 f
 guess_String_LessThan 0x825E7CA0 f
 guess_FE_CasPartList_Dtor 0x825E7CD0 f
 guess_FE_CasPartList_SetC0 0x825E7DA0 f
@@ -8748,7 +8748,7 @@ guess_CAC_ColourChannelFromChar 0x82603E98 f
 guess_CAC_CountColourEntries 0x82603F38 f
 guess_CAC_FindSponsorLogo 0x82604070 f
 guess_CasPartList_FindByKeyPair 0x82604188 f
-guess_FE_TeammateCas_BuildPartList 0x82604208 f
+guess_CAS_ApplyFacePreset 0x82604208 f
 guess_FE_StoreFirstEntryAndPush0E 0x82604550 f
 guess_CASScreen_UpperTattooReplaceCallback 0x82604618 f
 guess_CASScreen_LowerTattooReplaceCallback 0x82604658 f

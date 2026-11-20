@@ -400,6 +400,59 @@ fn load_tattoo_categories(data: &skate_data::collections::Collections) -> Vec<St
     }).collect()
 }
 
+/// One face preset row (class 0x3269B4F0F5E38E09, research b1038; 825FC7E8 option 95, 82604208): its index (0 =
+/// Custom), gender, text id, the colors it picks (zone slot, color key) and the morphs it sets (morph key, 0..1).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CasFacePreset {
+    pub index: i32,
+    pub male: bool,
+    pub text: String,
+    pub colours: Vec<(u32, String)>,
+    pub morphs: Vec<(String, f32)>,
+}
+
+const PRESET_CLASS: &str = "Hash_3269B4F0F5E38E09";
+const PRESET_TEXT: &str = "Hash_D0D7CE67D4A27FD6";
+const PRESET_INDEX: &str = "Hash_0DF636FBCE4D41B0";
+const PRESET_COLOURS: &str = "Hash_08C2C7A755AF4140";
+const PRESET_MORPHS: &str = "Hash_9FC1E6E6BACC7ECB";
+
+/// The face preset rows with a text (the `default` / `male` / `female` parents have none). Colour entries are 48
+/// bytes (zone ref at +8, color ref at +32), morph entries 32 (morph ref at +8, value at +24).
+fn load_face_presets(data: &skate_data::collections::Collections) -> Vec<CasFacePreset> {
+    let zone_slots: std::collections::HashMap<String, u32> = data.entries().iter()
+        .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == ZONE_CLASS)
+        .filter_map(|c| {
+            let slot = data.field(ZONE_CLASS, &c.key, ZONE_SLOT).ok().and_then(|f| u32::from_str_radix(f.data.get(..8)?, 16).ok())?;
+            Some((skate_data::attrib_hash::numeric_name(&c.key).trim_start_matches("Hash_").to_owned(), slot))
+        })
+        .collect();
+    let items = |key: &str, field: &str| data.field(PRESET_CLASS, key, field).ok().and_then(|f| f.array.clone()).map(|a| a.items).unwrap_or_default();
+    let mut presets: Vec<CasFacePreset> = data.entries().iter()
+        .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == PRESET_CLASS)
+        .filter_map(|c| {
+            let text = data.field(PRESET_CLASS, &c.key, PRESET_TEXT).ok()?.data.clone();
+            if text.is_empty() {
+                return None;
+            }
+            Some(CasFacePreset {
+                index: data.integer(PRESET_CLASS, &c.key, PRESET_INDEX).ok()? as i32,
+                male: data.field(PRESET_CLASS, &c.key, "male").is_ok_and(|f| f.data.starts_with("01")),
+                text,
+                colours: items(&c.key, PRESET_COLOURS).iter().filter_map(|i| {
+                    let zone = zone_slots.get(&i.get(16..32)?.to_ascii_uppercase())?;
+                    Some((*zone, i.get(64..80)?.to_ascii_uppercase()))
+                }).collect(),
+                morphs: items(&c.key, PRESET_MORPHS).iter().filter_map(|i| {
+                    Some((i.get(16..32)?.to_ascii_uppercase(), f32::from_bits(u32::from_str_radix(i.get(48..56)?, 16).ok()?)))
+                }).collect(),
+            })
+        })
+        .collect();
+    presets.sort_by_key(|p| (p.index, !p.male));
+    presets
+}
+
 const MORPH_CLASS: &str = "Hash_7F47CA62F4100F41";
 const MORPH_TARGET: &str = "Hash_AAC0F30B119BD14F";
 const MORPH_ORDER: &str = "Hash_0D381DFA82C751E1";
@@ -452,7 +505,7 @@ const BODY_ONCE: &str = "Hash_9C04CB22EB98D1CC";
 pub(crate) fn load_vault(asset_root: &std::path::Path) -> (std::collections::HashMap<String, CasCamera>,
     std::collections::HashMap<String, String>, std::collections::HashMap<String, CasBody>,
     std::collections::HashMap<u32, CasColourZone>, (std::collections::HashMap<String, CasMorph>, Option<MorphSettings>),
-    Vec<String>) {
+    Vec<String>, Vec<CasFacePreset>) {
     let Ok(data) = skate_data::collections::Collections::load(asset_root) else { return Default::default() };
     let bodies = data.entries().iter()
         .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == BODY_CLASS)
@@ -477,7 +530,8 @@ pub(crate) fn load_vault(asset_root: &std::path::Path) -> (std::collections::Has
     for (name, image) in logos {
         by_brand.entry(name).or_insert(image);
     }
-    (load_cameras(&data), by_brand, bodies, load_colour_zones(&data), load_morphs(&data), load_tattoo_categories(&data))
+    (load_cameras(&data), by_brand, bodies, load_colour_zones(&data), load_morphs(&data), load_tattoo_categories(&data),
+        load_face_presets(&data))
 }
 
 fn load_cameras(data: &skate_data::collections::Collections) -> std::collections::HashMap<String, CasCamera> {
@@ -564,6 +618,8 @@ pub(crate) fn sync_look(host: &mut CasHost, customiser: &mut crate::customiser::
     }
     if host.open && host.look.is_null() {
         host.look = customiser.draft.clone();
+        host.entry_look = host.look.clone();
+        host.face_preset = None;
         host.male = host.look["gender"].as_str() != Some("female");
         // The sliders start from the profile (customiser::apply's defaults when unset).
         host.trucks = host.look["truck"].as_f64().unwrap_or(PROFILE_TRUCK_DEFAULT) as f32;
@@ -677,6 +733,8 @@ const HAIR_FULL: &str = "full";
 const COLOUR_ROWS: [(i32, u32); 4] = [(62, 2), (66, 1), (68, 8), (76, 6)];
 const EYE_ZONE: u32 = 6;
 const SKIN_ZONE: u32 = 2;
+/// The Facial Presets row (menu table option 95).
+const FACE_PRESET: i32 = 95;
 const EYE_SLOT: &str = "Organ";
 
 #[derive(Clone, Debug, Default)]
@@ -776,6 +834,11 @@ pub(crate) struct CasHost {
     /// The morph rows by vault key hash and the row settings (vault); without settings the morph rows do not move.
     pub morphs: std::collections::HashMap<String, CasMorph>,
     pub morph_settings: Option<MorphSettings>,
+    /// The face presets (vault), the face preset row's pick (S+0x1C20; None until set) and the look the screen was
+    /// entered with (82538E78's copy), which Custom puts back.
+    pub face_presets: Vec<CasFacePreset>,
+    pub face_preset: Option<usize>,
+    pub entry_look: serde_json::Value,
     /// A held morph step changed the highlighted row: the stage refreshes it (SetState 50).
     pub value_refresh: bool,
     /// The tattoo categories (vault order) and the designs (library id, category), id order.
@@ -910,8 +973,8 @@ impl CasHost {
 
     /// The morph rows' Left / Right (825FBAE8, research b1041): every FE frame the stick is past the threshold the
     /// shown value moves one step, clamped 0..1, no repeat delay; written back raw over the morph's range (82536B10),
-    /// the body row as fat above the middle, thin below (825FB5B8). `seconds` of frames at the FE cadence. NOT RETAIL
-    /// YET: the looping move sound, the face preset row switching to Custom on a face row edit.
+    /// the body row as fat above the middle, thin below (825FB5B8); a face row edit sets the face preset row to Custom.
+    /// `seconds` of frames at the FE cadence. NOT RETAIL YET: the looping move sound.
     pub(crate) fn tick_morph(&mut self, x: f32, seconds: f32) -> bool {
         let row = self.current().map(|m| self.indices[m].0 as usize);
         let (Some(settings), Some((morph, n))) = (self.morph_settings, row.and_then(|r| self.morph_row(r))) else { return false };
@@ -926,7 +989,10 @@ impl CasHost {
                 self.set_morph_n(&morph, fat);
                 self.set_morph_n(&thin, thin_n);
             }
-            _ => self.set_morph_n(&morph, next),
+            _ => {
+                self.set_morph_n(&morph, next);
+                self.face_preset = self.custom_preset();
+            }
         }
         self.look_changed = true;
         self.value_refresh = true;
@@ -1067,6 +1133,16 @@ impl CasHost {
         if next == at && self.look["colour_keys"][zone.to_string()].is_string() {
             return false;
         }
+        // A skin or eye pick drops the face preset row to Custom (825FC7E8: zones 0x3AA5050BEDEFDDFA / 0x1A5E3EA9A0A82591).
+        if matches!(zone, SKIN_ZONE | EYE_ZONE) {
+            self.face_preset = self.custom_preset();
+        }
+        self.pick_colour(zone, next);
+        true
+    }
+
+    /// CAS_ColorPickerApply for one zone: the color's key, tint and the part or texture swaps its match text makes.
+    fn pick_colour(&mut self, zone: u32, next: usize) {
         let key = self.colour_zones[&zone].colours[next].key.clone();
         if !self.look["colour_keys"].is_object() {
             self.look["colour_keys"] = serde_json::json!({});
@@ -1133,6 +1209,65 @@ impl CasHost {
             }
             self.look["colour_highlights"][zone.to_string()] = serde_json::json!(self.colour_zones[&zone].colours[next].b);
         }
+        self.look_changed = true;
+    }
+
+    fn custom_preset(&self) -> Option<usize> {
+        self.face_presets.iter().position(|p| p.index == 0)
+    }
+
+    fn face_preset_index(&self) -> i32 {
+        self.face_preset.and_then(|i| self.face_presets.get(i)).map_or(0, |p| p.index)
+    }
+
+    /// CAC_GetStringValue on the face preset row (825FFE08: the row's text field). Unset reads as Custom, as the
+    /// retail recording shows on entering Facial Presets.
+    fn face_preset_text(&self) -> String {
+        self.face_preset.or_else(|| self.custom_preset()).and_then(|i| self.face_presets.get(i))
+            .map_or_else(|| "ID_CAC_PRESET_CUSTOM".to_owned(), |p| p.text.clone())
+    }
+
+    /// Left / Right on the face preset row (825FC7E8 option 95): the next index among the skater's gender's presets;
+    /// Left from Custom goes to the last, past the last or onto index 0 is Custom. A preset sets its morphs and colors
+    /// (82604208); Custom puts back the look the screen was entered with (82539048 restores the copy 82538E78 wrote on
+    /// entry). NOT RETAIL YET: the sounds.
+    fn step_face_preset(&mut self, right: bool) -> bool {
+        let male = self.male;
+        let last = self.face_presets.iter().filter(|p| p.male == male).map(|p| p.index).max().unwrap_or(0);
+        let next = self.face_preset_index() + if right { 1 } else { -1 };
+        let next = if next < 0 { last } else { next };
+        let pick = if next != 0 && next <= last {
+            self.face_presets.iter().position(|p| (p.male == male || p.index == 0) && p.index == next)
+        } else {
+            None
+        };
+        match pick {
+            Some(i) => {
+                self.face_preset = Some(i);
+                let preset = self.face_presets[i].clone();
+                for (key, n) in &preset.morphs {
+                    // 82604208 skips the body rows (fat, thin).
+                    if let Some(m) = self.morphs.get(key).filter(|m| m.target != "fat" && m.target != "thin").cloned() {
+                        self.set_morph_n(&m, *n);
+                    }
+                }
+                for (zone, colour) in &preset.colours {
+                    if let Some(at) = self.colour_zones.get(zone).and_then(|z| z.colours.iter().position(|c| c.key.eq_ignore_ascii_case(colour))) {
+                        self.pick_colour(*zone, at);
+                    }
+                }
+            }
+            None => {
+                self.face_preset = self.custom_preset();
+                if !self.entry_look.is_null() {
+                    self.look = self.entry_look.clone();
+                    self.male = self.look["gender"].as_str() != Some("female");
+                    self.trucks = self.look["truck"].as_f64().unwrap_or(PROFILE_TRUCK_DEFAULT) as f32;
+                    self.wheels = self.look["wheel"].as_f64().unwrap_or(PROFILE_TRUCK_DEFAULT) as f32;
+                }
+            }
+        }
+        bevy::log::info!("RETAIL_MENUS CreateASkater face preset {}", self.face_preset_text());
         self.look_changed = true;
         true
     }
@@ -1587,6 +1722,9 @@ impl CasHost {
         if let Some(zone) = self.highlighted().and_then(|id| self.colour_zone_of(id)) {
             return self.step_colour(zone, right);
         }
+        if self.highlighted() == Some(FACE_PRESET) {
+            return self.step_face_preset(right);
+        }
         if let Some(id) = self.highlighted().filter(|id| matches!(*id, POSTURE | SKATE_STYLE | STANCE)) {
             return self.step_edit_style(id, right);
         }
@@ -2011,6 +2149,7 @@ impl CasHost {
                 Value::Object(vm.array(swatches)?)
             }
             "CAC_GetStringValue" if self.option(row).is_some_and(|(id, _)| id == HAIR_STYLE) => Value::Text(self.hair_text()),
+            "CAC_GetStringValue" if self.option(row).is_some_and(|(id, _)| id == FACE_PRESET) => Value::Text(self.face_preset_text()),
             "CAC_GetStringValue" if self.option(row).and_then(|(id, _)| self.edit_style_text(id)).is_some() => {
                 Value::Text(self.option(row).and_then(|(id, _)| self.edit_style_text(id)).unwrap_or("#").into())
             }
@@ -2480,6 +2619,46 @@ mod tests {
     }
 
     #[test]
+    fn the_face_preset_row_steps_the_gender_s_presets_through_custom() {
+        let mut h = grid_host();
+        h.menus[HAIR_MENU] = menu("Facial Presets", "", (0, 0), &[95, 62]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        h.options[0].target = Some(HAIR_MENU);
+        let colour = |key: &str, text: &str| CasColour { key: key.into(), swatch: [0.0; 3], a: [0.5; 3], b: [0.0; 3], text: text.into() };
+        h.colour_zones = [(SKIN_ZONE, CasColourZone { default: "A".into(), colours: vec![colour("A", "light"), colour("B", "dark")] })].into();
+        h.morphs = [("E".to_owned(), CasMorph { target: "local_eye_width".into(), min: 0.0, max: 0.5, default: 0.25 }),
+            ("F".to_owned(), CasMorph { target: "fat".into(), min: 0.0, max: 0.5, default: 0.0 })].into();
+        let preset = |index: i32, male: bool, text: &str, skin: &str| CasFacePreset { index, male, text: text.into(),
+            colours: vec![(SKIN_ZONE, skin.into())], morphs: vec![("E".into(), 0.8), ("F".into(), 1.0)] };
+        h.face_presets = vec![preset(0, false, "ID_CAC_PRESET_CUSTOM", ""), preset(1, true, "ID_CAC_PRESET_01", "B"),
+            preset(1, false, "ID_CAC_PRESET_01F", "B"), preset(2, true, "ID_CAC_PRESET_02", "A"), preset(3, false, "ID_CAC_PRESET_03F", "A")];
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": {}, "morphs": { "local_eye_width": 0.1 } });
+        h.entry_look = h.look.clone();
+        h.select(0);
+        let mut vm = Vm::new();
+        let text = |h: &mut CasHost, vm: &mut Vm| h.call(vm, "Game", "CAC_GetStringValue", &[Value::Number(0.0)]).unwrap().unwrap();
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_PRESET_CUSTOM".into()), "unset reads as Custom");
+        assert!(h.left_right(true));
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_PRESET_01".into()));
+        assert!((h.look["morphs"]["local_eye_width"].as_f64().unwrap() - 0.4).abs() < 1e-6, "0.8 of the range");
+        assert!(h.look["morphs"]["fat"].is_null(), "body rows are skipped");
+        assert_eq!(h.look["colour_keys"]["2"], "B");
+        assert_eq!(h.look["skin"], "dark");
+        assert!(h.left_right(true));
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_PRESET_02".into()), "the female preset 3 is not counted");
+        assert!(h.left_right(true));
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_PRESET_CUSTOM".into()), "past the last");
+        assert_eq!(h.look, h.entry_look, "Custom puts back the entry look");
+        assert!(h.left_right(false));
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_PRESET_02".into()), "Left from Custom: the last");
+        h.indices[HAIR_MENU].0 = 1;
+        assert!(h.left_right(true));
+        h.indices[HAIR_MENU].0 = 0;
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_PRESET_CUSTOM".into()), "a skin pick drops to Custom");
+    }
+
+    #[test]
     fn the_wear_style_color_row_follows_the_part_and_a_board_pick_swaps_the_deck() {
         let mut h = grid_host();
         let colour = |key: &str, text: &str| CasColour { key: key.into(), swatch: [0.0; 3], a: [1.0; 3], b: [0.0; 3], text: text.into() };
@@ -2750,8 +2929,17 @@ mod tests {
     #[ignore = "requires the converted vault (SKATE3_ASSET_ROOT with private/stock/skater-collections.json)"]
     fn the_vault_gives_the_camera_rows_and_logos() {
         let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT") else { return };
-        let (cameras, logos, bodies, zones, (morphs, morph_settings), tattoo_categories) = load_vault(std::path::Path::new(&root));
+        let (cameras, logos, bodies, zones, (morphs, morph_settings), tattoo_categories, presets) = load_vault(std::path::Path::new(&root));
         assert_eq!(tattoo_categories, ["1", "2", "3"], "the vault's category list, its records' text fields");
+        // Face presets: Custom (0) and ten per gender, each with an eye and a skin color and the 19 morphs.
+        assert_eq!(presets.len(), 21);
+        assert_eq!((presets[0].index, presets[0].text.as_str()), (0, "ID_CAC_PRESET_CUSTOM"));
+        assert_eq!(presets.iter().filter(|p| p.male).map(|p| p.index).max(), Some(10));
+        let first = presets.iter().find(|p| p.male && p.index == 1).unwrap();
+        assert_eq!(first.colours.iter().map(|c| c.0).collect::<Vec<_>>(), [6, 2]);
+        assert!(first.colours.iter().all(|(zone, key)| zones[zone].colours.iter().any(|c| &c.key == key)));
+        assert_eq!(first.morphs.len(), 19);
+        assert!(first.morphs.iter().all(|(key, n)| morphs.contains_key(key) && (0.0..=1.0).contains(n)));
         // The 19 morphs by key hash (b994 / b1041): eye width 0..0.5, default 0.25; the row settings 0.1 / 0.01.
         assert_eq!(morphs.len(), 19);
         assert_eq!(morphs.get("2219FCFA4A03AEE0"), Some(&CasMorph { target: "local_eye_width".into(), min: 0.0, max: 0.5, default: 0.25 }));
