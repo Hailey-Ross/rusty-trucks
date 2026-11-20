@@ -23,6 +23,8 @@ mod prompt_glyphs {
 mod image_renderer_host {
     pub(crate) const SLOTS: usize = 0;
     pub(crate) const SLOT_TEXTURE_PREFIX: &str = "slot/";
+    pub(crate) const SWATCH_SLOTS: usize = 0;
+    pub(crate) const SWATCH_TEXTURE_PREFIX: &str = "swatch/";
 }
 // scoring_runtime logs through `bevy::log::info!`; this example runs without bevy, so the crate itself stands in for
 // it (`bevy::log` = this crate's `log`) and the log lines are dropped.

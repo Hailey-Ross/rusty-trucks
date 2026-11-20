@@ -394,6 +394,8 @@ impl Parts {
             .and_then(|id| lib.materials.get(id))
             .ok_or("Head unavailable")?;
         let tone = profile["skin"].as_str().unwrap_or(head.flag("SkinTone"));
+        // A Create-a-Skater hair color's text (cas_host `hairline`): the head material with that hairline color.
+        let hairline = profile["hairline"].as_str();
         let beard = if gender == "female" {
             ""
         } else {
@@ -423,7 +425,15 @@ impl Parts {
                         } else {
                             0
                         };
+                    let hairline_penalty = if slot == "Rostral"
+                        && hairline.is_some_and(|h| !m.flag("HairlineShadowColour").eq_ignore_ascii_case(h))
+                    {
+                        50
+                    } else {
+                        0
+                    };
                     shadow_penalty
+                        + hairline_penalty
                         + if *id == old_id {
                             0
                         } else {
@@ -457,6 +467,9 @@ impl Parts {
         // A Create-a-Skater color pick (cas_host `colour_tints`, by COLORIZED_SLOT): retail's recipe A, which the
         // character shaders multiply into the squared diffuse as is (doc 43 "Color rows"), so linear and unclamped.
         let zone = if !source.flag("SkinTone").is_empty() { Some(2) } else { colour_zone_for_slot(&part.slot) };
+        // Clothing zones tint colorizable materials only (a printed part has no IsColourizable flag).
+        let clothing = matches!(zone, Some(0 | 9 | 10 | 12));
+        let zone = zone.filter(|_| !clothing || source.flag("IsColourizable").eq_ignore_ascii_case("true"));
         let picked = zone.and_then(|z| profile["colour_tints"].get(z.to_string()))
             .and_then(|v| serde_json::from_value::<[f32; 3]>(v.clone()).ok());
         if let Some(a) = picked {
@@ -891,6 +904,20 @@ mod tests {
                 p["skin"] = serde_json::json!(tone);
                 if let Err(e) = parts.resolve(&p) {
                     failures.push(format!("{gender} {tone}: {e}"));
+                }
+            }
+            for hairline in ["black", "medium brown", "blonde"] {
+                let mut p = base.clone();
+                p["hairline"] = serde_json::json!(hairline);
+                match parts.resolve(&p) {
+                    Ok(r) => {
+                        let head = r["selections"]["Rostral"]["material_id"].as_str().and_then(|m| parts.library.materials.get(m));
+                        let has = parts.library.materials.values().any(|m| m.flag("HairlineShadowColour") == hairline && m.flag("Gender") != "female");
+                        if gender == "male" && has && head.map(|h| h.flag("HairlineShadowColour")) != Some(hairline) {
+                            failures.push(format!("{gender} hairline {hairline}: head not matched"));
+                        }
+                    }
+                    Err(e) => failures.push(format!("{gender} hairline {hairline}: {e}")),
                 }
             }
         }

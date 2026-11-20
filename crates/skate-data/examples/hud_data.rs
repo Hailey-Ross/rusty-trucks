@@ -23,6 +23,8 @@ mod prompt_glyphs {
 mod image_renderer_host {
     pub(crate) const SLOTS: usize = 0;
     pub(crate) const SLOT_TEXTURE_PREFIX: &str = "slot/";
+    pub(crate) const SWATCH_SLOTS: usize = 0;
+    pub(crate) const SWATCH_TEXTURE_PREFIX: &str = "swatch/";
 }
 use apt_vm::Value;
 fn main() -> Result<(), String> {

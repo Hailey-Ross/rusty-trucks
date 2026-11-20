@@ -8758,7 +8758,7 @@ guess_FE_CasRestoreSelection 0x82604840 f
 guess_TeammateCas_OnModePrompt 0x82604870 f
 guess_CAC_FormatThumbnailName 0x82604958 f
 guess_FE_TeammateCas_FormatThumbName 0x82604A78 f
-guess_FE_TeammateCas_SetPartUnlessFace 0x82604AD0 f
+guess_CAS_PostEditStyleBodyTarget 0x82604AD0 f
 FE_ReceiptScreen_Init 0x82604CB0 f
 guess_FE_CasPartList_Slot27 0x82604D50 f
 guess_FE_ReceiptScreen_HandleButton 0x82604DB8 f

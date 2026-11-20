@@ -34,6 +34,16 @@ impl SceneClip {
 
     /// The clip record named `name` (ASCII case ignored), or the bank's first clip with `None`.
     pub fn parse_named(bytes: Vec<u8>, name: Option<&str>) -> Result<Self, String> {
+        Self::parse_parts(bytes, name, false).map(|(clip, _)| clip)
+    }
+
+    /// A layer bank (miscload's `gesture/cac_<gender>_<name>.abin`): its pose stores only some hierarchy parts.
+    /// The first clip, and per bone whether a stored pose or clip part drives it (the rest is left to a base clip).
+    pub fn parse_layer(bytes: Vec<u8>) -> Result<(Self, Vec<bool>), String> {
+        Self::parse_parts(bytes, None, true)
+    }
+
+    fn parse_parts(bytes: Vec<u8>, name: Option<&str>, layer: bool) -> Result<(Self, Vec<bool>), String> {
         let bank = Bank::parse(bytes).map_err(|e| e.to_string())?;
         let hierarchy = bank.hierarchy().ok_or("Scene clip has no hierarchy")?;
         let bones = hierarchy.bone_count as usize;
@@ -64,20 +74,29 @@ impl SceneClip {
             return Err(format!("{}: invalid frame rate", header.name));
         }
         let identity = [1.0f32, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0].map(f32::to_bits);
-        let base = fill(&bank, &pose.parts, 1, vec![vec![identity; bones]], true)
-            .map_err(|e| format!("{} pose: {e}", header.name))?
-            .remove(0);
-        let deltas = fill(&bank, &clip.parts, count as usize, vec![vec![identity; bones]; count as usize], false)
+        let (mut base, posed) = fill(&bank, &pose.parts, 1, vec![vec![identity; bones]], !layer)
+            .map_err(|e| format!("{} pose: {e}", header.name))?;
+        let base = base.remove(0);
+        let (deltas, moved) = fill(&bank, &clip.parts, count as usize, vec![vec![identity; bones]; count as usize], false)
             .map_err(|e| format!("{}: {e}", header.name))?;
+        let mut driven = vec![false; bones];
+        for (slot, layout) in hierarchy.parts.iter().enumerate() {
+            if posed[slot] || moved[slot] {
+                let start = usize::try_from(layout.sqt_offset).unwrap_or(usize::MAX);
+                for d in driven.iter_mut().skip(start).take(layout.bone_count as usize) {
+                    *d = true;
+                }
+            }
+        }
         let frames = deltas.into_iter().map(|frame| frame.into_iter().zip(&base)
             .map(|(delta, pose)| words(add(sqt(delta), sqt(*pose), true))).collect()).collect();
-        Ok(Self {
+        Ok((Self {
             name: header.name.clone(),
             bone_names: hierarchy.bone_names.clone(),
             parents: hierarchy.parents.clone(),
             fps,
             frames,
-        })
+        }, driven))
     }
     pub fn duration(&self) -> f32 {
         self.frames.len() as f32 / self.fps
@@ -92,9 +111,10 @@ fn fill(
     count: usize,
     mut frames: Vec<Vec<SampleWords>>,
     complete: bool,
-) -> Result<Vec<Vec<SampleWords>>, String> {
+) -> Result<(Vec<Vec<SampleWords>>, Vec<bool>), String> {
     let hierarchy = bank.hierarchy().unwrap();
     let mut assigned = vec![false; hierarchy.parts.len()];
+    let mut filled = vec![false; hierarchy.parts.len()];
     for part in parts.iter().filter_map(|p| p.part.as_ref()) {
         let slot = ((part.header_word & 0x3f) >> 1) as usize;
         let layout = hierarchy.parts.get(slot).ok_or("Part slot outside hierarchy")?;
@@ -107,6 +127,7 @@ fn fill(
         if part.compressed_size == 0 {
             continue;
         }
+        filled[slot] = true;
         let decoder = RawDecoder::new(
             bank.bytes(),
             part.offset,
@@ -141,5 +162,5 @@ fn fill(
     if frames.iter().flatten().flatten().any(|w| !f32::from_bits(*w).is_finite()) {
         return Err("nonfinite RAW sample".into());
     }
-    Ok(frames)
+    Ok((frames, filled))
 }

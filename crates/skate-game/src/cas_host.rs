@@ -186,6 +186,7 @@ pub(crate) struct CasBody {
     pub clip: String,
     pub yaw_degrees: f32,
     pub position: [f32; 3],
+    pub once: bool,
 }
 
 /// One color of a CAS color zone (`cac_colour`, class 0x6D934D0E38C95E19; research b991 / b1038): the swatch the menu
@@ -443,6 +444,8 @@ const BODY_CLASS: &str = "Hash_95E142284549717F";
 const BODY_CLIP: &str = "Hash_249D0D4624998D68";
 const BODY_YAW: &str = "Hash_4591287983616615";
 const BODY_POSITION: &str = "Hash_6D2BEA1EFEA33425";
+/// Set on the 46 gesture rows only (the stand and pose rows have it clear): played once [inferred from that split].
+const BODY_ONCE: &str = "Hash_9C04CB22EB98D1CC";
 
 /// The vault data FE 15 reads: every CAS camera row by key (16 hex digits), the brand logo image by brand name and
 /// every body target row by key, inheritance resolved; empty without the vault export.
@@ -459,6 +462,7 @@ pub(crate) fn load_vault(asset_root: &std::path::Path) -> (std::collections::Has
                 clip: data.field(BODY_CLASS, &c.key, BODY_CLIP).ok()?.data.clone(),
                 yaw_degrees: data.float(BODY_CLASS, &c.key, BODY_YAW).ok()?,
                 position,
+                once: data.field(BODY_CLASS, &c.key, BODY_ONCE).ok().is_some_and(|f| f.data == "01"),
             };
             Some((skate_data::attrib_hash::numeric_name(&c.key).trim_start_matches("Hash_").to_owned(), body))
         })
@@ -549,6 +553,14 @@ pub(crate) fn sync_look(host: &mut CasHost, customiser: &mut crate::customiser::
                 materials: p.materials.iter().filter_map(|m| parts.library.materials.get(m)
                     .map(|mat| (m.clone(), mat.flag("EyeColour").to_owned()))).filter(|(_, c)| !c.is_empty()).collect(),
             })).collect();
+    }
+    if host.colourizable.is_empty() {
+        host.colourizable = parts.library.materials.iter()
+            .filter(|(_, m)| m.flag("IsColourizable").eq_ignore_ascii_case("true")).map(|(id, _)| id.clone()).collect();
+        host.decks = parts.library.models.iter().filter(|(_, p)| p.slot == BOARD_SLOT)
+            .map(|(id, p)| (id.clone(), p.materials.iter().filter_map(|m| parts.library.materials.get(m)
+                .map(|mat| (m.clone(), mat.flag("DeckColour").to_owned()))).filter(|(_, c)| !c.is_empty()).collect::<Vec<_>>()))
+            .filter(|(_, d)| !d.is_empty()).collect();
     }
     if host.open && host.look.is_null() {
         host.look = customiser.draft.clone();
@@ -674,6 +686,11 @@ pub(crate) struct EyeModel {
     pub materials: Vec<(String, String)>,
 }
 const BOARD_ZONE: u32 = 11;
+const HAIR_ZONE: u32 = 1;
+const BOARD_SLOT: &str = "SkateBoard";
+/// Option 98 of menu 30 (ID_CAC_WEARSTYLES_COLOUR): its zone is the edited part's (825416A8: hat 0, top 9, sock 10,
+/// bottom 12, board 11; research b1038).
+const WEAR_STYLE_COLOUR: i32 = 98;
 /// Edit Style rows (menu 16; 825FC7E8 / 825FFE08): Posture and Style step 0..3 with wraparound (look +0x2018 /
 /// +0x2014), Stance toggles (+0x2010: 0 = goofy, 1 = regular). They are the profile's `posture`, `style` and `stance`,
 /// which `customiser::apply` already hands to the skater's animation (defaults 0, 0, 1); labels are retail's text ids.
@@ -694,6 +711,17 @@ const GESTURE_UNLOCKS: [&str; 37] = ["gesture_airguitar", "gesture_airplane", "g
     "gesture_fingerpoint", "gesture_raisetheroof", "gesture_shaka", "gesture_shrug", "gesture_sky", "gesture_snap",
     "gesture_soularch", "gesture_spock", "gesture_surfsup", "gesture_swinghigh", "gesture_swinglow",
     "gesture_throwarms", "gesture_thumbdown", "gesture_wings", "gesture_yardsale"];
+/// The body target row each gesture posts when a slot steps to it (ctor 825F4B98 at S+0x1838 + 16 * index; 82604AD0
+/// writes it to the look and posts it): the vault's `cac_<gender>_<gesture>` rows.
+const GESTURE_BODIES: [u64; 37] = [
+    0xBCACFFAA652FAC9B, 0xB4689C41B8329176, 0x55C88E3F1634398F, 0x6D66EA0B63A7440E, 0xD823630C21BBFC7D, 0xD5DEF8F55620FB08,
+    0xAD17A9A2283DD9CA, 0xB0DC570164161DF6, 0xCF3D7CDC67C109EA, 0xE0A914A40BF94EF2, 0x151E783EEA2F0CBE, 0x60C67224E6FDCC28,
+    0xD1396FDCA3740CF8, 0xD85E25F874803D8B, 0x9A1F454A38F70280, 0xC807B0CB9B8E44B4, 0x6C53A0716D15EFE2, 0x7CD55C9E294B931D,
+    0xB0742355DC5B5C9B, 0xA93DD26DE9C84EA6, 0x62CB73DE4DD6FD86, 0x362C06C263B593BD, 0x7138813FCD93E42D, 0xE6A8E1C2514E0095,
+    0x79027F8466FFA848, 0x04883DF1614F6CA0, 0x55A60F8BF2E662E8, 0xEAA19B768D9B222F, 0xF7B057149574EF35, 0x1EF1DE28802EA038,
+    0xB5E67EC99EADFAE8, 0xF45B889FCD9831A7, 0x4751C21A35429D0B, 0x130FF44033181BB6, 0x81C7C64D5290E218, 0xCB97CA0E1DDBDF14,
+    0xBD81B91A70FB59B1,
+];
 const GESTURE_LABELS: [&str; 37] = ["ID_GESTURE_AIRGUITAR", "ID_GESTURE_AIRPLANE", "ID_GESTURE_BOXING",
     "ID_GESTURE_BRUCE", "ID_GESTURE_CHECKTIME", "ID_GESTURE_DEVIL", "ID_GESTURE_DOUBLE_GUN", "ID_GESTURE_DUNNO",
     "ID_GESTURE_FINGERWAG", "ID_GESTURE_FISTS", "ID_GESTURE_BICEPFLEX", "ID_GESTURE_FLIPTABLE", "ID_GESTURE_FONZ",
@@ -741,6 +769,10 @@ pub(crate) struct CasHost {
     pub hair_models: std::collections::HashMap<String, (String, String)>,
     /// The eye models (slot Organ) and their materials' EyeColour, which an eye color pick swaps by its match text.
     pub eye_models: std::collections::HashMap<String, EyeModel>,
+    /// The materials flagged IsColourizable, and the board models' (material, DeckColour) a board color pick swaps
+    /// by its match text (parts library).
+    pub colourizable: std::collections::HashSet<String>,
+    pub decks: std::collections::HashMap<String, Vec<(String, String)>>,
     /// The morph rows by vault key hash and the row settings (vault); without settings the morph rows do not move.
     pub morphs: std::collections::HashMap<String, CasMorph>,
     pub morph_settings: Option<MorphSettings>,
@@ -979,6 +1011,9 @@ impl CasHost {
         }
         self.look["gestures"][slot] = serde_json::json!(next);
         self.look_changed = true;
+        // 82604AD0: PostMsg_PresCASBodyTarget(the gesture's row), then PostMsg_PresCASCharacterRotate(1, 0.0).
+        self.body = format!("{:016X}", GESTURE_BODIES[next]);
+        self.turntable = 0.0;
         bevy::log::info!("RETAIL_MENUS CreateASkater gesture slot {slot} {}", GESTURE_LABELS[next]);
         true
     }
@@ -995,8 +1030,23 @@ impl CasHost {
         }
     }
 
-    fn colour_zone_of(id: i32) -> Option<u32> {
+    fn colour_zone_of(&self, id: i32) -> Option<u32> {
+        if id == WEAR_STYLE_COLOUR {
+            return self.wear_style_zone();
+        }
         COLOUR_ROWS.iter().find(|(row, _)| *row == id).map(|(_, zone)| *zone)
+    }
+
+    /// Row 98's zone (82603E98 via [[S+0x17A8]+0x20] and 825416A8): the zone of the slot of the part whose wear styles
+    /// menu 30 shows, while its worn material is colorizable [inferred: retail reads the part type only; a printed
+    /// part has no IsColourizable flag and takes no tint].
+    fn wear_style_zone(&self) -> Option<u32> {
+        let worn = self.wear_styles.iter().copied().find(|&v| self.wears(v)).or_else(|| self.wear_styles.first().copied())?;
+        let part = self.parts.get(worn)?;
+        if !self.colourizable.contains(&part.material_id) {
+            return None;
+        }
+        if part.slot == BOARD_SLOT { Some(BOARD_ZONE) } else { crate::customiser_parts::colour_zone_for_slot(&part.slot) }
     }
 
     /// The zone's picked color (82603F38 via 825388B8: the look's key for the zone), else the zone's default, as an
@@ -1009,8 +1059,7 @@ impl CasHost {
 
     /// Left / Right on a color row (825FC7E8): the previous / next color, clamped (no wrap); the picked color's key is
     /// kept per zone in the look; recipe A becomes the zone's tint (`colour_tints`), recipe B the hair highlight
-    /// (`colour_highlights`). NOT RETAIL YET: the eyebrow / facial hair channels a hair pick also writes, the sounds,
-    /// and the eye / board part swap by the color's text.
+    /// (`colour_highlights`). NOT RETAIL YET: the sounds.
     fn step_colour(&mut self, zone: u32, right: bool) -> bool {
         let Some(n) = self.colour_zones.get(&zone).map(|z| z.colours.len()) else { return false };
         let at = self.colour_index(zone);
@@ -1035,6 +1084,31 @@ impl CasHost {
             let text = self.colour_zones[&zone].colours[next].text.clone();
             if !text.is_empty() {
                 self.look["skin"] = serde_json::Value::String(text);
+            }
+        }
+        // Hair: the match text (black / medium brown / blonde) picks the head's HairlineShadowColour, the hairline,
+        // stubble and brow texture (the look's `hairline`, customiser_parts resolve). Retail also copies the tint to
+        // the eyebrow / facial hair channels 7 / 8, which no exported material reads. [inferred from data like skin:
+        // every hair color's text is one of the head materials' three HairlineShadowColour values]
+        if zone == HAIR_ZONE {
+            let text = self.colour_zones[&zone].colours[next].text.clone();
+            if !text.is_empty() {
+                self.look["hairline"] = serde_json::Value::String(text);
+            }
+        }
+        // Board (82DDC160 / 82DDEDB0 set the deck by the text): the worn deck's material with that DeckColour, the
+        // same one of its kind (clean / worn) as before.
+        if zone == BOARD_ZONE {
+            let text = self.colour_zones[&zone].colours[next].text.clone();
+            if let Some((model, material)) = self.worn(BOARD_SLOT).map(|(a, m)| (a.to_owned(), m.to_owned())) {
+                if let Some(deck) = self.decks.get(&model) {
+                    let colour = deck.iter().find(|(m, _)| *m == material).map(|(_, c)| c.clone()).unwrap_or_default();
+                    let nth = deck.iter().filter(|(_, c)| *c == colour).position(|(m, _)| *m == material).unwrap_or(0);
+                    let same: Vec<&String> = deck.iter().filter(|(_, c)| c.eq_ignore_ascii_case(&text)).map(|(m, _)| m).collect();
+                    if let Some(pick) = same.get(nth).or(same.first()).map(|m| (*m).clone()) {
+                        self.set_slot(BOARD_SLOT, Some((model, pick)));
+                    }
+                }
             }
         }
         if zone == EYE_ZONE {
@@ -1510,7 +1584,7 @@ impl CasHost {
         if self.highlighted() == Some(HAIR_STYLE) {
             return self.step_hair(right);
         }
-        if let Some(zone) = self.highlighted().and_then(Self::colour_zone_of) {
+        if let Some(zone) = self.highlighted().and_then(|id| self.colour_zone_of(id)) {
             return self.step_colour(zone, right);
         }
         if let Some(id) = self.highlighted().filter(|id| matches!(*id, POSTURE | SKATE_STYLE | STANCE)) {
@@ -1919,8 +1993,8 @@ impl CasHost {
             "CAC_GetBannerType" => Value::Text(match self.shop { 0 => "slappys", 1 => "petes", _ => "none" }.into()),
             "CAC_GetInfoPanelType" => Value::Text(match self.shop { 1 => "petes", 2 => "blurb", _ => "noblurb" }.into()),
             // 825FFB18 / 825FFE08 for the sliders: round(value * 10); LOOSE / MEDIUM / TIGHT, SOFT / MEDIUM / HARD.
-            "CAC_GetIntegerValue" if self.option(row).and_then(|(id, _)| Self::colour_zone_of(id)).is_some() => {
-                let zone = self.option(row).and_then(|(id, _)| Self::colour_zone_of(id)).unwrap_or_default();
+            "CAC_GetIntegerValue" if self.option(row).and_then(|(id, _)| self.colour_zone_of(id)).is_some() => {
+                let zone = self.option(row).and_then(|(id, _)| self.colour_zone_of(id)).unwrap_or_default();
                 Value::Number(self.colour_index(zone) as f64)
             }
             // A morph row: the shown value x 122, rounded (b1041: 822F95E4 = 122.0; the movie places its knob by it).
@@ -1932,7 +2006,7 @@ impl CasHost {
                 None => Value::Number(0.0),
             },
             "CAC_GetColours" => {
-                let zone = self.option(row).and_then(|(id, _)| Self::colour_zone_of(id));
+                let zone = self.option(row).and_then(|(id, _)| self.colour_zone_of(id));
                 let swatches = zone.map(|z| self.colour_swatches(z)).unwrap_or_default();
                 Value::Object(vm.array(swatches)?)
             }
@@ -2257,6 +2331,7 @@ mod tests {
         assert!(h.left_right(false), "wraps to the last gesture");
         assert_eq!(h.look["gestures"]["0"], 36);
         assert_eq!(text(&mut h, &mut vm, 0.0), Value::Text("ID_GESTURE_YARDSALE".into()));
+        assert_eq!(h.body, "BD81B91A70FB59B1", "the yardsale body target row plays it on the skater");
         // Gating on: only granted gestures are offered.
         h.unlocks.unlock_all = false;
         h.unlocks.grant(kind::GESTURES, "gesture_fingerpoint");
@@ -2389,6 +2464,55 @@ mod tests {
     }
 
     #[test]
+    fn a_hair_color_pick_sets_the_hairline_by_its_text() {
+        let mut h = grid_host();
+        h.menus[HAIR_MENU] = menu("Hair", "", (0, 0), &[66]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        h.options[0].target = Some(HAIR_MENU);
+        let colour = |key: &str, text: &str| CasColour { key: key.into(), swatch: [0.0; 3], a: [0.5; 3], b: [0.0; 3], text: text.into() };
+        h.colour_zones = [(HAIR_ZONE, CasColourZone { default: "A".into(), colours: vec![colour("A", "black"), colour("B", "blonde")] })].into();
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": {} });
+        h.select(0);
+        assert!(h.left_right(true));
+        assert_eq!(h.look["hairline"], "blonde");
+        assert_eq!(h.look["colour_tints"]["1"], serde_json::json!([0.5f32, 0.5f32, 0.5f32]));
+    }
+
+    #[test]
+    fn the_wear_style_color_row_follows_the_part_and_a_board_pick_swaps_the_deck() {
+        let mut h = grid_host();
+        let colour = |key: &str, text: &str| CasColour { key: key.into(), swatch: [0.0; 3], a: [1.0; 3], b: [0.0; 3], text: text.into() };
+        let zone = |c: Vec<CasColour>| CasColourZone { default: c[0].key.clone(), colours: c };
+        h.colour_zones = [
+            (BOARD_ZONE, zone(vec![colour("R", "red"), colour("B", "blue")])),
+            (0, zone(vec![colour("RC", ""), colour("BC", "")])),
+        ].into();
+        let deck = |m: &str| CasPart { slot: BOARD_SLOT.into(), model_id: "deck#".into(), model: "deck".into(), material_id: m.into(), material: m.into(), ..Default::default() };
+        let base = h.parts.len();
+        h.parts.extend([deck("red_clean"), deck("red_worn"), deck("blue_clean"), deck("blue_worn")]);
+        h.decks = [("deck#".to_string(), vec![("red_clean".into(), "red".into()), ("red_worn".into(), "red".into()),
+            ("blue_clean".into(), "blue".into()), ("blue_worn".into(), "blue".into())])].into();
+        h.colourizable = ["red_clean", "red_worn", "blue_clean", "blue_worn"].map(String::from).into();
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": { "SkateBoard": { "asset_id": "deck#", "material_id": "red_worn" } } });
+        h.wear_styles = (base..base + 4).collect();
+        h.stack.push(WEAR_STYLES);
+        h.enter(WEAR_STYLES);
+        assert_eq!(h.colour_zone_of(WEAR_STYLE_COLOUR), Some(BOARD_ZONE));
+        h.indices[WEAR_STYLES] = (0, 0);
+        assert!(h.left_right(true));
+        assert_eq!(h.look["selections"][BOARD_SLOT]["material_id"], "blue_worn", "same kind (worn), new color");
+        assert!(h.look["colour_tints"][BOARD_ZONE.to_string()].is_null(), "the deck swaps, no tint");
+        // A hat that is not colorizable has no color list; a colorizable one has the hat zone.
+        let hat = h.parts.iter().position(|p| p.slot == "Hat").unwrap();
+        h.wear_styles = vec![hat];
+        assert_eq!(h.colour_zone_of(WEAR_STYLE_COLOUR), None);
+        h.colourizable.insert(h.parts[hat].material_id.clone());
+        assert_eq!(h.colour_zone_of(WEAR_STYLE_COLOUR), Some(0));
+    }
+
+    #[test]
     fn a_skin_color_pick_sets_the_skin_tone_by_its_text_and_tints() {
         let mut h = grid_host();
         h.menus[HAIR_MENU] = menu("Skin", "", (0, 0), &[62]);
@@ -2508,7 +2632,7 @@ mod tests {
     #[test]
     fn an_options_body_target_poses_the_skater_and_merchandise_puts_the_whole_body_back() {
         let mut h = grid_host();
-        let body = |yaw: f32| CasBody { clip: "CAS_Stand".into(), yaw_degrees: yaw, position: [-1.0, 0.0, -7.05] };
+        let body = |yaw: f32| CasBody { clip: "CAS_Stand".into(), yaw_degrees: yaw, position: [-1.0, 0.0, -7.05], once: false };
         h.bodies = [(WHOLE_BODY.to_string(), body(260.0)), ("91098B2B2461D2DC".to_string(), body(149.25))].into_iter().collect();
         h.options[2].body = "91098B2B2461D2DC".into();
         h.select(0);
@@ -2638,7 +2762,7 @@ mod tests {
         assert_eq!(zones[&6].colours.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["blue", "dark blue", "green", "light brown", "dark brown"]);
         // The body rows: 69, the whole body at 260 degrees, the wrist row (keyed "wrist") at 149.25.
         assert_eq!(bodies.len(), 69);
-        assert_eq!(bodies[WHOLE_BODY], CasBody { clip: "CAS_Stand".into(), yaw_degrees: 260.0, position: [-1.0, 0.0, -7.05] });
+        assert_eq!(bodies[WHOLE_BODY], CasBody { clip: "CAS_Stand".into(), yaw_degrees: 260.0, position: [-1.0, 0.0, -7.05], once: false });
         assert!((bodies["91098B2B2461D2DC"].yaw_degrees - 149.25).abs() < 0.01);
         assert_eq!(cameras.len(), 47);
         let body = cameras[WHOLE_BODY];

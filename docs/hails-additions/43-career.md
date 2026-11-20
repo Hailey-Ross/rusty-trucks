@@ -672,8 +672,8 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   (option +0x28; whole body on the top / Merchandise menus), `MarqueeView::body` gives the stage the clip, yaw and
   place, `marquee_preview` reloads the clip when its bank / clip change. Tests
   `an_options_body_target_poses_the_skater_and_merchandise_puts_the_whole_body_back`, the vault test (69 rows).
-  NOT RETAIL YET: the rows' other fields (the second vector, two Bools) and the gesture clips (cac_male_spock ...,
-  in miscload.big's gesture bank, not exported) for Edit Style.
+  NOT RETAIL YET: the rows' other fields (the second vector, the Bool 0x760AE32CF50D24CB). The Bool
+  0x9C04CB22EB98D1CC is set on the 46 gesture rows only and read as "play once" (see "Gesture preview").
 - **Locks** (2026-11-18; Ghidra `.local/research/ghidra/cas-lock*.txt`) [code, high]: 825FD9F0's lock test is the
   predicate object with vtable 823046E0, test 825F46C8: a part with an Unlock name (record +0xF0) or a SponsorUnlock
   name (+0xDC) is locked unless the unlock manager has the Unlock under kind 5 (clothing unlock) or the SponsorUnlock
@@ -773,6 +773,22 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     materials). Ours: `cas_host` keeps the eye models (`eye_models`) and wears the worn (else the gender's) eye
     model with the matching material. Test `an_eye_color_pick_wears_the_eye_material_with_that_color_and_no_tint`.
     The face preset row switching to Custom on an eye / skin pick waits for the presets port.
+  - Hairline, stubble and brows follow the hair color (2026-11-19): every hair color's match text is one of the
+    three `HairlineShadowColour` values the male head materials come in (blonde; black for black, gray and medium
+    brown; medium brown for light brown, red and the dye colors) [data, vault + library]. A hair pick sets the look's
+    `hairline` to that text and the parts resolve prefers the head material with that hairline color [inferred from
+    that data, the same reading as skin; retail's apply copies the hair tint to the eyebrow / facial hair channels
+    7 / 8, which no exported material reads]. Tests `a_hair_color_pick_sets_the_hairline_by_its_text`, the
+    data-gated `owned_library_choices_resolve_without_conversion` (every hairline color resolves to a matching head).
+  - Wear style color, row 98 (2026-11-19) [code 82603E98 / 825416A8, b1038]: on menu 30 the row's zone is the edited
+    part's slot (hat 0, top 9, sock 10, bottom 12, board 11). Ours: the part whose wear styles the menu shows, and
+    only while its material is IsColourizable (48 materials: plain tees, jackets, hoodies, socks, two pants, two
+    hats, three hair models and the 20 plain decks); clothing tints go on colorizable materials only, so a printed
+    shirt keeps its print [inferred: retail reads the part type only]. Not in the PS3 recording (it never opens a
+    wear style page). Test `the_wear_style_color_row_follows_the_part_and_a_board_pick_swaps_the_deck`.
+  - Board color [code 82DDC160 / 82DDEDB0, b1038 section 3]: the pick's match text selects the worn deck's material
+    with that `DeckColour` (the plain deck has a clean and a worn material per color); ours keeps the same one of the
+    pair and writes no tint. Whether retail also tints the deck through channel 11 is open.
   - NOT RETAIL YET: the eyebrow / facial hair channels a hair pick also writes (our heads bake brows and facial
     hair into the head material, whose `HairlineShadowColour` matches the hair color's text; that a hair pick
     swaps the head material by it is NOT proven, b1038), the board part swap by the color's text, the clothing
@@ -890,8 +906,28 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   (saved on exit Yes), the sliders start from the profile. Test
   `edit_style_rows_write_the_profiles_posture_style_stance_and_the_sliders_its_truck_and_wheel`; the gesture rows
   write the profile's `gestures` "0" / "3" / "2" / "1" (test `gesture_rows_step_the_unlocked_gestures_into_the_profiles_slots`).
-  NOT RETAIL YET: Posture's body target re-post, the gesture played on the skater as a slot changes (the gesture
-  clips in miscload.big are not exported), the Left / Right sounds, retail's slider defaults (0.7 is ours).
+  NOT RETAIL YET: Posture's body target re-post, the Left / Right sounds, retail's slider defaults (0.7 is ours).
+- **Gesture preview** (2026-11-19) [code 82604AD0 recomp asm + ctor 825F4B98 Ghidra, data]: after a gesture slot
+  steps, 82604AD0 takes the slot's gesture index, reads the 64-bit key at S+0x1838 + 16 * index (the ctor's table:
+  label at +0, key at +8, e.g. AIRGUITAR 0xBCACFFAA652FAC9B .. YARDSALE 0xBD81B91A70FB59B1), stores it in the look
+  (+0x10) and posts it (82539688). Every key is a body target row (class 0x95E142284549717F, parent
+  0xAD454A0ECD0E2EDF = CAS_Stand) whose clip is `cac_male_<gesture>`; the clips are miscload's
+  `data/anim/gesture/cac_<male|female>_<gesture>.abin` (one clip per bank, already in the install with the rest of
+  miscload). Ours: `GESTURE_BODIES` (the ctor's 37 keys), the step posts the row as `CasHost::body`;
+  `marquee_preview::body_bank` loads the gender's bank (the female bank for a female skater [inferred from the file
+  names]) and plays the clip once, then the stand comes back [inferred: the rows' Bool 0x9C04CB22EB98D1CC, set on
+  gesture rows only]. The gesture banks are layers [data]: their pose stores only some hierarchy parts (our full
+  scene clip parse refuses them, "pose leaves hierarchy parts unset"), so `SceneClip::parse_layer` returns the clip
+  and the bones its stored parts drive, and `marquee_preview::layered` puts those bones over the stand clip
+  (MARQUEE_STAND, matched by bone name, the stand looping under the gesture's frames). The row
+  0xA774F79D33B6BE83 names `cas_gesturestand_cycle`, likely retail's base under gestures; that clip is in no
+  installed bank (searched by its FastString name), so the stand is ours [inferred]. `cac_<gender>_axe` has no clip
+  and no vault row. The PS3 recording shows the gesture on the skater as the slot changes (Bruce, Airplane).
+  Tests `gesture_rows_step_the_unlocked_gestures_into_the_profiles_slots` (the posted row),
+  `gesture_rows_play_from_the_gender_s_gesture_bank`, the data-gated `every_gesture_bank_parses_as_a_scene_clip`
+  (every bank parses as a layer and shares driven bones with the stand).
+  After the post it calls PostMsg_PresCASCharacterRotate(1, [0x82165A10] = 0.0): the turntable goes back to 0
+  (ours too). Open: the other rows that post 0xAD454A0ECD0E2EDF (CAS_Stand) through 82604AD0.
 - **Camera targets of the other menus** [code]: the tables 83044528 / 83044548 / 83044568 / 83044588 / 830445A8
   that 82600AF8 posts from belong to the tattoo / graphic adjust menus (7, 8, 34, 35, 36: indexed by the tattoo's
   location) and menu 11 (board graphics: the camera key comes from a vault record). They come with those features;
