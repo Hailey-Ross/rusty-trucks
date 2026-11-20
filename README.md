@@ -57,15 +57,26 @@ Everything here is in the `hails-additions` build, and the [release notes](https
 - **Audio:** Skate 3's audio engine, ported natively, with audio modding.
 - **Music:** Skate 3's soundtrack from your disc, the Music Player (Playlist Mode or Interactive Mode with the map's music zones and race music), and Custom Music to play your own songs.
 - **Stream-safe mode:** for streaming and recording. In the launcher, go to **Tools** and press **Stream-safe mode**: it downloads free-to-use music (every artist credited), plays it instead of the soundtrack, and writes a `CREDITS.txt` you can paste into your stream or video description. The Music Player lists those songs so you can pick one or turn some off, and the Guide / F1 / Esc menu gets a **Skip Song** button while they play.
-- **Career mode and challenges** (still being built, behind the Career and Challenges opt-in): own the spot, races, contests and all 12 Skate 101 tutorials, with the career, your team and the Skate Profile page.
+- **Career mode and challenges** (still being built, behind the Career and Challenges opt-in): own the spot, races, contests, follow the leader, films, Hall of Meat and all 12 Skate 101 tutorials, signed up for the Skate 3 way, with the career, your team and the Skate Profile page. A new career starts like Skate 3's: the intro movie, Press Start and the welcome (difficulty, camera, team name, Coach Frank).
 - **Every OS:** the game builds for Windows, Linux and macOS, and the Skate launcher is now one app for all three.
 - **Opt-ins:** anything that's off by default or not quite Skate 3 lives in one place, the Opt-Ins section of the Guide / F1 / Esc menu.
 - **Already upstream:** the audio engine, water, retail map spawns, trigger volumes, camera angles, SDL3 gamepads, grind bails at rail bends, see-through fences and the retail menus foundation started here and are now in upstream `main`.
 
 ## What I'm working on
 
-- **Career mode and challenges** (upstream draft [#68](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/68), behind the Career and Challenges opt-in): own the spot, races, contests and the Skate 101 tutorials already play. Follow the leader runs, with the trail behind the leader, but only from a test switch so far. Next up: signing up for it from the map and its speech, then films and Hall of Meat.
-- **The retail startup:** the boot movies, Press Start and the new career welcome (difficulty, camera, team name, Coach Frank), plus a cross-platform player for Skate 3's movies so it works beyond Windows too.
+- **Career mode and challenges** (upstream draft [#68](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/68), behind the Career and Challenges opt-in): every challenge kind plays now, from own the spot to films and Hall of Meat, and a new career starts with Skate 3's own intro and welcome. Next up for challenges: the filmer camera and the highlight reel for films.
+- **Create-a-Skater, Skate 3's own screen** (behind `SKATE_RETAIL_CAS=1` for now). Today's goals:
+  - [x] Your skater stands still on the set, swaying like in Skate 3 (no more jumping around)
+  - [x] Facial hair and eyebrow styles
+  - [x] Edit Style: stance, style and posture, plus the Trucks and Wheels sliders, all saved and used when you skate
+  - [x] Gestures: pick the four gestures for your D-pad
+  - [x] Hair styles
+  - [x] Colors: hair, eyes and skin (with the color squares in the menu)
+  - [ ] Colors: facial hair, clothing and boards
+  - [x] Skin tone (it is the Skin Color row, light to dark)
+  - [x] Face and body shape sliders
+  - [x] Tattoos: pick a spot and a design, then move, scale and turn it (design pictures still to come)
+  - [ ] Your skater shows each gesture as you pick it
 - **NPC skaters:** finishing their landings, spins and grab releases.
 - **Further out:** the pros at their challenge spots, the Object Dropper, and multiplayer.
 
@@ -82,7 +93,7 @@ This is where you can help the most. A few things I'd love a second pair of eyes
 - Pedestrians and NPC skaters: anyone floating, getting stuck or riding backwards?
 - Carrying and pushing props (hold RB next to a bench or bin). Does it feel like Skate 3?
 - Skate 3's menus (press Start).
-- **New:** turn on **Career and Challenges** in the Opt-Ins, ride up to an own the spot and press D-pad Up, and give the Skate 101 tutorials, a race and a contest a go. How close does it feel to the real thing?
+- **New:** turn on **Career and Challenges** in the Opt-Ins and start a new career: does the intro and welcome feel like Skate 3's? Then ride up to any challenge and press D-pad Up: own the spot, a race, a contest, follow the leader, a film or a Hall of Meat, and the Skate 101 tutorials. How close does it feel to the real thing?
 - **New:** Options > Music Player, and the soundtrack in Interactive Mode. Does the music feel like Skate 3's?
 - **New:** Stream-safe mode (launcher > Tools). Do the songs and their names show up, can you pick and skip songs in the Music Player and with Skip Song, and does the soundtrack stay quiet everywhere (menus, replays, contests)?
 - **New:** props in shade. Push a bench or bin under a bridge or next to a tall building: does it darken like the ground around it?
