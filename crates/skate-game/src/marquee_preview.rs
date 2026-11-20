@@ -62,9 +62,16 @@ pub(crate) struct MarqueeView {
 /// The bank a body target's clip is in, None = the stage's own clip. CAS_Stand keeps the stage's MARQUEE_STAND: the
 /// PS3 recording (3:00-10:15) shows the skater holding the board on the whole-body rows, and the only clip named
 /// CAS_STAND (cac_viewer_<male|female>.abin) stands without it, so which clip retail's animator plays for CAS_Stand
-/// is open. CAS_SINGLE_POSE_1..8 are only in sk83_marquee_viewer [inferred]; gestures are not exported.
-fn body_bank(clip: &str, _male: bool) -> Option<String> {
-    clip.to_ascii_uppercase().starts_with("CAS_SINGLE_POSE_").then(|| "sk83_marquee_viewer.abin".into())
+/// is open. CAS_SINGLE_POSE_1..8 are only in sk83_marquee_viewer [inferred]. A gesture row names the male clip
+/// (`cac_male_<gesture>`); its bank is miscload's `gesture/cac_<gender>_<gesture>.abin` (one clip each, the gender
+/// swap [inferred from the file names]). Returns the bank and the clip name, None = the bank's first clip.
+fn body_bank(clip: &str, male: bool) -> Option<(String, Option<String>)> {
+    let lower = clip.to_ascii_lowercase();
+    if lower.starts_with("cas_single_pose_") {
+        return Some(("sk83_marquee_viewer.abin".into(), Some(clip.into())));
+    }
+    let gesture = lower.strip_prefix("cac_male_").or_else(|| lower.strip_prefix("cac_female_"))?;
+    Some((format!("gesture/cac_{}_{gesture}.abin", if male { "male" } else { "female" }), None))
 }
 
 #[derive(Resource, Default)]
@@ -79,6 +86,9 @@ struct Viewer {
     clip: Option<Option<Arc<SceneClip>>>,
     /// The bank and clip `clip` was loaded for (FE 15's body targets change it).
     clip_key: Option<(String, String)>,
+    /// A play-once body target's clip that played out (the stand shows again) and the body clip posted last.
+    once_done: Option<String>,
+    last_body: Option<String>,
     /// SKATE_TRACE_MARQUEE only: the bone transforms written last frame.
     written: Vec<(Entity, Transform)>,
     bindings: Option<AnimationStatus>,
@@ -100,6 +110,19 @@ impl Plugin for MarqueePreviewPlugin {
                 .before(crate::app::FrameSet::Verification),
         );
     }
+}
+
+/// `layer`'s driven bones over `base`, matched by bone name, at the layer's frames and rate (the base loops).
+fn layered(base: &SceneClip, layer: &SceneClip, driven: &[bool]) -> SceneClip {
+    let from: Vec<Option<usize>> = base.bone_names.iter()
+        .map(|n| layer.bone_names.iter().position(|l| l.eq_ignore_ascii_case(n)).filter(|&i| driven.get(i) == Some(&true)))
+        .collect();
+    let frames = (0..layer.frames.len()).map(|i| {
+        let at = ((i as f32 / layer.fps * base.fps) as usize) % base.frames.len().max(1);
+        base.frames.get(at).map(|b| b.iter().zip(&from)
+            .map(|(word, l)| l.map_or(*word, |l| layer.frames[i][l])).collect()).unwrap_or_default()
+    }).collect();
+    SceneClip { name: layer.name.clone(), bone_names: base.bone_names.clone(), parents: base.parents.clone(), fps: layer.fps, frames }
 }
 
 /// FlowMessage 0x8D (82705E88): the highlighted skater.
@@ -149,6 +172,7 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
     }
     // Every open frame, the swap frames included: the gameplay camera (`camera::present`) would show the map.
     let mut stage = stage;
+    let stand = (stage.bank.clone(), stage.clip.clone());
     if let Some(c) = camera {
         let at = |v: [f32; 3]| stage.origin + Vec3::from_array(v);
         stage.eye = at(c.eye);
@@ -158,10 +182,20 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
     }
     stage_camera(world, &mut viewer, &stage);
     // FE 15's body target: the row's clip, yaw and place (82532800).
+    let body_clip = body.as_ref().map(|b| b.clip.clone());
+    if viewer.last_body != body_clip {
+        viewer.last_body = body_clip;
+        viewer.once_done = None;
+    }
+    let mut once = false;
+    let mut first_clip = false;
     if let Some(body) = &body {
-        if let Some(bank) = body_bank(&body.clip, male) {
+        let done = body.once && viewer.once_done.as_deref() == Some(body.clip.as_str());
+        if let Some((bank, clip)) = body_bank(&body.clip, male).filter(|_| !done) {
             stage.bank = bank;
-            stage.clip = body.clip.clone();
+            first_clip = clip.is_none();
+            stage.clip = clip.unwrap_or_else(|| body.clip.clone());
+            once = body.once;
         }
         stage.heading_degrees = body.yaw_degrees;
         stage.position = stage.origin + Vec3::from_array(body.position);
@@ -176,8 +210,20 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
         return;
     }
     let clip = viewer.clip.get_or_insert_with(|| {
-        let path = world.resource::<crate::config::Config>().asset_root.join("private/stock/data/anim").join(&stage.bank);
-        std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| SceneClip::parse_named(b, Some(&stage.clip)))
+        let anim = world.resource::<crate::config::Config>().asset_root.join("private/stock/data/anim");
+        let path = anim.join(&stage.bank);
+        let read = |path: &std::path::Path| std::fs::read(path).map_err(|e| e.to_string());
+        // A gesture bank is a layer over the stand: its parts' bones on top of the stand clip [inferred: the banks'
+        // poses store only some parts; retail's gesture stand cycle is not in the install].
+        let parsed = if first_clip {
+            read(&path).and_then(SceneClip::parse_layer).and_then(|(layer, driven)| {
+                read(&anim.join(&stand.0)).and_then(|b| SceneClip::parse_named(b, Some(&stand.1)))
+                    .map(|base| layered(&base, &layer, &driven))
+            })
+        } else {
+            read(&path).and_then(|b| SceneClip::parse_named(b, Some(&stage.clip)))
+        };
+        parsed
             .inspect_err(|e| warn!("MARQUEE_VIEWER clip {} in {}: {e}", stage.clip, path.display()))
             .ok().map(Arc::new)
     }).clone();
@@ -189,7 +235,15 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
         viewer.skins = skins;
         info!("MARQUEE_VIEWER show {:?}: {} joints bound", viewer.shown, viewer.bindings.as_ref().map_or(0, |b| b.online_bindings().len()));
     }
-    viewer.time = (viewer.time + world.resource::<Time<Real>>().delta_secs()) % clip.duration().max(1e-3);
+    let dt = world.resource::<Time<Real>>().delta_secs();
+    viewer.time = if once {
+        if viewer.time + dt >= clip.duration() {
+            viewer.once_done = viewer.last_body.clone();
+        }
+        (viewer.time + dt).min(clip.duration())
+    } else {
+        (viewer.time + dt) % clip.duration().max(1e-3)
+    };
     let Some(globals) = crate::trick_guide_scene::pose(&clip, viewer.time) else { return };
     // The character's world transform is translate(position) * rotY(heading) (b578), drawn through the player rig.
     let root = world.get::<GlobalTransform>(player).copied().unwrap_or_default().to_matrix();
@@ -318,5 +372,45 @@ mod tests {
         let forward = facing(s.heading_degrees) * Vec3::X;
         let to_eye = ((s.eye - s.position) * Vec3::new(1.0, 0.0, 1.0)).normalize();
         assert!(forward.angle_between(to_eye).to_degrees() < 5.0, "{forward} vs {to_eye}");
+    }
+
+    #[test]
+    fn gesture_rows_play_from_the_gender_s_gesture_bank() {
+        assert_eq!(body_bank("cac_male_spock", false), Some(("gesture/cac_female_spock.abin".into(), None)));
+        assert_eq!(body_bank("cac_male_spock", true), Some(("gesture/cac_male_spock.abin".into(), None)));
+        assert_eq!(body_bank("CAS_Single_Pose_3", true).map(|b| b.0), Some("sk83_marquee_viewer.abin".into()));
+        assert_eq!(body_bank("CAS_Stand", true), None);
+    }
+
+    #[test]
+    #[ignore = "requires the installed assets (SKATE3_ASSET_ROOT with private/stock/data/anim/gesture)"]
+    fn every_gesture_bank_parses_as_a_scene_clip() {
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("SKATE3_ASSET_ROOT"));
+        let dir = root.join("private/stock/data/anim/gesture");
+        let stage = MarqueeStage::default();
+        let stand = SceneClip::parse_named(std::fs::read(root.join("private/stock/data/anim").join(&stage.bank)).unwrap(), Some(&stage.clip)).unwrap();
+        let mut failures = vec![];
+        let mut clipless = vec![];
+        let mut count = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            count += 1;
+            match SceneClip::parse_layer(std::fs::read(&path).unwrap()) {
+                Ok((clip, driven)) => {
+                    let merged = layered(&stand, &clip, &driven);
+                    let shared = stand.bone_names.iter().filter(|n| clip.bone_names.iter().enumerate()
+                        .any(|(i, l)| driven[i] && l.eq_ignore_ascii_case(n))).count();
+                    if clip.duration() <= 0.0 || shared == 0 || merged.frames.len() != clip.frames.len() {
+                        failures.push(format!("{}: {shared} bones shared with the stand", path.display()));
+                    }
+                }
+                // Unused banks without a clip (cac_<gender>_axe: no vault row names it).
+                Err(e) if e.contains("has no clip") => clipless.push(path.display().to_string()),
+                Err(e) => failures.push(format!("{}: {e}", path.display())),
+            }
+        }
+        assert!(count >= 90, "{count} banks");
+        assert!(clipless.len() <= 2, "{clipless:?}");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

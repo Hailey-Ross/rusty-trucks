@@ -8759,7 +8759,7 @@
 82604870	guess_TeammateCas_OnModePrompt	Guess: Result 0 sets editor mode 1, result 1 loads the selected schema
 82604958	guess_CAC_FormatThumbnailName	Builds a thumbnail file name from three asset entries and a type name, lower case
 82604A78	guess_FE_TeammateCas_FormatThumbName	Guess: Formats the CAS thumbnail name into a small string.
-82604AD0	guess_FE_TeammateCas_SetPartUnlessFace	Guess: For item ids other than 0x31..0x34 writes the 64 bit pick into the look record.
+82604AD0	guess_CAS_PostEditStyleBodyTarget	Guess: Gesture rows 0x31..0x34: the slot gesture index picks the key at S+0x1838+16*i, other rows 0xAD454A0ECD0E2EDF (CAS_Stand row); writes it to look +0x10, PostMsg_PresCASBodyTarget, then PostMsg_PresCASCharacterRotate(1, 0.0).
 82604CB0	FE_ReceiptScreen_Init	research/fe-id-templates.md:40 (FE 16 init slot +12 82604CB0, template Receipt, high)
 82604D50	guess_FE_CasPartList_Slot27	Guess: class tag: RebuildList 82605368 collects CAC parts for a slot (guess_CAC_CollectPartsForSlot) and formats them with guess_FE_TeammateCas_FormatPartName (b10)
 82604DB8	guess_FE_ReceiptScreen_HandleButton	Guess: slot +40 input of FE 16 Receipt vtable 0x823039C8 only (fe-id-templates.md row 16, high)
