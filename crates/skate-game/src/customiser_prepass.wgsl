@@ -4,6 +4,8 @@ struct SkinStamp {
     transform: vec4<f32>,
     rectangle: vec4<f32>,
     enabled: vec4<f32>,
+    row_x: vec4<f32>,
+    row_y: vec4<f32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var hair_opacity: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var hair_sampler: sampler;

@@ -8,7 +8,7 @@
 #ifdef MOTION_VECTOR_PREPASS
 #import bevy_pbr::pbr_prepass_functions::calculate_motion_vector
 #endif
-struct CharacterParams { light: vec4<f32>, tint: vec4<f32>, options: vec4<f32>, rows: array<vec4<f32>,9>, sh: array<vec4<f32>,9> }
+struct CharacterParams { light: vec4<f32>, tint: vec4<f32>, options: vec4<f32>, rows: array<vec4<f32>,9>, sh: array<vec4<f32>,9>, highlight_tint: vec4<f32> }
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> p: CharacterParams;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var diffuse: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var diffuse_sampler: sampler;

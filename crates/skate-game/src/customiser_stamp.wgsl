@@ -4,6 +4,8 @@ struct SkinStamp {
     transform: vec4<f32>,
     rectangle: vec4<f32>,
     enabled: vec4<f32>,
+    row_x: vec4<f32>,
+    row_y: vec4<f32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var stamp_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var stamp_sampler: sampler;
@@ -101,9 +103,14 @@ fn fragment(
     pbr_input.material.base_color.a = mix(pbr_input.material.base_color.a, hair_alpha, stamp.enabled.y);
     // cacstamp_skin_defaultPS: skin * (1 + (decal.rgb - 1) * decal.a).
     // Its VS transforms TEXCOORD1 by the two i_customGraphic rows.
-    let stamp_uv = in.uv_b * stamp.transform.xy + stamp.transform.zw;
+    // A retail placement (enabled.z): the matrix rows (82C2E3A8), drawn where the graphic UV is inside 0..1
+    // (what retail draws outside is not read; doc 43 "Tattoos").
+    let matrix_uv = vec2<f32>(dot(stamp.row_x.xyz, vec3<f32>(in.uv_b, 1.0)), dot(stamp.row_y.xyz, vec3<f32>(in.uv_b, 1.0)));
+    let retail_placed = stamp.enabled.z > 0.0;
+    let stamp_uv = select(in.uv_b * stamp.transform.xy + stamp.transform.zw, matrix_uv, retail_placed);
     let decal = textureSample(stamp_texture, stamp_sampler, stamp_uv);
-    let inside = all(in.uv_b >= stamp.rectangle.xy) && all(in.uv_b <= stamp.rectangle.zw);
+    let inside = select(all(in.uv_b >= stamp.rectangle.xy) && all(in.uv_b <= stamp.rectangle.zw),
+        all(matrix_uv >= vec2<f32>(0.0)) && all(matrix_uv <= vec2<f32>(1.0)), retail_placed);
     let opacity = decal.a * stamp.enabled.x * select(0.0, 1.0, inside);
     pbr_input.material.base_color = vec4<f32>(
         pbr_input.material.base_color.rgb * mix(vec3<f32>(1.0), decal.rgb, opacity),
@@ -127,6 +134,7 @@ fn fragment(
         let mask = textureSample(retail_mask, retail_mask_sampler, in.uv).r;
         out.color = shade_character(retail, retail_n, pbr_input.world_position,
             pbr_input.material.base_color.rgb,
+            character_albedo(retail_albedo.rgb),
             select(retail_albedo.a, mask, retail.options.y > 0.0),
             pbr_input.material.base_color.a);
     } else if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {

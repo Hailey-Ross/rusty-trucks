@@ -5841,7 +5841,7 @@
 82531428	guess_StringId_Create	Measures a name, hashes it with 82965848 and builds an id record from it; used by SGBehaviour_CameraChooseShot_Ctor.
 825314B8	guess_RefCounted_ReleaseAtomic	Atomic decrement of the count at +0; frees through the default allocator when it reaches zero.
 82531590	guess_SkaterLook_ClearAllSlots	guess: clears five look slots (825315E8) and the flag +0x64.
-825315E8	guess_SkaterLook_ClearSlot	Clears look slot n (0..4) by setting its id to -1
+825315E8	guess_CASGraphic_ClearLocation	Guess: clears a stamp location (word -1, placement 0, 1, -1, -1)
 82531680	guess_SkaterLook_InitAttribRef0F21	Guess: Opens collection 0F21DD698DF85813 into the ref (default 830D0850)
 825316E8	guess_NIS_SnapVecBody	Guess: vector body of the snap to ground.
 82531868	guess_MarqueeViewer_SnapToAttribCamera	Guess: reads attrib fields 513070D9CBBE801A / 241CC15BA939C1BA / 1FFDC8E3ACA07C1F and snaps the marquee camera (+0x10..+0x74)
@@ -5913,7 +5913,7 @@
 825368A8	guess_CasAssetDb_CollectFiltered	Guess: gathers the assets of all 0x1A categories that pass a filter object (slots +0xC, +8).
 82536AC0	guess_InlineVector_FreeHeapC	Frees the vector storage to pool +0x738
 82536B10	PostMsg_PresCASCharacterMorph	Small function (300 bytes) that builds and posts cMsgPresCASCharacterMorph (0xDD61B118) through MsgBus_Post.
-82536C40	guess_CAS_AdjustGraphic	Name from the messages it posts (cMsgPresCASGraphicAdjust; 1 MsgBus_Post calls, 768 bytes); the rest of the body not read.
+82536C40	guess_CASGraphic_AdjustPlacement	Guess: one placement editor op on a stamp location (rotate, scale, move u / v) inside the region constraint rect; writes the floats, posts cMsgPresCASGraphicAdjust
 82536FA0	PostMsg_PresCASGraphicAdjust	Small function (264 bytes) that builds and posts cMsgPresCASGraphicAdjust (0xDCECC774) through MsgBus_Post.
 825370A8	guess_HudCASEditor_NewAssetRequest	Guess: allocates a 0x60 byte request with three interface vtables.
 82537268	guess_HudCASEditor_ResolveCurrentAsset	guess: looks the current part key (+0x54 +0x5B50) up in the CAS asset database (guess_CasAssetDb_FindByKey, kind 3) and stores it in the pending request +0x5DDC.
@@ -5959,8 +5959,8 @@
 8253C650	guess_CAS_TickStatus	Guess: adds dt to +4 and formats a status line when active.
 8253C790	guess_CAS_TickStatusFormat	Guess: formats a status string into a byte vector.
 8253C9F8	AttribRef_InitClass7F47CA62F4100F41	Structural: binds an AttribRef to the collection of Attrib class 0x7F47CA62F4100F41 whose key is argument 2 with the shared default 830D0850.
-8253CA60	guess_SkaterLook_LoadPreset	Guess: fills the look part records from a preset and the Attrib class 0x7F47CA62F4100F41.
-8253CD18	guess_CAC_GetRangeAt	Returns the range (min / max floats) of option n (0x1C byte records) or the defaults for 0x13
+8253CA60	CASMorph_FillTable	fills the 19-entry morph table from the cac_morph_params rows by target_order (name, min / max / default per gender)
+8253CD18	CASMorph_GetNormalized	a morph value over its range: (raw - min) / (max - min), clamped 0..1
 8253CD80	guess_SkaterLook_FindPresetCollection	guess: lists the collections of Attrib class 0x7F47CA62F4100F41 and finds the requested preset.
 8253CF50	CasMgr_FindIndexByName	Name to index search over the CAS manager list +0xBD0 +0xC; fat falls back to global_fat (strings 8223B23C / 8223B230).
 8253D000	guess_HandleList_AddWithNewId	Takes the next id from counter +0, pushes (value, id) onto the vector +4 and returns the id.
@@ -5976,7 +5976,7 @@
 8253E018	AttribRef_InitCollectionBD77229E	Inits an Attrib reference to collection key 0xBD77229E4122863E (default record 830D0850 when missing).
 8253E080	guess_CAS_FindAssetByPrefix	Guess: counts asset db matches and searches names for a fixed prefix.
 8253E228	guess_FE_ListCollectionKeysBD77	Guess: Lists every collection key of the Attrib class 0xBD77229E4122863E into a vector.
-8253E3D8	guess_CasAssetDb_ReadPartField	Guess: reads field 49F0AF4276FBBAD3 of collection 345C8861CFA6BCA5
+8253E3D8	guess_CASGraphics_BuildDesignList	Guess: fills the tattoo design list of a category and location (menu 11 enter)
 8253E4D8	CasAssetDb_ClassifyLogoPart	sorts a CAS part name by its prefix "logo_", "team_logo_", "tattoo_" or "team_brand_logo_", counts matches in the asset DB and inserts the part into the 0x190 byte vector (attrib 345C8861CFA6BCA5)
 8253EA80	CasAssetDb_AddUserLogoSlots	formats "ID_CAC_USERGEN_LOGO_%d" names and inserts a part record for each user made logo
 8253EC90	CasAssetDb_IsEmptyLogo	finds "logoEmpty" in the part name
@@ -6005,7 +6005,7 @@
 82541310	guess_CAC_ListColourCollections	Guess: lists the collections of Attrib class 0xAE1F950CA0D1ADF2 and reads each.
 82541490	guess_CAC_CollectColourEntries	guess: lists keys of Attrib class 0x6D934D0E38C95E19 matching the item and binds each collection.
 82541628	guess_CAC_HasColourCollection	Guess: binds class 0xAE1F950CA0D1ADF2 and checks the collection list.
-82541788	guess_FE_TeammateCas_GetPartString	Guess: Binds the part collection (class 6D934D0E38C95E19) and reads its string +0x34.
+82541788	guess_CAS_SwapPartByColourText	Guess: the eye / board color pick part swap: hashes the picked color text and finds the part by it
 82541800	guess_FE_ClearTwoStrings	Guess: Empties the two inline strings at +0 and +0x10.
 825418B0	guess_CAS_UpdaterDtor	Guess: CAS component dtor: stores vtables 822FE7A8..822FE7C0, unregisters the CAS update and destroys the vector +0x14
 82541980	guess_UpdatableTask_InitAndRegister	guess: stores four params (+0x24..+0x3C), allocates a 0x14 byte node and adds the object to the update registry with priority 0x10.
@@ -8698,29 +8698,29 @@
 825F9990	guess_FE_ScreenFactoryBody_DeletingDtor	Guess: deleting destructor next to guess_FE_ScreenFactoryBody
 825F99F8	guess_FE_ScreenFactoryBody_Teardown	Guess: frees the Attrib collections and inline vectors built by guess_FE_ScreenFactoryBody (field 0x5BB)
 825FAA48	guess_CAC_PostThumbnailEvent	Guess: unless the 821FFB68 check passes or flag bit 0 is set, posts event 0x1E through 830CFDC4 slot 0x3C.
-825FAAF0	guess_CAS_EnterScreen	Guess: sets the memcard load tag flags, releases the fader and posts the CAS camera target and character messages (AD454A0ECD0E2EDF, +0x5B9..+0x16E9)
+825FAAF0	guess_CASScreen_UpdateLoadState	Guess: the screen load state machine; states 9 / 10 apply a loaded graphic default placement and push the editor
 825FAFF0	guess_TeammateCas_EnterApply	Guess: resets the slot look if flagged (83067058), starts the edit controller (82535D10) and sets state +0x1800 = 3.
 825FB0F8	guess_FE_TeammateCas_ApplyAndReset	Guess: Copies the profile id, resets the skater look if needed, applies the teammate CAS and clears +0x1A80.
 825FB1D0	guess_FE_TeammateCasScreen_OnExit	Guess: Slot 6 of 82303940: stores the current look record and clears +0x1A81.
 825FB2E0	guess_FE_TeammateCas_CopyLookRecord	Guess: Copies a six word look record and allocates its payload.
 825FB3B0	guess_FE_TeammateCasScreen_Slot28	Guess: Slot 28 of 82303940: sets +8 to -1.
 825FB3C0	guess_FE_TeammateCasScreen_Slot27	Guess: Slot 27 of 82303940: resets the cursor +0x177C and the stack +0x16D4.
-825FB420	guess_HudCASEditor_IsCurrentOption	Binds option 0xEB261B591CB399D8 (class 7F47) and compares its index with the argument
-825FB490	guess_HudCASEditor_GetOptionValue	Binds two options of class 7F47 and reads the value range of the current one
-825FB5B8	guess_HudCASEditor_PostMorphs	Guess: binds two class 7F47CA62F4100F41 records and posts CAS morph messages by a threshold.
-825FB718	guess_FE_TeammateCas_CheckPartReady	Guess: When +0x16E4 is clear, checks the part ready flag through the profile chain +0x1764.
-825FB8C8	guess_TeammateCas_ToggleOutfit	Guess: toggles +0x16E5, picks an asset by filter or by key and sets state +0x1800 to 0x13 or 0x11.
-825FBAE8	guess_HudCASEditor_Shutdown	Name from the messages it posts (cMsgHUDCASEditorShutdown; 1 MsgBus_Post calls, 3116 bytes); the rest of the body not read.
+825FB420	guess_CASScreen_IsBodyRow	Guess: true when the highlighted morph row is the body shape row (global_fat)
+825FB490	CASScreen_BodyRowValue	the body shape slider value: (1 - thin) / 2 + fat / 2
+825FB5B8	CASScreen_BodyRowWrite	writes the body shape slider: at or above 0.5 fat = (v - 0.5) * 2, thin 0, else thin = 1 - 2v, fat 0
+825FB718	guess_CASScreen_TakeOffUpperClothing	Guess: takes the shirt off for the upper tattoo editor (keeps the worn part to restore)
+825FB8C8	guess_CASScreen_TakeOffLowerClothing	Guess: takes the pants off for the lower tattoo editor (keeps the worn part to restore)
+825FBAE8	CASScreen_Tick	Create-a-Skater screen per-frame tick: the turntable (LT / RT), the morph row editor (one normalized step per frame past the stick threshold, both from cac_fe_morph_settings) and the graphic placement editor
 825FC718	guess_InlineVector_FreeHeapG	Frees the vector storage to a memory system pool
 825FC768	guess_FE_TeammateCas_BackStep	Guess: Plays the back sound and, when the page stack +0x16D0 has more than one entry, pops a page.
-825FC7E8	guess_FE_TeammateCasScreen_HandleButton	Guess: Slot 10 of 82303940: large button handler by page +0x175C and the stack top.
+825FC7E8	CASScreen_HandleButton	Create-a-Skater button handler: B pops a menu, Left / Right step slider / selector / color values, the editor keys of menus 7 / 8
 825FD830	guess_FlowMsg_PostCac	Guess: Applies the thumbnail list and posts a FlowMessage with code cac for the DLC row
 825FD9B0	guess_FEScreen_StartCasReload	Guess: FE vtable 8230367C slot 210: state +0x1800 = 4 and +0x1804 = CASSimManager_QueueReloadOp(+0x1764)
-825FD9F0	guess_CAC_OnThumbnailSelected	Plays FE sounds, finds the part in the CAS asset db and applies it, or opens popup 0x11E.
+825FD9F0	CASScreen_OnThumbnailSelect	a thumbnail pick: a part on menu 10 (Remove clears the slot), a tattoo design on menu 11 (none clears the location)
 825FE000	guess_FE_ShowOnlineDownloadingPopup	Guess: When not already shown (+0x1C30) and online, shows the ID_ONLINE_DOWNLOADING popup
-825FE0E0	guess_TeammateCas_PostPresMessages	Guess: Posts the CAS graphic adjust, body target and character rotate messages
-825FE280	guess_CAS_ApplyPartAdjust	Guess: finds the part in the asset DB and posts the CAS graphic adjust, body target and character rotate messages (+0x1764..+0x1C3C)
-825FE3C0	guess_CaCFilter_OnSelect	Guess: Create a character filter menu select handler: plays the select sound, applies thumbnail lists, posts the CAS camera / body / rotate messages and shows warning popups
+825FE0E0	CASScreen_PickUpperTattooRegion	an upper body tattoo region pick: the stamp location 1 word = the region, placement reset, region camera, clothing off, push the categories
+825FE280	CASScreen_PickLowerTattooRegion	a lower body tattoo region pick: the stamp location 2 word = the region, placement reset, region camera, clothing off, push the categories
+825FE3C0	CASScreen_OnMenuSelect	Create-a-Skater A on a menu row (Game.OnMenuSelect): pushes the row target; C++ branches for the tattoo region / category menus 4 / 5 / 6 and others
 825FEDB8	guess_FE_TeammateCasScreen_OnListHilight	Guess: Slot 17 of 82303940: on page 10 picks the item +0x1798 [n] into +0x17A8.
 825FEEA0	guess_HudCASEditor_ApplySelectedAsset	Guess: in screen 10 finds the asset by key and resolves it.
 825FF018	guess_CAC_GetItemTextAt	Item text of a CAC row; page 0x20 reads a record from +0x17F0, others the option table.
@@ -8732,12 +8732,12 @@
 825FFA38	guess_CAC_GetSponsorLogoFile	Page 10: sponsor logo file name of the part in the CAS asset db, or fixed strings for the current / missing one.
 825FFB18	guess_CAC_GetIntegerValueAt	Integer value of a CAC option; page type 3 reads a 6 entry table.
 825FFE08	CAC_GetOptionStringValue	Create a skater option value text: option id from table 8302FA30 for the current page; returns ID_CAC_EDIT_TRUCKS_LOOSE / TIGHT / MEDIUM, ID_CAC_EDIT_WHEELS_SOFT / HARD / MEDIUM or formats a name into the screen buffer +0x15D0.
-82600530	guess_CAC_BuildColourList	Gets the colour set for the current part (table 8302FA30, stride 0x30) and collects its entries.
-82600620	guess_CAC_GetColourAt	Option id from the CAC page table 8302FA30, then reads the colour of that option.
+82600530	CAC_BuildColourList	the current color option's cac_colour list and its count (CAC_GetColours)
+82600620	CAC_GetColourAt	the color list entry i of the current color option: its swatch (record +0x10) into S+0x17C0
 82600780	guess_U32Vector_PushBackC	Appends a word to the vector +0x16D0..+0x16D8
 82600820	guess_CAC_ApplyThumbnailList	For kind 0x11 plays sound 0x215E, then walks the word vector +0x16D0
 826008C0	guess_FE_TeammateCas_PopPage	Guess: Pops the page stack top +0x16D4 and refreshes.
-82600AF8	guess_CAC_ThumbnailListBody	Guess: stops FE sounds and fills a u32 list (very large body).
+82600AF8	CASScreen_EnterMenu	entering a Create-a-Skater menu: the shop mode, the list setup (part grid, tattoo designs), the camera target
 82603128	guess_CasMenu_CollectFilteredAssets	Guess: collects CAS asset db entries filtered by +0x1784 into list +0x1764
 82603290	CaC_ShowExitConfirmationPopup	Shows the create a character exit confirmation popup (body ID_CAC_EXIT_CAC_CONFIRMATION, two options) and posts thumbnail event 0x2173
 82603358	guess_HudCASEditor_SetMode	Stores the mode byte +0x176C, sets +0x34 and refreshes
@@ -8751,8 +8751,8 @@
 82604188	guess_CasPartList_FindByKeyPair	Guess: Index of the entry whose two 64 bit keys match
 82604208	guess_FE_TeammateCas_BuildPartList	Guess: Builds the part list +0x1C20 when empty.
 82604550	guess_FE_StoreFirstEntryAndPush0E	Guess: Reads a list into a temp vector, stores its first 8 bytes at +0x17D8 and pushes command 0xE.
-82604618	guess_TeammateCas_OnPromptConfirm	Guess: Result 0 runs 825FE0E0 on the CAS screen +0x3C
-82604658	guess_FE_CasOnAdjustConfirm	Guess: on choice 0 applies the CAS part adjust of the FE CAS object
+82604618	guess_CASScreen_UpperTattooReplaceCallback	Guess: the replace popup callback of an occupied upper tattoo location (button 0 continues the region pick)
+82604658	guess_CASScreen_LowerTattooReplaceCallback	Guess: the replace popup callback of an occupied lower tattoo location (button 0 continues the region pick)
 82604698	guess_TeammateCas_OnSaveConfirm	Guess: Result 0 sets state +0x1800 = 6 and the loading busy flags
 82604748	guess_TeammateCas_OnApplyConfirm	Guess: Result 0 sets profile flag +0x6C bit 1, applies the look and rebuilds the thumbnail list
 82604840	guess_FE_CasRestoreSelection	Guess: copies +0x1760 back to +0x175C on the FE CAS object (cancel)
@@ -24792,9 +24792,9 @@
 82C2E0A0	guess_PresAssetLoader_InitSlots	Guess: grows the 0x10 byte slot vector to 0x1C entries with default keys.
 82C2E198	guess_CacSaveable_WriteHeaderFields	Guess: writes the header words.
 82C2E270	guess_SkaterLook_ReadHeader	Guess: reads two words of the look record from the byte stream (+0xC / +0x10)
-82C2E3A8	guess_PresSkaterLook_SetPartRotation	Guess: builds a rotation from sin / cos of the part angle and writes the part transform
+82C2E3A8	CASGraphic_BuildTransform	the stamp placement matrix M = T(u,v) T(-0.5,-0.5) R(rot) S(k, 2k) T(0.5,0.5), row vectors: graphic_uv = body_uv * M
 82C2E698	guess_CAS_AdjustGraphicBody	Guess: float and vector graphic adjust.
-82C2EBD8	guess_PresSkaterLook_ApplyPartRotations	Guess: Applies the part rotations of the look.
+82C2EBD8	guess_CASGraphic_FitsConstraint	Guess: whether the transformed stamp quad lies inside the constraint rect (the placement editor fit test)
 82C2EDD0	guess_Vt82322080_FreeList	Guess: frees the 0xC byte nodes of a circular list to the system pool +0xA98.
 82C2EE40	guess_PresMorph_ListPushFront	Guess: allocates a 0xC byte node and links it at the head.
 82C2EF40	guess_AssetTree_CountRange	Guess: Walks a tree range (MapTree_NextNode).

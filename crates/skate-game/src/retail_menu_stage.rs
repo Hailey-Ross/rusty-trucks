@@ -305,6 +305,8 @@ pub(crate) struct MenuStage {
     cas_id: Option<i32>,
     cas_open: bool,
     cas_shown: bool,
+    /// The gameplay suspension before FE 15 opened (FE 15 suspends it; closing puts this back).
+    cas_suspend_before: Option<bool>,
     cas_frames: u32,
     /// The menu and panel state last sent (SetScreenState: the menu's panel kind, research b1032).
     cas_state: Option<(usize, u32)>,
@@ -383,6 +385,8 @@ pub(crate) struct MenuStage {
     injected: std::collections::VecDeque<Option<u32>>,
     /// The triggers an injected `lt` / `rt` holds this frame (the CAS turntable takes them with the pad's).
     injected_triggers: [f32; 2],
+    /// An injected held left stick x (`sl` / `sr` tokens) for this frame.
+    injected_stick: f32,
 }
 
 /// The retail menus are wanted: on unless `SKATE3_RETAIL_MENUS=0`.
@@ -861,6 +865,7 @@ fn setup(
                     .filter(|_| tables.as_ref().is_some_and(|t| t.cas_menus.len() > crate::cas_host::TOP_MENU)).map(|i| 600 + i as i32),
                 cas_open: false,
                 cas_shown: false,
+                cas_suspend_before: None,
                 cas_frames: 0,
                 cas_state: None,
                 cas_host: crate::cas_host::CasHost {
@@ -870,6 +875,10 @@ fn setup(
                     logos: cas_vault.1,
                     cameras: cas_vault.0,
                     bodies: cas_vault.2,
+                    colour_zones: cas_vault.3,
+                    morphs: cas_vault.4.0,
+                    morph_settings: cas_vault.4.1,
+                    tattoo_categories: cas_vault.5,
                     ..crate::cas_host::CasHost::new(tables.as_ref().map(|t| t.cas_menus.clone()).unwrap_or_default(),
                         tables.as_ref().map(|t| t.cas_options.clone()).unwrap_or_default())
                 },
@@ -922,6 +931,7 @@ fn setup(
                 repeat: RepeatRule::RETAIL,
                 injected: injected_keys(&std::env::var("SKATE3_RETAIL_MENUS_KEYS").unwrap_or_default()),
                 injected_triggers: [0.0; 2],
+                injected_stick: 0.0,
             });
         }
         Err(e) => error!("RETAIL_MENUS stage failed: {e}"),
@@ -931,9 +941,13 @@ fn setup(
 /// Injected "keys" from here on are a fully held trigger for one frame (LT, RT), not Apt keys.
 const INJECTED_LT: u32 = 1000;
 const INJECTED_RT: u32 = 1001;
+/// The left stick held fully left / right for one frame.
+const INJECTED_SL: u32 = 1002;
+const INJECTED_SR: u32 = 1003;
 
 /// `SKATE3_RETAIL_MENUS_KEYS` tokens: a key index, `_` (one empty frame), `_xN` (N empty frames), `lt` / `rt` (a held
-/// trigger for one frame) or `ltxN` / `rtxN` (N frames).
+/// trigger for one frame), `sl` / `sr` (the left stick held left / right for one frame), or `ltxN` / `rtxN` / `slxN`
+/// / `srxN` (N frames).
 fn injected_keys(list: &str) -> std::collections::VecDeque<Option<u32>> {
     let mut out = std::collections::VecDeque::new();
     for token in list.split(',').map(str::trim) {
@@ -944,6 +958,10 @@ fn injected_keys(list: &str) -> std::collections::VecDeque<Option<u32>> {
             out.extend(std::iter::repeat_n(Some(INJECTED_LT), frames(rest)));
         } else if let Some(rest) = token.strip_prefix("rt") {
             out.extend(std::iter::repeat_n(Some(INJECTED_RT), frames(rest)));
+        } else if let Some(rest) = token.strip_prefix("sl") {
+            out.extend(std::iter::repeat_n(Some(INJECTED_SL), frames(rest)));
+        } else if let Some(rest) = token.strip_prefix("sr") {
+            out.extend(std::iter::repeat_n(Some(INJECTED_SR), frames(rest)));
         } else {
             out.extend(token.parse().ok().map(Some));
         }
@@ -1388,6 +1406,19 @@ fn update(
                     s.done = true;
                 }
             }
+            // FE 15 runs with the world stopped (retail's front end has no world behind it): otherwise gameplay
+            // animation and the fixed-step world keep driving the same skater rig the CAS stage poses, and the
+            // skater jumps around (user, 2026-11-19; MARQUEE_TRACE). Closing restores what was there before.
+            if let Some(overlay) = overlay.as_mut() {
+                if wanted_cas {
+                    ms.cas_suspend_before = Some(overlay.fe_suspended);
+                    overlay.fe_suspended = true;
+                    info!("RETAIL_MENUS CreateASkater world stopped");
+                } else if let Some(before) = ms.cas_suspend_before.take() {
+                    overlay.fe_suspended = before;
+                    info!("RETAIL_MENUS CreateASkater closed: gameplay {}", if before { "stays suspended" } else { "resumed" });
+                }
+            }
             ms.cas_open = wanted_cas;
             ms.cas_shown = false;
             ms.cas_frames = 0;
@@ -1401,10 +1432,20 @@ fn update(
             fired.insert(0, (APT_START, 0));
         }
         ms.injected_triggers = [0.0; 2];
+        ms.injected_stick = 0.0;
         if ms.stack.input_target().is_some() || ms.end_open.is_some() || ms.reward_open.is_some() || ms.poster_open || ms.welcome_open || ms.coach_open || ms.ftm_open || ms.team_open || ms.cas_open {
             match ms.injected.pop_front().flatten() {
                 Some(k @ (INJECTED_LT | INJECTED_RT)) => ms.injected_triggers[(k - INJECTED_LT) as usize] = 1.0,
+                Some(INJECTED_SL) => ms.injected_stick = -1.0,
+                Some(INJECTED_SR) => ms.injected_stick = 1.0,
                 k => fired.extend(k.map(|k| (k, 0))),
+            }
+        }
+        // A held morph step (cas_host::tick_morph) refreshes the row like a Left / Right value change (825FBAE8 calls
+        // the movie's vt+0x14 with 50).
+        if std::mem::take(&mut fe.cas.value_refresh) {
+            if let (true, true, Some(id)) = (ms.cas_open, ms.cas_shown, ms.cas_id) {
+                set_state(&mut ms.stage, id, 50, &mut fe)?;
             }
         }
         for (key, controller) in fired {
@@ -1453,6 +1494,8 @@ fn update(
                                     vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())], &mut fe)?;
                             }
                         }
+                        // The tattoo placement editor (menus 7 / 8) takes A and the reset key in C++ (825FC7E8).
+                        k if fe.cas.tattoo_editor_key(k) => {}
                         APT_PREVIOUS => {
                             if !fe.cas.back() {
                                 info!("RETAIL_MENUS CreateASkater exit confirmation");
@@ -2092,7 +2135,13 @@ fn update(
                 Effect::SuspendGameplay(on) => {
                     info!("RETAIL_MENUS gameplay {}", if on { "suspended" } else { "resumed" });
                     if let Some(overlay) = overlay.as_mut() {
-                        overlay.fe_suspended = on;
+                        // While FE 15 is open the world stays stopped: a screen closing under it (the name entry
+                        // closes the frame FE 15 opens) only changes what FE 15's close restores.
+                        if ms.cas_open {
+                            ms.cas_suspend_before = Some(on);
+                        } else {
+                            overlay.fe_suspended = on;
+                        }
                     }
                 }
                 // vt+44(hud, online): 0 both on, 1 both off, 2 online only (3 = keep is never emitted).
@@ -3282,7 +3331,7 @@ fn set_state(stage: &mut Stage, id: i32, state: i32, fe: &mut FrontEnd) -> Resul
 /// Whether the movie made this call this frame (removes it).
 /// FE 15's look on the skater and its save (cas_host::sync_look).
 fn cas_look(stage: Option<ResMut<MenuStage>>, customiser: Option<ResMut<crate::customiser::Customiser>>,
-    parts: Option<Res<crate::customiser_parts::Parts>>, time: Res<Time>, input: Option<Res<crate::input::ControllerInput>>,
+    parts: Option<Res<crate::customiser_parts::Parts>>, time: Res<Time<Real>>, input: Option<Res<crate::input::ControllerInput>>,
     career: Option<Res<crate::career::CareerState>>) {
     let (Some(mut ms), Some(mut customiser), Some(parts)) = (stage, customiser, parts) else { return };
     // The parts' locks follow the career's unlocks (825F46C8).
@@ -3293,9 +3342,18 @@ fn cas_look(stage: Option<ResMut<MenuStage>>, customiser: Option<ResMut<crate::c
     }
     // The turntable turns only while FE 15 is the top screen (825FBAE8 returns while a screen is pushed over it).
     if ms.cas_host.open && ms.cas_open && ms.cas_shown && ms.popups.is_empty() {
-        let pad = input.map_or([0.0; 2], |i| i.raw_input().triggers);
+        let raw = input.map(|i| i.raw_input()).unwrap_or_default();
         let held = ms.injected_triggers;
-        ms.cas_host.rotate([pad[0].max(held[0]), pad[1].max(held[1])], time.delta_secs());
+        ms.cas_host.rotate([raw.triggers[0].max(held[0]), raw.triggers[1].max(held[1])], time.delta_secs());
+        // The morph rows (825FBAE8 queries 0x378 / 0x8C: the d-pad and left stick x [inferred]).
+        let dpad = f32::from(raw.buttons & 0x0008 != 0) - f32::from(raw.buttons & 0x0004 != 0);
+        let x = [raw.left[0], dpad, ms.injected_stick].into_iter().fold(0.0f32, |a, v| if v.abs() > a.abs() { v } else { a });
+        ms.cas_host.tick_morph(x, time.delta_secs());
+        // The tattoo placement editor (825FBAE8): bumpers rotate, left stick y scales, right stick moves (scripted
+        // runs move u with `sl` / `sr`).
+        let rotate = f32::from(raw.buttons & 0x0200 != 0) - f32::from(raw.buttons & 0x0100 != 0);
+        let move_u = if ms.injected_stick != 0.0 { ms.injected_stick } else { raw.right[0] };
+        ms.cas_host.tick_tattoo([rotate, raw.left[1], move_u, raw.right[1]], time.delta_secs());
     }
     if ms.cas_host.preview_wait.is_some() {
         ms.cas_host.tick(time.delta_secs());
@@ -3411,6 +3469,14 @@ fn render(
     // Image slots (ImageRenderComponent, `slot/<n>`): the slot's loaded image; an empty slot or an image nobody has
     // draws nothing (retail: the texture lookup finds nothing, b258 section 2), never the white fallback.
     for draw in &mut draws {
+        if let Some(rgba) = ms.image_slots.swatch(&draw.texture) {
+            draw.texture.clear();
+            draw.fill = crate::apt_scene::Fill::Solid;
+            for i in 0..4 {
+                draw.multiply[i] *= rgba[i];
+            }
+            continue;
+        }
         if draw.texture.starts_with(crate::image_renderer_host::SLOT_TEXTURE_PREFIX) {
             draw.texture = ms.image_slots.texture(&draw.texture).unwrap_or_default().to_owned();
             if draw.texture.is_empty() {

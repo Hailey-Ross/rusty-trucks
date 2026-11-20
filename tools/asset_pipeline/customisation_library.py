@@ -318,15 +318,16 @@ def prepare(config):
         print('Prepared',part['slot'],len(model_data),'models',len(mat_data),'materials',flush=True)
     tattoos={}
     misc=next((p for p in catalog['components'] if p['slot']=='Misc'),None)
-    variants=(v for m in (misc or {}).get('models',[]) for lod in m.get('lods',[])
+    variants=((m,v) for m in (misc or {}).get('models',[]) for lod in m.get('lods',[])
               for group in lod.get('material_instances',[]) for v in group)
-    for variant in variants:
+    for model,variant in variants:
         try:
             mid=variant['id'];mat=catalog['materials'][mid]
             if not mat['flags'].get('cas.TattooCategory'):continue
             tex={t['channel']:t['id'] for t in mat['textures']}
             tattoos[mid]=dict(name=friendly(variant['name']),texture=texture(tex['decal']),
-                bounds=[float(v) for v in mat['flags']['cas.StampBorderConstraint'].split(',')])
+                bounds=[float(v) for v in mat['flags']['cas.StampBorderConstraint'].split(',')],
+                category=mat['flags']['cas.TattooCategory'],thumbnail=(model['name']+'_'+variant['name']).lower())
         except CONTENT_ERRORS as error:
             errors.append(dict(tattoo=variant.get('id'),error=str(error)))
     # Warm-up must not add receipted files a serial run would not have made.

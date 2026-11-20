@@ -78,6 +78,8 @@ pub(crate) struct CharacterParams {
     pub options: Vec4,
     pub rows: [Vec4; 9],
     pub sh: [Vec4; 9],
+    /// The hair highlight tint (a CAS color pick's recipe B, doc 43 "Color rows"); w = 1 when set.
+    pub highlight_tint: Vec4,
 }
 /// Character material binding and lighting updates; the ghost fade draws after them.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -344,6 +346,7 @@ fn bind(
                     f32::from(data.is_hair()),
                 ),
                 rows: std::array::from_fn(|i| Vec4::from_array(data.params[i])),
+                highlight_tint: Vec4::ZERO,
                 sh: lighting
                     .data
                     .default_sh
