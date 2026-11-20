@@ -79,6 +79,8 @@ struct Viewer {
     clip: Option<Option<Arc<SceneClip>>>,
     /// The bank and clip `clip` was loaded for (FE 15's body targets change it).
     clip_key: Option<(String, String)>,
+    /// SKATE_TRACE_MARQUEE only: the bone transforms written last frame.
+    written: Vec<(Entity, Transform)>,
     bindings: Option<AnimationStatus>,
     /// Bound after the swap for `shown` finished, with the skinned mesh count then (outfit parts spawn later).
     bound_for: Option<Skater>,
@@ -191,10 +193,47 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
     let Some(globals) = crate::trick_guide_scene::pose(&clip, viewer.time) else { return };
     // The character's world transform is translate(position) * rotY(heading) (b578), drawn through the player rig.
     let root = world.get::<GlobalTransform>(player).copied().unwrap_or_default().to_matrix();
+    if std::env::var_os("SKATE_TRACE_MARQUEE").is_some() {
+        let local = world.get::<Transform>(player).copied().unwrap_or_default();
+        let global = root.to_scale_rotation_translation().2;
+        info!("MARQUEE_TRACE t {:.3} global [{:.3}, {:.3}, {:.3}] local [{:.3}, {:.3}, {:.3}] gap {:.4} skins {skins}",
+            world.resource::<Time<Real>>().elapsed_secs(), global.x, global.y, global.z,
+            local.translation.x, local.translation.y, local.translation.z, global.distance(local.translation));
+    }
     let place = root.inverse() * Mat4::from_rotation_translation(facing(stage.heading_degrees) * Quat::from_rotation_y(turntable), stage.position);
     if let Some(bindings) = &viewer.bindings {
         let matrices: Vec<Mat4> = globals.iter().map(|g| place * crate::animation::native_matrix(*g)).collect();
-        for (entity, transform) in bindings.pose_transforms(&matrices) {
+        let poses = bindings.pose_transforms(&matrices);
+        if std::env::var_os("SKATE_TRACE_MARQUEE").is_some() {
+            // The last frame's final world position of one bound bone (after every later writer), and whether any
+            // bound bone's local transform changed since this system wrote it last frame (another writer).
+            if let Some(bone) = poses.last().and_then(|(e, _)| world.get::<GlobalTransform>(*e)) {
+                let p = bone.translation();
+                info!("MARQUEE_BONE t {:.3} bone [{:.3}, {:.3}, {:.3}]", world.resource::<Time<Real>>().elapsed_secs(), p.x, p.y, p.z);
+            }
+            // A bone from the middle of the skeleton, which the stand clip moves (the idle still plays).
+            if let Some(bone) = poses.get(poses.len() / 2).and_then(|(e, _)| world.get::<GlobalTransform>(*e)) {
+                let p = bone.translation();
+                info!("MARQUEE_MIDBONE t {:.3} bone [{:.3}, {:.3}, {:.3}]", world.resource::<Time<Real>>().elapsed_secs(), p.x, p.y, p.z);
+            }
+            let mut changed = 0usize;
+            let mut worst = 0.0f32;
+            for (entity, written) in viewer.written.iter() {
+                if let Some(now) = world.get::<Transform>(*entity) {
+                    let d = now.translation.distance(written.translation) + now.rotation.angle_between(written.rotation);
+                    if d > 1e-4 {
+                        changed += 1;
+                        worst = worst.max(d);
+                    }
+                }
+            }
+            if changed > 0 {
+                info!("MARQUEE_OVERWRITE t {:.3} bones {changed} of {} worst {worst:.4}",
+                    world.resource::<Time<Real>>().elapsed_secs(), viewer.written.len());
+            }
+            viewer.written = poses.clone();
+        }
+        for (entity, transform) in poses {
             if let Some(mut node) = world.get_mut::<Transform>(entity) {
                 *node = transform;
             }

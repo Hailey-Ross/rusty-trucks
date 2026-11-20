@@ -49,6 +49,13 @@ pub(crate) struct Tattoo {
     pub name: String,
     pub texture: String,
     pub bounds: [f32; 4],
+    /// The material's cas.TattooCategory: the `cac_tattoo_category` record whose text field holds it lists it in
+    /// Create-a-Skater (doc 43 "Tattoos"); empty in libraries set up before the field.
+    #[serde(default)]
+    pub category: String,
+    /// The design's Create-a-Skater thumbnail, `fe\cas\logos\<thumbnail>` (<model>_<variant>, lower case).
+    #[serde(default)]
+    pub thumbnail: String,
 }
 #[derive(Default, Deserialize)]
 pub(crate) struct Library {
@@ -72,6 +79,19 @@ pub(crate) struct Parts {
 }
 #[derive(Component)]
 pub(crate) struct PartRoot(pub String);
+
+/// The color zone (COLORIZED_SLOT, research b991) that tints a part slot: hat 0, hair 1, top 9, sock 10, bottom 12.
+/// Skin (2) goes by the material's SkinTone flag instead.
+pub(crate) fn colour_zone_for_slot(slot: &str) -> Option<u32> {
+    match slot {
+        "Hat" => Some(0),
+        "Hair" => Some(1),
+        "OuterTorso" => Some(9),
+        "Sock" => Some(10),
+        "Pants" => Some(12),
+        _ => None,
+    }
+}
 pub(crate) fn asset_directory(assets: &std::path::Path) -> std::path::PathBuf {
     let base = assets.join("private/customisation");
     if std::fs::read(base.join("customiser-availability.json")).ok()
@@ -156,6 +176,9 @@ impl Parts {
                     || v["side"]
                         .as_u64()
                         .is_some_and(|v| v > if zone == "Arm" { 3 } else { 1 })
+                    || !v["placement"].is_null()
+                        && !serde_json::from_value::<[f32; 4]>(v["placement"].clone())
+                            .is_ok_and(|p| p.iter().all(|x| x.is_finite()) && p[1] > 0.0)
                 {
                     return Err("Invalid tattoo".into());
                 }
@@ -431,6 +454,14 @@ impl Parts {
             else { profile["colours"].get(&part.slot) };
         let rgb = tint.and_then(|v| serde_json::from_value::<[f32;3]>(v.clone()).ok()).unwrap_or(source.tint);
         material.base.base_color = Color::srgb(rgb[0],rgb[1],rgb[2]);
+        // A Create-a-Skater color pick (cas_host `colour_tints`, by COLORIZED_SLOT): retail's recipe A, which the
+        // character shaders multiply into the squared diffuse as is (doc 43 "Color rows"), so linear and unclamped.
+        let zone = if !source.flag("SkinTone").is_empty() { Some(2) } else { colour_zone_for_slot(&part.slot) };
+        let picked = zone.and_then(|z| profile["colour_tints"].get(z.to_string()))
+            .and_then(|v| serde_json::from_value::<[f32; 3]>(v.clone()).ok());
+        if let Some(a) = picked {
+            material.base.base_color = Color::linear_rgb(a[0], a[1], a[2]);
+        }
         let slot = if part.slot == "OuterTorso" && part.flag("TopType").is_empty() { "Arm" } else { &part.slot };
         let stamp = &profile["tattoos"][slot];
         let mut extension = SkinStamp {
@@ -443,6 +474,10 @@ impl Parts {
             tint.w = 1.;
             extension.retail.tint = tint;
         }
+        // The hair's highlight tint: the pick's recipe B (cas_host `colour_highlights`).
+        extension.retail.highlight_tint = zone.and_then(|z| profile["colour_highlights"].get(z.to_string()))
+            .and_then(|v| serde_json::from_value::<[f32; 3]>(v.clone()).ok())
+            .map_or(Vec4::ZERO, |b| Vec4::new(b[0], b[1], b[2], 1.0));
         if let Some((tid,t)) = stamp["id"].as_str().and_then(|id| self.library.tattoos.get(id).map(|t|(id,t))) {
             let key=match stamp["side"].as_u64().unwrap_or(0) {1=>"StampUVConstraintQ4",2=>"StampUVConstraintQ1",3=>"StampUVConstraintQ2",_=>"StampUVConstraintQ3"};
             let bounds:Vec<f32>=part.flag(key).split(',').filter_map(|n|n.parse().ok()).collect();
@@ -450,6 +485,13 @@ impl Parts {
                 let (transform,rectangle)=crate::customiser_material::placement(bounds,t.bounds);
                 extension.texture=self.tattoos.get(tid).cloned(); extension.transform=transform;
                 extension.rectangle=rectangle; extension.enabled.x=1.;
+            }
+            // A Create-a-Skater placement (rotation, scale, u, v; cas_host): retail's matrix, no stretch to the
+            // region (doc 43 "Tattoos").
+            if let Ok(p)=serde_json::from_value::<[f32;4]>(stamp["placement"].clone()) {
+                let (row_x,row_y)=crate::customiser_material::placement_rows(p);
+                extension.texture=self.tattoos.get(tid).cloned(); extension.row_x=row_x; extension.row_y=row_y;
+                extension.enabled.x=1.; extension.enabled.z=1.;
             }
         }
         material.extension=extension; Some(material)
@@ -833,7 +875,7 @@ mod online_tests {
         let mut parts=Parts::default();
         parts.library.models.insert("body".into(),Part{slot:"Arm".into(),name:"body".into(),flags:HashMap::from([("StampUVConstraintQ3".into(),"0,0,1,1".into())]),materials:vec!["skin".into()],scene:String::new()});
         parts.library.materials.insert("skin".into(),Material{name:"skin".into(),flags:HashMap::from([("SkinTone".into(),"fair".into())]),diffuse:String::new(),normal:None,rough:None,alpha:false,opacity:None,tint:[1.;3],metallic:0.,roughness:0.5,lighting:None});
-        parts.library.tattoos.insert("ink".into(),Tattoo{name:"ink".into(),texture:String::new(),bounds:[0.,0.,1.,1.]});
+        parts.library.tattoos.insert("ink".into(),Tattoo{name:"ink".into(),texture:String::new(),bounds:[0.,0.,1.,1.],category:String::new(),thumbnail:String::new()});
         let mut images=Assets::<Image>::default();let image=images.add(Image::default());parts.tattoos.insert("ink".into(),image.clone());
         let mut materials=Assets::<SkaterMaterial>::default();
         let handle=materials.add(SkaterMaterial{base:StandardMaterial{normal_map_texture:Some(image.clone()),base_color_texture:Some(image.clone()),..default()},extension:SkinStamp {

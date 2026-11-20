@@ -30,8 +30,26 @@ pub(crate) struct SkinStamp {
     /// min.xy, max.zw of the selected arm/leg's stampable rectangle.
     #[uniform(102)]
     pub rectangle: Vec4,
+    /// x: stamp on, y: hair opacity, z: retail placement (`row_x` / `row_y`) instead of `transform` / `rectangle`.
     #[uniform(102)]
     pub enabled: Vec4,
+    /// The retail placement matrix's two rows (i_customGraphic c190 / c191): graphic_uv = (dot(row_x.xyz, (uv, 1)),
+    /// dot(row_y.xyz, (uv, 1))) (82C2E3A8, research b1043; doc 43 "Tattoos").
+    #[uniform(102)]
+    pub row_x: Vec4,
+    #[uniform(102)]
+    pub row_y: Vec4,
+}
+
+/// The retail stamp placement (rotation, scale k, u, v) as the shader's two rows: M = T(u, v) T(-0.5, -0.5) R(rot)
+/// S(k, 2k) T(0.5, 0.5) on row vectors (82C2E3A8): gx = k (c qx - s qy) + 0.5, gy = 2k (s qx + c qy) + 0.5 with
+/// q = uv + (u, v) - 0.5.
+pub(crate) fn placement_rows(p: [f32; 4]) -> (Vec4, Vec4) {
+    let [rot, k, u, v] = p;
+    let (s, c) = rot.sin_cos();
+    let ox = k * (c * (u - 0.5) - s * (v - 0.5)) + 0.5;
+    let oy = 2.0 * k * (s * (u - 0.5) + c * (v - 0.5)) + 0.5;
+    (Vec4::new(k * c, -k * s, ox, 0.0), Vec4::new(2.0 * k * s, 2.0 * k * c, oy, 0.0))
 }
 impl MaterialExtension for SkinStamp {
     fn fragment_shader() -> ShaderRef {

@@ -685,11 +685,213 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   the option / info types, a locked pick stays on the grid. The highlight preview still shows a locked part
   (825FEEA0 has no lock test). Test `a_part_with_an_ungranted_unlock_is_locked_and_cannot_be_picked`. NOT RETAIL YET:
   the error sound (its name is not known, only the hash) and the DLC purchase popup 0x11E.
+- **Fix: the world stops behind Create-a-Skater** (2026-11-19): the skater on the CAS set jumped around (seen while
+  the boot flow's first Create-a-Skater ran; worse the deeper into the menus). Measured with `SKATE_TRACE_MARQUEE=1`
+  (marquee_preview.rs: the rig root, one end bone and one mid bone per frame, and how many bound bones another system
+  rewrote between two frames; summary tool `.local/poc-tests/marquee-trace.py`) and from a capture split into frames
+  (`.local/poc-tests/track-dark-blob.py`): with the world running, gameplay animation and the fixed-step world posed the
+  same player rig every frame (about 360 of 385 bones, at the player's spot in DownTown 300 m away), peds kept streaming
+  in (skinned meshes 107 -> 207, each change also rebinds the stage), and the posed skater jumped 5 to 24 cm out and
+  back 34 times in 41 s (320 px pops in the capture). Cause in our code: FE 15 never suspended gameplay, and the name
+  entry (FE 46) closing in the frame FE 15 opens sent "resume". Change (`retail_menu_stage.rs`): opening FE 15 suspends
+  gameplay (the PC overlay's `fe_suspended`, virtual time paused) and keeps it suspended while open (a resume from a
+  screen under it only changes what FE 15's close restores); closing restores the state from before; the CAS look /
+  preview / turntable system runs on real time. After: rig 0.00 m over 41 s, skinned mesh count constant, no jumps over
+  5 cm on the end or mid bone, the idle sway plays (mid bone about 1 mm per frame), on Merchandise, Body Shape and
+  Brow; the user watched the runs: smooth, sways in place like retail. Retail parity: retail's front end has no world
+  running behind FE 15 [inferred from the boot flow; the world-tick gating code is not read]. Open: small frame-time
+  hitches remain (the head material swap: 15 hitches, worst 46 ms on Left / Right in run casbrow2).
 - **Fix: the list pickers' rows are enabled** (2026-11-18): the CAS screen's OnMenuGetItemEnabled (vtable slot 0x48,
   word at 82303988) is 8281DD70, which returns 1 [code]. Our host did not answer the call, so the Merchandise /
   Accessories / Skateboards lists (panel 0, the movie's menu picker) showed no highlight and ignored Up / Down; only
   their first row (Hats) could be opened (seen while scripting a run to Accessories > Wrist; the "no row highlighted"
   note below). Now answered `true`; test `every_picker_row_is_enabled`.
+- **Facial hair and eyebrow style selectors** (2026-11-19; Ghidra `.local/research/ghidra/cas-input.txt`,
+  `cas-stringvalue.txt`, `cas-style-*.txt`; research b1037 for the record layout, main verified its name table and
+  the head match function):
+  - Left / Right on Facial Hair Style (option 67, menu 21) and Eyebrow Style (80, menu 24) [code, high]: the CAS
+    input 825FC7E8 steps the menu's part list (S+0x1798) with wraparound and applies the part. The list is built on
+    entering the menu (82600AF8) with the screen's own filter objects (ctor 825F4B98: S+0xCDC "Facial Hair Style
+    Filter" 82304560, S+0xF4C "Eyebrow Style Filter" 82304548), not the option's action object. Their tests (825F3F38,
+    825F3DA8) keep the head parts that equal the worn head in Gender, SkinTone, HairlineShadowStyle,
+    HairlineShadowColour and the other style; the eyebrow list is sorted, and drops "style7" (82302284) when the
+    screen's gender check returns 0 [inferred: male].
+  - Data [data]: the head looks are the head model's materials (male "Head" 470: skin tone, hairline shadow, facial
+    hair and eyebrow combinations; female "Thin Head" 36, no facial hair), so the selectors step materials, read by
+    flag NAME (a mod's materials join by their flags).
+  - The row's value (825FFE08) [code]: `ID_CAC_FACIAL_HAIR_<style>` / `ID_CAC_EYEBROW_<style>` (the flag value upper
+    case, spaces to underscores, e.g. "full beard" -> ID_CAC_FACIAL_HAIR_FULL_BEARD "Full Beard"), and the retail
+    error texts `#FacialHairStyleNotTaggedError` / `#BrowStyleNotTaggedError` for an untagged look.
+  - Change: `cas_host` fills `heads` from the parts library (`head_looks`), `build_style_list` on entering menu 21 /
+    24, `step_style` on Left / Right (puts the material on; facial hair also sets the look's `beard`, which
+    `customiser_parts::resolve` matches the head material to), `style_text` for CAC_GetStringValue. Test
+    `the_facial_hair_and_eyebrow_selectors_step_head_looks_that_keep_the_other_fields`. NOT RETAIL YET: the Left /
+    Right sounds (0xAD8BF9A0B4997B49 / 0xD8EE38A61C45EA28), the hair style (65, its filter's stored index is open),
+    skin tone (63) and the Edit Style rows.
+- **Color rows** (2026-11-19; research b991, b1038 (main verified the vault side), b1040 (TU3 shaders)):
+  - Rows and zones [code, 82603E98]: Skin Color 62 -> skin zone (COLORIZED_SLOT 2), Hair Color 66 -> hair (1),
+    Facial Hair Color 68 -> facial hair (8; in no TU3 menu), Eye Color 76 -> eye (6). Each `cac_colour_zone` (class
+    0xAE1F950CA0D1ADF2) names its slot, a group (RefSpec) and a default color; the list is the group's `cac_colour`
+    rows (class 0x6D934D0E38C95E19) by their order field, ascending [data: hair 10, skin 7, eye 5, clothing 10 red ..
+    black; board 10]. Left / Right step the current index (the look's color key for the zone, else 0) clamped, no
+    wrap; CAC_GetColours gives the swatches, CAC_GetIntegerValue on a color row the current index [code, b1038].
+  - Applying [code b991 + shader b1040]: CAS_ColorPickerApply writes the color's recipe pair (A = `cac_colour`
+    0x97462E6ABC78A423, HDR up to 2.69; B = 0xBC3B0D9B2DB64358) into the zone's tint channel (hair also into the
+    eyebrow and facial hair channels; skin also into the arm, leg and torso channels). The skater's character
+    shaders (cac_cloth, cacstamp_cloth / skin, cac_face, cac_hair) multiply the squared diffuse by one color
+    (i_modulateColor1), no ped-style mask; only cac_hair has a second color (i_modulateColor2) on its highlight.
+    Which recipe feeds which constant, and that it is uploaded unconverted, is [inferred]: the upload code was not
+    found (the constant names live only in the shaders' constant tables), and the ped port (doc 26f "Ped colorize")
+    uses its data tints raw in the same squared space.
+  - Change: `cas_host` loads the zones with the vault (`load_colour_zones`), handles the color rows, keeps the
+    picked key per zone (`colour_keys`) and writes recipe A to `colour_tints`; `customiser_parts::profile_material`
+    uses `colour_tints` as a linear, unclamped base color for the zone's parts (skin by the SkinTone flag, hat 0,
+    hair 1, top 9, sock 10, bottom 12), so the retail tint path takes it as is. Tests
+    `a_color_row_starts_on_the_zones_default_steps_clamped_and_keeps_the_key`, the vault test (zone sizes, the eye
+    order). The pick log names each color by its text field, which is the part match text (hair: blonde / medium
+    brown / black), not a display name: pink hair logs as "medium brown" [data].
+  - Swatch squares [code 825A5F88 / 825A5FE8 / 825A6038, movie `controls/swatch_renderer`]: the color row's
+    `highlight_color` builds one `swatch_renderer` per color and passes CAC_GetColours' r, g, b to
+    `Game.SwatchRenderer_SetColour(index, r, g, b)`; the host keeps 100 slots (reserve = first free, else -1;
+    free clears the flag), floats as is, integers / 255, alpha 1. Ours: `image_renderer_host::ImageSlots`
+    swatches, `apt_scene` draws a `SwatchRenderComponent` as `swatch/<n>`, the stage fills it with the slot's
+    color. NOT RETAIL YET: integer arguments (our VM has one number type, all taken as is; the TU3 movies pass
+    floats). Test `swatch_slots_reserve_color_and_free_like_retail`.
+  - Hair highlight [shader b1040, cac_hair_defaultPS]: `lin x (diffuse light x MOD1 + highlight x MOD2)`. The pick's
+    recipe B goes to `colour_highlights` and the hair material's `CharacterParams::highlight_tint`; `shade_character`'s hair
+    path takes the untinted `lin` and uses `lin x highlight_tint` for its highlight term when set (unset: unchanged). That
+    recipe B is MOD2 is [inferred] like recipe A's upload.
+  - Skin color: the skin zone's colors carry match text light / dark, and their recipe A is a tone, not the
+    darkness (the first dark color's A is 0.56, 0.53, 0.46, lighter than the fourth light one's 0.45, 0.36, 0.29)
+    [data]. So a skin pick also sets the look's `skin` to the text, which the parts resolve turns into the light or
+    dark SkinTone material of the head, arms and legs, and recipe A tints over it [inferred from that data; the
+    retail code that swaps the texture is not read: 82538060 writes tints only, b1038]. Checked in game (the
+    darkest color darkens face, arms and legs). Test `a_skin_color_pick_sets_the_skin_tone_by_its_text_and_tints`.
+    The skin Tone row (63) is dead UI in retail (b1039), so skin tone is this row.
+  - Eye color [code 82541788, b1038 section 3]: the eye zone tints nothing; the pick's match text selects the eye
+    part's material with that `EyeColour` flag (our data: slot `Organ`, one eye model per gender with five
+    materials). Ours: `cas_host` keeps the eye models (`eye_models`) and wears the worn (else the gender's) eye
+    model with the matching material. Test `an_eye_color_pick_wears_the_eye_material_with_that_color_and_no_tint`.
+    The face preset row switching to Custom on an eye / skin pick waits for the presets port.
+  - NOT RETAIL YET: the eyebrow / facial hair channels a hair pick also writes (our heads bake brows and facial
+    hair into the head material, whose `HairlineShadowColour` matches the hair color's text; that a hair pick
+    swaps the head material by it is NOT proven, b1038), the board part swap by the color's text, the clothing
+    color row (98 on the wear style menu), the sounds.
+- **Tattoos** (2026-11-19; research b1042 (agent, from the recomp's asm; Ghidra not run), main checked the menu tree
+  in the extracted table and the category data in the vault export, which corrected the agent's list field hash to
+  0xFFDEC982A33E9230 and showed 0x49F0AF4276FBBAD3 is a Bool, not the design list):
+  - Flow [code 825FE3C0, b1042]: Body Mods' Upper / Lower Body Tattoo (options 19 / 20) push the region menus 4
+    (27 front, 28 back, 29 left arm, 30 right arm) / 5 (31 left leg, 32 right leg); a region pushes the categories
+    (6), a category the design list (11, panel 6), a design the placement editor (7 / 8); "none" clears the
+    location and pops to Body Mods. The region rows have no target: the pushes are C++.
+  - Data [data]: `cac_tattoo_categories/default` (class 0xD38EA152CCFDEE0D) lists three `cac_tattoo_category`
+    records (class 0x345C8861CFA6BCA5) whose text field 0xC283F7484D8204B6 is '1' / '2' / '3', the value of the
+    designs' cas.TattooCategory (66 / 44 / 60 designs). Retail keeps one upper and one lower tattoo (stamp tail
+    locations 1 / 2).
+  - Change: the library export keeps each tattoo's `category` (customisation_library.py; installs set up before
+    it get the field from `.local/tools/add-tattoo-category.py` or the next Refresh Game Files); `cas_host` loads
+    the category list with the vault, fills menu 6's rows from it, lists a category's designs with "none" last,
+    and a pick writes the look's `tattoos.Arm` / `tattoos.Leg` with our stamp `side` for the region.
+    Test `a_tattoo_goes_region_category_design_and_none_removes_it`, the vault test (categories).
+  - Placement [code + data, research b1043 (agent) and main's dumps]: a placement is (rotation, scale k, u, v).
+    82C2E3A8 builds M = T(u, v) T(-0.5, -0.5) R(rot) S(k, 2k) T(0.5, 0.5) on row vectors, graphic_uv = body_uv * M:
+    the graphic centered at body (0.5 - u, 0.5 - v), 1 / k wide and 1 / (2k) high, never stretched to the region;
+    the stamp shaders take M's columns as i_customGraphic (c190 / c191). A design pick posts the region's default
+    placement (table 0x830442B8 by the region's row: upper 1 / 5 / 7 / 10, lower 8 / 11 from 0x83044468 /
+    0x83044498; e.g. arms k 7 at u +-0.25, v -0.15) and pushes the editor (7 / 8).
+  - Editor [code 825FBAE8 / 82536C40 / 82C2E698 / 82C2EBD8]: per FE frame each input past 0.01 adjusts one value:
+    rotate 0.01, scale -0.1 (capped at 15), u -0.005, v +0.005 (which pad input drives which is [inferred] from the
+    legend: bumpers rotate, left stick scales, right stick moves). Then, when the design's bounds corners (its
+    cas.StampBorderConstraint) leave the region's constraint rect (the worn part's StampUVConstraintQ1..Q4 by the
+    row: x [left, right], y [1 - top, 1 - bottom]; missing: the row's UV quadrant), u and then v are pushed back by
+    the first corner's overshoot + 0.001 (not when it sticks out on both sides), and k grows by 1.001 until it fits
+    (ours caps that loop at 20,000 steps). A returns to Body Mods, key 4 resets to the default placement.
+  - Change: `tattoos.<slot>.placement` in the look (validated finite, k > 0); `customiser_material::placement_rows`
+    gives the shader the two rows and `customiser_stamp.wgsl` samples the design at M (uv_b) where that is inside
+    0..1 [inferred: what retail draws outside the graphic is not read]; stamps without a placement keep the old
+    fit. `cas_host::adjust_graphic` / `tick_tattoo` port the editor. Tests
+    `the_placement_matrix_and_the_fit_follow_retail`, the tattoo flow test (default placement, reset, A).
+  - Region cameras [data 0x83044548 / 0x83044568 camera rows, 0x830445E8 / 0x83044608 body rows]: a region pick
+    posts the region's camera and pose and resets the turntable (CharacterRotate(1, 0)); upper front / back / left
+    arm / right arm 94ADE31AD9BCCBAB / 99D608AFAD331C62 / BB4783E9DB0E4647 / 387F458990473B6B, legs C8946ECFD41E5776
+    / B115E4069E2C5B1E (all in the vault); the front body row 4A663E264EABE260 is not in the TU3 vault, so that
+    region keeps the whole-body pose. Checked in game (the right arm view shows the default placement).
+  - Clothing [code 825FB718 / 825FB8C8, data, the PS3 recording 2026-11-16 11-13-28.mp4 ~4:25 / ~5:30]: a region
+    pick keeps the worn shirt (upper) or pants (lower) and puts on the slot's lookup part 0; X (key 5) toggles,
+    A and the "none" pick put the kept part back. Lookup part 0 in our data: upper, the gender's skin torso
+    ("Arms Wholetorso", whose female texture is the sports bra the recording shows) in the look's skin tone;
+    lower, the gray Retro Shorts ("Retroshorts Grey", as recorded) [inferred: matched by name from the
+    recording, the lookup's own order is not read]. Checked in game (front torso, left leg).
+  - Design grid [data, the PS3 recording ~4:10 / ~4:35]: each design's thumbnail is `fe\cas\logos\<model>_<variant>`
+    (all 170 TU3 designs are among the disc's logos images; the library export keeps `thumbnail`); no check marks
+    except on the location's current design ("owned", like the part grid); the remove entry comes first and only
+    when the location already holds a tattoo (the first visit lists designs only; b1042 read "appended last" from
+    the code, which the recording contradicts). Checked in game (the Tribal grid).
+  - NOT RETAIL YET: the skin torso's body-shape material (thin / average / chubby: ours takes the first of the
+    tone), the replace popup, the two designs the recording shows after the remove entry on a later visit (a skull
+    and a red swirl; their source is not read), the design order (ours: id order; retail's
+    8253E3D8 order not read), the shirt / board / hat graphics (34..36) that share the editor. Keys 4 / 5 are
+    AptOption (Y) / AptMisc (X) in the menu tables, so Y resets and X toggles the clothing, as the retail legend
+    reads (b1042's conflict came from a swapped key map).
+- **Face and body sliders (morph rows)** (2026-11-19; research b1041 (agent), main verified the step field hash
+  0x2D4497B70742FD97 and the 8253CD18 call in the recomp's 825FBAE8, the constants 122.0 (822F95E4), 0.5
+  (8209975C) and 2.0 (82060C50) in Ghidra, and the option hashes through the menu table data test):
+  - Rows: option kind "morph" (64 body shape, 77..94 eyes / brows / nose / jaw / mouth / chin); the option's +0x18
+    is the vault key hash of its `cac_morph_params` row (class 0x7F47CA62F4100F41: target name, target_order,
+    min / max / default; 19 rows, face 0..0.5 default 0.25, fat / thin 0..0.5 default 0) [code 8253C9F8, data].
+  - Left / Right [code 825FBAE8, the CAS screen tick, not 825FC7E8 or the movie]: every FE frame the stick is
+    past the threshold the shown value (the morph normalized over its range, 8253CD18) moves one step, clamped
+    0..1, no repeat delay; threshold 0.1 and step 0.01 from `cac_fe_morph_settings/default` (class
+    0xBB852B438BF578ED) [data]. The value is written back raw over the range into the look (82536B10), then the
+    movie refreshes (SetState 50). CAC_GetIntegerValue = floor(n x 122 + 0.5).
+  - Body shape (64) is one slider over fat and thin: shown (1 - thin) / 2 + fat / 2; at or above the middle
+    fat = (v - 0.5) x 2, thin 0, below it thin = 1 - 2v, fat 0 [code 825FB490 / 825FB5B8].
+  - Change: the menu table extractor keeps the option's +0x18 (`CasOptionRow::morph`; a menu table re-export puts
+    it into the install); `cas_host` loads the morph rows and settings with the vault (`load_morphs`),
+    `tick_morph` steps the highlighted morph row from the held left stick / d-pad (825FBAE8's two input queries:
+    which pad inputs they are is [inferred]) at the 30 Hz FE cadence like the turntable (retail's FE tick rate is
+    [inferred]), and the look's `morphs.<target>` drive the existing morph apply. Scripted runs hold the stick with
+    `sl` / `sr` (`slxN` / `srxN`) keys. Tests `morph_rows_step_per_frame_clamped_and_the_body_row_splits_fat_and_thin`,
+    the vault test (19 morphs, eye width, settings), the menu table data test (option 64 / 78 hashes).
+  - NOT RETAIL YET: the looping move sound (FE sound 0x119E9CE644D5A9E1), the face preset row switching to Custom
+    on a face row edit, the morph Undo rows 96 / 97.
+- **Hair style selector** (2026-11-19; research b1039 from the recomp, main verified the filter's setter (vtable
+  82304518 +0x10 = 825F3C70) and its string 8230224C = "full", and the enter remap's 82202A78 = "full"):
+  - [code] The "Hair Style Filter" (S+0xC7C) keeps the parts whose kind-2 index (82DDC998: the HairModelType at record
+    +0x88) equals the name index of "full", set by its vt+0x10 before RebuildBrandList (82603480) collects them, so
+    the list is one entry per hair style, never the hat variants. Entering menu 20 maps the worn part to its "full"
+    model (FindByNameIndex on HairStyle +0x8C, Gender +0x7C, "full"); with the flag at (cas+0x54)+0x2030 set the
+    Remove entry (S+0x1A84) goes first. Left / Right (825FC7E8 option 0x41) wraps; Remove puts the bald default on
+    (ThumbnailLookup(cas, 2, 1)), any other entry its part. The value text is ID_CAC_HAIRSTYLE_<HairStyle>, Remove
+    ID_CAC_HAIRSTYLE_BALD.
+  - [data] 56 hair models: male 18 full + 18 hat, female 10 + 10, one material each; the hair color is the separate
+    color row 66 (b1038), so a style pick keeps the color.
+  - Change: `cas_host` reads HairModelType / HairStyle from the parts library (`hair_models`), `build_hair_list` on
+    entering menu 20 (the gender's full parts in `cas-parts.json` order; Remove first for a male skater [inferred:
+    the 0x2030 flag read as "male", as for the eyebrow filter]), `step_hair`, `hair_text`. Test
+    `the_hair_style_selector_steps_full_hair_of_the_gender_with_bald_first_for_a_male_skater`. NOT RETAIL YET: bald
+    clears the hair slot instead of putting retail's bald default part on; RebuildBrandList's sort key is not read
+    (database order kept).
+  - Skin Tone (option 63) is in no TU3 menu (menu 18 Skin is [62, 96]): its input and text code are dead UI; retail
+    skin is the color row 62. Not ported.
+- **Edit Style rows and the board sliders** (2026-11-19) [code, 825FC7E8 / 825FFE08]: Style (54) steps 0..3 with
+  wraparound, labels ID_CAC_LABEL_STYLE_NORMAL / LOOSE / GONZO / AGGRESSIVE (look +0x2014); Posture (53) 0..3,
+  ID_CAC_LABEL_POSTURE_1..4 (+0x2018, also re-posts the body target); Stance (55) toggles +0x2010, 0 =
+  ID_CAC_STANCE_GOOFY, else ID_CAC_STANCE_REGULAR. Gesture slots 49..52: entering menu 16 (82600AF8) loads the four
+  slots from look +0x201C / +0x2020 / +0x2024 / +0x2028 into S+0x180C / +0x1810 / +0x1814 / +0x1818 (rows 49 / 52 /
+  51 / 50) and lists the gesture table's indices 0..36 whose kind 4 unlock `gesture_<name>` is granted, in table
+  order; Left / Right step that list with wraparound (an index not in it counts as position 0); the label is the
+  ctor's table at S+0x1830 + 16 * index (`ID_GESTURE_AIRGUITAR` .. `ID_GESTURE_YARDSALE`, e.g. 18 =
+  ID_GESTURE_PUMP_HI "High Pump", 22 = ID_GESTURE_FINGERPOINT). The 37 names match gameplay's clip table order
+  (`graph_host/motion_character_gesture.rs` NAMES). Our profile already has these values and gameplay already reads them
+  (`customiser.rs` `apply`: `stance` (default 1) and `style` to the skater animation, `posture` to its posture
+  profile, `truck` / `wheel` (default 0.7) to the board physics, `gestures` four of 37 entries). Change: the Edit
+  Style rows write `posture` / `style` / `stance` and the Trucks / Wheels sliders `truck` / `wheel` into the look
+  (saved on exit Yes), the sliders start from the profile. Test
+  `edit_style_rows_write_the_profiles_posture_style_stance_and_the_sliders_its_truck_and_wheel`; the gesture rows
+  write the profile's `gestures` "0" / "3" / "2" / "1" (test `gesture_rows_step_the_unlocked_gestures_into_the_profiles_slots`).
+  NOT RETAIL YET: Posture's body target re-post, the gesture played on the skater as a slot changes (the gesture
+  clips in miscload.big are not exported), the Left / Right sounds, retail's slider defaults (0.7 is ours).
 - **Camera targets of the other menus** [code]: the tables 83044528 / 83044548 / 83044568 / 83044588 / 830445A8
   that 82600AF8 posts from belong to the tattoo / graphic adjust menus (7, 8, 34, 35, 36: indexed by the tattoo's
   location) and menu 11 (board graphics: the camera key comes from a vault record). They come with those features;

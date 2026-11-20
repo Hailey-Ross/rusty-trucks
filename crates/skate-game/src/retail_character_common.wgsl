@@ -4,6 +4,8 @@
 struct CharacterParams {
     light: vec4<f32>, tint: vec4<f32>, options: vec4<f32>,
     rows: array<vec4<f32>,9>, sh: array<vec4<f32>,9>,
+    // Hair highlight tint (cac_hair i_modulateColor2: a CAS color pick's recipe B); w = 1 when set.
+    highlight_tint: vec4<f32>,
 }
 
 // Both original and modular stock meshes use the authored derivative basis.
@@ -26,17 +28,17 @@ fn character_albedo(linear: vec3<f32>) -> vec3<f32> {
     return gamma*gamma;
 }
 
-fn shade_character(p: CharacterParams, vn: vec3<f32>, position: vec4<f32>, d: vec3<f32>, smask: f32, alpha: f32) -> vec4<f32> {
+fn shade_character(p: CharacterParams, vn: vec3<f32>, position: vec4<f32>, d: vec3<f32>, lin: vec3<f32>, smask: f32, alpha: f32) -> vec4<f32> {
     let vd = -normalize(position.xyz-frame::view.world_position);
     if p.options.w>0.0 {
-        // Native hair response. The installed GLB supplies the selected dye
-        // and composited strand coverage; live CAC colour rows are not present.
+        // Native hair response: lin x (light x MOD1 + highlight x MOD2) (cac_hair_defaultPS, doc 43 "Color rows").
         let ndl=saturate(dot(vn,p.light.xyz));
         let fres=pow(1.0-saturate(dot(vn,vd)),max(p.rows[2].w,1.0));
-        let hl=p.rows[1].rgb*(saturate(ndl*0.75+0.25)+p.rows[5].w*0.25)
-            +p.rows[6].rgb*fres*saturate(ndl*1.75+0.25);
+        let lit=p.rows[1].rgb*(saturate(ndl*0.75+0.25)+p.rows[5].w*0.25);
+        let highlight=p.rows[6].rgb*fres*saturate(ndl*1.75+0.25);
+        let hd=select(d,lin*p.highlight_tint.rgb,p.highlight_tint.w>0.0);
         if alpha<p.options.z { discard; }
-        return vec4<f32>(d*hl*p.light.w,alpha*p.tint.a);
+        return vec4<f32>((d*lit+hd*highlight)*p.light.w,alpha*p.tint.a);
     }
     let s=p.rows[7].y;
     let v=vn*s;

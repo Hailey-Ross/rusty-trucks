@@ -4,7 +4,7 @@ Names for 32,931 functions of the Xbox 360 Skate 3 executable with Title Update 
 
 This folder holds names and short descriptions only. It contains no game code and no game files.
 
-**Confirmed names and guesses.** 13,546 names are confirmed: what the function does was worked out while porting it. The other 19,385 are guesses: their names start with `guess_` (for example `guess_ParkSetup_ReleaseLists`) (most descriptions also start with "Guess:"). A guess is a best reading of the code that nobody has checked against the game yet, so treat it as a hint. When a guess is confirmed it loses the prefix.
+**Confirmed names and guesses.** 13,560 names are confirmed: what the function does was worked out while porting it. The other 19,371 are guesses: their names start with `guess_` (for example `guess_ParkSetup_ReleaseLists`) (most descriptions also start with "Guess:"). A guess is a best reading of the code that nobody has checked against the game yet, so treat it as a hint. When a guess is confirmed it loses the prefix.
 
 ## What is in here
 

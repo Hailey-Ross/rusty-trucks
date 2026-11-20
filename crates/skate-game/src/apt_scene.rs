@@ -166,6 +166,11 @@ fn visit(
             "ImageRenderComponent" => last_digits(&vm.get(id, "_name").text())
                 .filter(|slot| *slot < crate::image_renderer_host::SLOTS)
                 .map(|slot| format!("{}{slot}", crate::image_renderer_host::SLOT_TEXTURE_PREFIX)),
+            // SwatchRenderComponent (swatch_renderer: Init renames the clip to its SwatchRenderer_ReserveIndex slot): a
+            // flat quad of the slot's color, resolved by the stage.
+            "SwatchRenderComponent" => last_digits(&vm.get(id, "_name").text())
+                .filter(|slot| *slot < crate::image_renderer_host::SWATCH_SLOTS)
+                .map(|slot| format!("{}{slot}", crate::image_renderer_host::SWATCH_TEXTURE_PREFIX)),
             _ => None,
         };
         // MapRenderComponent (b262 / b263) and CustomTimeline (b403) placeholders carry the clip transform for the stage.

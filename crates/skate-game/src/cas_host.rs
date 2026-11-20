@@ -49,6 +49,40 @@ pub(crate) struct CasOption {
     pub camera: String,
     /// The body target the option posts (+0x28: the pose and yaw row).
     pub body: String,
+    /// The morph a "morph" row edits (+0x18: the `cac_morph_params` vault key, research b1041).
+    pub morph: String,
+}
+
+/// One `cac_morph_params` row (class 0x7F47CA62F4100F41, research b994 / b1041): the look's `morphs.<target>`
+/// raw value and its range. Both gender branches of the TU3 data are the same; the first is used [inferred].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CasMorph {
+    pub target: String,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+}
+
+/// `cac_fe_morph_settings/default` (class 0xBB852B438BF578ED): the stick threshold and the normalized step per FE
+/// frame of the morph rows (825FBAE8).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MorphSettings {
+    pub threshold: f32,
+    pub step: f32,
+}
+
+/// One head material (Rostral model + material) and its head fields, from the parts library.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct HeadLook {
+    pub model: String,
+    pub material: String,
+    pub fields: std::collections::HashMap<String, String>,
+}
+
+impl HeadLook {
+    fn field(&self, name: &str) -> &str {
+        self.fields.get(name).map_or("", String::as_str)
+    }
 }
 
 /// One catalog part as setup lists it (`cas-parts.json`, tools/asset_pipeline/cas_grid.py): a model with one of
@@ -154,6 +188,257 @@ pub(crate) struct CasBody {
     pub position: [f32; 3],
 }
 
+/// One color of a CAS color zone (`cac_colour`, class 0x6D934D0E38C95E19; research b991 / b1038): the swatch the menu
+/// shows, the two recipe vectors a pick writes (A HDR up to 2.69, B), and the match text (a part's EyeColour /
+/// DeckColour / HairlineShadowColour / SkinTone value).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CasColour {
+    pub key: String,
+    pub swatch: [f32; 3],
+    pub a: [f32; 3],
+    pub b: [f32; 3],
+    pub text: String,
+}
+
+/// A color zone (`cac_colour_zone`, class 0xAE1F950CA0D1ADF2): its colors in retail order (field order, ascending,
+/// 82541490) and its default color key.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CasColourZone {
+    pub default: String,
+    pub colours: Vec<CasColour>,
+}
+
+const ZONE_CLASS: &str = "Hash_AE1F950CA0D1ADF2";
+const ZONE_SLOT: &str = "Hash_97220B633B540525";
+const ZONE_GROUP: &str = "Hash_9EE25A772ECA5BD4";
+const ZONE_DEFAULT: &str = "Hash_74DF44D2C52AFC68";
+const COLOUR_CLASS: &str = "Hash_6D934D0E38C95E19";
+const COLOUR_SWATCH: &str = "Hash_7827ED970A88B70C";
+const COLOUR_A: &str = "Hash_97462E6ABC78A423";
+const COLOUR_B: &str = "Hash_BC3B0D9B2DB64358";
+const COLOUR_TEXT: &str = "Hash_AB0E65FA2F485ED8";
+const COLOUR_ORDER: &str = "Hash_9C2DC17266699DD9";
+
+/// The color zones by COLORIZED_SLOT (0 hat, 1 hair, 2 skin, 6 eye, 7 eyebrow, 8 facial hair, 9 top, 10 sock,
+/// 11 skateboard, 12 bottom), inheritance resolved.
+fn load_colour_zones(data: &skate_data::collections::Collections) -> std::collections::HashMap<u32, CasColourZone> {
+    let hex = |s: &str, from: usize, len: usize| s.get(from..from + len).map(str::to_owned);
+    let text = |class: &str, key: &str, field: &str| data.field(class, key, field).ok().map(|f| f.data.clone());
+    let vec3 = |key: &str, field: &str| data.words::<4>(COLOUR_CLASS, key, field).ok().map(|w| [w[0], w[1], w[2]].map(f32::from_bits));
+    let mut colours: Vec<(String, i32, CasColour)> = data.entries().iter()
+        .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == COLOUR_CLASS)
+        .filter_map(|c| {
+            let order = text(COLOUR_CLASS, &c.key, COLOUR_ORDER).and_then(|d| u32::from_str_radix(d.get(..8)?, 16).ok())? as i32;
+            Some((skate_data::attrib_hash::numeric_name(&c.parent), order, CasColour {
+                key: skate_data::attrib_hash::numeric_name(&c.key).trim_start_matches("Hash_").to_owned(),
+                swatch: vec3(&c.key, COLOUR_SWATCH)?,
+                a: vec3(&c.key, COLOUR_A).unwrap_or([0.0; 3]),
+                b: vec3(&c.key, COLOUR_B).unwrap_or([0.0; 3]),
+                text: text(COLOUR_CLASS, &c.key, COLOUR_TEXT).unwrap_or_default(),
+            }))
+        })
+        .collect();
+    colours.sort_by_key(|(_, order, _)| *order);
+    data.entries().iter()
+        .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == ZONE_CLASS)
+        .filter_map(|c| {
+            let slot = text(ZONE_CLASS, &c.key, ZONE_SLOT).and_then(|d| u32::from_str_radix(d.get(..8)?, 16).ok())?;
+            let group = text(ZONE_CLASS, &c.key, ZONE_GROUP).and_then(|d| hex(&d, 16, 16))?;
+            let default = text(ZONE_CLASS, &c.key, ZONE_DEFAULT).and_then(|d| hex(&d, 0, 16)).unwrap_or_default();
+            let list = colours.iter().filter(|(parent, ..)| parent.trim_start_matches("Hash_").eq_ignore_ascii_case(&group))
+                .map(|(.., colour)| colour.clone()).collect::<Vec<_>>();
+            (!list.is_empty()).then(|| (slot, CasColourZone { default: default.to_ascii_uppercase(), colours: list }))
+        })
+        .collect()
+}
+
+/// Tattoo menus (research b1042): Body Mods' Upper / Lower Body Tattoo rows push the region menus 4 / 5; a region
+/// pushes the categories (6), a category the design list (11); the placement editors are 7 / 8.
+const BODY_MODS: usize = 17;
+const TATTOO_UPPER: usize = 4;
+const TATTOO_LOWER: usize = 5;
+const TATTOO_CATEGORIES: usize = 6;
+const TATTOO_DESIGNS: usize = 11;
+/// The category rows' labels (ID_CAC_TATTOO_CATEGORY_01..06); row i is the vault's category i.
+const TATTOO_CATEGORY_ROW: i32 = 21;
+/// The region rows: upper 27 front, 28 back, 29 left arm, 30 right arm; lower 31 left leg, 32 right leg.
+const TATTOO_UPPER_REGIONS: std::ops::RangeInclusive<i32> = 27..=30;
+const TATTOO_LOWER_REGIONS: std::ops::RangeInclusive<i32> = 31..=32;
+/// Our stamp `side` per retail region (customiser_parts: 0 / 1 the left / right quadrant, 2 chest, 3 back)
+/// [inferred: retail picks the constraint through its region tables 0x83044468 / 0x83044498, not read].
+const TATTOO_UPPER_SIDE: [u32; 4] = [2, 3, 0, 1];
+const TATTOO_LOWER_SIDE: [u32; 2] = [0, 1];
+/// Per region: the camera row and the body (pose) row the region pick posts [data 0x83044548 / 0x830445E8 upper,
+/// 0x83044568 / 0x83044608 lower; the front body row is not in the TU3 vault, so the pose stays the whole-body one].
+const TATTOO_UPPER_TARGETS: [(&str, &str); 4] = [
+    ("94ADE31AD9BCCBAB", "4A663E264EABE260"),
+    ("99D608AFAD331C62", "A3D6441668F00463"),
+    ("BB4783E9DB0E4647", "BED40F6AC6664346"),
+    ("387F458990473B6B", "862562BC11BB028C"),
+];
+const TATTOO_LOWER_TARGETS: [(&str, &str); 2] = [("C8946ECFD41E5776", "DFAC4B4514810678"), ("B115E4069E2C5B1E", "8C38F0625AB9DFE7")];
+/// The pants material a lower tattoo puts on (the PS3 recording's gray shorts).
+const TATTOO_SHORTS: &str = "Retroshorts Grey";
+const TATTOO_UPPER_ADJUST: usize = 7;
+const TATTOO_LOWER_ADJUST: usize = 8;
+/// Region -> placement row (= constraint index) [data 0x83044468 upper, 0x83044498 lower].
+const TATTOO_UPPER_ROW: [usize; 4] = [1, 5, 7, 10];
+const TATTOO_LOWER_ROW: [usize; 2] = [8, 11];
+/// The default placement per row, (rotation, scale, u, v) for the two gender variants [data 0x830442B8; which
+/// variant is which gender is [inferred]: the first is used for the male skater].
+const GRAPHIC_DEFAULTS: [[[f32; 4]; 2]; 12] = [
+    [[0.0, 5.0, 0.25, 0.25], [0.0, 5.0, 0.25, 0.25]],
+    [[0.0, 5.0, 0.25, 0.25], [0.0, 5.0, 0.25, 0.21]],
+    [[1.5712, 7.0, 0.25, 0.25], [1.5712, 7.0, 0.25, 0.25]],
+    [[0.0, 5.0, 0.25, 0.32], [0.0, 5.0, 0.25, 0.32]],
+    [[0.0, 5.0, -0.25, 0.25], [0.0, 5.0, -0.25, 0.25]],
+    [[0.0, 5.0, -0.25, 0.30], [0.0, 5.0, -0.25, 0.10]],
+    [[0.0, 7.0, 0.25, -0.15], [0.0, 7.0, 0.25, -0.15]],
+    [[0.0, 7.0, 0.234, -0.15], [0.0, 7.0, 0.25, -0.15]],
+    [[0.0, 10.0, 0.17, -0.35], [0.0, 10.0, 0.19, -0.35]],
+    [[0.0, 7.0, -0.234, -0.15], [0.0, 7.0, -0.25, -0.15]],
+    [[0.0, 7.0, -0.25, -0.15], [0.0, 7.0, -0.25, -0.15]],
+    [[0.0, 10.0, -0.17, -0.35], [0.0, 10.0, -0.19, -0.35]],
+];
+/// The placement editor's per-frame factors and limits (825FBAE8 / 82C2E698, research b1042 "Main's dumps"):
+/// dead zone, rotate, scale, u, v, the scale cap, the push-back margin and the fit loop's growth.
+const GRAPHIC_DEADZONE: f32 = 0.01;
+const GRAPHIC_ROTATE: f32 = 0.01;
+const GRAPHIC_SCALE: f32 = -0.1;
+const GRAPHIC_MOVE_U: f32 = -0.005;
+const GRAPHIC_MOVE_V: f32 = 0.005;
+const GRAPHIC_SCALE_MAX: f32 = 15.0;
+const GRAPHIC_MARGIN: f32 = 0.001;
+const GRAPHIC_GROW: f64 = 1.001;
+/// Our cap on the fit loop (retail's has none).
+const GRAPHIC_FIT_LIMIT: usize = 20_000;
+
+/// A body UV point of graphic UV (gx, gy) under placement p (the inverse of 82C2E3A8's matrix, research b1043).
+fn graphic_to_body(p: [f32; 4], gx: f32, gy: f32) -> [f32; 2] {
+    let [rot, k, u, v] = p;
+    let (s, c) = rot.sin_cos();
+    let (a, b) = ((gx - 0.5) / k, (gy - 0.5) / (2.0 * k));
+    [c * a + s * b + 0.5 - u, -s * a + c * b + 0.5 - v]
+}
+
+/// The graphic bounds' four corners on the body (82C2EBD8's order).
+fn graphic_corners(p: [f32; 4], bounds: [f32; 4]) -> [[f32; 2]; 4] {
+    [(bounds[2], bounds[1]), (bounds[2], bounds[0]), (bounds[3], bounds[1]), (bounds[3], bounds[0])]
+        .map(|(gx, gy)| graphic_to_body(p, gx, gy))
+}
+
+/// 82C2EBD8: every corner inside the constraint rect `[xmin, xmax, ymin, ymax]`, inclusive.
+fn graphic_fits(p: [f32; 4], rect: [f32; 4], bounds: [f32; 4]) -> bool {
+    graphic_corners(p, bounds).iter().all(|q| (rect[0]..=rect[1]).contains(&q[0]) && (rect[2]..=rect[3]).contains(&q[1]))
+}
+
+/// One placement editor op (82C2E698): 0 rotate, 1 scale (capped at 15), 2 move u, 3 move v; then, when the graphic
+/// leaves the constraint rect, u and then v are pushed back by the first corner's overshoot (only when it does not
+/// stick out on both sides), and the scale grows by 1.001 until it fits.
+fn adjust_graphic(mut p: [f32; 4], op: usize, amount: f32, rect: [f32; 4], bounds: [f32; 4]) -> [f32; 4] {
+    match op {
+        0 => p[0] += amount,
+        1 => p[1] = (p[1] + amount).min(GRAPHIC_SCALE_MAX),
+        2 => p[2] += amount,
+        _ => p[3] += amount,
+    }
+    if graphic_fits(p, rect, bounds) {
+        return p;
+    }
+    for axis in 0..2 {
+        let corners = graphic_corners(p, bounds);
+        let (lo, hi) = (rect[axis * 2], rect[axis * 2 + 1]);
+        let both = corners.iter().any(|q| q[axis] < lo) && corners.iter().any(|q| q[axis] > hi);
+        if both {
+            continue;
+        }
+        if let Some(q) = corners.iter().find(|q| q[axis] < lo || q[axis] > hi) {
+            let (d, margin) = if q[axis] > hi { (q[axis] - hi, GRAPHIC_MARGIN) } else { (q[axis] - lo, -GRAPHIC_MARGIN) };
+            p[2 + axis] += d + margin;
+        }
+    }
+    let mut n = 0;
+    while !graphic_fits(p, rect, bounds) && n < GRAPHIC_FIT_LIMIT {
+        p[1] = (f64::from(p[1]) * GRAPHIC_GROW) as f32;
+        n += 1;
+    }
+    p
+}
+
+/// A part's stamp constraint rect for a constraint index (82536C40): flag StampUVConstraintQ1 (0..3), Q2 (4..5), Q3
+/// (6..8), Q4 (9..11) as [top, bottom, left, right] -> x [left, right], y [1 - top, 1 - bottom]; missing or all
+/// zero: the index's quadrant of the UV square.
+pub(crate) fn constraint_rect(flag: impl Fn(&str) -> String, index: usize) -> [f32; 4] {
+    let (key, quadrant) = match index {
+        0..=3 => ("StampUVConstraintQ1", [0.0, 0.5, 0.0, 0.5]),
+        4..=5 => ("StampUVConstraintQ2", [0.5, 1.0, 0.0, 0.5]),
+        6..=8 => ("StampUVConstraintQ3", [0.0, 0.5, 0.5, 1.0]),
+        _ => ("StampUVConstraintQ4", [0.5, 1.0, 0.5, 1.0]),
+    };
+    let r: Vec<f32> = flag(key).split(',').filter_map(|n| n.trim().parse().ok()).collect();
+    match <[f32; 4]>::try_from(r) {
+        Ok(r) if r.iter().any(|v| *v != 0.0) => [r[2], r[3], 1.0 - r[0], 1.0 - r[1]],
+        _ => quadrant,
+    }
+}
+const TATTOO_CATEGORIES_CLASS: &str = "Hash_D38EA152CCFDEE0D";
+const TATTOO_CATEGORIES_LIST: &str = "Hash_FFDEC982A33E9230";
+const TATTOO_CATEGORY_CLASS: &str = "Hash_345C8861CFA6BCA5";
+const TATTOO_CATEGORY_TEXT: &str = "Hash_C283F7484D8204B6";
+
+/// The tattoo categories in the menu's order: `cac_tattoo_categories/default`'s list (825F3050), each entry a
+/// `cac_tattoo_category` record whose text field equals its designs' cas.TattooCategory [data: '1', '2', '3' in TU3].
+fn load_tattoo_categories(data: &skate_data::collections::Collections) -> Vec<String> {
+    let Some(list) = data.entries().iter()
+        .find(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == TATTOO_CATEGORIES_CLASS)
+        .and_then(|c| data.field(TATTOO_CATEGORIES_CLASS, &c.key, TATTOO_CATEGORIES_LIST).ok())
+        .and_then(|f| f.array.clone()) else { return Vec::new() };
+    list.items.iter().filter_map(|item| {
+        let key = format!("Hash_{}", item.get(..16)?.to_ascii_uppercase());
+        Some(data.field(TATTOO_CATEGORY_CLASS, &key, TATTOO_CATEGORY_TEXT).ok()?.data.clone())
+    }).collect()
+}
+
+const MORPH_CLASS: &str = "Hash_7F47CA62F4100F41";
+const MORPH_TARGET: &str = "Hash_AAC0F30B119BD14F";
+const MORPH_ORDER: &str = "Hash_0D381DFA82C751E1";
+const MORPH_MIN: &str = "Hash_0279ED3135F03661";
+const MORPH_MAX: &str = "Hash_D4340AC527D228E1";
+const MORPH_DEFAULT: &str = "Hash_49E3727FEB2F6475";
+const MORPH_SETTINGS_CLASS: &str = "Hash_BB852B438BF578ED";
+const MORPH_THRESHOLD: &str = "Hash_2A501F561E088458";
+const MORPH_STEP: &str = "Hash_2D4497B70742FD97";
+
+/// The morph rows by vault key hash (16 hex digits, the options' +0x18) and the morph row settings (8253CA60,
+/// 825FBAE8; field hashes from tools/asset_pipeline/customisation_native.py and research b1041). Rows with
+/// `target_order` -1 are the schema default, not a morph.
+fn load_morphs(data: &skate_data::collections::Collections)
+    -> (std::collections::HashMap<String, CasMorph>, Option<MorphSettings>) {
+    let float = |class: &str, key: &str, field: &str| data.words::<1>(class, key, field).ok().map(|w| f32::from_bits(w[0]));
+    let morphs = data.entries().iter()
+        .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == MORPH_CLASS)
+        .filter_map(|c| {
+            let order = data.words::<1>(MORPH_CLASS, &c.key, MORPH_ORDER).ok()?[0] as i32;
+            (order >= 0).then_some(())?;
+            Some((skate_data::attrib_hash::numeric_name(&c.key).trim_start_matches("Hash_").to_owned(), CasMorph {
+                target: data.field(MORPH_CLASS, &c.key, MORPH_TARGET).ok()?.data.clone(),
+                min: float(MORPH_CLASS, &c.key, MORPH_MIN)?,
+                max: float(MORPH_CLASS, &c.key, MORPH_MAX)?,
+                default: float(MORPH_CLASS, &c.key, MORPH_DEFAULT)?,
+            }))
+        })
+        .filter(|(_, m)| m.max > m.min)
+        .collect();
+    let settings = data.entries().iter()
+        .find(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == MORPH_SETTINGS_CLASS
+            && skate_data::attrib_hash::numeric_name(&c.key) == skate_data::attrib_hash::numeric_name("default"))
+        .and_then(|c| Some(MorphSettings {
+            threshold: float(MORPH_SETTINGS_CLASS, &c.key, MORPH_THRESHOLD)?,
+            step: float(MORPH_SETTINGS_CLASS, &c.key, MORPH_STEP)?,
+        }));
+    (morphs, settings)
+}
+
 const BODY_CLASS: &str = "Hash_95E142284549717F";
 const BODY_CLIP: &str = "Hash_249D0D4624998D68";
 const BODY_YAW: &str = "Hash_4591287983616615";
@@ -162,7 +447,9 @@ const BODY_POSITION: &str = "Hash_6D2BEA1EFEA33425";
 /// The vault data FE 15 reads: every CAS camera row by key (16 hex digits), the brand logo image by brand name and
 /// every body target row by key, inheritance resolved; empty without the vault export.
 pub(crate) fn load_vault(asset_root: &std::path::Path) -> (std::collections::HashMap<String, CasCamera>,
-    std::collections::HashMap<String, String>, std::collections::HashMap<String, CasBody>) {
+    std::collections::HashMap<String, String>, std::collections::HashMap<String, CasBody>,
+    std::collections::HashMap<u32, CasColourZone>, (std::collections::HashMap<String, CasMorph>, Option<MorphSettings>),
+    Vec<String>) {
     let Ok(data) = skate_data::collections::Collections::load(asset_root) else { return Default::default() };
     let bodies = data.entries().iter()
         .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == BODY_CLASS)
@@ -186,7 +473,7 @@ pub(crate) fn load_vault(asset_root: &std::path::Path) -> (std::collections::Has
     for (name, image) in logos {
         by_brand.entry(name).or_insert(image);
     }
-    (load_cameras(&data), by_brand, bodies)
+    (load_cameras(&data), by_brand, bodies, load_colour_zones(&data), load_morphs(&data), load_tattoo_categories(&data))
 }
 
 fn load_cameras(data: &skate_data::collections::Collections) -> std::collections::HashMap<String, CasCamera> {
@@ -216,9 +503,59 @@ pub(crate) fn sync_look(host: &mut CasHost, customiser: &mut crate::customiser::
     if host.defaults.is_empty() {
         host.defaults = parts.library.defaults.clone();
     }
+    if host.heads.is_empty() {
+        host.heads = head_looks(&parts.library);
+    }
+    if host.hair_models.is_empty() {
+        host.hair_models = parts.library.models.iter().filter(|(_, p)| p.slot == HAIR_SLOT)
+            .map(|(id, p)| (id.clone(), (p.flag("HairModelType").to_owned(), p.flag("HairStyle").to_owned()))).collect();
+    }
+    host.tattoo_fit = match (host.current(), host.tattoo_region) {
+        (Some(TATTOO_UPPER_ADJUST | TATTOO_LOWER_ADJUST), Some((upper, region))) => {
+            let slot = if upper { "Arm" } else { "Leg" };
+            let row = if upper { TATTOO_UPPER_ROW.get(region) } else { TATTOO_LOWER_ROW.get(region) }.copied().unwrap_or(0);
+            let part = host.look["selections"][slot]["asset_id"].as_str().and_then(|id| parts.library.models.get(id));
+            let rect = constraint_rect(|k| part.map(|p| p.flag(k).to_owned()).unwrap_or_default(), row);
+            host.look["tattoos"][slot]["id"].as_str().and_then(|id| parts.library.tattoos.get(id)).map(|t| (rect, t.bounds))
+        }
+        _ => None,
+    };
+    if host.bare_torsos.is_empty() {
+        for (id, p) in parts.library.models.iter().filter(|(_, p)| p.slot == "OuterTorso") {
+            let skin: Vec<(String, String)> = p.materials.iter().filter_map(|m| parts.library.materials.get(m)
+                .map(|mat| (m.clone(), mat.flag("SkinTone").to_owned()))).filter(|(_, t)| !t.is_empty()).collect();
+            if !skin.is_empty() {
+                host.bare_torsos.insert(p.flag("Gender") != "female", (id.clone(), skin));
+            }
+        }
+        for (id, p) in parts.library.models.iter().filter(|(_, p)| p.slot == "Pants") {
+            if let Some(m) = p.materials.iter().find(|m| parts.library.materials.get(*m).is_some_and(|mat| mat.name == TATTOO_SHORTS)) {
+                host.tattoo_shorts.insert(p.flag("Gender") != "female", (id.clone(), m.clone()));
+            }
+        }
+    }
+    if host.tattoos.is_empty() {
+        let mut tattoos: Vec<(String, String)> = parts.library.tattoos.iter().map(|(id, t)| (id.clone(), t.category.clone())).collect();
+        tattoos.sort();
+        host.tattoos = tattoos;
+        host.tattoo_names = parts.library.tattoos.iter().map(|(id, t)| (id.clone(), t.name.clone())).collect();
+        host.tattoo_thumbnails = parts.library.tattoos.iter().filter(|(_, t)| !t.thumbnail.is_empty())
+            .map(|(id, t)| (id.clone(), format!("fe\\cas\\logos\\{}", t.thumbnail))).collect();
+    }
+    if host.eye_models.is_empty() {
+        host.eye_models = parts.library.models.iter().filter(|(_, p)| p.slot == EYE_SLOT)
+            .map(|(id, p)| (id.clone(), EyeModel {
+                male: p.flag("Gender") != "female",
+                materials: p.materials.iter().filter_map(|m| parts.library.materials.get(m)
+                    .map(|mat| (m.clone(), mat.flag("EyeColour").to_owned()))).filter(|(_, c)| !c.is_empty()).collect(),
+            })).collect();
+    }
     if host.open && host.look.is_null() {
         host.look = customiser.draft.clone();
         host.male = host.look["gender"].as_str() != Some("female");
+        // The sliders start from the profile (customiser::apply's defaults when unset).
+        host.trucks = host.look["truck"].as_f64().unwrap_or(PROFILE_TRUCK_DEFAULT) as f32;
+        host.wheels = host.look["wheel"].as_f64().unwrap_or(PROFILE_TRUCK_DEFAULT) as f32;
     }
     let resolve = |look: &serde_json::Value| parts.resolve(look).or_else(|first| {
         let gender = look["gender"].as_str().unwrap_or("male");
@@ -262,6 +599,19 @@ pub(crate) fn sync_look(host: &mut CasHost, customiser: &mut crate::customiser::
     }
 }
 
+/// Every head model's materials with their head fields (HEAD_FIELDS), models and materials in library order.
+fn head_looks(library: &crate::customiser_parts::Library) -> Vec<HeadLook> {
+    let mut models: Vec<(&String, &crate::customiser_parts::Part)> = library.models.iter().filter(|(_, p)| p.slot == HEAD_SLOT).collect();
+    models.sort_by(|a, b| a.0.cmp(b.0));
+    models.into_iter()
+        .flat_map(|(id, part)| part.materials.iter().filter_map(move |m| {
+            let material = library.materials.get(m)?;
+            let fields = HEAD_FIELDS.iter().map(|f| (f.to_string(), material.flag(f).to_owned())).collect();
+            Some(HeadLook { model: id.clone(), material: m.clone(), fields })
+        }))
+        .collect()
+}
+
 /// The part thumbnail grid (menu 10, PartThumbnails).
 pub(crate) const PART_GRID: usize = 10;
 /// Record tests of the part filters (research b1035, retail values; data a mod can change): t-shirts keep these
@@ -290,9 +640,73 @@ const PREVIEW_DELAY: f32 = 0.5;
 /// The turntable (825FBAE8 posts cMsgPresCASCharacterRotate per frame, 8253B618 turns the character): a trigger
 /// past 0.02 (821E9580) adds rate * value to the angle each frame; the rate is the body target row's float at +0x24
 /// (0.1 in all 69 rows of class 0x95E142284549717F). Frames at the console's 30 Hz FE cadence.
+/// The head looks the Facial Hair (67, menu 21) and Eyebrow (80, menu 24) style selectors step through (825FC7E8):
+/// materials of the worn head model that keep every other head field of the worn one (the screen's Facial Hair /
+/// Eyebrow Style Filters 825F3F38 / 825F3DA8 over record +0x7C, +0xD4, +0x84, +0x80, +0x78, +0x6C; research b1037).
+/// The fields by name, so a mod's head materials join by their flags.
+const HEAD_SLOT: &str = "Rostral";
+const HEAD_FIELDS: [&str; 5] = ["SkinTone", "HairlineShadowStyle", "HairlineShadowColour", "FacialHairStyle", "EyebrowStyle"];
+const FACIAL_HAIR: i32 = 67;
+const EYEBROWS: i32 = 80;
+const FACIAL_HAIR_MENU: usize = 21;
+const EYEBROW_MENU: usize = 24;
+/// The Eyebrow Style Filter drops this style for a male skater (82600AF8's menu 24 branch: name 82302284, flag set
+/// when the gender check returns 0) [inferred: the flag's meaning from b1035's gender check].
+const EYEBROW_EXCLUDED_MALE: &str = "style7";
+/// Hair Style (option 65, menu 20; research b1039, main verified 82304518 +0x10 = 825F3C70 and 8230224C = "full"):
+/// the "Hair Style Filter" keeps the hair parts whose HairModelType is "full", of the skater's gender, in database
+/// order; a male skater gets the Remove entry (bald) first; a worn hat model counts as its style's full model.
+const HAIR_STYLE: i32 = 65;
+const HAIR_MENU: usize = 20;
+const HAIR_SLOT: &str = "Hair";
+const HAIR_FULL: &str = "full";
+/// Color rows and their zone (82603E98, research b1038): Skin Color 62 -> skin (2), Hair Color 66 -> hair (1), Facial
+/// Hair Color 68 -> facial hair (8; in no TU3 menu), Eye Color 76 -> eye (6).
+const COLOUR_ROWS: [(i32, u32); 4] = [(62, 2), (66, 1), (68, 8), (76, 6)];
+const EYE_ZONE: u32 = 6;
+const SKIN_ZONE: u32 = 2;
+const EYE_SLOT: &str = "Organ";
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EyeModel {
+    pub male: bool,
+    /// (material id, EyeColour).
+    pub materials: Vec<(String, String)>,
+}
+const BOARD_ZONE: u32 = 11;
+/// Edit Style rows (menu 16; 825FC7E8 / 825FFE08): Posture and Style step 0..3 with wraparound (look +0x2018 /
+/// +0x2014), Stance toggles (+0x2010: 0 = goofy, 1 = regular). They are the profile's `posture`, `style` and `stance`,
+/// which `customiser::apply` already hands to the skater's animation (defaults 0, 0, 1); labels are retail's text ids.
+const POSTURE: i32 = 53;
+const SKATE_STYLE: i32 = 54;
+const STANCE: i32 = 55;
+const POSTURE_LABELS: [&str; 4] = ["ID_CAC_LABEL_POSTURE_1", "ID_CAC_LABEL_POSTURE_2", "ID_CAC_LABEL_POSTURE_3", "ID_CAC_LABEL_POSTURE_4"];
+const SKATE_STYLE_LABELS: [&str; 4] = ["ID_CAC_LABEL_STYLE_NORMAL", "ID_CAC_LABEL_STYLE_LOOSE", "ID_CAC_LABEL_STYLE_GONZO", "ID_CAC_LABEL_STYLE_AGGRESSIVE"];
+/// Gesture slot rows 49..52 (menu 16) and the profile `gestures` key each edits (82600AF8's menu 16 branch: S+0x180C /
+/// +0x1818 / +0x1814 / +0x1810 from look +0x201C / +0x2028 / +0x2024 / +0x2020, our slots 0 / 3 / 2 / 1).
+const GESTURE_ROWS: [(i32, &str); 4] = [(49, "0"), (50, "3"), (51, "2"), (52, "1")];
+/// The 37 gestures in gameplay's table order (motion_character_gesture.rs NAMES): the kind 4 unlock names the list
+/// keeps (82600AF8) and the labels (ctor 825F4B98 at S+0x1830 + 16 * index).
+const GESTURE_UNLOCKS: [&str; 37] = ["gesture_airguitar", "gesture_airplane", "gesture_boxing", "gesture_bruce",
+    "gesture_checktime", "gesture_devil", "gesture_doublegun", "gesture_dunno", "gesture_fingerwag", "gesture_fists",
+    "gesture_flex", "gesture_fliptable", "gesture_fonz", "gesture_freedom", "gesture_fu", "gesture_getaway",
+    "gesture_getouttahere", "gesture_handcuffs", "gesture_pumphi", "gesture_pumplo", "gesture_prewind", "gesture_peace",
+    "gesture_fingerpoint", "gesture_raisetheroof", "gesture_shaka", "gesture_shrug", "gesture_sky", "gesture_snap",
+    "gesture_soularch", "gesture_spock", "gesture_surfsup", "gesture_swinghigh", "gesture_swinglow",
+    "gesture_throwarms", "gesture_thumbdown", "gesture_wings", "gesture_yardsale"];
+const GESTURE_LABELS: [&str; 37] = ["ID_GESTURE_AIRGUITAR", "ID_GESTURE_AIRPLANE", "ID_GESTURE_BOXING",
+    "ID_GESTURE_BRUCE", "ID_GESTURE_CHECKTIME", "ID_GESTURE_DEVIL", "ID_GESTURE_DOUBLE_GUN", "ID_GESTURE_DUNNO",
+    "ID_GESTURE_FINGERWAG", "ID_GESTURE_FISTS", "ID_GESTURE_BICEPFLEX", "ID_GESTURE_FLIPTABLE", "ID_GESTURE_FONZ",
+    "ID_GESTURE_FREEDOM", "ID_GESTURE_FU", "ID_GESTURE_GETAWAY", "ID_GESTURE_GETOUTTAHERE", "ID_GESTURE_HANDCUFFS",
+    "ID_GESTURE_PUMP_HI", "ID_GESTURE_PUMP_LO", "ID_GESTURE_PREWIND", "ID_GESTURE_PEACE", "ID_GESTURE_FINGERPOINT",
+    "ID_GESTURE_RAISEROOF", "ID_GESTURE_SHAKA", "ID_GESTURE_SHRUG", "ID_GESTURE_SKY", "ID_GESTURE_SNAP",
+    "ID_GESTURE_SOULARCH", "ID_GESTURE_SPOCK", "ID_GESTURE_SURFSUP", "ID_GESTURE_SWINGHIGH", "ID_GESTURE_SWINGLOW",
+    "ID_GESTURE_THROWARMS", "ID_GESTURE_THMB_DWN", "ID_GESTURE_WINGS", "ID_GESTURE_YARDSALE"];
 const TURNTABLE_DEADZONE: f32 = 0.02;
 const TURNTABLE_RATE: f32 = 0.1;
 const FE_HZ: f32 = 30.0;
+/// CAC_GetIntegerValue's scale for a morph row's 0..1 value (822F95E4).
+const MORPH_DISPLAY: f32 = 122.0;
 
 #[derive(Default)]
 pub(crate) struct CasHost {
@@ -315,6 +729,41 @@ pub(crate) struct CasHost {
     pub preview_wait: Option<f32>,
     /// The rest the highlight needs before the preview (retail 500 ms, 825FBAE8; a mod can change it).
     pub preview_delay: f32,
+    /// Every head look (sync_look fills it from the parts library) and, on the Facial Hair / Eyebrow menus, the
+    /// ones the selector steps through (S+0x1798) with the shown one (S+0x1808).
+    pub heads: Vec<HeadLook>,
+    pub style_list: Vec<usize>,
+    pub style_at: usize,
+    /// Hair models' HairModelType and HairStyle by model id (parts library), the Hair menu's list (None = Remove,
+    /// bald; else an index into `parts`) and the shown entry.
+    /// The color zones by COLORIZED_SLOT (vault); the look keeps each zone's picked color key in `colour_keys`.
+    pub colour_zones: std::collections::HashMap<u32, CasColourZone>,
+    pub hair_models: std::collections::HashMap<String, (String, String)>,
+    /// The eye models (slot Organ) and their materials' EyeColour, which an eye color pick swaps by its match text.
+    pub eye_models: std::collections::HashMap<String, EyeModel>,
+    /// The morph rows by vault key hash and the row settings (vault); without settings the morph rows do not move.
+    pub morphs: std::collections::HashMap<String, CasMorph>,
+    pub morph_settings: Option<MorphSettings>,
+    /// A held morph step changed the highlighted row: the stage refreshes it (SetState 50).
+    pub value_refresh: bool,
+    /// The tattoo categories (vault order) and the designs (library id, category), id order.
+    pub tattoo_categories: Vec<String>,
+    pub tattoos: Vec<(String, String)>,
+    pub tattoo_names: std::collections::HashMap<String, String>,
+    pub tattoo_thumbnails: std::collections::HashMap<String, String>,
+    /// The picked region (upper?, region index) and the design list of the picked category (None = remove, last).
+    pub tattoo_region: Option<(bool, usize)>,
+    pub tattoo_list: Vec<Option<String>>,
+    /// The clothing taken off for a tattoo (slot, the worn selection), put back on leaving the editor or by X.
+    pub tattoo_clothes: Option<(String, serde_json::Value)>,
+    /// By gender (male = true): the skin torso model and its (material, SkinTone), and the tattoo shorts (model,
+    /// material) the tattoo editor puts on.
+    pub bare_torsos: std::collections::HashMap<bool, (String, Vec<(String, String)>)>,
+    pub tattoo_shorts: std::collections::HashMap<bool, (String, String)>,
+    /// In the placement editor: the region's constraint rect and the design's bounds (sync_look, from the parts).
+    pub tattoo_fit: Option<([f32; 4], [f32; 4])>,
+    pub hair_list: Vec<Option<usize>>,
+    pub hair_at: usize,
     /// The career's unlock store (kinds 5 / 6 decide the parts' locks), copied in while the screen is open.
     pub unlocks: skate_core::career::unlocks::Unlocks,
     /// The character's turntable angle in radians (CAS animation manager +0x64) and its rate per 30 Hz frame at a
@@ -357,6 +806,8 @@ pub(crate) struct CasHost {
     pub wheels: f32,
 }
 
+/// `customiser::apply`'s default for an unset `truck` / `wheel` (retail's default not read yet).
+const PROFILE_TRUCK_DEFAULT: f64 = 0.7;
 /// Option ids of the top menu's sliders.
 const TRUCKS: i32 = 47;
 const WHEELS: i32 = 48;
@@ -377,6 +828,7 @@ impl CasHost {
             payload: o.payload,
             camera: o.camera,
             body: o.body,
+            morph: o.morph,
         }).collect();
         Self { menus, options, indices, trucks: 0.5, wheels: 0.5, male: true, preview_delay: PREVIEW_DELAY,
             turntable_rate: TURNTABLE_RATE, ..Default::default() }
@@ -390,6 +842,341 @@ impl CasHost {
             if value >= TURNTABLE_DEADZONE {
                 self.turntable += sign * self.turntable_rate * value * frames;
             }
+        }
+    }
+
+    /// A morph's value over its range, 0..1 (8253CD18: below min reads as min, above max as 1).
+    fn morph_n(&self, morph: &CasMorph) -> f32 {
+        let raw = self.look["morphs"][&morph.target].as_f64().map_or(morph.default, |v| v as f32);
+        ((raw - morph.min) / (morph.max - morph.min)).clamp(0.0, 1.0)
+    }
+
+    fn set_morph_n(&mut self, morph: &CasMorph, n: f32) {
+        if !self.look["morphs"].is_object() {
+            self.look["morphs"] = serde_json::json!({});
+        }
+        self.look["morphs"][&morph.target] = serde_json::json!(morph.min + n.clamp(0.0, 1.0) * (morph.max - morph.min));
+    }
+
+    /// The body row's partner: the body shape row edits `fat` and `thin` as one slider (825FB420 / 825FB490).
+    fn thin_morph(&self) -> Option<CasMorph> {
+        self.morphs.values().find(|m| m.target == "thin").cloned()
+    }
+
+    /// The highlighted row's morph and its shown value 0..1: the morph's own, or for the body row
+    /// (1 - thin) / 2 + fat / 2 (825FB490).
+    fn morph_row(&self, row: usize) -> Option<(CasMorph, f32)> {
+        let (_, option) = self.option(row)?;
+        let option = option.filter(|o| o.kind == "morph")?;
+        let morph = self.morphs.get(&option.morph)?.clone();
+        let n = match (morph.target.as_str(), self.thin_morph()) {
+            ("fat", Some(thin)) => ((1.0 - self.morph_n(&thin)) * 0.5 + self.morph_n(&morph) * 0.5).clamp(0.0, 1.0),
+            _ => self.morph_n(&morph),
+        };
+        Some((morph, n))
+    }
+
+    /// The morph rows' Left / Right (825FBAE8, research b1041): every FE frame the stick is past the threshold the
+    /// shown value moves one step, clamped 0..1, no repeat delay; written back raw over the morph's range (82536B10),
+    /// the body row as fat above the middle, thin below (825FB5B8). `seconds` of frames at the FE cadence. NOT RETAIL
+    /// YET: the looping move sound, the face preset row switching to Custom on a face row edit.
+    pub(crate) fn tick_morph(&mut self, x: f32, seconds: f32) -> bool {
+        let row = self.current().map(|m| self.indices[m].0 as usize);
+        let (Some(settings), Some((morph, n))) = (self.morph_settings, row.and_then(|r| self.morph_row(r))) else { return false };
+        let dir = if x > settings.threshold { 1.0 } else if x < -settings.threshold { -1.0 } else { return false };
+        let next = (n + dir * settings.step * seconds * FE_HZ).clamp(0.0, 1.0);
+        if next == n {
+            return false;
+        }
+        match (morph.target.as_str(), self.thin_morph()) {
+            ("fat", Some(thin)) => {
+                let (fat, thin_n) = if next >= 0.5 { ((next - 0.5) * 2.0, 0.0) } else { (0.0, 1.0 - next * 2.0) };
+                self.set_morph_n(&morph, fat);
+                self.set_morph_n(&thin, thin_n);
+            }
+            _ => self.set_morph_n(&morph, next),
+        }
+        self.look_changed = true;
+        self.value_refresh = true;
+        true
+    }
+
+    /// The placement editor's analog ops (825FBAE8 on menus 7 / 8): `input` = [rotate (right bumper - left bumper),
+    /// scale (left stick y), move u (right stick x), move v (right stick y)] [which pad input drives which op is
+    /// inferred from the screen's legend]; each past the dead zone adjusts the placement by its factor per FE frame
+    /// (82C2E698 with the fit). Returns whether the placement moved.
+    pub(crate) fn tick_tattoo(&mut self, input: [f32; 4], seconds: f32) -> bool {
+        let (Some(menu @ (TATTOO_UPPER_ADJUST | TATTOO_LOWER_ADJUST)), Some((rect, bounds))) = (self.current(), self.tattoo_fit) else { return false };
+        let slot = if menu == TATTOO_UPPER_ADJUST { "Arm" } else { "Leg" };
+        let Ok(mut p) = serde_json::from_value::<[f32; 4]>(self.look["tattoos"][slot]["placement"].clone()) else { return false };
+        let before = p;
+        let frames = seconds * FE_HZ;
+        for (op, (x, factor)) in input.iter().zip([GRAPHIC_ROTATE, GRAPHIC_SCALE, GRAPHIC_MOVE_U, GRAPHIC_MOVE_V]).enumerate() {
+            if x.abs() > GRAPHIC_DEADZONE {
+                p = adjust_graphic(p, op, x * factor * frames, rect, bounds);
+            }
+        }
+        if p == before {
+            return false;
+        }
+        self.look["tattoos"][slot]["placement"] = serde_json::json!(p);
+        self.look_changed = true;
+        true
+    }
+
+    /// An Edit Style value from the look (0..3, the profile's default 0 when missing).
+    fn style_value(&self, key: &str) -> usize {
+        self.look[key].as_f64().map_or(0, |v| (v.max(0.0) as usize).min(3))
+    }
+
+    /// Stance 0 = goofy; missing = 1 (regular), the profile's default.
+    fn goofy(&self) -> bool {
+        self.look["stance"].as_f64().unwrap_or(1.0) < 0.5
+    }
+
+    /// Left / Right on an Edit Style row: Posture / Style wrap over 0..3, Stance toggles. NOT RETAIL YET: Posture's
+    /// body target re-post (no posture-specific rows yet).
+    fn step_edit_style(&mut self, id: i32, right: bool) -> bool {
+        let (key, next) = match id {
+            POSTURE | SKATE_STYLE => {
+                let key = if id == POSTURE { "posture" } else { "style" };
+                let at = self.style_value(key);
+                (key, serde_json::json!(if right { (at + 1) % 4 } else { (at + 3) % 4 }))
+            }
+            STANCE => ("stance", serde_json::json!(if self.goofy() { 1 } else { 0 })),
+            _ => return false,
+        };
+        bevy::log::info!("RETAIL_MENUS CreateASkater {key} {next}");
+        self.look[key] = next;
+        self.look_changed = true;
+        true
+    }
+
+    /// The profile `gestures` key a gesture row edits.
+    fn gesture_slot(id: i32) -> Option<&'static str> {
+        GESTURE_ROWS.iter().find(|(row, _)| *row == id).map(|(_, slot)| *slot)
+    }
+
+    /// The gesture in a slot (the profile's, else the slot's own index: customiser::apply's default).
+    fn gesture(&self, slot: &str) -> usize {
+        self.look["gestures"][slot].as_u64().map_or(slot.parse().unwrap_or(0), |v| v as usize).min(GESTURE_LABELS.len() - 1)
+    }
+
+    /// Left / Right on a gesture row (825FC7E8): the next / previous unlocked gesture (kind 4, by name) in table order,
+    /// wrapping. NOT RETAIL YET: the gesture played on the skater as it changes (SetPartUnlessFace; gesture clips are
+    /// not exported) and the sound.
+    fn step_gesture(&mut self, slot: &str, right: bool) -> bool {
+        use skate_core::career::unlocks::kind;
+        let list: Vec<usize> = (0..GESTURE_UNLOCKS.len())
+            .filter(|&i| self.unlocks.is_unlocked(kind::GESTURES, GESTURE_UNLOCKS[i])).collect();
+        if list.is_empty() {
+            return false;
+        }
+        let at = list.iter().position(|&i| i == self.gesture(slot)).unwrap_or(0);
+        let next = list[if right { (at + 1) % list.len() } else { (at + list.len() - 1) % list.len() }];
+        if !self.look["gestures"].is_object() {
+            self.look["gestures"] = serde_json::json!({});
+        }
+        self.look["gestures"][slot] = serde_json::json!(next);
+        self.look_changed = true;
+        bevy::log::info!("RETAIL_MENUS CreateASkater gesture slot {slot} {}", GESTURE_LABELS[next]);
+        true
+    }
+
+    fn edit_style_text(&self, id: i32) -> Option<&'static str> {
+        if let Some(slot) = Self::gesture_slot(id) {
+            return Some(GESTURE_LABELS[self.gesture(slot)]);
+        }
+        match id {
+            POSTURE => Some(POSTURE_LABELS[self.style_value("posture")]),
+            SKATE_STYLE => Some(SKATE_STYLE_LABELS[self.style_value("style")]),
+            STANCE => Some(if self.goofy() { "ID_CAC_STANCE_GOOFY" } else { "ID_CAC_STANCE_REGULAR" }),
+            _ => None,
+        }
+    }
+
+    fn colour_zone_of(id: i32) -> Option<u32> {
+        COLOUR_ROWS.iter().find(|(row, _)| *row == id).map(|(_, zone)| *zone)
+    }
+
+    /// The zone's picked color (82603F38 via 825388B8: the look's key for the zone), else the zone's default, as an
+    /// index into its list (0 when neither is in it).
+    fn colour_index(&self, zone: u32) -> usize {
+        let Some(z) = self.colour_zones.get(&zone) else { return 0 };
+        let key = self.look["colour_keys"][zone.to_string()].as_str().unwrap_or(&z.default).to_ascii_uppercase();
+        z.colours.iter().position(|c| c.key == key).unwrap_or(0)
+    }
+
+    /// Left / Right on a color row (825FC7E8): the previous / next color, clamped (no wrap); the picked color's key is
+    /// kept per zone in the look; recipe A becomes the zone's tint (`colour_tints`), recipe B the hair highlight
+    /// (`colour_highlights`). NOT RETAIL YET: the eyebrow / facial hair channels a hair pick also writes, the sounds,
+    /// and the eye / board part swap by the color's text.
+    fn step_colour(&mut self, zone: u32, right: bool) -> bool {
+        let Some(n) = self.colour_zones.get(&zone).map(|z| z.colours.len()) else { return false };
+        let at = self.colour_index(zone);
+        let next = if right { (at + 1).min(n.saturating_sub(1)) } else { at.saturating_sub(1) };
+        if next == at && self.look["colour_keys"][zone.to_string()].is_string() {
+            return false;
+        }
+        let key = self.colour_zones[&zone].colours[next].key.clone();
+        if !self.look["colour_keys"].is_object() {
+            self.look["colour_keys"] = serde_json::json!({});
+        }
+        bevy::log::info!("RETAIL_MENUS CreateASkater colour zone {zone} {} ({})", self.colour_zones[&zone].colours[next].text, key);
+        self.look["colour_keys"][zone.to_string()] = serde_json::Value::String(key);
+        // CAS_ColorPickerApply writes the recipe into the zone's tint channel (b991); the skater's material takes
+        // recipe A as its modulate color (customiser_parts `colour_tints`). The eye (6) and board (11) zones swap a
+        // part by the color's text instead (82541788: eye = the material with that EyeColour; board not ported).
+        // Skin: the color's match text (light / dark) picks the SkinTone texture of the head, arm and leg materials
+        // (the look's `skin`, customiser_parts resolve); recipe A tints over it. [inferred from data: the dark colors'
+        // recipe A is no darker than the light ones, so the dark texture does the darkening; the retail code that
+        // swaps it is not read (82538060 writes tints only, b1038)].
+        if zone == SKIN_ZONE {
+            let text = self.colour_zones[&zone].colours[next].text.clone();
+            if !text.is_empty() {
+                self.look["skin"] = serde_json::Value::String(text);
+            }
+        }
+        if zone == EYE_ZONE {
+            let text = self.colour_zones[&zone].colours[next].text.clone();
+            let worn = self.look["selections"][EYE_SLOT]["asset_id"].as_str().map(str::to_owned);
+            let male = self.male;
+            let model = worn.filter(|m| self.eye_models.contains_key(m))
+                .or_else(|| self.eye_models.iter().filter(|(_, e)| e.male == male).map(|(id, _)| id.clone()).min());
+            if let Some(model) = model {
+                if let Some((material, _)) = self.eye_models[&model].materials.iter().find(|(_, c)| c.eq_ignore_ascii_case(&text)).cloned() {
+                    self.set_slot(EYE_SLOT, Some((model, material)));
+                }
+            }
+        }
+        if !matches!(zone, EYE_ZONE | BOARD_ZONE) {
+            if !self.look["colour_tints"].is_object() {
+                self.look["colour_tints"] = serde_json::json!({});
+            }
+            self.look["colour_tints"][zone.to_string()] = serde_json::json!(self.colour_zones[&zone].colours[next].a);
+            if !self.look["colour_highlights"].is_object() {
+                self.look["colour_highlights"] = serde_json::json!({});
+            }
+            self.look["colour_highlights"][zone.to_string()] = serde_json::json!(self.colour_zones[&zone].colours[next].b);
+        }
+        self.look_changed = true;
+        true
+    }
+
+    /// CAC_GetColours on a color row (825A77D8): the zone's swatches as r, g, b numbers, in list order.
+    fn colour_swatches(&self, zone: u32) -> Vec<Value> {
+        self.colour_zones.get(&zone).into_iter().flat_map(|z| z.colours.iter())
+            .flat_map(|c| c.swatch.map(|v| Value::Number(f64::from(v)))).collect()
+    }
+
+    fn hair_style_of(&self, model_id: &str) -> Option<&str> {
+        self.hair_models.get(model_id).map(|(_, style)| style.as_str())
+    }
+
+    /// Entering the Hair menu (82600AF8 menu 20): the full hair parts of the skater's gender, Remove first for a male
+    /// skater, on the worn style (a hat model maps to its style's full part; no hair = Remove).
+    fn build_hair_list(&mut self) {
+        let male = self.male;
+        let mut list: Vec<Option<usize>> = if male { vec![None] } else { Vec::new() };
+        list.extend(self.parts.iter().enumerate()
+            .filter(|(_, p)| p.slot == HAIR_SLOT && if male { p.gender != "female" } else { p.gender != "male" })
+            .filter(|(_, p)| self.hair_models.get(&p.model_id).is_some_and(|(kind, _)| kind == HAIR_FULL))
+            .map(|(i, _)| Some(i)));
+        let worn_style = self.worn(HAIR_SLOT).and_then(|(model, _)| self.hair_style_of(model)).map(str::to_owned);
+        self.hair_at = match worn_style {
+            Some(style) => list.iter().position(|e| e.is_some_and(|i| self.hair_style_of(&self.parts[i].model_id) == Some(style.as_str()))).unwrap_or(0),
+            None => 0,
+        };
+        self.hair_list = list;
+    }
+
+    /// Left / Right on Hair Style (825FC7E8, wraps): the next style goes on; Remove takes the hair off (retail puts
+    /// the bald default part on, ThumbnailLookup(cas, 2, 1)). The hair color is its own row (66) and stays.
+    fn step_hair(&mut self, right: bool) -> bool {
+        let n = self.hair_list.len();
+        if n < 2 {
+            return false;
+        }
+        self.hair_at = if right { (self.hair_at + 1) % n } else { (self.hair_at + n - 1) % n };
+        match self.hair_list[self.hair_at] {
+            Some(i) => {
+                let p = self.parts[i].clone();
+                bevy::log::info!("RETAIL_MENUS CreateASkater hair {}", self.hair_style_of(&p.model_id).unwrap_or(""));
+                self.set_slot(HAIR_SLOT, Some((p.model_id, p.material_id)));
+            }
+            None => {
+                bevy::log::info!("RETAIL_MENUS CreateASkater hair bald");
+                self.set_slot(HAIR_SLOT, None);
+            }
+        }
+        true
+    }
+
+    /// CAC_GetStringValue on Hair Style (825FFE08): ID_CAC_HAIRSTYLE_BALD for Remove, else ID_CAC_HAIRSTYLE_<style>.
+    fn hair_text(&self) -> String {
+        match self.hair_list.get(self.hair_at) {
+            Some(None) => "ID_CAC_HAIRSTYLE_BALD".into(),
+            Some(Some(i)) => self.hair_style_of(&self.parts[*i].model_id).filter(|s| !s.is_empty())
+                .map_or("#".into(), |s| format!("ID_CAC_HAIRSTYLE_{}", s.to_ascii_uppercase().replace(' ', "_"))),
+            None => "#".into(),
+        }
+    }
+
+    /// The style a selector row steps (its head field), if it is one.
+    fn style_field(id: i32) -> Option<&'static str> {
+        match id {
+            FACIAL_HAIR => Some("FacialHairStyle"),
+            EYEBROWS => Some("EyebrowStyle"),
+            _ => None,
+        }
+    }
+
+    /// Entering the Facial Hair / Eyebrow menu (82600AF8 menus 21 / 24): the worn head model's looks that keep every
+    /// head field but `field`, in library order; the eyebrow list sorted (guess_Menu_SortPtrRange) [inferred: by the
+    /// style name] and without EYEBROW_EXCLUDED_MALE for a male skater. Starts on the worn look (FindByKeyPair).
+    fn build_style_list(&mut self, field: &str) {
+        self.style_list.clear();
+        self.style_at = 0;
+        let Some((model, material)) = self.worn(HEAD_SLOT).map(|(a, m)| (a.to_owned(), m.to_owned())) else { return };
+        let Some(worn) = self.heads.iter().find(|h| h.model == model && h.material == material).cloned() else { return };
+        let mut list: Vec<usize> = self.heads.iter().enumerate()
+            .filter(|(_, h)| h.model == model && HEAD_FIELDS.iter().all(|f| *f == field || h.field(f) == worn.field(f)))
+            .filter(|(_, h)| !(field == "EyebrowStyle" && self.male && h.field(field) == EYEBROW_EXCLUDED_MALE))
+            .map(|(i, _)| i)
+            .collect();
+        if field == "EyebrowStyle" {
+            list.sort_by(|a, b| self.heads[*a].field(field).cmp(self.heads[*b].field(field)));
+        }
+        self.style_at = list.iter().position(|&i| self.heads[i].material == material).unwrap_or(0);
+        self.style_list = list;
+    }
+
+    /// Left / Right on a style row (825FC7E8, wraps): the next look goes on. Facial hair also sets the look's
+    /// `beard`, which the parts library matches the head material to.
+    fn step_style(&mut self, field: &str, right: bool) -> bool {
+        let n = self.style_list.len();
+        if n < 2 {
+            return false;
+        }
+        self.style_at = if right { (self.style_at + 1) % n } else { (self.style_at + n - 1) % n };
+        let head = self.heads[self.style_list[self.style_at]].clone();
+        if field == "FacialHairStyle" {
+            self.look["beard"] = serde_json::Value::String(head.field(field).to_owned());
+        }
+        bevy::log::info!("RETAIL_MENUS CreateASkater {field} {}", head.field(field));
+        self.set_slot(HEAD_SLOT, Some((head.model, head.material)));
+        true
+    }
+
+    /// CAC_GetStringValue on a style row (825FFE08): `ID_CAC_FACIAL_HAIR_<style>` / `ID_CAC_EYEBROW_<style>` (upper
+    /// case, spaces to underscores), the retail error text for an untagged look.
+    fn style_text(&self, field: &str) -> String {
+        let value = self.style_list.get(self.style_at).map_or("", |&i| self.heads[i].field(field));
+        match (field, value.is_empty()) {
+            ("FacialHairStyle", true) => "#FacialHairStyleNotTaggedError".into(),
+            (_, true) => "#BrowStyleNotTaggedError".into(),
+            ("FacialHairStyle", false) => format!("ID_CAC_FACIAL_HAIR_{}", value.to_ascii_uppercase().replace(' ', "_")),
+            _ => format!("ID_CAC_EYEBROW_{}", value.to_ascii_uppercase().replace(' ', "_")),
         }
     }
 
@@ -681,6 +1468,16 @@ impl CasHost {
         if menu != PART_GRID {
             self.end_preview();
         }
+        match menu {
+            HAIR_MENU => self.build_hair_list(),
+            FACIAL_HAIR_MENU => self.build_style_list("FacialHairStyle"),
+            EYEBROW_MENU => self.build_style_list("EyebrowStyle"),
+            // One row per vault category, options 21.. (how retail fills menu 6's rows is open, b1042).
+            TATTOO_CATEGORIES => {
+                self.menus[menu].options = (0..self.tattoo_categories.len().min(6) as i32).map(|i| TATTOO_CATEGORY_ROW + i).collect();
+            }
+            _ => {}
+        }
         if matches!(menu, TOP_MENU | MERCHANDISE) {
             self.post_camera(WHOLE_BODY.into());
             self.body = WHOLE_BODY.into();
@@ -707,6 +1504,21 @@ impl CasHost {
         if self.current() == Some(WEAR_STYLES) && self.highlighted() == Some(WEAR_STYLE_OPTION) {
             return self.cycle_wear_style(right);
         }
+        if let Some(field) = self.highlighted().and_then(Self::style_field) {
+            return self.step_style(field, right);
+        }
+        if self.highlighted() == Some(HAIR_STYLE) {
+            return self.step_hair(right);
+        }
+        if let Some(zone) = self.highlighted().and_then(Self::colour_zone_of) {
+            return self.step_colour(zone, right);
+        }
+        if let Some(id) = self.highlighted().filter(|id| matches!(*id, POSTURE | SKATE_STYLE | STANCE)) {
+            return self.step_edit_style(id, right);
+        }
+        if let Some(slot) = self.highlighted().and_then(Self::gesture_slot) {
+            return self.step_gesture(slot, right);
+        }
         let value = match self.highlighted() {
             Some(TRUCKS) => &mut self.trucks,
             Some(WHEELS) => &mut self.wheels,
@@ -716,6 +1528,12 @@ impl CasHost {
         let next = next.clamp(0.0, 1.0);
         let changed = next != *value;
         *value = next;
+        // The profile's `truck` / `wheel` (0..1), which `customiser::apply` hands to the board physics.
+        if changed {
+            let key = if self.highlighted() == Some(TRUCKS) { "truck" } else { "wheel" };
+            self.look[key] = serde_json::json!(next);
+            self.look_changed = true;
+        }
         changed
     }
 
@@ -739,8 +1557,11 @@ impl CasHost {
             self.pop_to(MERCHANDISE);
             return self.current();
         }
-        let (id, option) = self.option(row)?;
-        let option = option?;
+        let id = self.option(row)?.0;
+        if let Some(menu) = self.tattoo_select(id) {
+            return Some(menu);
+        }
+        let option = self.option(row)?.1?;
         let target = option.target.filter(|t| *t < self.menus.len())?;
         let (title, camera, body) = (option.text.clone(), option.camera.clone(), option.body.clone());
         // 825FE3C0 posts the option's camera target with the push, and its body target (+0x28) when set.
@@ -761,6 +1582,149 @@ impl CasHost {
         self.indices[target] = (0, 0);
         self.enter(target);
         Some(target)
+    }
+
+    fn push(&mut self, menu: usize) -> Option<usize> {
+        if menu >= self.menus.len() {
+            return None;
+        }
+        self.stack.push(menu);
+        self.indices[menu] = (0, 0);
+        self.enter(menu);
+        Some(menu)
+    }
+
+    /// The tattoo branches of OnMenuSelect (825FE3C0 menus 4 / 5 / 6, research b1042): a region row keeps the region
+    /// (825FE0E0 / 825FE280) and pushes the categories; a category row lists its designs, "none" last (8253E3D8, the
+    /// enter of menu 11), and pushes the list. NOT RETAIL YET: the replace popup when the location already holds a
+    /// tattoo, taking the clothing off, the region cameras, and the design list's vault order (ours: id order).
+    fn tattoo_select(&mut self, id: i32) -> Option<usize> {
+        match self.current()? {
+            TATTOO_UPPER | TATTOO_LOWER => {
+                let region = if TATTOO_UPPER_REGIONS.contains(&id) { (true, (id - TATTOO_UPPER_REGIONS.start()) as usize) }
+                    else if TATTOO_LOWER_REGIONS.contains(&id) { (false, (id - TATTOO_LOWER_REGIONS.start()) as usize) }
+                    else { return None };
+                bevy::log::info!("RETAIL_MENUS CreateASkater tattoo region {region:?}");
+                self.tattoo_region = Some(region);
+                // The region's camera and body targets (tables 0x83044548 / 0x83044568, 0x830445E8 / 0x83044608).
+                let (camera, body) = if region.0 { TATTOO_UPPER_TARGETS[region.1] } else { TATTOO_LOWER_TARGETS[region.1] };
+                self.post_camera(camera.into());
+                self.body = body.into();
+                self.take_clothing_off(region.0);
+                self.push(TATTOO_CATEGORIES)
+            }
+            TATTOO_CATEGORIES => {
+                let category = self.tattoo_categories.get(usize::try_from(id - TATTOO_CATEGORY_ROW).ok()?)?.clone();
+                // The remove entry comes first, and only when the location already holds a tattoo [the PS3
+                // recording 2026-11-16 11-13-28.mp4 ~4:25 / ~4:35: the first visit lists designs only, a later one
+                // starts with the remove icon; b1042 read "appended last" from the code, which the recording does not
+                // show].
+                let slot = if self.tattoo_region.is_some_and(|(upper, _)| upper) { "Arm" } else { "Leg" };
+                let has = self.look["tattoos"][slot]["id"].is_string();
+                self.tattoo_list = has.then_some(None).into_iter()
+                    .chain(self.tattoos.iter().filter(|(_, c)| *c == category).map(|(t, _)| Some(t.clone()))).collect();
+                bevy::log::info!("RETAIL_MENUS CreateASkater tattoo category {category}: {} entries", self.tattoo_list.len());
+                self.push(TATTOO_DESIGNS)
+            }
+            _ => None,
+        }
+    }
+
+    /// A design pick on menu 11 (825FD9F0): the design goes on the region's location (the look's `tattoos.Arm` /
+    /// `tattoos.Leg`, one each like retail's tail locations 1 / 2); "none" clears it; back to Body Mods. NOT RETAIL
+    /// YET: the placement editor (menus 7 / 8: move, scale, rotate, fit; research b1042), so the stamp keeps our
+    /// fixed placement for the region.
+    fn pick_tattoo(&mut self, row: usize) {
+        let (Some(entry), Some((upper, region))) = (self.tattoo_list.get(row).cloned(), self.tattoo_region) else { return };
+        let slot = if upper { "Arm" } else { "Leg" };
+        let side = if upper { TATTOO_UPPER_SIDE.get(region) } else { TATTOO_LOWER_SIDE.get(region) }.copied().unwrap_or(0);
+        if !self.look["tattoos"].is_object() {
+            self.look["tattoos"] = serde_json::json!({});
+        }
+        match entry {
+            Some(id) => {
+                let placement = self.default_placement(upper, region);
+                bevy::log::info!("RETAIL_MENUS CreateASkater tattoo {slot} {id} side {side} placement {placement:?}");
+                self.look["tattoos"][slot] = serde_json::json!({ "id": id, "side": side, "region": region, "placement": placement });
+                self.look_changed = true;
+                // 825FAAF0 states 9 / 10: the design loaded, its default placement posted, the editor pushed.
+                self.push(if upper { TATTOO_UPPER_ADJUST } else { TATTOO_LOWER_ADJUST });
+            }
+            None => {
+                bevy::log::info!("RETAIL_MENUS CreateASkater tattoo {slot} removed");
+                if let Some(t) = self.look["tattoos"].as_object_mut() {
+                    t.remove(slot);
+                }
+                self.look_changed = true;
+                self.put_clothing_back();
+                self.pop_to(BODY_MODS);
+            }
+        }
+    }
+
+    /// 825FB718 / 825FB8C8: the shirt (upper) or pants (lower) come off for the tattoo: the worn part is kept and
+    /// the slot gets its lookup part 0 (ThumbnailLookup(look, slot, 0)). Which parts those are [data + the PS3
+    /// recording 2026-11-16 11-13-28.mp4 ~4:25 / ~5:30]: upper, the gender's skin torso ("Arms Wholetorso": the
+    /// female one is the sports bra) in the look's skin tone; lower, the gray Retro Shorts ("Retroshorts Grey").
+    fn take_clothing_off(&mut self, upper: bool) {
+        if self.tattoo_clothes.is_some() {
+            return;
+        }
+        let tone = self.look["skin"].as_str().unwrap_or("light").to_owned();
+        let part = if upper {
+            self.bare_torsos.get(&self.male).and_then(|(model, materials)| {
+                let material = materials.iter().find(|(_, t)| *t == tone).or(materials.first())?;
+                Some(("OuterTorso", model.clone(), material.0.clone()))
+            })
+        } else {
+            self.tattoo_shorts.get(&self.male).map(|(model, material)| ("Pants", model.clone(), material.clone()))
+        };
+        let Some((slot, model, material)) = part else { return };
+        self.tattoo_clothes = Some((slot.into(), self.look["selections"][slot].clone()));
+        bevy::log::info!("RETAIL_MENUS CreateASkater tattoo clothing off: {slot} {model} / {material}");
+        self.set_slot(slot, Some((model, material)));
+    }
+
+    /// The kept part back on (825FB718's second branch: find it by key and apply it).
+    fn put_clothing_back(&mut self) {
+        let Some((slot, worn)) = self.tattoo_clothes.take() else { return };
+        bevy::log::info!("RETAIL_MENUS CreateASkater tattoo clothing back {slot}");
+        if !self.look["selections"].is_object() {
+            self.look["selections"] = serde_json::json!({});
+        }
+        self.look["selections"][slot.as_str()] = worn;
+        self.look_changed = true;
+    }
+
+    /// The region's default placement (rotation, scale, u, v): table 0x830442B8 by the region's row.
+    fn default_placement(&self, upper: bool, region: usize) -> [f32; 4] {
+        let row = if upper { TATTOO_UPPER_ROW.get(region) } else { TATTOO_LOWER_ROW.get(region) }.copied().unwrap_or(0);
+        GRAPHIC_DEFAULTS[row][usize::from(!self.male)]
+    }
+
+    /// The placement editor's buttons (825FC7E8 on menus 7 / 8, research b1042): A back to Body Mods (the clothing
+    /// back on), key 4 (Y) the region's default placement. NOT RETAIL YET: key 5 (X: clothing off / on), the
+    /// clothing taken off on entering.
+    pub(crate) fn tattoo_editor_key(&mut self, key: u32) -> bool {
+        let (Some(menu @ (TATTOO_UPPER_ADJUST | TATTOO_LOWER_ADJUST)), Some((upper, region))) = (self.current(), self.tattoo_region) else { return false };
+        let slot = if menu == TATTOO_UPPER_ADJUST { "Arm" } else { "Leg" };
+        match key {
+            2 => {
+                self.put_clothing_back();
+                self.pop_to(BODY_MODS);
+                true
+            }
+            5 => {
+                if self.tattoo_clothes.is_some() { self.put_clothing_back() } else { self.take_clothing_off(upper) }
+                true
+            }
+            4 if self.look["tattoos"][slot].is_object() => {
+                self.look["tattoos"][slot]["placement"] = serde_json::json!(self.default_placement(upper, region));
+                self.look_changed = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// B (825FC768): pops one menu while the stack holds more than one; false on the top menu (retail opens the exit
@@ -842,6 +1806,38 @@ impl CasHost {
         }
         let row = args.first().map(|v| v.number().max(0.0) as usize).unwrap_or(0);
         let text = |s: &str| Value::Text(if s.is_empty() { "#".into() } else { s.into() });
+        // The tattoo designs (menu 11, panel 6): each design's thumbnail `fe\cas\logos\<model>_<variant>` (the disc's
+        // 190 tattoo images live there; the PS3 recording shows them in this grid), the remove icon for "none".
+        if m == TATTOO_DESIGNS {
+            let entry = self.tattoo_list.get(row).cloned();
+            match method {
+                "CAC_GetNumItems" => return Ok(Some(Value::Number(self.tattoo_list.len() as f64))),
+                "CAC_GetThumbnailFileName" => {
+                    let thumb = match &entry {
+                        Some(Some(id)) => self.tattoo_thumbnails.get(id).cloned().unwrap_or_else(|| "no_image".into()),
+                        Some(None) => "fe\\cas\\general\\remove".into(),
+                        None => "no_image".into(),
+                    };
+                    return Ok(Some(Value::Text(thumb)));
+                }
+                // "owned" (the check mark) only on the location's current design, as the part grid does; the
+                // recording shows no marks on a first visit.
+                "CAC_GetOptionType" => {
+                    let slot = if self.tattoo_region.is_some_and(|(upper, _)| upper) { "Arm" } else { "Leg" };
+                    let worn = matches!(&entry, Some(Some(id)) if self.look["tattoos"][slot]["id"].as_str() == Some(id.as_str()));
+                    return Ok(Some(Value::Text(if worn { "owned" } else { "none" }.into())));
+                }
+                "CAC_GetDescriptionText" | "CAC_GetItemText" => {
+                    let name = entry.flatten().and_then(|id| self.tattoo_names.get(&id).cloned());
+                    return Ok(Some(Value::Text(name.unwrap_or_else(|| "ID_CAC_REMOVE_PART".into()))));
+                }
+                "CAC_OnThumbnailSelect" => {
+                    self.pick_tattoo(row);
+                    return Ok(Some(Value::Undefined));
+                }
+                _ => {}
+            }
+        }
         // The part grid (menu 10) answers from its entries.
         if m == PART_GRID {
             match method {
@@ -923,10 +1919,31 @@ impl CasHost {
             "CAC_GetBannerType" => Value::Text(match self.shop { 0 => "slappys", 1 => "petes", _ => "none" }.into()),
             "CAC_GetInfoPanelType" => Value::Text(match self.shop { 1 => "petes", 2 => "blurb", _ => "noblurb" }.into()),
             // 825FFB18 / 825FFE08 for the sliders: round(value * 10); LOOSE / MEDIUM / TIGHT, SOFT / MEDIUM / HARD.
+            "CAC_GetIntegerValue" if self.option(row).and_then(|(id, _)| Self::colour_zone_of(id)).is_some() => {
+                let zone = self.option(row).and_then(|(id, _)| Self::colour_zone_of(id)).unwrap_or_default();
+                Value::Number(self.colour_index(zone) as f64)
+            }
+            // A morph row: the shown value x 122, rounded (b1041: 822F95E4 = 122.0; the movie places its knob by it).
+            "CAC_GetIntegerValue" if self.morph_row(row).is_some() => {
+                Value::Number((self.morph_row(row).map_or(0.0, |(_, n)| n) * MORPH_DISPLAY + 0.5).floor() as f64)
+            }
             "CAC_GetIntegerValue" => match self.option(row).and_then(|(id, _)| self.slider(id)) {
                 Some(v) => Value::Number((v * 10.0).round() as f64),
                 None => Value::Number(0.0),
             },
+            "CAC_GetColours" => {
+                let zone = self.option(row).and_then(|(id, _)| Self::colour_zone_of(id));
+                let swatches = zone.map(|z| self.colour_swatches(z)).unwrap_or_default();
+                Value::Object(vm.array(swatches)?)
+            }
+            "CAC_GetStringValue" if self.option(row).is_some_and(|(id, _)| id == HAIR_STYLE) => Value::Text(self.hair_text()),
+            "CAC_GetStringValue" if self.option(row).and_then(|(id, _)| self.edit_style_text(id)).is_some() => {
+                Value::Text(self.option(row).and_then(|(id, _)| self.edit_style_text(id)).unwrap_or("#").into())
+            }
+            "CAC_GetStringValue" if self.option(row).and_then(|(id, _)| Self::style_field(id)).is_some() => {
+                let field = self.option(row).and_then(|(id, _)| Self::style_field(id)).unwrap_or_default();
+                Value::Text(self.style_text(field))
+            }
             "CAC_GetStringValue" => match self.option(row).and_then(|(id, _)| self.slider(id).map(|v| (id, v))) {
                 Some((id, v)) => {
                     let level = if v < SLIDER_LOW { 0 } else if v > SLIDER_HIGH { 2 } else { 1 };
@@ -1152,6 +2169,335 @@ mod tests {
     }
 
     #[test]
+    fn the_facial_hair_and_eyebrow_selectors_step_head_looks_that_keep_the_other_fields() {
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        h.menus[FACIAL_HAIR_MENU] = menu("FacialHair", "", (0, 0), &[FACIAL_HAIR]);
+        h.menus[EYEBROW_MENU] = menu("Brow", "", (0, 0), &[EYEBROWS]);
+        h.options[0].target = Some(FACIAL_HAIR_MENU);
+        h.options[1].target = Some(EYEBROW_MENU);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0, 1]);
+        let look = |m: &str, tone: &str, beard: &str, brow: &str| HeadLook { model: "head#".into(), material: m.into(),
+            fields: [("SkinTone", tone), ("HairlineShadowStyle", ""), ("HairlineShadowColour", "black"),
+                ("FacialHairStyle", beard), ("EyebrowStyle", brow)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+        h.heads = vec![look("a", "light", "stubble", "style2"), look("b", "light", "full beard", "style2"),
+            look("c", "dark", "goatee", "style2"), look("d", "light", "stubble", "style7"), look("e", "light", "stubble", "style1")];
+        h.look["selections"]["Rostral"] = serde_json::json!({ "asset_id": "head#", "material_id": "a" });
+        h.begin();
+        h.look["selections"]["Rostral"] = serde_json::json!({ "asset_id": "head#", "material_id": "a" });
+        // Facial hair: the light-skinned style2 looks only (not the dark one, not other brows), on the worn one.
+        h.select(0);
+        assert_eq!(h.style_list.iter().map(|&i| h.heads[i].material.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        let text = |h: &mut CasHost, vm: &mut Vm| h.call(vm, "Game", "CAC_GetStringValue", &[Value::Number(0.0)]).unwrap().unwrap();
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_FACIAL_HAIR_STUBBLE".into()));
+        assert!(h.left_right(true));
+        assert_eq!(h.look["selections"]["Rostral"]["material_id"], "b");
+        assert_eq!(h.look["beard"], "full beard");
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_FACIAL_HAIR_FULL_BEARD".into()));
+        assert!(h.left_right(true), "wraps");
+        assert_eq!(h.look["selections"]["Rostral"]["material_id"], "a");
+        // Eyebrows: sorted by style, style7 left out for the male skater.
+        h.back();
+        h.select(1);
+        assert_eq!(h.style_list.iter().map(|&i| h.heads[i].material.as_str()).collect::<Vec<_>>(), ["e", "a"]);
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_EYEBROW_STYLE2".into()));
+        h.male = false;
+        h.back();
+        h.select(1);
+        assert_eq!(h.style_list.len(), 3, "a female skater keeps style7");
+    }
+
+    #[test]
+    fn edit_style_rows_write_the_profiles_posture_style_stance_and_the_sliders_its_truck_and_wheel() {
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        h.menus[16] = menu("EditStyle", "", (0, 0), &[POSTURE, SKATE_STYLE, STANCE]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0, TRUCKS]);
+        h.options[0].target = Some(16);
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": {} });
+        h.select(0);
+        let text = |h: &mut CasHost, vm: &mut Vm, row: f64| h.call(vm, "Game", "CAC_GetStringValue", &[Value::Number(row)]).unwrap().unwrap();
+        // Unset: posture 1, style normal, stance regular (the profile's defaults 0, 0, 1).
+        assert_eq!(text(&mut h, &mut vm, 0.0), Value::Text("ID_CAC_LABEL_POSTURE_1".into()));
+        assert_eq!(text(&mut h, &mut vm, 2.0), Value::Text("ID_CAC_STANCE_REGULAR".into()));
+        assert!(h.left_right(false), "posture wraps back from 0");
+        assert_eq!(h.look["posture"], 3);
+        h.call(&mut vm, "Game", "CAC_UpdateMenuIndices", &[Value::Number(1.0), Value::Number(0.0)]).unwrap();
+        assert!(h.left_right(true));
+        assert_eq!(h.look["style"], 1);
+        assert_eq!(text(&mut h, &mut vm, 1.0), Value::Text("ID_CAC_LABEL_STYLE_LOOSE".into()));
+        h.call(&mut vm, "Game", "CAC_UpdateMenuIndices", &[Value::Number(2.0), Value::Number(0.0)]).unwrap();
+        assert!(h.left_right(true));
+        assert_eq!(h.look["stance"], 0, "goofy");
+        assert_eq!(text(&mut h, &mut vm, 2.0), Value::Text("ID_CAC_STANCE_GOOFY".into()));
+        assert!(h.look_changed);
+        // The Trucks slider writes the profile's truck.
+        h.back();
+        h.call(&mut vm, "Game", "CAC_UpdateMenuIndices", &[Value::Number(1.0), Value::Number(0.0)]).unwrap();
+        assert!(h.left_right(true));
+        assert_eq!(h.look["truck"].as_f64().map(|v| (v * 10.0).round()), Some(6.0));
+    }
+
+    #[test]
+    fn gesture_rows_step_the_unlocked_gestures_into_the_profiles_slots() {
+        use skate_core::career::unlocks::kind;
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        h.menus[16] = menu("EditStyle", "", (0, 0), &[49, 50, 51, 52]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        h.options[0].target = Some(16);
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": {} });
+        h.select(0);
+        let text = |h: &mut CasHost, vm: &mut Vm, row: f64| h.call(vm, "Game", "CAC_GetStringValue", &[Value::Number(row)]).unwrap().unwrap();
+        // Unset: each slot shows its own index (row 1 = option 50 = slot "3" = Bruce).
+        assert_eq!(text(&mut h, &mut vm, 0.0), Value::Text("ID_GESTURE_AIRGUITAR".into()));
+        assert_eq!(text(&mut h, &mut vm, 1.0), Value::Text("ID_GESTURE_BRUCE".into()));
+        assert!(h.left_right(false), "wraps to the last gesture");
+        assert_eq!(h.look["gestures"]["0"], 36);
+        assert_eq!(text(&mut h, &mut vm, 0.0), Value::Text("ID_GESTURE_YARDSALE".into()));
+        // Gating on: only granted gestures are offered.
+        h.unlocks.unlock_all = false;
+        h.unlocks.grant(kind::GESTURES, "gesture_fingerpoint");
+        h.unlocks.grant(kind::GESTURES, "gesture_wings");
+        // The current gesture is not in the list: retail counts from index 0 (825FC7E8), so Right gives list[1].
+        assert!(h.left_right(true));
+        assert_eq!(h.look["gestures"]["0"], 35);
+        assert_eq!(text(&mut h, &mut vm, 0.0), Value::Text("ID_GESTURE_WINGS".into()));
+        assert!(h.left_right(true), "wraps");
+        assert_eq!(h.look["gestures"]["0"], 22);
+    }
+
+    #[test]
+    fn the_hair_style_selector_steps_full_hair_of_the_gender_with_bald_first_for_a_male_skater() {
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        h.menus[HAIR_MENU] = menu("Hair", "", (0, 0), &[HAIR_STYLE]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        h.options[0].target = Some(HAIR_MENU);
+        let hair = |model: &str, gender: &str| CasPart { slot: "Hair".into(), model_id: model.into(), model: model.into(),
+            material_id: format!("{model}-m"), material: "m".into(), gender: gender.into(), ..Default::default() };
+        h.parts = vec![hair("afro", "male"), hair("afro_hat", "male"), hair("mohawk", "male"), hair("bob", "female")];
+        h.hair_models = [("afro", "full", "afro"), ("afro_hat", "hat", "afro"), ("mohawk", "full", "moosed up"), ("bob", "full", "bob")]
+            .into_iter().map(|(m, k, s)| (m.to_string(), (k.to_string(), s.to_string()))).collect();
+        h.begin();
+        // Wearing the afro's hat model: the list starts on the afro.
+        h.look = serde_json::json!({ "gender": "male", "selections": { "Hair": { "asset_id": "afro_hat", "material_id": "afro_hat-m" } } });
+        h.select(0);
+        assert_eq!(h.hair_list, vec![None, Some(0), Some(2)], "bald, then the male full models in database order");
+        let text = |h: &mut CasHost, vm: &mut Vm| h.call(vm, "Game", "CAC_GetStringValue", &[Value::Number(0.0)]).unwrap().unwrap();
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_HAIRSTYLE_AFRO".into()));
+        assert!(h.left_right(true));
+        assert_eq!(h.look["selections"]["Hair"]["asset_id"], "mohawk");
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_HAIRSTYLE_MOOSED_UP".into()));
+        assert!(h.left_right(true), "wraps to bald");
+        assert!(h.look["selections"]["Hair"].is_null());
+        assert_eq!(text(&mut h, &mut vm), Value::Text("ID_CAC_HAIRSTYLE_BALD".into()));
+        // A female skater: her full models, no Remove.
+        h.male = false;
+        h.back();
+        h.select(0);
+        assert_eq!(h.hair_list, vec![Some(3)]);
+    }
+
+    #[test]
+    fn a_color_row_starts_on_the_zones_default_steps_clamped_and_keeps_the_key() {
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        h.menus[HAIR_MENU] = menu("Hair", "", (0, 0), &[66]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        h.options[0].target = Some(HAIR_MENU);
+        let colour = |key: &str, r: f32| CasColour { key: key.into(), swatch: [r, 0.0, 0.0], a: [r; 3], b: [0.0; 3], text: key.into() };
+        h.colour_zones = [(1u32, CasColourZone { default: "B".into(), colours: vec![colour("A", 0.1), colour("B", 0.2), colour("C", 0.3)] })].into();
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": {} });
+        h.select(0);
+        let call = |h: &mut CasHost, vm: &mut Vm, m: &str| h.call(vm, "Game", m, &[Value::Number(0.0)]).unwrap().unwrap();
+        assert_eq!(call(&mut h, &mut vm, "CAC_GetIntegerValue"), Value::Number(1.0), "the default B");
+        assert!(matches!(call(&mut h, &mut vm, "CAC_GetColours"), Value::Object(_)));
+        assert!(h.left_right(true));
+        assert_eq!(h.look["colour_keys"]["1"], "C");
+        assert_eq!(h.look["colour_tints"]["1"], serde_json::json!([0.3f32, 0.3f32, 0.3f32]), "recipe A goes on the zone's tint");
+        assert_eq!(h.look["colour_highlights"]["1"], serde_json::json!([0.0f32, 0.0f32, 0.0f32]), "recipe B on the highlight");
+        assert!(!h.left_right(true), "clamped at the last color, no wrap");
+        assert!(h.left_right(false) && h.left_right(false));
+        assert_eq!(h.look["colour_keys"]["1"], "A");
+        assert_eq!(call(&mut h, &mut vm, "CAC_GetIntegerValue"), Value::Number(0.0));
+        assert!(!h.left_right(false), "clamped at the first");
+    }
+
+    #[test]
+    fn an_eye_color_pick_wears_the_eye_material_with_that_color_and_no_tint() {
+        let mut h = grid_host();
+        h.menus[HAIR_MENU] = menu("Eyes", "", (0, 0), &[76]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        h.options[0].target = Some(HAIR_MENU);
+        let colour = |key: &str, text: &str| CasColour { key: key.into(), swatch: [0.0; 3], a: [1.0; 3], b: [0.0; 3], text: text.into() };
+        h.colour_zones = [(EYE_ZONE, CasColourZone { default: "A".into(), colours: vec![colour("A", "blue"), colour("B", "green")] })].into();
+        let eyes = |male: bool, p: &str| EyeModel { male, materials: vec![(format!("{p}blue"), "blue".into()), (format!("{p}green"), "green".into())] };
+        h.eye_models = [("eyes_m".to_string(), eyes(true, "m_")), ("eyes_f".to_string(), eyes(false, "f_"))].into();
+        h.begin();
+        h.look = serde_json::json!({ "gender": "female", "selections": {} });
+        h.male = false;
+        h.select(0);
+        assert!(h.left_right(true));
+        assert_eq!(h.look["selections"][EYE_SLOT], serde_json::json!({ "asset_id": "eyes_f", "material_id": "f_green" }));
+        assert!(h.look["colour_tints"][EYE_ZONE.to_string()].is_null(), "the eye zone swaps a part, no tint");
+    }
+
+    #[test]
+    fn morph_rows_step_per_frame_clamped_and_the_body_row_splits_fat_and_thin() {
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        h.menus[HAIR_MENU] = menu("Eyes", "", (0, 0), &[78, 64]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        h.options[0].target = Some(HAIR_MENU);
+        for (id, key) in [(78usize, "EYE"), (64, "FAT")] {
+            if h.options.len() <= id {
+                h.options.resize(id + 1, CasOption::default());
+            }
+            h.options[id] = CasOption { kind: "morph".into(), morph: key.into(), ..Default::default() };
+        }
+        let m = |t: &str, d: f32| CasMorph { target: t.into(), min: 0.0, max: 0.5, default: d };
+        h.morphs = [("EYE".to_string(), m("local_eye_width", 0.25)), ("FAT".to_string(), m("fat", 0.0)), ("THIN".to_string(), m("thin", 0.0))].into();
+        h.morph_settings = Some(MorphSettings { threshold: 0.1, step: 0.01 });
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": {} });
+        h.select(0);
+        let value = |h: &mut CasHost, vm: &mut Vm, row: f64| h.call(vm, "Game", "CAC_GetIntegerValue", &[Value::Number(row)]).unwrap().unwrap();
+        assert_eq!(value(&mut h, &mut vm, 0.0), Value::Number(61.0), "the default 0.25 of 0..0.5 = 0.5 x 122");
+        let frame = 1.0 / FE_HZ;
+        assert!(!h.tick_morph(0.05, frame), "inside the threshold");
+        assert!(h.tick_morph(1.0, frame) && h.value_refresh);
+        assert!((h.look["morphs"]["local_eye_width"].as_f64().unwrap() - 0.255).abs() < 1e-6, "one step = 0.01 of the range");
+        for _ in 0..200 {
+            h.tick_morph(1.0, frame);
+        }
+        assert_eq!(h.look["morphs"]["local_eye_width"].as_f64(), Some(0.5));
+        assert!(!h.tick_morph(1.0, frame), "clamped at the end");
+        assert_eq!(value(&mut h, &mut vm, 0.0), Value::Number(122.0));
+        // The body row: shown 0.5 with fat = thin = 0; moving down makes it thin, up fat.
+        assert_eq!(value(&mut h, &mut vm, 1.0), Value::Number(61.0));
+        let m = h.current().unwrap();
+        h.indices[m].0 = 1;
+        for _ in 0..10 {
+            h.tick_morph(-1.0, frame);
+        }
+        assert!((h.look["morphs"]["thin"].as_f64().unwrap() - 0.1).abs() < 1e-5, "0.4 shown = thin 0.2 of the range");
+        assert_eq!(h.look["morphs"]["fat"].as_f64(), Some(0.0));
+    }
+
+    #[test]
+    fn a_skin_color_pick_sets_the_skin_tone_by_its_text_and_tints() {
+        let mut h = grid_host();
+        h.menus[HAIR_MENU] = menu("Skin", "", (0, 0), &[62]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        h.options[0].target = Some(HAIR_MENU);
+        let colour = |key: &str, text: &str, a: f32| CasColour { key: key.into(), swatch: [0.0; 3], a: [a; 3], b: [0.0; 3], text: text.into() };
+        h.colour_zones = [(SKIN_ZONE, CasColourZone { default: "A".into(), colours: vec![colour("A", "light", 0.8), colour("B", "dark", 0.56)] })].into();
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": {} });
+        h.select(0);
+        assert!(h.left_right(true));
+        assert_eq!(h.look["skin"], "dark");
+        assert_eq!(h.look["colour_tints"]["2"], serde_json::json!([0.56f32, 0.56f32, 0.56f32]));
+        assert!(h.left_right(false));
+        assert_eq!(h.look["skin"], "light");
+    }
+
+    #[test]
+    fn a_tattoo_goes_region_category_design_and_none_removes_it() {
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        while h.menus.len() <= BODY_MODS {
+            h.menus.push(menu("", "", (0, 0), &[]));
+        }
+        h.menus[BODY_MODS] = menu("BackAlleyPete", "", (0, 0), &[19]);
+        h.menus[TATTOO_UPPER] = menu("TattooUpperRegions", "", (0, 0), &[27, 28, 29, 30]);
+        h.menus[TATTOO_CATEGORIES] = menu("TattooCategories", "", (0, 0), &[]);
+        h.menus[TATTOO_DESIGNS] = menu("TattooThumbnails", "", (0, 0), &[]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        if h.options.len() <= 32 {
+            h.options.resize(33, CasOption::default());
+        }
+        h.options[0].target = Some(BODY_MODS);
+        h.options[19].target = Some(TATTOO_UPPER);
+        h.options[21].text = "ID_CAC_TATTOO_CATEGORY_01".into();
+        h.tattoo_categories = vec!["1".into(), "2".into()];
+        h.tattoo_names = [("c".to_string(), "Viper".to_string())].into();
+        h.tattoos = vec![("a".into(), "2".into()), ("b".into(), "1".into()), ("c".into(), "2".into())];
+        h.begin();
+        let shirt = serde_json::json!({ "asset_id": "tee", "material_id": "white" });
+        h.look = serde_json::json!({ "gender": "male", "skin": "dark", "selections": { "OuterTorso": shirt } });
+        h.bare_torsos = [(true, ("torso".to_string(), vec![("skin_light".to_string(), "light".to_string()), ("skin_dark".to_string(), "dark".to_string())]))].into();
+        let call = |h: &mut CasHost, vm: &mut Vm, m: &str, row: f64| h.call(vm, "Game", m, &[Value::Number(row)]).unwrap().unwrap();
+        h.select(0);
+        h.select(0);
+        assert_eq!(h.select(3), Some(TATTOO_CATEGORIES), "right arm");
+        let torso = serde_json::json!({ "asset_id": "torso", "material_id": "skin_dark" });
+        assert_eq!(h.look["selections"]["OuterTorso"], torso, "the shirt comes off: the skin torso in the look's tone");
+        assert_eq!(h.tattoo_region, Some((true, 3)));
+        assert_eq!((h.camera.as_str(), h.body.as_str()), ("387F458990473B6B", "862562BC11BB028C"), "the right arm's targets");
+        assert_eq!(call(&mut h, &mut vm, "CAC_GetNumItems", 0.0), Value::Number(2.0));
+        assert_eq!(call(&mut h, &mut vm, "CAC_GetItemText", 0.0), Value::Text("ID_CAC_TATTOO_CATEGORY_01".into()));
+        assert_eq!(h.menus[TATTOO_CATEGORIES].options, vec![21, 22], "rows filled on enter");
+        assert_eq!(h.select(1), Some(TATTOO_DESIGNS), "category 2");
+        assert_eq!(h.tattoo_list, vec![Some("a".into()), Some("c".into())], "the category's designs; no remove entry without a tattoo");
+        assert_eq!(call(&mut h, &mut vm, "CAC_GetDescriptionText", 1.0), Value::Text("Viper".into()));
+        assert_eq!(call(&mut h, &mut vm, "CAC_GetOptionType", 1.0), Value::Text("none".into()), "no check mark");
+        h.tattoo_thumbnails = [("c".to_string(), "fe\\cas\\logos\\logo_object_tattoo_viper_mat".to_string())].into();
+        assert_eq!(call(&mut h, &mut vm, "CAC_GetThumbnailFileName", 1.0), Value::Text("fe\\cas\\logos\\logo_object_tattoo_viper_mat".into()));
+        call(&mut h, &mut vm, "CAC_OnThumbnailSelect", 1.0);
+        // The right arm's default placement (row 10 of 0x830442B8), then the placement editor.
+        assert_eq!(h.look["tattoos"]["Arm"], serde_json::json!({ "id": "c", "side": 1, "region": 3, "placement": [0.0f32, 7.0f32, -0.25f32, -0.15f32] }));
+        assert_eq!(h.menu(), Some(TATTOO_UPPER_ADJUST));
+        h.look["tattoos"]["Arm"]["placement"] = serde_json::json!([0.5, 9.0, 0.0, 0.0]);
+        assert!(h.tattoo_editor_key(4), "reset");
+        assert_eq!(h.look["tattoos"]["Arm"]["placement"], serde_json::json!([0.0f32, 7.0f32, -0.25f32, -0.15f32]));
+        assert!(h.tattoo_editor_key(5), "X: shirt back on");
+        assert_eq!(h.look["selections"]["OuterTorso"], shirt);
+        assert!(h.tattoo_editor_key(5), "X: off again");
+        assert_eq!(h.look["selections"]["OuterTorso"], torso);
+        assert!(h.tattoo_editor_key(2), "A");
+        assert_eq!(h.menu(), Some(BODY_MODS));
+        assert_eq!(h.look["selections"]["OuterTorso"], shirt, "A puts it back");
+        h.select(0);
+        h.select(3);
+        h.select(1);
+        assert_eq!(h.tattoo_list, vec![None, Some("a".into()), Some("c".into())], "with a tattoo the remove entry comes first");
+        assert_eq!(call(&mut h, &mut vm, "CAC_GetThumbnailFileName", 0.0), Value::Text("fe\\cas\\general\\remove".into()));
+        assert_eq!(call(&mut h, &mut vm, "CAC_GetOptionType", 2.0), Value::Text("owned".into()), "the worn design's check mark");
+        call(&mut h, &mut vm, "CAC_OnThumbnailSelect", 0.0);
+        assert!(h.look["tattoos"]["Arm"].is_null(), "none removes it");
+    }
+
+    #[test]
+    fn the_placement_matrix_and_the_fit_follow_retail() {
+        // rot 0, k 5, (0.25, 0.25): the graphic covers body x 0.15..0.35, y 0.20..0.30 (b1043's example).
+        let (rx, ry) = crate::customiser_material::placement_rows([0.0, 5.0, 0.25, 0.25]);
+        let g = |x: f32, y: f32| (rx.x * x + rx.y * y + rx.z, ry.x * x + ry.y * y + ry.z);
+        let close = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5;
+        assert!(close(g(0.15, 0.20), (0.0, 0.0)) && close(g(0.35, 0.30), (1.0, 1.0)));
+        assert!(close((graphic_to_body([0.3, 7.0, 0.1, -0.2], 0.5, 0.5)[0], graphic_to_body([0.3, 7.0, 0.1, -0.2], 0.5, 0.5)[1]), (0.4, 0.7)),
+            "the graphic center sits at (0.5 - u, 0.5 - v)");
+        let rect = [0.0, 0.5, 0.0, 0.5];
+        let bounds = [1.0, 0.0, 0.0, 1.0];
+        let start = [0.0, 5.0, 0.25, 0.25];
+        assert!(graphic_fits(start, rect, bounds));
+        // Moving u far left (the graphic right) pushes it back inside, just past the edge.
+        let moved = adjust_graphic(start, 2, -0.3, rect, bounds);
+        assert!(graphic_fits(moved, rect, bounds) && moved[2] > -0.05 && moved[2] < 0.25, "{moved:?}");
+        // Growing the graphic past the rect: the scale is raised again until it fits; the cap holds at 15.
+        let grown = adjust_graphic(start, 1, -4.5, rect, bounds);
+        assert!(graphic_fits(grown, rect, bounds) && grown[1] >= 1.0 && grown[1] < 5.0, "{grown:?}");
+        assert_eq!(adjust_graphic(start, 1, 20.0, rect, bounds)[1], 15.0);
+        // The constraint flag flips v; missing gives the quadrant.
+        assert_eq!(constraint_rect(|_| "0.9,0.1,0.2,0.4".into(), 7), [0.2, 0.4, 0.100000024, 0.9]);
+        assert_eq!(constraint_rect(|_| String::new(), 10), [0.5, 1.0, 0.5, 1.0]);
+    }
+
+    #[test]
     fn every_picker_row_is_enabled() {
         let mut h = grid_host();
         let mut vm = Vm::new();
@@ -1280,7 +2626,16 @@ mod tests {
     #[ignore = "requires the converted vault (SKATE3_ASSET_ROOT with private/stock/skater-collections.json)"]
     fn the_vault_gives_the_camera_rows_and_logos() {
         let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT") else { return };
-        let (cameras, logos, bodies) = load_vault(std::path::Path::new(&root));
+        let (cameras, logos, bodies, zones, (morphs, morph_settings), tattoo_categories) = load_vault(std::path::Path::new(&root));
+        assert_eq!(tattoo_categories, ["1", "2", "3"], "the vault's category list, its records' text fields");
+        // The 19 morphs by key hash (b994 / b1041): eye width 0..0.5, default 0.25; the row settings 0.1 / 0.01.
+        assert_eq!(morphs.len(), 19);
+        assert_eq!(morphs.get("2219FCFA4A03AEE0"), Some(&CasMorph { target: "local_eye_width".into(), min: 0.0, max: 0.5, default: 0.25 }));
+        assert_eq!(morph_settings, Some(MorphSettings { threshold: 0.1, step: 0.01 }));
+        // Color zones by slot: hair 10, skin 7, eye 5, hat 10 (b1038), the hair default key from the zone row.
+        assert_eq!([1u32, 2, 6, 0].map(|s| zones.get(&s).map_or(0, |z| z.colours.len())), [10, 7, 5, 10]);
+        assert_eq!(zones[&1].default, "0D86C9E2EBF8EB59");
+        assert_eq!(zones[&6].colours.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["blue", "dark blue", "green", "light brown", "dark brown"]);
         // The body rows: 69, the whole body at 260 degrees, the wrist row (keyed "wrist") at 149.25.
         assert_eq!(bodies.len(), 69);
         assert_eq!(bodies[WHOLE_BODY], CasBody { clip: "CAS_Stand".into(), yaw_degrees: 260.0, position: [-1.0, 0.0, -7.05] });

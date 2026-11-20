@@ -733,6 +733,10 @@ pub struct CasOptionRow {
     pub camera: String,
     #[serde(default)]
     pub body: String,
+    /// The morph key hash at +0x18 (16 hex digits, empty when 0): the vault key of the `cac_morph_params` row
+    /// (class 0x7F47CA62F4100F41) a "morph" row edits (research b1041).
+    #[serde(default)]
+    pub morph: String,
 }
 
 /// The category number a filter vtable's slot 5 (vt+0x14) returns: `li r3,N` then `blr`; the slot count (26, the
@@ -803,9 +807,9 @@ fn cas_options(img: &Image, lists: u32, count: usize, slots: usize) -> Result<Ve
     let mut base: Option<usize> = None;
     let mut fields: Vec<[Option<u32>; 5]> = vec![[None; 5]; count];
     // 64-bit values built by `rldimi rA,rS,32,0` (rS the high word), valid while rA still holds the low word; the
-    // records' camera and body target hashes (+0x20 / +0x28) are stored from them with `std`.
+    // records' camera and body target hashes (+0x20 / +0x28) and morph key hash (+0x18) are stored from them with `std`.
     let mut wide: [Option<(u64, u32)>; 32] = [None; 32];
-    let mut targets: Vec<[u64; 2]> = vec![[0; 2]; count];
+    let mut targets: Vec<[u64; 3]> = vec![[0; 3]; count];
     for k in anchor..(anchor + CAS_CTOR_LIMIT).min(words) {
         let Some(w) = word(k) else { break };
         if w == 0x4e80_0020 {
@@ -853,7 +857,7 @@ fn cas_options(img: &Image, lists: u32, count: usize, slots: usize) -> Result<Ve
                 if Some(ra) == base && ds >= CAS_OPTION_BASE {
                     let (id, field) = (((ds - CAS_OPTION_BASE) / CAS_OPTION) as usize, (ds - CAS_OPTION_BASE) % CAS_OPTION);
                     let value = wide[rd].filter(|(_, lo)| regs[rd] == Some(*lo)).map(|(v, _)| v).or(regs[rd].map(u64::from));
-                    if let (true, Some(v), Some(slot)) = (id < count, value, [32, 40].iter().position(|f| *f == field)) {
+                    if let (true, Some(v), Some(slot)) = (id < count, value, [32, 40, 24].iter().position(|f| *f == field)) {
                         targets[id][slot] = v;
                     }
                 }
@@ -891,6 +895,7 @@ fn cas_options(img: &Image, lists: u32, count: usize, slots: usize) -> Result<Ve
     let rows: Vec<CasOptionRow> = fields.iter().zip(&actions).zip(&targets).map(|((f, (vtable, payload)), t)| CasOptionRow {
         camera: hash(t[0]),
         body: hash(t[1]),
+        morph: hash(t[2]),
         text: text(f[0]),
         description: text(f[1]),
         target: f[2].map_or(-1, |v| v as i32),

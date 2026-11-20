@@ -88,6 +88,8 @@ fn check_structure(t: &MenuTables) {
     // The camera / body target hashes at +0x20 / +0x28 (b1031, b1036): hats, t-shirts and wheels.
     assert_eq!((o[4].camera.as_str(), o[4].body.as_str()), ("256799DCA03F926D", "AD454A0ECD0E2EDF"));
     assert_eq!(o[5].camera, "1CDBC33D837B77BF");
+    // The morph key hashes at +0x18 (b1031, b1041): body shape (global_fat), eye width; none on non-morph rows.
+    assert_eq!((o[64].morph.as_str(), o[78].morph.as_str(), o[4].morph.as_str()), ("EB261B591CB399D8", "2219FCFA4A03AEE0", ""));
     assert_eq!((o[17].camera.as_str(), o[17].body.as_str()), ("CC37C25A08447470", "03B710C80E1AC13E"));
     let screen = |i: usize| -> Vec<String> { t.to_menu_data().screens[i].iter().map(|s| s.trim_start_matches("ID_GAMESETTINGS_").to_owned()).collect() };
     assert_eq!(screen(1), ["DIFFICULTY_SETTINGS", "AUDIO_SETTINGS", "VIDEO_SETTINGS", "CONTROL_SETTINGS", "ONLINE_SETTINGS", "SKATEFEED_SETTINGS"]);

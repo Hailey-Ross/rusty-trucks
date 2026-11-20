@@ -19,5 +19,5 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     let vn=select(normalize(i.world_normal),mapped,p.options.x>0.0);
     var smask=albedo.a;
     if p.options.y>0.0 { smask=textureSample(mask_map,mask_sampler,i.uv).r; }
-    return shade_character(p, vn, i.world_position, d, smask, albedo.a);
+    return shade_character(p, vn, i.world_position, d, character_albedo(albedo.rgb), smask, albedo.a);
 }
