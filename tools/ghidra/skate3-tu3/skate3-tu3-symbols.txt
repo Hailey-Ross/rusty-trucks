@@ -5927,7 +5927,7 @@ guess_CAC_AddThumbnailHandle 0x82538998 f
 guess_CAC_QueueThumbnailRequest 0x82538C00 f
 guess_CAC_CollectPartsForSlot 0x82538D38 f
 guess_CasMgr_WriteLookCopy 0x82538E78 f
-guess_CAS_UpdateBlendWeights 0x82538F60 f
+guess_CAS_RestoreMorphsFromCopy 0x82538F60 f
 guess_CAS_RestoreEntryLook 0x82539048 f
 guess_CasAssetDb_FilterList 0x82539188 f
 guess_FE_TeammateCas_ApplyPartB 0x82539510 f
@@ -6017,7 +6017,7 @@ guess_FE_CancelFileRequests 0x825424E0 f
 guess_CAS_CopyPartVectors 0x82542598 f
 guess_GameSession_CompleteRequestsBody 0x825428B8 f
 guess_HudCASEditor_ResetPartHandles 0x82542C98 f
-guess_CAS_SmallMathBody 0x82542D38 f
+guess_CAS_CopyMorphValues 0x82542D38 f
 guess_CAS_ShowRequestReset 0x82542F40 f
 guess_CAS_LookRequestStep 0x82542F78 f
 guess_Vt822FEAD0_DtorBody 0x82543058 f

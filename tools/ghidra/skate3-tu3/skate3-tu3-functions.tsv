@@ -5928,7 +5928,7 @@
 82538C00	guess_CAC_QueueThumbnailRequest	Guess: unless a request is in state 4, adds a handle and allocates a 0x208 byte request.
 82538D38	guess_CAC_CollectPartsForSlot	guess: builds a filter object (vtable 822FE954) from the slot record and runs guess_CasAssetDb_CollectFiltered into the output list.
 82538E78	guess_CasMgr_WriteLookCopy	Guess: Deep copy write of the look (part pairs, slots, saveable) into a pool block (b983).
-82538F60	guess_CAS_UpdateBlendWeights	Guess: runs the CAS math body then updates 19 blend weights from the skeleton table +0x5CE4
+82538F60	guess_CAS_RestoreMorphsFromCopy	Guess: copies the 19 morph values of the look copy +0x5DF0 back into the look (82542D38) and posts each, normalized over its range, as cMsgPresCASCharacterMorph; Undo Changes option 97 (Body Shape).
 82539048	guess_CAS_RestoreEntryLook	Guess: CharacterSlot_Deserialize of the look copy at +0x5DF0 (written by 82538E78 on screen entry) back into the look, then reloads the skater; the face preset row's Custom.
 82539188	guess_CasAssetDb_FilterList	Guess: appends and erases entries while filtering.
 82539510	guess_FE_TeammateCas_ApplyPartB	Guess: Second CAS part apply when +0x5DD8 is set.
@@ -6018,7 +6018,7 @@
 82542598	guess_CAS_CopyPartVectors	Guess: copies the part name strings and 64 bit vectors (+0x10..+0x28)
 825428B8	guess_GameSession_CompleteRequestsBody	Guess: inserts the finished request ids into a U32 vector and assigns the result byte range (+0x3C, +0x10)
 82542C98	guess_HudCASEditor_ResetPartHandles	Guess: run-42\b25.txt: clears the header words, frees the buffer +0x204 through the default allocator, fills 26 slot pairs with the empty values 830CAB18 / 830CAB20
-82542D38	guess_CAS_SmallMathBody	Guess: body with no calls (+0x1B4)
+82542D38	guess_CAS_CopyMorphValues	Guess: copies the 19 morph floats from a look copy (+0x1B0) into the look record list, setting the dirty byte +0x5D50.
 82542F40	guess_CAS_ShowRequestReset	Guess: resets the show request +0x14 (guess_CAS_ResetShowRequest)
 82542F78	guess_CAS_LookRequestStep	Guess: in state 1 (+8), when the request (+0x14) is done frees the look request +0x10 and matches the startup names (8223B3C4 / 8223B3BC)
 82543058	guess_Vt822FEAD0_DtorBody	Sets the vtable 822FEAD0, frees the list nodes and sets the base vtable 82324990
