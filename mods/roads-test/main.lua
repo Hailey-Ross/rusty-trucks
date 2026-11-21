@@ -15,7 +15,8 @@ return {
       local roads = {}
       for i = 1, 4 do
         local j = i % 4 + 1
-        roads["loop_" .. i] = { from = "corner_" .. i, to = "corner_" .. j, points = { corners[i], corners[j] }, lanes = 1, speed_limit = 9 }
+        roads["loop_" .. i] = { from = "corner_" .. i, to = "corner_" .. j, points = { corners[i], corners[j] }, lanes = 1, speed_limit = 9,
+          traffic = { cars = 2 } }
       end
       sdk.world.set_tuning("roads", { roads = roads })
       sdk.world.tuning("roads_live", "roads")

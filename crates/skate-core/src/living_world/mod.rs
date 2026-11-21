@@ -30,7 +30,7 @@ pub use census::{CensusCircle, CensusGrid, CensusMap, CensusRange, CensusRecord,
 pub use clock::ConsoleClock;
 pub use config::{CensusKindConfig, FreePlay, PopulationConfig, SkaterConfig};
 pub use draw_distance::DrawDistance;
-pub use population::{CallOutcome, LaneState, LivingWorld, TickInputs};
+pub use population::{CallOutcome, LaneState, LivingWorld, ModTraffic, TickInputs};
 pub use rng::Rng;
 pub use skaters::{Companion, SkaterCharacter, SkaterLine, SkaterWorld};
 

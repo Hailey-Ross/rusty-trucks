@@ -155,6 +155,19 @@ pub struct TickInputs<'a> {
     /// The world is streamed in and the census may spawn (retail census `+168 & 0x40`, the
     /// world-state word `0x830670CC == 5`, the manager byte `+121`).
     pub world_ready: bool,
+    /// Mods' roads that ask for their own cars (ours; [`ModTraffic`]).
+    pub mod_traffic: &'a [ModTraffic],
+}
+
+/// A mod road's own traffic (ours, not retail: retail places cars only where the census allows them; doc 26h
+/// "Routes for mods"): the vehicle pass keeps up to `cars` (times the traffic density) on its segments, of the
+/// census vehicle `categories` (empty: any).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModTraffic {
+    pub name: String,
+    pub segments: Vec<SegmentId>,
+    pub cars: u32,
+    pub categories: Vec<String>,
 }
 
 impl<'a> TickInputs<'a> {
@@ -172,6 +185,7 @@ impl<'a> TickInputs<'a> {
             scripted_skaters: 0,
             ambient_skater_override: None,
             world_ready: true,
+            mod_traffic: &[],
         }
     }
 }
@@ -589,5 +603,105 @@ fn vehicle_spawns(
         }
         out.push(Decision::Spawn(record));
         left -= 1;
+    }
+    mod_road_spawns(rules, st, inputs, net, catalog, (centre, inner, outer), limit, (tick, seed, initial), density, out);
+}
+
+/// Tries per road and pass to place one of a mod road's cars.
+const MOD_ROAD_ATTEMPTS: u32 = 4;
+
+/// Mods' road traffic ([`ModTraffic`]): a road with fewer cars on its segments than it asks for gets one more per
+/// pass, at a random spot of a random one of its segments that lies inside this pass's spawn ring, with the
+/// factory's lane fit, overlap test and vehicle limit.
+#[allow(clippy::too_many_arguments)]
+fn mod_road_spawns(
+    rules: &placement::PlacementRules,
+    st: &mut KindState,
+    inputs: &TickInputs,
+    net: &RoadNetwork,
+    catalog: &VehicleCatalog,
+    (centre, inner, outer): (Vec3, f32, f32),
+    limit: Option<u32>,
+    (tick, seed, initial): (u64, u64, bool),
+    density: f32,
+    out: &mut Vec<Decision>,
+) {
+    for road in inputs.mod_traffic {
+        let want = (road.cars as f32 * density.max(0.0)).round() as u32;
+        let on = st.live.values().filter(|l| l.lane.is_some_and(|s| road.segments.contains(&s.segment))).count() as u32;
+        if on >= want {
+            continue;
+        }
+        if limit.is_some_and(|p| st.live.len() as u32 >= p) {
+            return;
+        }
+        let segments: Vec<usize> = (0..net.segments.len()).filter(|&i| road.segments.contains(&net.segments[i].id)).collect();
+        if segments.is_empty() {
+            continue;
+        }
+        let categories: Vec<&String> = if road.categories.is_empty() {
+            catalog.categories.iter().filter(|(_, l)| !l.is_empty()).map(|(c, _)| c).collect()
+        } else {
+            road.categories.iter().filter(|c| catalog.categories.get(*c).is_some_and(|l| !l.is_empty())).collect()
+        };
+        if categories.is_empty() {
+            continue;
+        }
+        for _ in 0..MOD_ROAD_ATTEMPTS {
+            let si = segments[st.rng.modulo(segments.len() as u32) as usize];
+            let s = &net.segments[si];
+            let span = s.length - 2.0 * rules.end_margin;
+            if span <= 0.0 {
+                break;
+            }
+            let distance = rules.end_margin + span * st.rng.unit();
+            let cars_on = |lane: u8| -> Vec<LaneCar> {
+                st.live
+                    .values()
+                    .filter_map(|l| l.lane)
+                    .filter(|c| c.segment == s.id && c.lane == lane)
+                    .map(|c| LaneCar { distance: c.distance, length: c.length, speed: c.speed })
+                    .collect()
+            };
+            let lanes: Vec<u8> = (0..s.lanes).filter(|&l| placement::lane_fits(net, si, l, distance, rules, &cars_on(l))).collect();
+            if lanes.is_empty() {
+                continue;
+            }
+            let lane = placement::pick_lane(&lanes, st.rng.next_u32(), rules);
+            let frame = net.lane_frame(si, lane as f32, distance);
+            let (dx, dz) = (frame.position[0] - centre[0], frame.position[2] - centre[2]);
+            let r = (dx * dx + dz * dz).sqrt();
+            if r < inner || r > outer {
+                continue;
+            }
+            let category = categories[st.rng.modulo(categories.len() as u32) as usize].clone();
+            let Some(entity_name) = catalog.categories.get(&category).and_then(|list| census::pick_entity(&mut st.rng, list)).cloned() else { continue };
+            let Some(entity) = catalog.entities.get(&entity_name) else { continue };
+            let radius = 0.5 * entity.length.max(entity.width);
+            let mut obstacles: Vec<(Vec3, f32)> = st.live.values().map(|l| (l.position, l.lane.map_or(0.0, |s| 0.5 * s.length.max(s.width)))).collect();
+            obstacles.extend(inputs.observers.iter().map(|o| (o.position, 0.0)));
+            if placement::overlaps(frame.position, radius, &obstacles, rules) {
+                continue;
+            }
+            let palette_seed = derive(seed, &[0x5041_4C45_5454_45, Kind::Vehicle as u64, st.next_serial as u64]);
+            let id = s.id;
+            let choice = SpawnChoice::Vehicle {
+                record: format!("mod_road:{}", road.name),
+                category,
+                entity: entity_name,
+                model: entity.model.clone(),
+                chassis: (palette_seed % entity.chassis_colours.max(1) as u64) as u32,
+                secondary: ((palette_seed >> 32) % entity.secondary_colours.max(1) as u64) as u32,
+                segment: id.0,
+                lane,
+                distance,
+            };
+            let record = st.spawn(seed, tick, frame.position, frame.yaw(), initial, choice);
+            if let Some(l) = st.live.get_mut(&record.id.serial) {
+                l.lane = Some(LaneState { segment: id, lane, distance, speed: 0.0, length: entity.length, width: entity.width });
+            }
+            out.push(Decision::Spawn(record));
+            break;
+        }
     }
 }

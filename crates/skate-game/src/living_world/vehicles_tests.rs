@@ -147,7 +147,7 @@ fn a_mod_road_rebuilds_the_network_and_the_cars_start_over() {
     run(&mut a, 0.05, 60.0);
     assert_eq!(cars(&mut a).len(), 1);
     let road = ModRoad { name: "my_lane".into(), from: "a".into(), to: "b".into(), points: vec![[50.0, 0.0, 0.0], [50.0, 0.0, 120.0]],
-        lanes: 1, lane_width: 3.5, speed_limit: 11.0, two_way: true };
+        lanes: 1, lane_width: 3.5, speed_limit: 11.0, two_way: true, traffic: None };
     a.world_mut().resource_mut::<PopulationState>().set_road_patch(vec![road]);
     run(&mut a, 0.05, 60.0);
     assert!(cars(&mut a).is_empty(), "the cars on the old network go");

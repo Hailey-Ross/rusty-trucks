@@ -393,7 +393,9 @@ function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",a
 -- livingworld_models record}, glbs = {model record = GLB path}, paint_gain, retail 1; names as in vehicles.json,
 -- sdk.engine.inspect(key, "world_tuning:vehicles") lists the live tables; cars already on the road keep theirs)
 -- or the mod's own roads ("roads": roads = {name = {from = node, to = node, points = {{x, y, z}, ...} 2..256,
--- lanes 1..4 each way (1), lane_width 2..8 m (3.5), speed_limit 1..60 m/s (11), two_way (true)}}; roads sharing
+-- lanes 1..4 each way (1), lane_width 2..8 m (3.5), speed_limit 1..60 m/s (11), two_way (true), traffic =
+-- {cars = 0..16, categories = {"sedans", "taxis", ...} (any when empty)}: cars kept on the road of its own, placed
+-- inside the spawn ring and scaled by the traffic density; without it only the map census's cars reach it}}; roads sharing
 -- a node name meet in a junction there, a node with one road is a dead end; the cars start over on the new
 -- network; sdk.engine.inspect(key, "world_tuning:roads") gives the segment and junction counts)
 -- or the dynamic shadow floor on the baked world ("shadows": world_floor =
