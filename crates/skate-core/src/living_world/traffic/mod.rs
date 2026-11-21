@@ -19,7 +19,7 @@ pub use cursor::{choose_connector, Advance, ConnectorChoice, LaneCursor, Place};
 pub use follow::{Car, FollowEvent, FollowParams};
 pub use graph::{
     ConnectorId, ConnectorInput, Curve, EndInput, Frame, JunctionId, JunctionInput, LaneId, PieceInput, RoadInput, RoadNetwork, SegmentId,
-    SegmentInput, TrafficError, Turn,
+    SegmentInput, TrafficError, Turn, ENDS,
 };
 pub use junction::{junction_entry, query_due, Entry, EntryInfo, EntryQuery, Occupancy, VehicleKey, VehicleSnapshot, Vehicles};
 pub use signals::{priority_end, Controller, Light, Phase, SignalChange, SignalClock, SignalTimings};

@@ -385,6 +385,8 @@ pub(crate) struct ModControl {
     pub overrides: BTreeMap<(String, String), skate_mods::ChallengeOptions>,
     pub abort: bool,
     pub events: Vec<serde_json::Value>,
+    /// Mods' own challenges in the list (`sdk.challenges.add`): their id -> the mod.
+    pub added: BTreeMap<String, String>,
 }
 
 /// Events kept for mods between two mod ticks; older ones drop first.
@@ -513,10 +515,14 @@ fn arm(
         challenges.loaded = true;
         let root = config.asset_root.parent().unwrap_or(&config.asset_root);
         challenges.records = crate::challenge_records::Records::load(root.join("settings/challenges.json"));
+        // A mod's own challenges added before the first map keep their place behind the disc's.
+        let keys = challenges.mods.added.clone();
+        let added: Vec<Challenge> = challenges.retail.drain(..).filter(|c| keys.contains_key(&c.id)).collect();
         challenges.retail = load(&config.asset_root).unwrap_or_else(|e| {
             info!("SKATE_CHALLENGES none ({e})");
             Vec::new()
         });
+        challenges.retail.extend(added);
         challenges.tutorials = crate::tutorial_run::load(&config.asset_root);
         info!("SKATE_CHALLENGES tutorials={}", challenges.tutorials.len());
     }

@@ -160,6 +160,64 @@ impl TriggerShapeOptions {
 }
 
 /// A mod's change to one challenge's values (`sdk.challenges.configure`): unset fields keep the setup data's value.
+/// A box of a mod's challenge: center, full size (m) and a turn about the up axis (radians).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ChallengeBox {
+    pub center: [f32; 3],
+    pub size: [f32; 3],
+    #[serde(default)]
+    pub yaw: f32,
+}
+
+/// A place of a mod's challenge: where the player stands and faces (radians about the up axis).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ChallengePlace {
+    pub position: [f32; 3],
+    #[serde(default)]
+    pub yaw: f32,
+}
+
+/// A whole new own the spot challenge from a mod (`sdk.challenges.add`, ours): its boundary, the spot where lines
+/// score, the start and sign-up places, the radii and the points; retail's own the spot values by default.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ChallengeDefinition {
+    pub title: String,
+    /// The map it is on (absent: the map loaded when it is added).
+    pub map: Option<String>,
+    pub boundary: ChallengeBox,
+    pub spot: ChallengeBox,
+    /// Where lines must happen to count (absent: the spot).
+    pub scoring: Option<ChallengeBox>,
+    pub start: ChallengePlace,
+    /// The sign-up and discovery center (absent: the start).
+    pub sign_up: Option<ChallengePlace>,
+    pub sign_up_radius: Option<f32>,
+    pub discovery_radius: Option<f32>,
+    pub owned_points: Option<i32>,
+    pub killed_points: Option<i32>,
+    pub out_of_bounds_time: Option<i32>,
+    pub owned_display_time: Option<f32>,
+    pub killed_display_time: Option<f32>,
+}
+
+impl ChallengeDefinition {
+    pub fn validate(&self) -> bool {
+        let finite = |v: &[f32]| v.iter().all(|x| x.is_finite() && x.abs() <= 100_000.0);
+        let boxed = |b: &ChallengeBox| finite(&b.center) && finite(&[b.yaw]) && b.size.iter().all(|s| s.is_finite() && (0.5..=2000.0).contains(s));
+        let place = |p: &ChallengePlace| finite(&p.position) && finite(&[p.yaw]);
+        let radius = |r: Option<f32>| r.is_none_or(|r| r.is_finite() && (1.0..=1000.0).contains(&r));
+        let options = ChallengeOptions { owned_points: self.owned_points, killed_points: self.killed_points, out_of_bounds_time: self.out_of_bounds_time,
+            owned_display_time: self.owned_display_time, killed_display_time: self.killed_display_time };
+        !self.title.is_empty() && self.title.len() <= 128 && self.map.as_ref().is_none_or(|m| !m.is_empty() && m.len() <= 128)
+            && boxed(&self.boundary) && boxed(&self.spot) && self.scoring.as_ref().is_none_or(boxed)
+            && place(&self.start) && self.sign_up.as_ref().is_none_or(place)
+            && radius(self.sign_up_radius) && radius(self.discovery_radius) && options.validate()
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ChallengeOptions {
@@ -874,6 +932,14 @@ pub enum Command {
         id: String,
         enabled: bool,
     },
+    /// Add (or replace) this mod's own the spot challenge `id` (`ChallengeDefinition`); it goes when the mod stops.
+    ChallengeAdd {
+        id: String,
+        definition: ChallengeDefinition,
+    },
+    ChallengeRemove {
+        id: String,
+    },
     ChallengeConfigure {
         id: String,
         #[serde(default)]
@@ -1347,6 +1413,8 @@ impl Command {
             Self::CareerTeammateLook { n, profile } => {
                 (1..=16).contains(n) && profile.as_ref().is_none_or(|p| serde_json::to_vec(p).is_ok_and(|v| v.len() <= 65536))
             }
+            Self::ChallengeAdd { id, definition } => crate::schema::valid_id(id) && definition.validate(),
+            Self::ChallengeRemove { id } => crate::schema::valid_id(id),
             Self::ChallengeConfigure { id, options } => {
                 crate::schema::valid_id(id) && options.as_ref().is_none_or(ChallengeOptions::validate)
             }
@@ -1507,6 +1575,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::MusicCaption { .. } => "music_caption",
         Command::MusicExternal { .. } => "music_external",
         Command::ChallengeStart { .. } => "challenge_start",
+        Command::ChallengeAdd { .. } => "challenge_add",
+        Command::ChallengeRemove { .. } => "challenge_remove",
         Command::PresentationPlay { .. } => "presentation_play",
         Command::PresentationStop { .. } => "presentation_stop",
         Command::ChallengeAbort { .. } => "challenge_abort",
@@ -1853,6 +1923,8 @@ impl Vm {
             capabilities.set("world_pause", 1)?;
             // sdk.presentation: play groups of retail presentation events.
             capabilities.set("presentation", 1)?;
+            // sdk.challenges.add / remove: a mod's own own the spot challenges.
+            capabilities.set("challenge_add", 1)?;
         capabilities.set("replay", 1)?;
             // Retail menus (sdk.menus): edit the retail menu structure, handle any entry.
             capabilities.set("retail_menus", 1)?;
@@ -3046,7 +3118,7 @@ mod world_audio_tests {
     fn world_tuning_commands_deserialize_and_validate() {
         for (value, ok) in [
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_draw_distance":2.0}}), true),
-            (json!({"kind":"world_set_tuning","domain":"carry"}), true), (json!({"kind":"world_pause_simulation","on":true}), true), (json!({"kind":"presentation_play","key":"intro","events":[["FadeOut","0.5"],["Wait","1"],["NIS","tut_sksc_01"],["FadeIn","0.5"]]}), true), (json!({"kind":"presentation_play","key":"intro","events":[]}), false), (json!({"kind":"presentation_play","key":"intro","events":[["Fade Out"]]}), false), (json!({"kind":"world_set_tuning","domain":"challenges","patch":{"reel_slots":6}}), true),
+            (json!({"kind":"world_set_tuning","domain":"carry"}), true), (json!({"kind":"world_pause_simulation","on":true}), true), (json!({"kind":"challenge_add","id":"plaza","definition":{"title":"Plaza","boundary":{"center":[0,0,0],"size":[60,20,60]},"spot":{"center":[0,0,0],"size":[10,4,10],"yaw":0.5},"start":{"position":[0,0,-20]}}}), true), (json!({"kind":"challenge_add","id":"plaza","definition":{"title":"","boundary":{"center":[0,0,0],"size":[60,20,60]},"spot":{"center":[0,0,0],"size":[10,4,10]},"start":{"position":[0,0,-20]}}}), false), (json!({"kind":"challenge_add","id":"plaza","definition":{"title":"x","boundary":{"center":[0,0,0],"size":[0,20,60]},"spot":{"center":[0,0,0],"size":[10,4,10]},"start":{"position":[0,0,-20]}}}), false), (json!({"kind":"presentation_play","key":"intro","events":[["FadeOut","0.5"],["Wait","1"],["NIS","tut_sksc_01"],["FadeIn","0.5"]]}), true), (json!({"kind":"presentation_play","key":"intro","events":[]}), false), (json!({"kind":"presentation_play","key":"intro","events":[["Fade Out"]]}), false), (json!({"kind":"world_set_tuning","domain":"challenges","patch":{"reel_slots":6}}), true),
             (json!({"kind":"engine_inspect","system":"world_tuning:props"}), true),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"nope":1}}), false),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_tricks":{"mode":"recorded","min_air_frames":30},"skater_trick_profiles":{"default":{"regular":[{"trick":96,"weight":1.0}]}}}}), true),

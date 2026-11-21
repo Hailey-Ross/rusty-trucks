@@ -395,7 +395,10 @@ function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",a
 -- or the mod's own roads ("roads": roads = {name = {from = node, to = node, points = {{x, y, z}, ...} 2..256,
 -- lanes 1..4 each way (1), lane_width 2..8 m (3.5), speed_limit 1..60 m/s (11), two_way (true), traffic =
 -- {cars = 0..16, categories = {"sedans", "taxis", ...} (any when empty)}: cars kept on the road of its own, placed
--- inside the spawn ring and scaled by the traffic density; without it only the map census's cars reach it}}; roads sharing
+-- inside the spawn ring and scaled by the traffic density; without it only the map census's cars reach it}}, district =
+-- the district whose map roads to start from ("" none; absent: the map's own); a node "map:nearest" (a free end of
+-- the map junction nearest that road end, within 40 m) or "map:<id>" (sdk.world.tuning(key, "roads").map_junctions
+-- lists the ids) joins one of the map's own unsignalled junctions; roads sharing
 -- a node name meet in a junction there, a node with one road is a dead end; the cars start over on the new
 -- network; sdk.engine.inspect(key, "world_tuning:roads") gives the segment and junction counts)
 -- or the dynamic shadow floor on the baked world ("shadows": world_floor =
@@ -662,6 +665,14 @@ function sdk.presentation.state(key) sdk.engine.inspect(key, "presentation") end
 function sdk.challenges.abort() submit{kind="challenge_abort"} end
 function sdk.challenges.set_enabled(id, enabled) submit{kind="challenge_enable",id=id,enabled=enabled ~= false} end
 function sdk.challenges.configure(id, options) submit{kind="challenge_configure",id=id,options=non_empty(options)} end
+-- A whole new own the spot challenge (sdk.capabilities.challenge_add >= 1; ours): definition = {title, map? (the
+-- loaded map), boundary = {center = {x, y, z}, size = {w, h, d}, yaw? (radians)}, spot = box (where lines score),
+-- scoring? = box (default the spot), start = {position = {x, y, z}, yaw?}, sign_up? = place (default the start),
+-- sign_up_radius? (10), discovery_radius? (100), owned_points? (1000), killed_points? (1500), out_of_bounds_time? (5 s),
+-- owned_display_time?, killed_display_time?}. Its id in sdk.challenges.list() / start() is "mod:<your id>/<id>";
+-- it is discovered, signed up for, run, scored and saved like a disc challenge, and goes when the mod stops.
+function sdk.challenges.add(id, definition) submit{kind="challenge_add",id=id,definition=definition} end
+function sdk.challenges.remove(id) submit{kind="challenge_remove",id=id} end
 
 -- Career (with the Challenges opt-in): board sales, money, milestones, armed actions, flags, team and achievements.
 -- Changes stay with the career when the mod stops; flags a mod sets go under "<mod id>:<name>" unless the career

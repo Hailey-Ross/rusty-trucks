@@ -438,6 +438,12 @@ pub(crate) struct PopulationState {
     /// clears its cars when it changes: their cursors index the old network).
     roads_stock: Option<skate_core::living_world::traffic::RoadInput>,
     road_patch: Vec<skate_core::living_world::traffic::mod_roads::ModRoad>,
+    /// A mod's road set (`roads` tuning `district`: another district's map roads, "" none); None: the map's own.
+    road_district: Option<String>,
+    /// The loaded map's own road input (`roads_stock` is this or the mod's district).
+    map_roads: Option<skate_core::living_world::traffic::RoadInput>,
+    /// Where `roads.bin` is read from for a mod's district.
+    asset_root: Option<std::path::PathBuf>,
     /// The mod roads that keep cars of their own (from `road_patch`).
     mod_traffic: Vec<skate_core::living_world::ModTraffic>,
     pub roads_revision: u64,
@@ -472,6 +478,9 @@ impl Default for PopulationState {
             vehicle_patch: Default::default(),
             roads_stock: None,
             road_patch: Vec::new(),
+            road_district: None,
+            map_roads: None,
+            asset_root: None,
             mod_traffic: Vec::new(),
             roads_revision: 0,
             npc: npc_skaters::NpcData::default(),
@@ -518,8 +527,9 @@ impl PopulationState {
         self.census = data.census;
         self.skaters = data.skaters;
         self.roads = data.roads;
-        self.roads_stock = data.road_input;
-        if !self.road_patch.is_empty() {
+        self.map_roads = data.road_input;
+        self.roads_stock = self.district_roads();
+        if !self.road_patch.is_empty() || self.road_district.is_some() {
             self.patch_roads();
         }
         self.vehicles_stock = data.vehicles;
@@ -537,11 +547,54 @@ impl PopulationState {
 
     /// Mods' `roads` tuning (their own roads), kept across world loads; the network is rebuilt and the cars start over.
     pub(crate) fn set_road_patch(&mut self, roads: Vec<skate_core::living_world::traffic::mod_roads::ModRoad>) {
-        if roads == self.road_patch {
+        let district = self.road_district.clone();
+        self.set_roads(roads, district, None);
+    }
+
+    /// Mods' roads plus their road set (`district`; None: the map's own). `asset_root` is where `roads.bin` is.
+    pub(crate) fn set_roads(&mut self, roads: Vec<skate_core::living_world::traffic::mod_roads::ModRoad>, district: Option<String>, asset_root: Option<&Path>) {
+        if let Some(root) = asset_root {
+            self.asset_root = Some(root.to_path_buf());
+        }
+        if roads == self.road_patch && district == self.road_district {
             return;
+        }
+        if district != self.road_district {
+            self.road_district = district;
+            self.roads_stock = self.district_roads();
         }
         self.road_patch = roads;
         self.patch_roads();
+    }
+
+    pub(crate) fn road_district(&self) -> Option<&str> {
+        self.road_district.as_deref()
+    }
+
+    /// The unsignalled junctions of the road set with free ends (id, ground position, free ends): what `map:<id>` joins.
+    pub(crate) fn joinable_junctions(&self) -> Vec<(u64, [f32; 3], u8)> {
+        let Some(input) = self.roads_stock.as_ref() else { return Vec::new() };
+        input.junctions.iter().filter(|j| !j.signalled).filter_map(|j| {
+            let free = (0..skate_core::living_world::traffic::ENDS).filter(|&e| j.approaches[e].is_none() && j.exits[e].is_none()).count() as u8;
+            let p = skate_core::living_world::traffic::mod_roads::junction_position(input, j)?;
+            (free > 0).then_some((j.id.0, p, free))
+        }).collect()
+    }
+
+    /// The road input the network starts from: the map's own, or the mod's district from `roads.bin` ("" none).
+    fn district_roads(&self) -> Option<skate_core::living_world::traffic::RoadInput> {
+        let Some(district) = self.road_district.as_deref() else { return self.map_roads.clone() };
+        if district.is_empty() {
+            return None;
+        }
+        let root = self.asset_root.as_deref()?;
+        let bytes = std::fs::read(root.join("private/living_world/roads.bin")).map_err(|e| warn!("LIVING_WORLD roads district {district}: {e}")).ok()?;
+        skate_data::roads::RoadGraph::parse(&bytes).map_err(|e| warn!("LIVING_WORLD roads district {district}: {e}")).ok()
+            .and_then(|g| g.district_traffic_input(district))
+            .or_else(|| {
+                warn!("LIVING_WORLD roads district {district}: no such district in roads.bin; no map roads");
+                None
+            })
     }
 
     fn patch_roads(&mut self) {
