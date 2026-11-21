@@ -409,6 +409,8 @@ pub(crate) struct PopulationState {
     /// clears its cars when it changes: their cursors index the old network).
     roads_stock: Option<skate_core::living_world::traffic::RoadInput>,
     road_patch: Vec<skate_core::living_world::traffic::mod_roads::ModRoad>,
+    /// The mod roads that keep cars of their own (from `road_patch`).
+    mod_traffic: Vec<skate_core::living_world::ModTraffic>,
     pub roads_revision: u64,
     /// Replay-tier lines and voices of the loaded district (milestone 3).
     pub npc: npc_skaters::NpcData,
@@ -441,6 +443,7 @@ impl Default for PopulationState {
             vehicle_patch: Default::default(),
             roads_stock: None,
             road_patch: Vec::new(),
+            mod_traffic: Vec::new(),
             roads_revision: 0,
             npc: npc_skaters::NpcData::default(),
             data_config: PopulationConfig::retail(),
@@ -524,7 +527,8 @@ impl PopulationState {
                 .or_else(|| self.roads_stock.as_ref().and_then(|s| RoadNetwork::build(s).ok()))
         };
         self.roads_revision += 1;
-        info!("LIVING_WORLD roads: {} segments ({} mod roads)", self.roads.as_ref().map_or(0, |r| r.segments.len()), self.road_patch.len());
+        self.mod_traffic = mod_roads::traffic(&self.road_patch);
+        info!("LIVING_WORLD roads: {} segments ({} mod roads, {} with their own traffic)", self.roads.as_ref().map_or(0, |r| r.segments.len()), self.road_patch.len(), self.mod_traffic.len());
     }
 
     fn patch_vehicles(&mut self) {
@@ -908,6 +912,7 @@ pub(crate) fn step_population(
         scripted_skaters: state.world.scripted_count(),
         ambient_skater_override: None,
         world_ready: true,
+        mod_traffic: &state.mod_traffic,
     };
     let mut decisions = std::mem::take(&mut state.pending);
     decisions.extend(state.world.advance(time.delta_secs_f64(), &inputs));

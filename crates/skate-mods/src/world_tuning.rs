@@ -845,7 +845,22 @@ pub struct RoadPatch {
     pub lane_width: Option<f32>,
     pub speed_limit: Option<f32>,
     pub two_way: Option<bool>,
+    /// Cars the engine keeps on this road of its own (ours): without it only the map census's cars reach the road.
+    pub traffic: Option<RoadTrafficPatch>,
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoadTrafficPatch {
+    /// Cars kept on the road (0 to 16), scaled by the traffic density setting.
+    pub cars: u32,
+    /// Census vehicle category names (`sedans`, `taxis`, ...; up to 16); empty or missing: any category.
+    #[serde(default)]
+    pub categories: Vec<String>,
+}
+
+/// Cars one mod road may ask for.
+pub const MAX_ROAD_CARS: u32 = 16;
 
 /// Roads one patch may add.
 pub const MAX_MOD_ROADS: usize = 512;
@@ -861,6 +876,7 @@ impl RoadsPatch {
                     && r.lanes.is_none_or(|l| (1..=4).contains(&l))
                     && r.lane_width.is_none_or(|w| w.is_finite() && (2.0..=8.0).contains(&w))
                     && r.speed_limit.is_none_or(|s| s.is_finite() && (1.0..=60.0).contains(&s))
+                    && r.traffic.as_ref().is_none_or(|t| t.cars <= MAX_ROAD_CARS && t.categories.len() <= 16 && t.categories.iter().all(|c| !c.is_empty() && c.len() <= 64))
             })
     }
 }
@@ -1663,6 +1679,11 @@ mod tests {
         assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "a", "points": [[0, 0, 0], [0, 0, 50]]}}})), "a road needs two nodes");
         assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0]]}}})), "and two points");
         assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [1, 0, 0]], "lanes": 9}}})));
+        // A road's own traffic: up to 16 cars of named categories.
+        assert!(valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [0, 0, 50]], "traffic": {"cars": 4, "categories": ["taxis"]}}}})));
+        assert!(valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [0, 0, 50]], "traffic": {"cars": 2}}}})));
+        assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [0, 0, 50]], "traffic": {"cars": 40}}}})));
+        assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [0, 0, 50]], "traffic": {"cars": 2, "density": 1}}}})), "unknown fields are refused");
         // The NPC skaters' obstacle avoider.
         assert!(valid_patch("living_world", &json!({"npc_avoid": {"enabled": false, "speed_margin": 2.0, "radius_pedestrian": 12.0, "cone": 1.0, "max_entries": 8}})));
         assert!(!valid_patch("living_world", &json!({"npc_avoid": {"cone": 4.0}})));

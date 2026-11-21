@@ -311,6 +311,33 @@ fn vehicles_ring_80_100_cull_110_cap_30_rotation_slot_1() {
     assert_eq!(despawns(&world.step(&inputs), Kind::Vehicle)[0].id, id);
 }
 
+/// Ours (doc 26h "Routes for mods"): a mod road that asks for traffic keeps that many cars even where no census record
+/// allows any, each on one of its lanes inside the pass's ring, of its categories; without the ask it stays empty.
+#[test]
+fn a_mod_road_keeps_its_own_traffic_outside_the_census() {
+    use super::ModTraffic;
+    let mut map = map();
+    map.grids[0].layers.insert("livingworld_vehicle_census".into(), vec![0u16; 500 * 500]);
+    let obs = [still(0.0, 0.0)];
+    let mut inputs = offline(&obs, &map);
+    let mut world = LivingWorld::new(config(), 5);
+    for _ in 0..400 {
+        world.step(&inputs);
+    }
+    assert_eq!(world.count(Kind::Vehicle), 0, "the census allows no cars here");
+    let traffic = [ModTraffic { name: "loop".into(), segments: vec![traffic::SegmentId(1020)], cars: 3, categories: vec!["taxis".into()] }];
+    inputs.mod_traffic = &traffic;
+    for _ in 0..4000 {
+        for s in spawns(&world.step(&inputs), Kind::Vehicle) {
+            let SpawnChoice::Vehicle { segment, category, record, .. } = &s.choice else { panic!("{:?}", s.choice) };
+            assert_eq!((*segment, category.as_str(), record.as_str()), (1020, "taxis", "mod_road:loop"));
+            let r = h(s.position, obs[0].position);
+            assert!(r <= 100.0 + 1e-3, "inside the ring: {r}");
+        }
+    }
+    assert_eq!(world.count(Kind::Vehicle), 3, "the road keeps the cars it asks for");
+}
+
 /// b551: in zombie mode Free Play "No" still clears the cars at once, never the peds (`sub_826B7010`).
 #[test]
 fn free_play_zero_in_zombie_mode_clears_cars_not_peds() {

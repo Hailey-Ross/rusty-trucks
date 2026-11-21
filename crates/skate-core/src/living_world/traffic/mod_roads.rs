@@ -21,6 +21,30 @@ pub struct ModRoad {
     pub speed_limit: f32,
     /// Lanes both ways (a second segment from `to` back to `from`, on the other side of the line).
     pub two_way: bool,
+    /// Cars the road keeps of its own (none: only the census's cars reach it).
+    pub traffic: Option<ModRoadTraffic>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModRoadTraffic {
+    pub cars: u32,
+    /// Census vehicle category names (empty: any).
+    pub categories: Vec<String>,
+}
+
+/// The population's view of the roads that ask for cars (both directions of a two-way road).
+pub fn traffic(roads: &[ModRoad]) -> Vec<crate::living_world::ModTraffic> {
+    roads
+        .iter()
+        .filter_map(|r| {
+            let t = r.traffic.as_ref().filter(|t| t.cars > 0)?;
+            let mut segments = vec![segment_id(&r.name, false)];
+            if r.two_way {
+                segments.push(segment_id(&r.name, true));
+            }
+            Some(crate::living_world::ModTraffic { name: r.name.clone(), segments, cars: t.cars, categories: t.categories.clone() })
+        })
+        .collect()
 }
 
 /// The stable id a mod name gets (FNV-1a 64 over "mod_road:<kind>:<name>"), apart from the disc's ids by the prefix.
@@ -183,7 +207,7 @@ mod tests {
     use crate::living_world::traffic::RoadNetwork;
 
     fn road(name: &str, from: &str, to: &str, points: Vec<Vec3>, two_way: bool) -> ModRoad {
-        ModRoad { name: name.into(), from: from.into(), to: to.into(), points, lanes: 1, lane_width: 3.5, speed_limit: 11.0, two_way }
+        ModRoad { name: name.into(), from: from.into(), to: to.into(), points, lanes: 1, lane_width: 3.5, speed_limit: 11.0, two_way, traffic: None }
     }
 
     #[test]

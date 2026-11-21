@@ -216,6 +216,7 @@ fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
             let roads = p.roads.into_iter().map(|(name, r)| skate_core::living_world::traffic::mod_roads::ModRoad {
                 name, from: r.from, to: r.to, points: r.points, lanes: r.lanes.unwrap_or(1), lane_width: r.lane_width.unwrap_or(3.5),
                 speed_limit: r.speed_limit.unwrap_or(11.0), two_way: r.two_way.unwrap_or(true),
+                traffic: r.traffic.map(|t| skate_core::living_world::traffic::mod_roads::ModRoadTraffic { cars: t.cars, categories: t.categories }),
             }).collect();
             if let Some(mut s) = world.get_resource_mut::<crate::living_world::PopulationState>() {
                 s.set_road_patch(roads);
