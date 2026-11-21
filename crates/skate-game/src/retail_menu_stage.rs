@@ -2403,12 +2403,18 @@ fn update(
         }
         // The exit confirmation's answer (82604748): Yes saves the look (cas_host::sync_look) and closes FE 15 (NOT
         // RETAIL YET: the 250 ms close countdown and fade); No re-enters the top menu.
-        let cas_answers: Vec<i64> = {
+        let (cas_answers, replace_answers): (Vec<i64>, Vec<i64>) = {
             let (ours, others) = std::mem::take(&mut popup_mods.engine_choices).into_iter()
-                .partition::<Vec<_>, _>(|(callback, _)| callback == crate::cas_host::EXIT_POPUP);
+                .partition::<Vec<_>, _>(|(callback, _)| callback == crate::cas_host::EXIT_POPUP || callback == crate::cas_host::TATTOO_REPLACE_POPUP);
             popup_mods.engine_choices = others;
-            ours.into_iter().map(|(_, choice)| choice as i64).collect()
+            let (exit, replace): (Vec<_>, Vec<_>) = ours.into_iter().partition(|(callback, _)| callback == crate::cas_host::EXIT_POPUP);
+            (exit.into_iter().map(|(_, c)| c as i64).collect(), replace.into_iter().map(|(_, c)| c as i64).collect())
         };
+        for choice in replace_answers {
+            info!("RETAIL_MENUS CreateASkater tattoo replace answer {choice}");
+            fe.cas.tattoo_replace_answer(choice);
+        }
+        popup_mods.engine_requests.extend(std::mem::take(&mut fe.cas.popups));
         for choice in cas_answers {
             info!("RETAIL_MENUS CreateASkater exit answer {choice}");
             if choice == 0 {
@@ -2432,7 +2438,11 @@ fn update(
                 ms.stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text(id.to_string()), Value::Text("true".into())], &mut fe)?;
             }
             let shown = fe.cas.menu().zip(fe.cas.panel());
-            if ms.cas_shown && shown.is_some() && shown != ms.cas_state {
+            for sound in std::mem::take(&mut fe.cas.sounds) {
+                sounds.write(FrontendSound { key: sound });
+            }
+            let refresh = std::mem::take(&mut fe.cas.menu_refresh);
+            if ms.cas_shown && shown.is_some() && (shown != ms.cas_state || refresh) {
                 info!("RETAIL_MENUS CreateASkater menu / panel {shown:?}");
                 set_state(&mut ms.stage, id, shown.map_or(0, |s| s.1 as i32), &mut fe)?;
                 ms.cas_state = shown;
@@ -3333,8 +3343,13 @@ fn set_state(stage: &mut Stage, id: i32, state: i32, fe: &mut FrontEnd) -> Resul
 /// FE 15's look on the skater and its save (cas_host::sync_look).
 fn cas_look(stage: Option<ResMut<MenuStage>>, customiser: Option<ResMut<crate::customiser::Customiser>>,
     parts: Option<Res<crate::customiser_parts::Parts>>, time: Res<Time<Real>>, input: Option<Res<crate::input::ControllerInput>>,
-    career: Option<Res<crate::career::CareerState>>) {
+    career: Option<Res<crate::career::CareerState>>, living: Option<Res<crate::living_world::LivingWorldSettings>>) {
     let (Some(mut ms), Some(mut customiser), Some(parts)) = (stage, customiser, parts) else { return };
+    // The Base Outfit opt-in (user ask 713): Remove on a top or pants leaves the base parts on.
+    let base = living.is_some_and(|l| l.user_opt_ins.base_outfit);
+    if ms.cas_host.base_outfit != base {
+        ms.cas_host.base_outfit = base;
+    }
     // The parts' locks follow the career's unlocks (825F46C8).
     if let Some(career) = career {
         if ms.cas_host.open && ms.cas_host.unlocks != career.career.unlocks {

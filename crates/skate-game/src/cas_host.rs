@@ -5,6 +5,8 @@ use skate_data::menu_tables::CasMenu;
 
 /// The top menu (EditSkaterMain).
 pub(crate) const TOP_MENU: usize = 15;
+/// Edit Style (gesture slots, Stance, Style, Posture).
+const EDIT_STYLE: usize = 16;
 
 /// Who wants FE 15 open (the boot flow's Customize row); `done` once it closed.
 #[derive(bevy::prelude::Resource, Default, Debug)]
@@ -15,6 +17,19 @@ pub(crate) struct CasScreen {
 
 /// The exit confirmation's callback (82603290 -> 82604748).
 pub(crate) const EXIT_POPUP: &str = "engine:cas.exit";
+/// The tattoo replace warning's callback (82604618 / 82604658).
+pub(crate) const TATTOO_REPLACE_POPUP: &str = "engine:cas.tattoo_replace";
+
+/// A on a tattoo region whose location holds a tattoo (825FE3C0 menus 4 / 5): Yes (0) / No (1).
+fn tattoo_replace_popup(upper: bool) -> skate_core::fe_popup::PopupRequest {
+    skate_core::fe_popup::PopupRequest {
+        title: "ID_COMMON_WARNING_TITLE".into(),
+        description: if upper { "ID_CAC_UPPER_TATTOO_CHANGE_CONFIRMATION" } else { "ID_CAC_LOWER_TATTOO_CHANGE_CONFIRMATION" }.into(),
+        options: vec!["ID_COMMON_YES".into(), "ID_COMMON_NO".into()],
+        callback: TATTOO_REPLACE_POPUP.into(),
+        ..Default::default()
+    }
+}
 
 /// B on the top menu (82603290, research b1033): Yes (0) / No (1).
 pub(crate) fn exit_popup() -> skate_core::fe_popup::PopupRequest {
@@ -28,10 +43,9 @@ pub(crate) fn exit_popup() -> skate_core::fe_popup::PopupRequest {
     }
 }
 
-/// NOT RETAIL YET: the retail screen opens only with `SKATE_RETAIL_CAS=1` until its navigation (menu push / pop, B,
-/// the exit popup; research b1031) is ported; otherwise the boot flow keeps our customizer.
+/// Skate 3's own Create-a-Skater screen, on by default (2026-11-20); `SKATE_RETAIL_CAS=0` keeps our customizer.
 pub(crate) fn retail_enabled() -> bool {
-    std::env::var("SKATE_RETAIL_CAS").is_ok_and(|v| v == "1")
+    std::env::var("SKATE_RETAIL_CAS").map_or(true, |v| v != "0")
 }
 
 /// One option (the constructor's option records, S+0x40 + id * 0x30): text id, description id, target menu (None =
@@ -187,6 +201,8 @@ pub(crate) struct CasBody {
     pub yaw_degrees: f32,
     pub position: [f32; 3],
     pub once: bool,
+    /// The host's post count when it was posted (`CasHost::pose`).
+    pub post: u32,
 }
 
 /// One color of a CAS color zone (`cac_colour`, class 0x6D934D0E38C95E19; research b991 / b1038): the swatch the menu
@@ -283,6 +299,45 @@ const TATTOO_SHORTS: &str = "Retroshorts Grey";
 const TATTOO_UPPER_ADJUST: usize = 7;
 const TATTOO_LOWER_ADJUST: usize = 8;
 /// Region -> placement row (= constraint index) [data 0x83044468 upper, 0x83044498 lower].
+/// Custom graphics (research b1051): the menus, the rows menu 30 adds (100 the shirt's Add Graphic, 103 the board's
+/// and hat's, 104 Remove), the category rows (101 brand, 102 team) and the shirt regions (front, back, left arm, right
+/// arm).
+const GRAPHIC_CATEGORIES: usize = 12;
+const BRAND_GRAPHICS: usize = 13;
+const TEAM_GRAPHICS: usize = 14;
+const SHIRT_GRAPHIC_LOCATION: usize = 33;
+const SHIRT_GRAPHIC_ADJUST: usize = 34;
+const BOARD_GRAPHIC_ADJUST: usize = 35;
+const HAT_GRAPHIC_ADJUST: usize = 36;
+const ADD_SHIRT_GRAPHIC: i32 = 100;
+const BRAND_GRAPHICS_ROW: i32 = 101;
+const TEAM_GRAPHICS_ROW: i32 = 102;
+const ADD_GRAPHIC: i32 = 103;
+const REMOVE_GRAPHIC: i32 = 104;
+const SHIRT_GRAPHIC_REGIONS: std::ops::RangeInclusive<i32> = 111..=114;
+/// Default placement rows of 0x830442B8: the shirt's per region (table 0x83044438), the board's 2, the hat's 3; the
+/// cameras (0x83044528 per shirt region, the board's and hat's rows) and the board's body target [data, b1051].
+const SHIRT_GRAPHIC_ROW: [usize; 4] = [0, 4, 6, 9];
+const SHIRT_GRAPHIC_CAMERAS: [&str; 4] = ["496CC99E42AD2C2F", "3F111150D2AFE8B5", "4EC0B69C787D6BDA", "A47411BBF4FCB5D5"];
+const BOARD_GRAPHIC_TARGETS: (&str, &str) = ("A9A4A1C434A3E055", "4A663E264EABE260");
+const HAT_GRAPHIC_CAMERA: &str = "256799DCA03F926D";
+
+fn graphic_row(slot: &str, region: usize) -> usize {
+    match slot {
+        OUTER_TORSO => SHIRT_GRAPHIC_ROW[region.min(3)],
+        BOARD_SLOT => 2,
+        _ => 3,
+    }
+}
+
+fn graphic_editor(slot: &str) -> usize {
+    match slot {
+        OUTER_TORSO => SHIRT_GRAPHIC_ADJUST,
+        BOARD_SLOT => BOARD_GRAPHIC_ADJUST,
+        _ => HAT_GRAPHIC_ADJUST,
+    }
+}
+
 const TATTOO_UPPER_ROW: [usize; 4] = [1, 5, 7, 10];
 const TATTOO_LOWER_ROW: [usize; 2] = [8, 11];
 /// The default placement per row, (rotation, scale, u, v) for the two gender variants [data 0x830442B8; which
@@ -516,6 +571,7 @@ pub(crate) fn load_vault(asset_root: &std::path::Path) -> (std::collections::Has
                 yaw_degrees: data.float(BODY_CLASS, &c.key, BODY_YAW).ok()?,
                 position,
                 once: data.field(BODY_CLASS, &c.key, BODY_ONCE).ok().is_some_and(|f| f.data == "01"),
+                post: 0,
             };
             Some((skate_data::attrib_hash::numeric_name(&c.key).trim_start_matches("Hash_").to_owned(), body))
         })
@@ -599,7 +655,30 @@ pub(crate) fn sync_look(host: &mut CasHost, customiser: &mut crate::customiser::
         host.tattoo_names = parts.library.tattoos.iter().map(|(id, t)| (id.clone(), t.name.clone())).collect();
         host.tattoo_thumbnails = parts.library.tattoos.iter().filter(|(_, t)| !t.thumbnail.is_empty())
             .map(|(id, t)| (id.clone(), format!("fe\\cas\\logos\\{}", t.thumbnail))).collect();
+        // The custom graphics' logos share the names / thumbnails maps (material ids never collide).
+        for (id, t) in &parts.library.logos {
+            host.tattoo_names.insert(id.clone(), t.name.clone());
+            if !t.thumbnail.is_empty() {
+                host.tattoo_thumbnails.insert(id.clone(), format!("fe\\cas\\logos\\{}", t.thumbnail));
+            }
+        }
+        let mut logos: Vec<(u32, String, bool)> = parts.library.logos.iter().map(|(id, t)| (t.order, id.clone(), t.kind == "team")).collect();
+        logos.sort();
+        host.graphic_logos = logos.into_iter().map(|(_, id, team)| (id, team)).collect();
     }
+    if host.logoable.is_empty() {
+        host.logoable = parts.library.materials.iter()
+            .filter(|(_, m)| m.flag("IsLogoable").eq_ignore_ascii_case("true")).map(|(id, _)| id.clone()).collect();
+    }
+    host.graphic_fit = match (host.current(), host.graphic.as_ref()) {
+        (Some(SHIRT_GRAPHIC_ADJUST | BOARD_GRAPHIC_ADJUST | HAT_GRAPHIC_ADJUST), Some((slot, region))) => {
+            let row = graphic_row(slot, *region);
+            let part = host.look["selections"][slot.as_str()]["asset_id"].as_str().and_then(|id| parts.library.models.get(id));
+            let rect = constraint_rect(|k| part.map(|p| p.flag(k).to_owned()).unwrap_or_default(), row);
+            host.look["graphics"][slot.as_str()]["id"].as_str().and_then(|id| parts.library.logos.get(id)).map(|t| (rect, t.bounds))
+        }
+        _ => None,
+    };
     if host.eye_models.is_empty() {
         host.eye_models = parts.library.models.iter().filter(|(_, p)| p.slot == EYE_SLOT)
             .map(|(id, p)| (id.clone(), EyeModel {
@@ -736,6 +815,13 @@ const SKIN_ZONE: u32 = 2;
 /// The Facial Presets row (menu table option 95) and the Undo Changes rows: 96 on the face, hair and skin menus,
 /// 97 on Body Shape.
 const FACE_PRESET: i32 = 95;
+/// The `fe` records core_nav_left / core_nav_right (825FC7E8's Left / Right sounds).
+const SOUND_NAV_LEFT: u64 = 0xAD8B_F9A0_B499_7B49;
+const SOUND_NAV_RIGHT: u64 = 0xD8EE_38A6_1C45_EA28;
+/// core_a_button (A on the graphic editors, 825FC7E8).
+const SOUND_A_BUTTON: u64 = 0x373D_38D7_EA16_7A71;
+/// core_error (a locked part, 825FD9F0).
+const SOUND_ERROR: u64 = 0x47F7_2022_2F2C_AED4;
 const UNDO_LOOK: i32 = 96;
 const UNDO_MORPHS: i32 = 97;
 const EYE_SLOT: &str = "Organ";
@@ -844,6 +930,13 @@ pub(crate) struct CasHost {
     pub look_copy: serde_json::Value,
     /// A held morph step changed the highlighted row: the stage refreshes it (SetState 50).
     pub value_refresh: bool,
+    /// The current menu was entered again (825FAAF0 state 5, Undo row 97): the stage redraws all its rows.
+    pub menu_refresh: bool,
+    /// `fe` record keys to play (the stage sends them as `FrontendSound`).
+    pub sounds: Vec<u64>,
+    /// Popups to open (the stage pushes them) and the tattoo region row waiting for the replace answer.
+    pub popups: Vec<skate_core::fe_popup::PopupRequest>,
+    pub tattoo_replace: Option<i32>,
     /// The tattoo categories (vault order) and the designs (library id, category), id order.
     pub tattoo_categories: Vec<String>,
     pub tattoos: Vec<(String, String)>,
@@ -852,6 +945,15 @@ pub(crate) struct CasHost {
     /// The picked region (upper?, region index) and the design list of the picked category (None = remove, last).
     pub tattoo_region: Option<(bool, usize)>,
     pub tattoo_list: Vec<Option<String>>,
+    /// Custom graphics (research b1051): the logos in database order (id, team), the materials flagged IsLogoable,
+    /// the part being given a graphic (slot, shirt region), the open grid's logos and the editor's fit.
+    pub graphic_logos: Vec<(String, bool)>,
+    pub logoable: std::collections::HashSet<String>,
+    pub graphic: Option<(String, usize)>,
+    pub graphic_list: Vec<String>,
+    pub graphic_fit: Option<([f32; 4], [f32; 4])>,
+    /// The Base Outfit opt-in (living world opt-ins, user ask 713).
+    pub base_outfit: bool,
     /// The clothing taken off for a tattoo (slot, the worn selection), put back on leaving the editor or by X.
     pub tattoo_clothes: Option<(String, serde_json::Value)>,
     /// By gender (male = true): the skin torso model and its (material, SkinTone), and the tattoo shorts (model,
@@ -884,6 +986,8 @@ pub(crate) struct CasHost {
     /// The body target rows by key and the target last posted (cMsgPresCASBodyTarget).
     pub bodies: std::collections::HashMap<String, CasBody>,
     pub body: String,
+    /// Counts the posts, so posting the same gesture row again plays it again.
+    pub body_posts: u32,
     /// The open grid: None = the Remove entry, else an index into `parts`; its slot.
     pub grid: Vec<Option<usize>>,
     pub grid_slot: Option<String>,
@@ -977,7 +1081,8 @@ impl CasHost {
     /// The morph rows' Left / Right (825FBAE8, research b1041): every FE frame the stick is past the threshold the
     /// shown value moves one step, clamped 0..1, no repeat delay; written back raw over the morph's range (82536B10),
     /// the body row as fat above the middle, thin below (825FB5B8); a face row edit sets the face preset row to Custom.
-    /// `seconds` of frames at the FE cadence. NOT RETAIL YET: the looping move sound.
+    /// `seconds` of frames at the FE cadence. Retail starts / stops the looping cas_slider here; that record's level
+    /// is 0 on the disc and the front-end queue drops level 0 (82495828), so it is silent and not played.
     pub(crate) fn tick_morph(&mut self, x: f32, seconds: f32) -> bool {
         let row = self.current().map(|m| self.indices[m].0 as usize);
         let (Some(settings), Some((morph, n))) = (self.morph_settings, row.and_then(|r| self.morph_row(r))) else { return false };
@@ -1007,9 +1112,14 @@ impl CasHost {
     /// inferred from the screen's legend]; each past the dead zone adjusts the placement by its factor per FE frame
     /// (82C2E698 with the fit). Returns whether the placement moved.
     pub(crate) fn tick_tattoo(&mut self, input: [f32; 4], seconds: f32) -> bool {
-        let (Some(menu @ (TATTOO_UPPER_ADJUST | TATTOO_LOWER_ADJUST)), Some((rect, bounds))) = (self.current(), self.tattoo_fit) else { return false };
-        let slot = if menu == TATTOO_UPPER_ADJUST { "Arm" } else { "Leg" };
-        let Ok(mut p) = serde_json::from_value::<[f32; 4]>(self.look["tattoos"][slot]["placement"].clone()) else { return false };
+        // The tattoo editors (menus 7 / 8) and the custom graphic editors (34..36, the same tick, b1051).
+        let (group, slot, (rect, bounds)) = match (self.current(), self.tattoo_fit, self.graphic_fit, self.graphic.clone()) {
+            (Some(menu @ (TATTOO_UPPER_ADJUST | TATTOO_LOWER_ADJUST)), Some(fit), _, _) => ("tattoos", (if menu == TATTOO_UPPER_ADJUST { "Arm" } else { "Leg" }).to_owned(), fit),
+            (Some(SHIRT_GRAPHIC_ADJUST | BOARD_GRAPHIC_ADJUST | HAT_GRAPHIC_ADJUST), _, Some(fit), Some((slot, _))) => ("graphics", slot, fit),
+            _ => return false,
+        };
+        let slot = slot.as_str();
+        let Ok(mut p) = serde_json::from_value::<[f32; 4]>(self.look[group][slot]["placement"].clone()) else { return false };
         let before = p;
         let frames = seconds * FE_HZ;
         for (op, (x, factor)) in input.iter().zip([GRAPHIC_ROTATE, GRAPHIC_SCALE, GRAPHIC_MOVE_U, GRAPHIC_MOVE_V]).enumerate() {
@@ -1020,7 +1130,7 @@ impl CasHost {
         if p == before {
             return false;
         }
-        self.look["tattoos"][slot]["placement"] = serde_json::json!(p);
+        self.look[group][slot]["placement"] = serde_json::json!(p);
         self.look_changed = true;
         true
     }
@@ -1064,8 +1174,7 @@ impl CasHost {
     }
 
     /// Left / Right on a gesture row (825FC7E8): the next / previous unlocked gesture (kind 4, by name) in table order,
-    /// wrapping. NOT RETAIL YET: the gesture played on the skater as it changes (SetPartUnlessFace; gesture clips are
-    /// not exported) and the sound.
+    /// wrapping; the slot's gesture plays on the skater (82604AD0, doc 43 "Gesture preview").
     fn step_gesture(&mut self, slot: &str, right: bool) -> bool {
         use skate_core::career::unlocks::kind;
         let list: Vec<usize> = (0..GESTURE_UNLOCKS.len())
@@ -1080,9 +1189,9 @@ impl CasHost {
         }
         self.look["gestures"][slot] = serde_json::json!(next);
         self.look_changed = true;
-        // 82604AD0: PostMsg_PresCASBodyTarget(the gesture's row), then PostMsg_PresCASCharacterRotate(1, 0.0).
-        self.body = format!("{:016X}", GESTURE_BODIES[next]);
-        self.turntable = 0.0;
+        if let Some(id) = GESTURE_ROWS.iter().find(|(_, s)| *s == slot).map(|(id, _)| *id) {
+            self.post_edit_style_body(id);
+        }
         bevy::log::info!("RETAIL_MENUS CreateASkater gesture slot {slot} {}", GESTURE_LABELS[next]);
         true
     }
@@ -1128,7 +1237,7 @@ impl CasHost {
 
     /// Left / Right on a color row (825FC7E8): the previous / next color, clamped (no wrap); the picked color's key is
     /// kept per zone in the look; recipe A becomes the zone's tint (`colour_tints`), recipe B the hair highlight
-    /// (`colour_highlights`). NOT RETAIL YET: the sounds.
+    /// (`colour_highlights`).
     fn step_colour(&mut self, zone: u32, right: bool) -> bool {
         let Some(n) = self.colour_zones.get(&zone).map(|z| z.colours.len()) else { return false };
         let at = self.colour_index(zone);
@@ -1233,7 +1342,6 @@ impl CasHost {
     /// Left / Right on the face preset row (825FC7E8 option 95): the next index among the skater's gender's presets;
     /// Left from Custom goes to the last, past the last or onto index 0 is Custom. A preset sets its morphs and colors
     /// (82604208); Custom puts back the look as it was on entering the menu (82539048, the copy `enter` keeps).
-    /// NOT RETAIL YET: the sounds.
     fn step_face_preset(&mut self, right: bool) -> bool {
         let male = self.male;
         let last = self.face_presets.iter().filter(|p| p.male == male).map(|p| p.index).max().unwrap_or(0);
@@ -1263,11 +1371,20 @@ impl CasHost {
             None => {
                 self.face_preset = self.custom_preset();
                 self.restore_look_copy();
+                self.reenter();
             }
         }
         bevy::log::info!("RETAIL_MENUS CreateASkater face preset {}", self.face_preset_text());
         self.look_changed = true;
         true
+    }
+
+    /// CASScreen_EnterMenu on the current menu: the stage redraws every row from the look.
+    fn reenter(&mut self) {
+        if let Some(m) = self.current() {
+            self.enter(m);
+            self.menu_refresh = true;
+        }
     }
 
     /// 82539048: the whole look back from the copy (CharacterSlot_Deserialize), the skater reloaded.
@@ -1282,29 +1399,22 @@ impl CasHost {
         self.look_changed = true;
     }
 
-    /// A on Undo Changes (825FE3C0): row 96 restores the whole look from the copy; row 97 (Body Shape) copies the
-    /// copy's 19 morph values back (82538F60 / 82542D38) and re-enters the menu, which copies the look again. NOT
-    /// RETAIL YET: the menu's other rows show the restored values when highlighted (retail's redraw after the reload,
-    /// state 5, is not read).
+    /// A on Undo Changes (825FE3C0): row 96 restores the whole look from the copy (state 5; 825FAAF0 re-enters the
+    /// menu when the reload is done); row 97 (Body Shape) copies the copy's 19 morph values back (82538F60 /
+    /// 82542D38) and re-enters the menu at once. Entering copies the look again.
     fn undo(&mut self, id: i32) -> bool {
         match id {
-            UNDO_LOOK => {
-                self.restore_look_copy();
-                self.value_refresh = true;
-            }
+            UNDO_LOOK => self.restore_look_copy(),
             UNDO_MORPHS => {
                 if self.look_copy.is_null() {
                     return false;
                 }
                 self.look["morphs"] = self.look_copy["morphs"].clone();
                 self.look_changed = true;
-                self.value_refresh = true;
-                if let Some(m) = self.current() {
-                    self.enter(m);
-                }
             }
             _ => return false,
         }
+        self.reenter();
         bevy::log::info!("RETAIL_MENUS CreateASkater undo {id}");
         true
     }
@@ -1432,11 +1542,16 @@ impl CasHost {
         self.turntable = 0.0;
     }
 
-    /// The CAS OnMenuHilight (vt+0x44 = 825FEDB8) on the part grid: the row is kept and the preview waits again.
+    /// The CAS OnMenuHilight (vt+0x44 = 825FEDB8): on the part grid the row is kept and the preview waits again; on
+    /// Edit Style (menu 16) the row's body posts (82604AD0: a gesture slot plays its gesture).
     fn hilight(&mut self, row: usize) {
         if self.current() == Some(PART_GRID) && row < self.grid.len() {
             self.preview_row = row;
             self.preview_wait = Some(0.0);
+        }
+        if self.current() == Some(EDIT_STYLE) {
+            let id = self.menus[EDIT_STYLE].options.get(row).copied().unwrap_or(-1);
+            self.post_edit_style_body(id);
         }
     }
 
@@ -1641,17 +1756,21 @@ impl CasHost {
     /// popup 0x11E, the board graphic special case and the two rec+0x24 / +0x34 flags that also open menu 30.
     fn pick(&mut self, row: usize) {
         let Some(entry) = self.grid.get(row).copied() else { return };
+        // core_a_button on Remove and on an unlocked part, core_error on a locked one (825FD9F0).
+        self.sounds.push(if entry.is_some_and(|i| self.locked(i)) { SOUND_ERROR } else { SOUND_A_BUTTON });
         let Some(i) = entry else {
             let slot = self.grid_slot.clone();
             self.pop_to(MERCHANDISE);
             if let Some(slot) = slot {
-                bevy::log::info!("RETAIL_MENUS CreateASkater remove {slot}");
-                self.set_slot(&slot, None);
+                // The Base Outfit opt-in (user ask 713; ours): a top or pants removed leaves the base part on.
+                let base = self.base_outfit.then(|| self.base_part(&slot)).flatten();
+                bevy::log::info!("RETAIL_MENUS CreateASkater remove {slot}{}", if base.is_some() { " (base outfit)" } else { "" });
+                self.set_slot(&slot, base);
             }
             return;
         };
         // A locked part stays on the grid, not put on (the highlight preview still shows it: 825FEEA0 has no lock
-        // test). NOT RETAIL YET: the error sound 0x47F720222F2CAED4 and the DLC purchase popup 0x11E.
+        // test). NOT RETAIL YET: the DLC purchase popup 0x11E.
         if self.locked(i) {
             bevy::log::info!("RETAIL_MENUS CreateASkater locked {}", self.parts[i].model);
             return;
@@ -1705,7 +1824,19 @@ impl CasHost {
 
     /// The character's pose and place now: the posted body target's row (None: no rows exported).
     pub(crate) fn pose(&self) -> Option<CasBody> {
-        self.bodies.get(&self.body).or_else(|| self.bodies.get(WHOLE_BODY)).cloned()
+        self.bodies.get(&self.body).or_else(|| self.bodies.get(WHOLE_BODY)).cloned().map(|b| CasBody { post: self.body_posts, ..b })
+    }
+
+    /// 82604AD0 on an Edit Style row (option id): a gesture slot posts its gesture's body row, any other row the stand
+    /// (CAS_Stand 0xAD454A0ECD0E2EDF); then PostMsg_PresCASCharacterRotate(1, 0.0) turns the skater back.
+    fn post_edit_style_body(&mut self, id: i32) {
+        self.body = match Self::gesture_slot(id) {
+            Some(slot) => format!("{:016X}", GESTURE_BODIES[self.gesture(slot)]),
+            None => WHOLE_BODY.into(),
+        };
+        self.body_posts = self.body_posts.wrapping_add(1);
+        self.turntable = 0.0;
+        bevy::log::info!("RETAIL_MENUS CreateASkater body {} for row {id} (post {})", self.body, self.body_posts);
     }
 
     /// Entering a menu (82600AF8): the shop mode it sets; the top and Merchandise menus post the whole-body camera.
@@ -1722,6 +1853,13 @@ impl CasHost {
             TATTOO_CATEGORIES => {
                 self.menus[menu].options = (0..self.tattoo_categories.len().min(6) as i32).map(|i| TATTOO_CATEGORY_ROW + i).collect();
             }
+            WEAR_STYLES => self.build_wear_style_rows(),
+            // The board's and hat's editors post their camera (and the board its body) on entry.
+            BOARD_GRAPHIC_ADJUST => {
+                self.post_camera(BOARD_GRAPHIC_TARGETS.0.into());
+                self.body = BOARD_GRAPHIC_TARGETS.1.into();
+            }
+            HAT_GRAPHIC_ADJUST => self.post_camera(HAT_GRAPHIC_CAMERA.into()),
             _ => {}
         }
         if matches!(menu, TOP_MENU | MERCHANDISE) {
@@ -1747,10 +1885,30 @@ impl CasHost {
         self.option(self.indices[m].0 as usize).map(|(id, _)| id)
     }
 
-    /// Left / Right (825FC7E8, C++): the top menu's sliders move by 0.1 within 0..1. True when a value changed
-    /// (the movie then refreshes it, SetScreenState state 50). NOT RETAIL YET: selectors, stance, part cycles,
-    /// colors and morphs.
+    /// Left / Right (825FC7E8, C++) on the rows it takes: the direction's sound, the row's step (the top menu's
+    /// sliders move by 0.1 within 0..1), then the movie refreshes it (SetScreenState state 50). True when a row took
+    /// it or a value changed.
     pub(crate) fn left_right(&mut self, right: bool) -> bool {
+        let handled = self.takes_left_right();
+        let changed = self.step_value(right);
+        // 825FC7E8 plays the direction's sound on every row it takes (a clamped color too), then state 50.
+        if handled {
+            self.sounds.push(if right { SOUND_NAV_RIGHT } else { SOUND_NAV_LEFT });
+        }
+        handled || changed
+    }
+
+    /// The rows 825FC7E8's Left / Right takes.
+    fn takes_left_right(&self) -> bool {
+        let Some(id) = self.highlighted() else { return false };
+        (self.current() == Some(WEAR_STYLES) && id == WEAR_STYLE_OPTION)
+            || Self::style_field(id).is_some()
+            || self.colour_zone_of(id).is_some()
+            || Self::gesture_slot(id).is_some()
+            || matches!(id, HAIR_STYLE | FACE_PRESET | POSTURE | SKATE_STYLE | STANCE | TRUCKS | WHEELS)
+    }
+
+    fn step_value(&mut self, right: bool) -> bool {
         let step = if right { SLIDER_STEP } else { -SLIDER_STEP };
         if self.current() == Some(WEAR_STYLES) && self.highlighted() == Some(WEAR_STYLE_OPTION) {
             return self.cycle_wear_style(right);
@@ -1806,12 +1964,15 @@ impl CasHost {
     pub(crate) fn select(&mut self, row: usize) -> Option<usize> {
         // Menu 30's A is "Accept" (help kind 2): back to Merchandise with the worn style [inferred: the menu 30 branch
         // of 825FE3C0 is not read].
-        if self.current() == Some(WEAR_STYLES) {
+        let id = self.option(row)?.0;
+        if self.current() == Some(WEAR_STYLES) && !matches!(id, ADD_SHIRT_GRAPHIC | ADD_GRAPHIC | REMOVE_GRAPHIC) {
             self.wear_styles.clear();
             self.pop_to(MERCHANDISE);
             return self.current();
         }
-        let id = self.option(row)?.0;
+        if matches!(id, ADD_SHIRT_GRAPHIC | ADD_GRAPHIC | REMOVE_GRAPHIC | BRAND_GRAPHICS_ROW | TEAM_GRAPHICS_ROW) || SHIRT_GRAPHIC_REGIONS.contains(&id) {
+            return self.graphic_select(id);
+        }
         if let Some(menu) = self.tattoo_select(id) {
             return Some(menu);
         }
@@ -1833,12 +1994,104 @@ impl CasHost {
             // titles the hat grid "Hats").
             self.grid_title = title;
             self.build_grid(id as usize);
-            bevy::log::info!("RETAIL_MENUS CreateASkater grid for option {id}: {} entries", self.grid.len());
+            let worn = self.grid.iter().position(|e| e.is_some_and(|i| self.wears(i)));
+            bevy::log::info!("RETAIL_MENUS CreateASkater grid for option {id}: {} entries, worn at {worn:?}", self.grid.len());
         }
         self.stack.push(target);
         self.indices[target] = (0, 0);
         self.enter(target);
         Some(target)
+    }
+
+    /// Menu 30's rows at its entry (82600AF8, research b1051): Color (98) when the worn style's material is
+    /// colorizable, Style (99) unless it is a board and when there is more than one style, Add Graphic when the material
+    /// takes a logo (100 for a shirt, to the regions; 103 otherwise, to the categories), then Remove Graphic (104).
+    fn build_wear_style_rows(&mut self) {
+        let worn = self.wear_styles.iter().copied().find(|&v| self.wears(v)).or_else(|| self.wear_styles.first().copied());
+        let Some(part) = worn.and_then(|i| self.parts.get(i)).cloned() else { return };
+        let mut rows = Vec::new();
+        if self.colourizable.contains(&part.material_id) {
+            rows.push(WEAR_STYLE_COLOUR);
+        }
+        if part.slot != BOARD_SLOT && self.wear_styles.len() > 1 {
+            rows.push(WEAR_STYLE_OPTION);
+        }
+        if self.logoable.contains(&part.material_id) {
+            rows.push(if part.slot == OUTER_TORSO { ADD_SHIRT_GRAPHIC } else { ADD_GRAPHIC });
+        }
+        rows.push(REMOVE_GRAPHIC);
+        self.menus[WEAR_STYLES].options = rows;
+        self.graphic = crate::customiser_parts::GRAPHIC_SLOTS.contains(&part.slot.as_str()).then(|| {
+            let region = self.look["graphics"][part.slot.as_str()]["region"].as_u64().unwrap_or(0) as usize;
+            (part.slot.clone(), region)
+        });
+    }
+
+    /// The custom graphic rows of OnMenuSelect (825FE3C0, research b1051): 100 pushes the shirt's regions, 103 the
+    /// categories (with the option's camera and body targets); a region (111..114) keeps the region, posts its camera
+    /// and body targets and pushes the categories; Brand (101) / Team (102) list their logos (database order; offline
+    /// the team list is the 42 `team_logo_*`, retail's downloaded user logos are online only) and push the grid;
+    /// Remove (104) clears the part's graphic.
+    fn graphic_select(&mut self, id: i32) -> Option<usize> {
+        match id {
+            ADD_SHIRT_GRAPHIC => self.push(SHIRT_GRAPHIC_LOCATION),
+            ADD_GRAPHIC => {
+                if let Some(o) = usize::try_from(id).ok().and_then(|i| self.options.get(i)).cloned() {
+                    if !o.camera.is_empty() {
+                        self.post_camera(o.camera);
+                    }
+                    if !o.body.is_empty() {
+                        self.body = o.body;
+                    }
+                }
+                self.push(GRAPHIC_CATEGORIES)
+            }
+            BRAND_GRAPHICS_ROW | TEAM_GRAPHICS_ROW => {
+                let team = id == TEAM_GRAPHICS_ROW;
+                self.graphic_list = self.graphic_logos.iter().filter(|(_, t)| *t == team).map(|(i, _)| i.clone()).collect();
+                bevy::log::info!("RETAIL_MENUS CreateASkater graphics {}: {} logos", if team { "team" } else { "brand" }, self.graphic_list.len());
+                self.push(if team { TEAM_GRAPHICS } else { BRAND_GRAPHICS })
+            }
+            REMOVE_GRAPHIC => {
+                if let Some((slot, _)) = self.graphic.clone() {
+                    if let Some(g) = self.look["graphics"].as_object_mut() {
+                        g.remove(&slot);
+                    }
+                    bevy::log::info!("RETAIL_MENUS CreateASkater graphic removed from {slot}");
+                    self.look_changed = true;
+                }
+                self.reenter();
+                None
+            }
+            r if SHIRT_GRAPHIC_REGIONS.contains(&r) => {
+                let region = (r - SHIRT_GRAPHIC_REGIONS.start()) as usize;
+                self.graphic = Some((OUTER_TORSO.into(), region));
+                self.post_camera(SHIRT_GRAPHIC_CAMERAS[region].into());
+                self.body = TATTOO_UPPER_TARGETS[region].1.into();
+                self.push(GRAPHIC_CATEGORIES)
+            }
+            _ => None,
+        }
+    }
+
+    /// The default placement of the part's graphic (0x830442B8 by the part's row, the gender's variant).
+    fn graphic_default(&self, slot: &str, region: usize) -> [f32; 4] {
+        GRAPHIC_DEFAULTS[graphic_row(slot, region)][usize::from(!self.male)]
+    }
+
+    /// A logo pick on menu 13 / 14 (825FD9F0 -> load state 8 / 11 / 12): the part's graphic at its default
+    /// placement, then the part's editor (34 / 35 / 36).
+    fn pick_graphic(&mut self, row: usize) {
+        let (Some(id), Some((slot, region))) = (self.graphic_list.get(row).cloned(), self.graphic.clone()) else { return };
+        self.sounds.push(SOUND_A_BUTTON);
+        let placement = self.graphic_default(&slot, region);
+        if !self.look["graphics"].is_object() {
+            self.look["graphics"] = serde_json::json!({});
+        }
+        bevy::log::info!("RETAIL_MENUS CreateASkater graphic {id} on {slot} region {region} placement {placement:?}");
+        self.look["graphics"][slot.as_str()] = serde_json::json!({ "id": id, "region": region, "placement": placement });
+        self.look_changed = true;
+        self.push(graphic_editor(&slot));
     }
 
     fn push(&mut self, menu: usize) -> Option<usize> {
@@ -1852,23 +2105,24 @@ impl CasHost {
     }
 
     /// The tattoo branches of OnMenuSelect (825FE3C0 menus 4 / 5 / 6, research b1042): a region row keeps the region
-    /// (825FE0E0 / 825FE280) and pushes the categories; a category row lists its designs, "none" last (8253E3D8, the
-    /// enter of menu 11), and pushes the list. NOT RETAIL YET: the replace popup when the location already holds a
-    /// tattoo, taking the clothing off, the region cameras, and the design list's vault order (ours: id order).
+    /// (825FE0E0 / 825FE280) and pushes the categories, after a Yes / No warning when the location already holds a
+    /// tattoo (ID_CAC_UPPER / LOWER_TATTOO_CHANGE_CONFIRMATION; the row kept in S+0x1C3C, Yes = 82604618 / 82604658);
+    /// a category row lists its designs (8253E3D8, the enter of menu 11) and pushes the list. NOT RETAIL YET: the
+    /// design list's vault order (ours: id order).
     fn tattoo_select(&mut self, id: i32) -> Option<usize> {
         match self.current()? {
             TATTOO_UPPER | TATTOO_LOWER => {
-                let region = if TATTOO_UPPER_REGIONS.contains(&id) { (true, (id - TATTOO_UPPER_REGIONS.start()) as usize) }
-                    else if TATTOO_LOWER_REGIONS.contains(&id) { (false, (id - TATTOO_LOWER_REGIONS.start()) as usize) }
-                    else { return None };
-                bevy::log::info!("RETAIL_MENUS CreateASkater tattoo region {region:?}");
-                self.tattoo_region = Some(region);
-                // The region's camera and body targets (tables 0x83044548 / 0x83044568, 0x830445E8 / 0x83044608).
-                let (camera, body) = if region.0 { TATTOO_UPPER_TARGETS[region.1] } else { TATTOO_LOWER_TARGETS[region.1] };
-                self.post_camera(camera.into());
-                self.body = body.into();
-                self.take_clothing_off(region.0);
-                self.push(TATTOO_CATEGORIES)
+                let upper = TATTOO_UPPER_REGIONS.contains(&id);
+                if !upper && !TATTOO_LOWER_REGIONS.contains(&id) {
+                    return None;
+                }
+                if self.look["tattoos"][if upper { "Arm" } else { "Leg" }]["id"].is_string() {
+                    self.tattoo_replace = Some(id);
+                    self.popups.push(tattoo_replace_popup(upper));
+                    bevy::log::info!("RETAIL_MENUS CreateASkater tattoo replace warning for row {id}");
+                    return None;
+                }
+                self.pick_tattoo_region(id)
             }
             TATTOO_CATEGORIES => {
                 let category = self.tattoo_categories.get(usize::try_from(id - TATTOO_CATEGORY_ROW).ok()?)?.clone();
@@ -1884,6 +2138,29 @@ impl CasHost {
                 self.push(TATTOO_DESIGNS)
             }
             _ => None,
+        }
+    }
+
+    /// CASScreen_PickUpper / LowerTattooRegion (825FE0E0 / 825FE280): the region kept, its camera and body targets,
+    /// the clothing off, the categories pushed.
+    fn pick_tattoo_region(&mut self, id: i32) -> Option<usize> {
+        let region = if TATTOO_UPPER_REGIONS.contains(&id) { (true, (id - TATTOO_UPPER_REGIONS.start()) as usize) }
+            else if TATTOO_LOWER_REGIONS.contains(&id) { (false, (id - TATTOO_LOWER_REGIONS.start()) as usize) }
+            else { return None };
+        bevy::log::info!("RETAIL_MENUS CreateASkater tattoo region {region:?}");
+        self.tattoo_region = Some(region);
+        // The region's camera and body targets (tables 0x83044548 / 0x83044568, 0x830445E8 / 0x83044608).
+        let (camera, body) = if region.0 { TATTOO_UPPER_TARGETS[region.1] } else { TATTOO_LOWER_TARGETS[region.1] };
+        self.post_camera(camera.into());
+        self.body = body.into();
+        self.take_clothing_off(region.0);
+        self.push(TATTOO_CATEGORIES)
+    }
+
+    /// The replace warning's answer (82604618 / 82604658): Yes (0) picks the kept region row, No stays.
+    pub(crate) fn tattoo_replace_answer(&mut self, choice: i64) {
+        if let Some(id) = self.tattoo_replace.take().filter(|_| choice == 0) {
+            self.pick_tattoo_region(id);
         }
     }
 
@@ -1923,19 +2200,28 @@ impl CasHost {
     /// the slot gets its lookup part 0 (ThumbnailLookup(look, slot, 0)). Which parts those are [data + the PS3
     /// recording 2026-11-16 11-13-28.mp4 ~4:25 / ~5:30]: upper, the gender's skin torso ("Arms Wholetorso": the
     /// female one is the sports bra) in the look's skin tone; lower, the gray Retro Shorts ("Retroshorts Grey").
+    /// The base part of a slot: the bare torso in the look's skin tone (the sports bra on a female skater) for a top,
+    /// the short shorts for pants; None for any other slot.
+    fn base_part(&self, slot: &str) -> Option<(String, String)> {
+        match slot {
+            OUTER_TORSO => {
+                let tone = self.look["skin"].as_str().unwrap_or("light");
+                self.bare_torsos.get(&self.male).and_then(|(model, materials)| {
+                    let material = materials.iter().find(|(_, t)| t == tone).or(materials.first())?;
+                    Some((model.clone(), material.0.clone()))
+                })
+            }
+            "Pants" => self.tattoo_shorts.get(&self.male).cloned(),
+            _ => None,
+        }
+    }
+
     fn take_clothing_off(&mut self, upper: bool) {
         if self.tattoo_clothes.is_some() {
             return;
         }
-        let tone = self.look["skin"].as_str().unwrap_or("light").to_owned();
-        let part = if upper {
-            self.bare_torsos.get(&self.male).and_then(|(model, materials)| {
-                let material = materials.iter().find(|(_, t)| *t == tone).or(materials.first())?;
-                Some(("OuterTorso", model.clone(), material.0.clone()))
-            })
-        } else {
-            self.tattoo_shorts.get(&self.male).map(|(model, material)| ("Pants", model.clone(), material.clone()))
-        };
+        let slot = if upper { OUTER_TORSO } else { "Pants" };
+        let part = self.base_part(slot).map(|(model, material)| (slot, model, material));
         let Some((slot, model, material)) = part else { return };
         self.tattoo_clothes = Some((slot.into(), self.look["selections"][slot].clone()));
         bevy::log::info!("RETAIL_MENUS CreateASkater tattoo clothing off: {slot} {model} / {material}");
@@ -1959,14 +2245,32 @@ impl CasHost {
         GRAPHIC_DEFAULTS[row][usize::from(!self.male)]
     }
 
-    /// The placement editor's buttons (825FC7E8 on menus 7 / 8, research b1042): A back to Body Mods (the clothing
-    /// back on), key 4 (Y) the region's default placement. NOT RETAIL YET: key 5 (X: clothing off / on), the
-    /// clothing taken off on entering.
+    /// The placement editor's buttons (825FC7E8 on menus 7 / 8, research b1042): A back to Body Mods (core_a_button,
+    /// the clothing back on), key 5 (X) clothing off / on (825FB718), key 4 (Y) the region's default placement.
     pub(crate) fn tattoo_editor_key(&mut self, key: u32) -> bool {
+        // The custom graphic editors 34..36 (b1051): A back to Merchandise (menu 1), key 4 the default placement, no
+        // clothing key.
+        if let (Some(SHIRT_GRAPHIC_ADJUST | BOARD_GRAPHIC_ADJUST | HAT_GRAPHIC_ADJUST), Some((slot, region))) = (self.current(), self.graphic.clone()) {
+            return match key {
+                2 => {
+                    self.sounds.push(SOUND_A_BUTTON);
+                    self.pop_to(MERCHANDISE);
+                    true
+                }
+                4 if self.look["graphics"][slot.as_str()].is_object() => {
+                    self.look["graphics"][slot.as_str()]["placement"] = serde_json::json!(self.graphic_default(&slot, region));
+                    self.look_changed = true;
+                    true
+                }
+                5 => true,
+                _ => false,
+            };
+        }
         let (Some(menu @ (TATTOO_UPPER_ADJUST | TATTOO_LOWER_ADJUST)), Some((upper, region))) = (self.current(), self.tattoo_region) else { return false };
         let slot = if menu == TATTOO_UPPER_ADJUST { "Arm" } else { "Leg" };
         match key {
             2 => {
+                self.sounds.push(SOUND_A_BUTTON);
                 self.put_clothing_back();
                 self.pop_to(BODY_MODS);
                 true
@@ -2090,6 +2394,31 @@ impl CasHost {
                 }
                 "CAC_OnThumbnailSelect" => {
                     self.pick_tattoo(row);
+                    return Ok(Some(Value::Undefined));
+                }
+                _ => {}
+            }
+        }
+        // The custom graphics' logo grids (menus 13 / 14, panel 6; b1051): the logos' thumbnails, no "none" entry, the
+        // check mark on the part's current logo.
+        if matches!(m, BRAND_GRAPHICS | TEAM_GRAPHICS) {
+            let entry = self.graphic_list.get(row).cloned();
+            match method {
+                "CAC_GetNumItems" => return Ok(Some(Value::Number(self.graphic_list.len() as f64))),
+                "CAC_GetThumbnailFileName" => {
+                    let thumb = entry.and_then(|id| self.tattoo_thumbnails.get(&id).cloned()).unwrap_or_else(|| "no_image".into());
+                    return Ok(Some(Value::Text(thumb)));
+                }
+                "CAC_GetOptionType" => {
+                    let slot = self.graphic.as_ref().map_or("", |(s, _)| s.as_str());
+                    let worn = entry.is_some_and(|id| self.look["graphics"][slot]["id"].as_str() == Some(id.as_str()));
+                    return Ok(Some(Value::Text(if worn { "owned" } else { "none" }.into())));
+                }
+                "CAC_GetDescriptionText" | "CAC_GetItemText" => {
+                    return Ok(Some(text(&entry.and_then(|id| self.tattoo_names.get(&id).cloned()).unwrap_or_default())));
+                }
+                "CAC_OnThumbnailSelect" => {
+                    self.pick_graphic(row);
                     return Ok(Some(Value::Undefined));
                 }
                 _ => {}
@@ -2287,7 +2616,8 @@ mod tests {
             h.left_right(false);
         }
         assert_eq!(h.trucks, 0.0);
-        assert!(!h.left_right(false));
+        h.left_right(false);
+        assert_eq!(h.trucks, 0.0);
         assert_eq!(h.call(&mut vm, "Game", "CAC_GetStringValue", &[Value::Number(4.0)]).unwrap(),
             Some(Value::Text("ID_CAC_EDIT_WHEELS_MEDIUM".into())));
     }
@@ -2529,6 +2859,30 @@ mod tests {
     }
 
     #[test]
+    fn highlighting_an_edit_style_row_posts_its_gesture_or_the_stand() {
+        let mut h = grid_host();
+        let mut vm = Vm::new();
+        h.menus[16] = menu("EditStyle", "", (0, 0), &[49, 50, 55]);
+        h.menus[TOP_MENU] = menu("EditSkaterMain", "", (0, 0), &[0]);
+        h.options[0].target = Some(16);
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": {} });
+        h.select(0);
+        let hilight = |h: &mut CasHost, vm: &mut Vm, row: f64| {
+            h.call(vm, "Game", "OnMenuHilight", &[Value::Number(16.0), Value::Number(row)]).unwrap();
+        };
+        h.turntable = 1.0;
+        hilight(&mut h, &mut vm, 1.0);
+        assert_eq!(h.body, format!("{:016X}", GESTURE_BODIES[3]), "row 50 = slot 3 = Bruce (825FEDB8 -> 82604AD0)");
+        assert_eq!(h.turntable, 0.0);
+        let post = h.body_posts;
+        hilight(&mut h, &mut vm, 1.0);
+        assert_eq!(h.body_posts, post + 1, "the same gesture posts again, so it plays again");
+        hilight(&mut h, &mut vm, 2.0);
+        assert_eq!(h.body, WHOLE_BODY, "Stance posts the stand");
+    }
+
+    #[test]
     fn the_hair_style_selector_steps_full_hair_of_the_gender_with_bald_first_for_a_male_skater() {
         let mut h = grid_host();
         let mut vm = Vm::new();
@@ -2579,11 +2933,16 @@ mod tests {
         assert_eq!(h.look["colour_keys"]["1"], "C");
         assert_eq!(h.look["colour_tints"]["1"], serde_json::json!([0.3f32, 0.3f32, 0.3f32]), "recipe A goes on the zone's tint");
         assert_eq!(h.look["colour_highlights"]["1"], serde_json::json!([0.0f32, 0.0f32, 0.0f32]), "recipe B on the highlight");
-        assert!(!h.left_right(true), "clamped at the last color, no wrap");
+        h.sounds.clear();
+        assert!(h.left_right(true), "a clamped row still refreshes (825FC7E8)");
+        assert_eq!(h.look["colour_keys"]["1"], "C", "clamped at the last color, no wrap");
+        assert_eq!(h.sounds, [SOUND_NAV_RIGHT], "and plays the direction's sound");
         assert!(h.left_right(false) && h.left_right(false));
         assert_eq!(h.look["colour_keys"]["1"], "A");
         assert_eq!(call(&mut h, &mut vm, "CAC_GetIntegerValue"), Value::Number(0.0));
-        assert!(!h.left_right(false), "clamped at the first");
+        h.left_right(false);
+        assert_eq!(h.look["colour_keys"]["1"], "A", "clamped at the first");
+        assert_eq!(h.sounds.last(), Some(&SOUND_NAV_LEFT));
     }
 
     #[test]
@@ -2722,9 +3081,11 @@ mod tests {
         h.look["skin"] = serde_json::json!("dark");
         h.look["morphs"]["a"] = serde_json::json!(0.4);
         h.indices[HAIR_MENU].0 = 1;
+        h.menu_refresh = false;
         assert_eq!(h.select(1), None);
         assert_eq!(h.look, h.look_copy, "96 puts back the whole look");
         assert!(h.look["skin"].is_null());
+        assert!(h.menu_refresh, "the reload re-enters the menu, so every row redraws (825FAAF0 state 5)");
         assert!(h.back());
         h.look["skin"] = serde_json::json!("dark");
         h.look["morphs"]["a"] = serde_json::json!(0.3);
@@ -2767,6 +3128,92 @@ mod tests {
         assert_eq!(h.colour_zone_of(WEAR_STYLE_COLOUR), None);
         h.colourizable.insert(h.parts[hat].material_id.clone());
         assert_eq!(h.colour_zone_of(WEAR_STYLE_COLOUR), Some(0));
+    }
+
+    #[test]
+    fn with_the_base_outfit_opt_in_remove_leaves_the_sports_bra_and_shorts() {
+        let mut h = grid_host();
+        h.male = false;
+        h.bare_torsos = [(false, ("torso_f".to_string(), vec![("bra_light".to_string(), "light".to_string()), ("bra_dark".to_string(), "dark".to_string())]))].into();
+        h.tattoo_shorts = [(false, ("shorts_f".to_string(), "shorts_mat".to_string()))].into();
+        h.look = serde_json::json!({ "gender": "female", "skin": "dark", "selections": {
+            "OuterTorso": { "asset_id": "tee", "material_id": "white" }, "Pants": { "asset_id": "jeans", "material_id": "blue" } } });
+        let remove = |h: &mut CasHost, slot: &str| {
+            h.stack = vec![TOP_MENU, MERCHANDISE, PART_GRID];
+            h.grid = vec![None];
+            h.grid_slot = Some(slot.to_string());
+            h.pick(0);
+        };
+        h.base_outfit = true;
+        remove(&mut h, "OuterTorso");
+        assert_eq!(h.look["selections"]["OuterTorso"], serde_json::json!({ "asset_id": "torso_f", "material_id": "bra_dark" }), "the bra in the skin tone");
+        remove(&mut h, "Pants");
+        assert_eq!(h.look["selections"]["Pants"], serde_json::json!({ "asset_id": "shorts_f", "material_id": "shorts_mat" }));
+        h.base_outfit = false;
+        remove(&mut h, "Pants");
+        assert!(h.look["selections"]["Pants"].is_null(), "off: Remove clears the slot as before");
+    }
+
+    #[test]
+    fn custom_graphics_go_rows_category_logo_editor_and_remove() {
+        let mut h = grid_host();
+        while h.menus.len() <= HAT_GRAPHIC_ADJUST {
+            h.menus.push(menu("", "", (0, 0), &[]));
+        }
+        if h.options.len() <= 114 {
+            h.options.resize(115, CasOption::default());
+        }
+        let deck = |m: &str| CasPart { slot: BOARD_SLOT.into(), model_id: "deck#".into(), model: "deck".into(), material_id: m.into(), material: m.into(), ..Default::default() };
+        let base = h.parts.len();
+        h.parts.extend([deck("plain_clean"), deck("plain_worn")]);
+        h.colourizable = ["plain_clean", "plain_worn"].map(String::from).into();
+        h.logoable = ["plain_clean", "plain_worn"].map(String::from).into();
+        h.graphic_logos = vec![("brand_a".into(), false), ("team_a".into(), true), ("brand_b".into(), false)];
+        h.begin();
+        h.look = serde_json::json!({ "gender": "male", "selections": { "SkateBoard": { "asset_id": "deck#", "material_id": "plain_clean" } } });
+        h.wear_styles = vec![base, base + 1];
+        h.stack.push(MERCHANDISE);
+        h.stack.push(WEAR_STYLES);
+        h.enter(WEAR_STYLES);
+        assert_eq!(h.menus[WEAR_STYLES].options, [WEAR_STYLE_COLOUR, ADD_GRAPHIC, REMOVE_GRAPHIC], "a board: no style row, Add Graphic 103");
+        h.indices[WEAR_STYLES] = (1, 0);
+        assert_eq!(h.select(1), Some(GRAPHIC_CATEGORIES));
+        h.menus[GRAPHIC_CATEGORIES] = menu("GraphicCategories", "", (0, 0), &[BRAND_GRAPHICS_ROW, TEAM_GRAPHICS_ROW]);
+        assert_eq!(h.select(0), Some(BRAND_GRAPHICS));
+        assert_eq!(h.graphic_list, ["brand_a", "brand_b"], "brand logos in database order");
+        let mut vm = Vm::new();
+        h.call(&mut vm, "Game", "CAC_OnThumbnailSelect", &[Value::Number(1.0)]).unwrap();
+        assert_eq!(h.menu(), Some(BOARD_GRAPHIC_ADJUST));
+        assert_eq!(h.look["graphics"][BOARD_SLOT], serde_json::json!({ "id": "brand_b", "region": 0, "placement": [1.5712f32, 7.0f32, 0.25f32, 0.25f32] }), "row 2's default");
+        h.look["graphics"][BOARD_SLOT]["placement"] = serde_json::json!([0.0, 9.0, 0.0, 0.0]);
+        assert!(h.tattoo_editor_key(4), "reset");
+        assert_eq!(h.look["graphics"][BOARD_SLOT]["placement"], serde_json::json!([1.5712f32, 7.0f32, 0.25f32, 0.25f32]));
+        assert!(h.tattoo_editor_key(5), "no clothing key, taken");
+        assert!(h.tattoo_editor_key(2));
+        assert_eq!(h.menu(), Some(MERCHANDISE), "A pops to menu 1");
+        // Remove (104) on menu 30 clears only the board's graphic.
+        h.look["graphics"]["Hat"] = serde_json::json!({ "id": "brand_a", "region": 0 });
+        h.stack.push(WEAR_STYLES);
+        h.enter(WEAR_STYLES);
+        h.select(2);
+        assert!(h.look["graphics"][BOARD_SLOT].is_null() && h.look["graphics"]["Hat"].is_object());
+        // A shirt: Add Graphic 100 goes to the regions; the right arm keeps region 3 and its default row 9.
+        let tee = CasPart { slot: OUTER_TORSO.into(), model_id: "tee#".into(), model: "tee".into(), material_id: "tee_white".into(), material: "tee_white".into(), ..Default::default() };
+        h.parts.push(tee);
+        h.logoable.insert("tee_white".into());
+        h.look["selections"][OUTER_TORSO] = serde_json::json!({ "asset_id": "tee#", "material_id": "tee_white" });
+        h.wear_styles = vec![h.parts.len() - 1];
+        h.enter(WEAR_STYLES);
+        assert_eq!(h.menus[WEAR_STYLES].options, [ADD_SHIRT_GRAPHIC, REMOVE_GRAPHIC]);
+        assert_eq!(h.select(0), Some(SHIRT_GRAPHIC_LOCATION));
+        h.menus[SHIRT_GRAPHIC_LOCATION] = menu("ShirtGraphicLocation", "", (0, 0), &[111, 112, 113, 114]);
+        assert_eq!(h.select(3), Some(GRAPHIC_CATEGORIES));
+        assert_eq!(h.graphic, Some((OUTER_TORSO.into(), 3)));
+        assert_eq!(h.camera, SHIRT_GRAPHIC_CAMERAS[3]);
+        assert_eq!(h.select(1), Some(TEAM_GRAPHICS));
+        h.call(&mut vm, "Game", "CAC_OnThumbnailSelect", &[Value::Number(0.0)]).unwrap();
+        assert_eq!(h.menu(), Some(SHIRT_GRAPHIC_ADJUST));
+        assert_eq!(h.look["graphics"][OUTER_TORSO]["placement"], serde_json::json!(GRAPHIC_DEFAULTS[9][0]));
     }
 
     #[test]
@@ -2844,7 +3291,13 @@ mod tests {
         assert_eq!(h.menu(), Some(BODY_MODS));
         assert_eq!(h.look["selections"]["OuterTorso"], shirt, "A puts it back");
         h.select(0);
+        assert_eq!(h.select(3), None, "the location holds a tattoo: the replace warning first");
+        assert_eq!(h.popups.pop().map(|p| p.description), Some("ID_CAC_UPPER_TATTOO_CHANGE_CONFIRMATION".into()));
+        h.tattoo_replace_answer(1);
+        assert_eq!(h.menu(), Some(TATTOO_UPPER), "No stays on the regions");
         h.select(3);
+        h.tattoo_replace_answer(0);
+        assert_eq!(h.menu(), Some(TATTOO_CATEGORIES), "Yes picks the region");
         h.select(1);
         assert_eq!(h.tattoo_list, vec![None, Some("a".into()), Some("c".into())], "with a tattoo the remove entry comes first");
         assert_eq!(call(&mut h, &mut vm, "CAC_GetThumbnailFileName", 0.0), Value::Text("fe\\cas\\general\\remove".into()));
@@ -2889,7 +3342,7 @@ mod tests {
     #[test]
     fn an_options_body_target_poses_the_skater_and_merchandise_puts_the_whole_body_back() {
         let mut h = grid_host();
-        let body = |yaw: f32| CasBody { clip: "CAS_Stand".into(), yaw_degrees: yaw, position: [-1.0, 0.0, -7.05], once: false };
+        let body = |yaw: f32| CasBody { clip: "CAS_Stand".into(), yaw_degrees: yaw, position: [-1.0, 0.0, -7.05], once: false, post: 0 };
         h.bodies = [(WHOLE_BODY.to_string(), body(260.0)), ("91098B2B2461D2DC".to_string(), body(149.25))].into_iter().collect();
         h.options[2].body = "91098B2B2461D2DC".into();
         h.select(0);
@@ -2972,13 +3425,14 @@ mod tests {
         assert_eq!(h.wear_styles, vec![3, 2]);
         assert_eq!(h.look["selections"]["Hat"]["asset_id"], "cap#");
         assert_eq!(h.look["selections"]["Hat"]["material_id"], "blue#");
-        h.indices[WEAR_STYLES] = (1, 0);
+        assert_eq!(h.menus[WEAR_STYLES].options, [WEAR_STYLE_OPTION, REMOVE_GRAPHIC], "a hat that is not colorizable: Style, then Remove Graphic (82600AF8)");
+        h.indices[WEAR_STYLES] = (0, 0);
         assert!(h.left_right(true));
         assert_eq!(h.look["selections"]["Hat"]["asset_id"], "cap_4_backward#");
         assert!(h.left_right(true));
         assert_eq!(h.look["selections"]["Hat"]["asset_id"], "cap#");
         // A accepts: back to Merchandise.
-        h.select(1);
+        h.select(0);
         assert_eq!(h.menu(), Some(MERCHANDISE));
     }
 
@@ -3028,7 +3482,7 @@ mod tests {
         assert_eq!(zones[&6].colours.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["blue", "dark blue", "green", "light brown", "dark brown"]);
         // The body rows: 69, the whole body at 260 degrees, the wrist row (keyed "wrist") at 149.25.
         assert_eq!(bodies.len(), 69);
-        assert_eq!(bodies[WHOLE_BODY], CasBody { clip: "CAS_Stand".into(), yaw_degrees: 260.0, position: [-1.0, 0.0, -7.05], once: false });
+        assert_eq!(bodies[WHOLE_BODY], CasBody { clip: "CAS_Stand".into(), yaw_degrees: 260.0, position: [-1.0, 0.0, -7.05], once: false, post: 0 });
         assert!((bodies["91098B2B2461D2DC"].yaw_degrees - 149.25).abs() < 0.01);
         assert_eq!(cameras.len(), 47);
         let body = cameras[WHOLE_BODY];

@@ -436,6 +436,8 @@ pub(crate) struct Challenges {
     pub last_bail_pose: Option<usize>,
     /// The last closed bail's Hall of Meat score (P+0x34DC, final at bail close; Trick.GetHOMScore).
     pub last_bail_score: Option<skate_core::hall_of_meat::BailScore>,
+    /// A presentation TeleportLocalPlayer move is under way (its event finishes when it is no longer pending).
+    pub presentation_teleport: bool,
     /// Bails closed so far (the Hall of Meat host turns a change into WipeoutOver).
     pub bails_closed: u32,
     pub last_bail: skate_core::hall_of_meat::BailSummary,
@@ -866,6 +868,28 @@ fn update(
             end_choice: end_dialog.choice.take() };
         let actions = if std::mem::take(&mut challenges.mods.abort) { tutorial.abandon(&mut presenter) } else { tutorial.step(&input, &mut presenter) };
         crate::hud_challenge::take_callout(&mut hud, &presenter, guide.as_deref());
+        // TeleportLocalPlayer: the locator from the tutorial's export; done once the move is no longer pending (the
+        // transition end, 8257A7D8). A name the export did not resolve is logged and done at once.
+        if let Ok(mut t) = presenter.teleport.lock() {
+            if let Some(name) = t.request.take() {
+                match tutorial.data.locators.get(&name) {
+                    Some(m) => {
+                        info!("SKATE_TUTORIAL presentation teleport to {name} {:?}", &m[3][..3]);
+                        if let Err(e) = skater.travel_ex(*m, None, !tutorial.data.spawn_offboard) {
+                            warn!("SKATE_TUTORIAL presentation teleport {e}");
+                        }
+                        challenges.presentation_teleport = true;
+                    }
+                    None => {
+                        warn!("SKATE_TUTORIAL presentation teleport: no locator {name} in the export (Refresh Game Files)");
+                        t.finished = true;
+                    }
+                }
+            } else if challenges.presentation_teleport && !skater.teleport_pending() {
+                challenges.presentation_teleport = false;
+                t.finished = true;
+            }
+        }
         // The sim controller posts its rate every frame while set (8256E4F0 -> OnRequestSetSimRate, count 1).
         if let (Some(timestep), Some(camera)) = (presenter.sim_timestep(), camera.as_mut()) {
             camera.presentation_rate_requests.push(skate_core::camera::SimulationRateRequest { timestep, ticks: 1 });
@@ -1117,7 +1141,7 @@ pub(crate) fn install(app: &mut App) {
         .add_systems(PreUpdate, arm.after(crate::map_transition::MapTransitionSet).run_if(opted_in))
         .add_systems(Update, switch_off.run_if(not(opted_in)))
         .add_systems(Update, (sign_up.after(crate::teleporters::prompt).before(crate::retail_menu_stage::MenuStageSet), update.after(crate::trigger_volumes::TriggerSet).in_set(CareerResultSet)).chain().run_if(opted_in))
-        .add_systems(Update, crate::presentation_run::tick.after(CareerResultSet).run_if(opted_in))
+        .add_systems(Update, (crate::presentation_run::tick, crate::presentation_run::play_sfx).chain().after(CareerResultSet).run_if(opted_in))
         .add_systems(Startup, crate::presentation_run::load_speech);
 }
 

@@ -310,10 +310,71 @@ struct Frame {
 /// these, like the host's own step cap).
 const MAX_FED_STEPS: usize = 8;
 
+/// The replay NIS entry transition's length (82795A70 ramps over the constant 1.0 at 8231A844; research b1052).
+pub(crate) const REEL_TRANSITION_SECONDS: f32 = 1.0;
+
+/// The reel clip's transition: `In` blooms the current view to white before the clip, `Out` clears it while the
+/// clip plays (seconds into each).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ReelPhase {
+    In(f32),
+    Out(f32),
+}
+
+/// A highlight reel clip's camera (research b1050): the NIS scene's ICE take, fitted to the clip's window as retail
+/// fits a take to its clip, placed around the replayed skater (828F36B0: SPACE 2 at the object's position, SPACE 0
+/// in the player's frame, SPACE 3 in an object's matrix: the highlight's located place when it has one; any other
+/// SPACE stays where it is).
+#[derive(Clone, Debug)]
+pub(crate) struct ReelShot {
+    pub track: skate_core::camera_track::CameraTrack,
+    pub start: f64,
+    pub end: f64,
+    /// The highlight definition's world position and direction (`located` scenes).
+    pub located: Option<(Vec3, Vec3)>,
+}
+
+impl ReelShot {
+    /// The camera at replay time `cursor` for the skater's recorded `root`, and its field of view.
+    pub(crate) fn camera(&self, cursor: f64, root: &Transform) -> Option<(Transform, f32)> {
+        let span = (self.end - self.start).max(1e-3);
+        let time = (((cursor - self.start) / span).clamp(0.0, 1.0) as f32) * self.track.length;
+        let sample = self.track.sample(time)?;
+        let place = |[x, y, z]: [f32; 3], space: skate_core::camera_track::CameraSpace| {
+            let point = Vec3::new(y, z, x);
+            match space.mode {
+                2 => root.translation + point,
+                0 => root.translation + root.rotation * point,
+                3 => match self.located {
+                    Some((at, dir)) => at + Quat::from_rotation_arc(Vec3::Z, dir.normalize_or(Vec3::Z)) * point,
+                    None => root.translation + root.rotation * point,
+                },
+                _ => point,
+            }
+        };
+        let (eye, look) = (place(sample.eye, sample.eye_space), place(sample.look, sample.look_space));
+        let forward = (look - eye).normalize_or(Vec3::Z);
+        let up = Quat::from_axis_angle(forward, sample.dutch) * Vec3::Y;
+        Some((Transform::from_translation(eye).looking_at(look, up), sample.fov_radians()))
+    }
+}
+
 #[derive(Resource, Default)]
 pub(crate) struct Replay {
     frames: VecDeque<Frame>,
     pub active: bool,
+    /// A highlight reel clip plays (`play_reel_clip`): the cursor runs to this time with no input or replay screen;
+    /// `reel_done` is set when it got there.
+    pub reel_end: Option<f64>,
+    pub reel_done: bool,
+    /// The reel clip's NIS scene camera (None: the recorded game camera).
+    pub reel_shot: Option<ReelShot>,
+    /// The player skipped the reel clip (the host then ends the whole reel).
+    pub reel_skipped: bool,
+    /// The clip's visual transition (REPLAYNISLOADSCREEN), None when it is over.
+    pub reel_transition: Option<ReelPhase>,
+    /// The clip waiting for its transition's white: (start, end, camera take, located place).
+    reel_pending: Option<(f64, f64, Option<(skate_core::camera_track::CameraTrack, Option<(Vec3, Vec3)>)>)>,
     pub free_camera: Option<Transform>,
     /// The panel is hidden (retail L3: kHideEditor / kShowEditor), the help screen is open (retail Start: FE 13) and
     /// how many help page turns were asked (A); all reset when the replay opens.
@@ -633,6 +694,9 @@ impl Replay {
             info!("REPLAY_CLOSE at={:.1}s", self.cursor - start);
         }
         self.active = false;
+        self.reel_shot = None;
+        self.reel_transition = None;
+        self.reel_pending = None;
         self.editor = None;
         self.marker_ask = None;
         self.camera_ask = None;
@@ -649,6 +713,65 @@ impl Replay {
     pub(crate) fn look(&self, base: &skate_core::colour_matrix::ColourMatrixRecord) -> Option<skate_core::replay_edit::ReplayLook> {
         self.active.then_some(())?;
         self.editor.as_ref()?.look(self.cursor, base)
+    }
+
+    /// The newest recorded time (the highlights' "now"); 0 with nothing recorded.
+    pub(crate) fn last_time(&self) -> f64 {
+        self.frames.back().map_or(0.0, |f| f.time)
+    }
+
+    /// One highlight reel clip (82BCE0D8: an NIS replay scene over the window): the transition blooms the current
+    /// view to white, then the recording plays from `start` to `end` (clamped to what is kept) under the camera take
+    /// while the white clears. Nothing recorded: done at once.
+    pub(crate) fn play_reel_clip(
+        &mut self,
+        start: f64,
+        end: f64,
+        take: Option<(skate_core::camera_track::CameraTrack, Option<(Vec3, Vec3)>)>,
+    ) {
+        if !self.active {
+            self.enter();
+        }
+        if !self.active {
+            self.reel_done = true;
+            return;
+        }
+        self.playing = false;
+        self.reel_end = Some(self.cursor);
+        self.reel_done = false;
+        self.reel_transition = Some(ReelPhase::In(0.0));
+        self.reel_pending = Some((start, end, take));
+    }
+
+    /// The clip starts at the transition's full white (NIS load state 7, 8281EF88: playback and the reverse
+    /// transition together).
+    fn start_pending_reel_clip(&mut self) {
+        let Some((start, end, take)) = self.reel_pending.take() else { return };
+        let (first, last) = self.bounds();
+        self.seek(start);
+        let end = end.clamp(first, last).max(self.cursor);
+        self.reel_end = Some(end);
+        self.reel_shot = take.map(|(track, located)| ReelShot { track, start: self.cursor, end, located });
+        self.playing = true;
+        info!("REPLAY_REEL clip {:.2}..{:.2} s", self.cursor, end);
+    }
+
+    /// The transition's progress, 0 (clear) to 1 (full white): the value 82795A70 writes to the active screen
+    /// fade block +0x18.
+    pub(crate) fn reel_bloom(&self) -> f32 {
+        let x = |t: f32| (t / REEL_TRANSITION_SECONDS).clamp(0.0, 1.0);
+        match self.reel_transition.filter(|_| self.active) {
+            Some(ReelPhase::In(t)) => x(t),
+            Some(ReelPhase::Out(t)) => 1.0 - x(t),
+            None => 0.0,
+        }
+    }
+
+    /// Stops a playing reel clip (the reel removed: a retry or abandon).
+    pub(crate) fn stop_reel(&mut self) {
+        if self.reel_end.take().is_some() {
+            self.exit();
+        }
     }
 
     pub(crate) fn seek(&mut self, time: f64) {
@@ -1145,6 +1268,49 @@ pub(crate) fn controls(
         if replay.active {replay.exit();}
         return;
     }
+    if let Some(end) = replay.reel_end {
+        // A skips (the NIS skip, 825EFF98: A on the first press); a skipped scene ends the whole reel (82BCDFC0 posts
+        // cMsgHighlightReelComplete when cMsgNISComplete says skipped).
+        let pad = input.raw_input();
+        let pressed = pad.buttons & !replay.previous_buttons;
+        replay.previous_buttons = pad.buttons;
+        if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
+            info!("REPLAY_REEL skipped at {:.2} s", replay.cursor);
+            replay.reel_skipped = true;
+            replay.reel_transition = None;
+            replay.reel_pending = None;
+            replay.cursor = end;
+        }
+        input.discard_gameplay();
+        // REPLAYNISLOADSCREEN (8285EC08 kind 6 -> BloomToWhite, 82795A70, 1.0 s each way): the NIS load waits for
+        // the full white (8281EF88 state 5), then starts playback and the reverse together (state 7).
+        let dt = time.delta_secs();
+        match replay.reel_transition {
+            Some(ReelPhase::In(t)) => {
+                let t = t + dt;
+                if t < REEL_TRANSITION_SECONDS {
+                    replay.reel_transition = Some(ReelPhase::In(t));
+                    return;
+                }
+                replay.reel_transition = Some(ReelPhase::Out(0.0));
+                replay.start_pending_reel_clip();
+                return;
+            }
+            Some(ReelPhase::Out(t)) => {
+                let t = t + dt;
+                replay.reel_transition = (t < REEL_TRANSITION_SECONDS).then_some(ReelPhase::Out(t));
+            }
+            None => {}
+        }
+        let end = replay.reel_end.unwrap_or(end);
+        replay.cursor = (replay.cursor + time.delta_secs_f64()).min(end);
+        if replay.cursor >= end || !replay.active {
+            replay.reel_end = None;
+            replay.reel_done = true;
+            replay.exit();
+        }
+        return;
+    }
     let pad = input.raw_input();
     let pressed = pad.buttons & !replay.previous_buttons;
     let released = replay.previous_buttons & !pad.buttons;
@@ -1536,7 +1702,7 @@ fn publish_feed(replay: Res<Replay>, mut feed: ResMut<ReplayFeed>) {
         }
     };
     let next = crate::replay_menu_host::ReplayScreenFeed {
-        active: replay.active,
+        active: replay.active && replay.reel_end.is_none(),
         instant: replay.active && replay.editor.is_none(),
         position: if end > start { (replay.cursor - start) / (end - start) } else { 1.0 },
         playing: replay.playing,

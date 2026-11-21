@@ -92,8 +92,10 @@ reason), `npc_trick` (id, line, node, recorded, chosen), `npc_line_end` (id) and
 `living_world_density_counts_and_free_play_set_merge_and_reset` (merge, the values reach the population config,
 invalid values rejected, reset), skate-mods validation cases.
 
-Not exposed yet: road district selection for mod maps (the loader picks the district by map name), census range
-overrides (`data_config`), spawn tables, models per kind, routes, behavior overrides. The ped mirrored-animation fix has no values.
+Spawn tables and car models are the `vehicles` domain, a mod's own roads the `roads` domain (doc 26h
+[routes for mods](26h-living-world-traffic.md#routes-for-mods)). Not exposed yet: road district selection for mod
+maps (the loader picks the district by map name), census range overrides (`data_config`), joining a mod road to
+the map's own junctions, behavior overrides. The ped mirrored-animation fix has no values.
 
 ## Credits
 

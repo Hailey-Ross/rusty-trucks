@@ -380,11 +380,13 @@ pub(crate) struct TrafficState {
     pub rng: Rng,
     pub data: VehicleData,
     pub(crate) loaded_for: Option<(String, u64)>,
+    /// The population's roads revision the cars were placed on.
+    pub(crate) roads_revision: u64,
 }
 
 impl Default for TrafficState {
     fn default() -> Self {
-        Self { cars: Vec::new(), index: BTreeMap::new(), clock: None, last_tick: None, rng: Rng::new(0x5452_4146), data: VehicleData::default(), loaded_for: None }
+        Self { cars: Vec::new(), index: BTreeMap::new(), clock: None, last_tick: None, rng: Rng::new(0x5452_4146), data: VehicleData::default(), loaded_for: None, roads_revision: 0 }
     }
 }
 
@@ -565,7 +567,11 @@ pub(crate) fn apply_vehicle_records(
         choose_first(net, &traffic.cars, &mut car, overrides.connector_choice, &mut traffic.rng);
         let t = car_transform(net, &car);
         events.write(TrafficEvent::Spawned { id: s.id, entity: meta.entity.clone(), model: meta.model.clone(), chassis: meta.chassis_id.clone() });
-        debug!("TRAFFIC_SPAWN #{} {} model {} glb {}", s.id.serial, meta.entity, meta.model, meta.glb);
+        let segment = match &s.choice {
+            SpawnChoice::Vehicle { segment, .. } => *segment,
+            _ => 0,
+        };
+        debug!("TRAFFIC_SPAWN #{} {} model {} glb {} segment {segment:016X}", s.id.serial, meta.entity, meta.model, meta.glb);
         let e = commands
             .spawn((
                 Name::new(format!("Traffic car {} ({})", s.id.serial, meta.entity)),
@@ -602,6 +608,24 @@ pub(crate) fn drive_traffic(
     let _span = super::timing::span(super::timing::TRAFFIC);
     let st = &mut *state;
     let traffic = &mut *traffic;
+    // The roads changed (a mod's `roads` tuning): the cars' cursors index the old network, so they go and the census
+    // spawns new ones on the new roads.
+    if traffic.roads_revision != st.roads_revision {
+        traffic.roads_revision = st.roads_revision;
+        if settings.net_role != NetRole::Client {
+            for car in std::mem::take(&mut traffic.cars) {
+                let id = LivingWorldId { kind: Kind::Vehicle, serial: car.key };
+                if let Some(skate_core::living_world::Decision::Despawn(r)) = st.world.despawn(id, DespawnReason::External) {
+                    st.despawned += 1;
+                    despawns.write(LivingWorldDespawn(r));
+                }
+                if let Some((e, _)) = traffic.index.remove(&car.key) {
+                    crate::replay::retire(&mut commands, e);
+                    events.write(TrafficEvent::Despawned { id, reason: DespawnReason::External });
+                }
+            }
+        }
+    }
     let Some(net) = st.roads.as_ref() else { return };
     // The car alarm (`+3424` bit 0x10) is the alarm rule's (game_audio::car_alarm): read back every tick.
     for car in &mut traffic.cars {

@@ -34,7 +34,9 @@ def _field(name):
     return 'Hash_%016X' % hash64(name)
 
 
+SKATER_COLLECTIONS = 'data/db/skatercollections'
 TRIGGER_BOUNDARY = _field('OTSTriggerBoundary')
+HIGHLIGHT = _field('HighlightDefinition')
 SCORING_BOUNDARY = _field('OTSScoringBoundary')
 START = _field('StartLocation')
 OWNED = _field('ObjectivesOwned')
@@ -312,7 +314,57 @@ def objective_rows(rows_by_hash, objectives, binary, binary_of=None):
         entry['failure_first'] = bool(first and first[0].get('data', '00')[:2] == '01')
         hints = inherited_field(rows_by_hash, objective, HINTS)
         entry['hints'] = [failure_row(rows_by_hash, ref, binary, binary_of) for ref in refs(hints[0] if hints else None)]
+        # HighlightDefinition (b1050): the replay window and scenes the highlight reel shows for this objective.
+        highlight = inherited_field(rows_by_hash, objective, HIGHLIGHT)
+        if highlight and highlight[0].get('data'):
+            source = (binary_of or (lambda _row: None))(highlight[1]) or binary
+            entry['highlight'] = highlight_definition(bytes.fromhex(highlight[0]['data']), source)
         out.append(entry)
+    return out
+
+
+def highlight_definition(raw, binary):
+    """tHighlightDefinition (0x90 bytes, research b1050): pre and post seconds, then the owned (+0x10) and killed
+    (+0x50) halves, each a scene name (text offset into the bank .bin), a located byte (+6), a world position (+0x10)
+    and a direction (+0x20). None when the field is short."""
+    if len(raw) < 0x90:
+        return None
+    pre, post = struct.unpack_from('>ff', raw, 0)
+
+    def half(at):
+        offset = struct.unpack_from('>I', raw, at)[0]
+        scene = cstring(binary, offset).decode('utf-8') if offset and binary is not None and offset < len(binary) else ''
+        return dict(scene=scene, located=raw[at + 6] != 0,
+                    position=[round(v, 6) for v in struct.unpack_from('>3f', raw, at + 0x10)],
+                    direction=[round(v, 6) for v in struct.unpack_from('>3f', raw, at + 0x20)])
+    return dict(pre=round(pre, 6), post=round(post, 6), owned=half(0x10), killed=half(0x50))
+
+
+def presentation_events_in(data):
+    """Every decoded presentation event anywhere in `data` (dicts with a `type` and `args`), in document order."""
+    if isinstance(data, dict):
+        if 'type' in data and isinstance(data.get('args'), list):
+            yield data
+        for value in data.values():
+            yield from presentation_events_in(value)
+    elif isinstance(data, (list, tuple)):
+        for value in data:
+            yield from presentation_events_in(value)
+
+
+def teleport_locators(key, data, place):
+    """The locators the TeleportLocalPlayer events in `data` name (arg2 empty: a teleport to arg1, research b874), by
+    name to their matrix through `place`; a name that does not resolve is left out (logged), so its event is done at
+    once in game."""
+    out = {}
+    for event in presentation_events_in(data):
+        name, target = (event['args'] + [None, None])[:2]
+        if event['type'] != 'TeleportLocalPlayer' or not name or target or name in out:
+            continue
+        try:
+            out[name] = place(name)['matrix']
+        except ValueError as e:
+            print(f'challenges: {key} teleport {e}', file=sys.stderr)
     return out
 
 
@@ -441,6 +493,13 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
                 banks.append((source, archive, entry, entries[path[:-4] + '.bin']))
             elif path.startswith(MISSIONS) and path.count('/') == 4:
                 hulls.setdefault(path.split('/')[3], (archive, []))[1].append(entry)
+    # The anywhere films' objective rows resolve only in data/db/skatercollections (b961 §1, b1050): it is read
+    # last, so every challenge bank's own rows win.
+    for source, archive in _sources(game_root, ()):
+        entries = {e.path.replace('\\', '/').lower(): e for e in archive.entries}
+        if SKATER_COLLECTIONS + '.vlt' in entries and SKATER_COLLECTIONS + '.bin' in entries:
+            banks.append((source, archive, entries[SKATER_COLLECTIONS + '.vlt'], entries[SKATER_COLLECTIONS + '.bin']))
+            break
     schema = work / 'schema'
     if not (schema / 'data/db/skaterschema.vlt').is_file():
         disc = next(a for s, a in _sources(game_root, ()))
@@ -520,6 +579,8 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
         ignore = own.get(IGNORE_REPOSITION) or fields.get(IGNORE_REPOSITION)
         radius_up = radius(fields, SIGN_UP_RADIUS)
         title_id = (fields.get(TITLE) or {}).get('data') or None
+        presentation = {name: decoded_events(own.get(field), binary, bank_binary) for name, field in PRESENTATION.items()}
+        objectives = objective_rows(rows_by_hash, refs(fields.get(OBJECTIVES)), bank_binary, binary_of)
         return dict(
             id=key, family=TUTORIAL, map=label_of(district), district=district,
             title_id=title_id, title=text.get(title_id) if title_id else None,
@@ -529,8 +590,9 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
             spawn_offboard=bool(own.get(SPAWN_OFFBOARD, {}).get('data', '00')[:2] == '01'),
             persistent=own.get(PERSISTENT, {}).get('data', '00')[:2] == '01',
             ignore_initial_reposition=None if ignore is None else ignore.get('data', '00')[:2] == '01',
-            presentation={name: decoded_events(own.get(field), binary, bank_binary) for name, field in PRESENTATION.items()},
-            objectives=objective_rows(rows_by_hash, refs(fields.get(OBJECTIVES)), bank_binary, binary_of))
+            presentation=presentation,
+            objectives=objectives,
+            locators=teleport_locators(key, (presentation, objectives), place))
 
     def sign_up_location(fields, bank_binary, district, folder):
         """The bank row's Location locator (the sign-up sphere's center, b842 / b843): the district's locators, else the

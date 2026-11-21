@@ -6,7 +6,8 @@ from pathlib import Path
 
 from tools.asset_pipeline.challenges import (CHALLENGE, DEFINITION, ENTERED, GROUP, KILLED_TIME, OBJECTIVES,
                                              OUT_OF_BOUNDS_TIME, OWNED_TIME, POINTS, RETURN_MESSAGE, chain,
-                                             group_points, objective_programs, parameters)
+                                             group_points, highlight_definition, objective_programs, parameters,
+                                             teleport_locators)
 from tools.asset_pipeline.retained import carry
 from tools.asset_pipeline.vlt import hash64
 
@@ -28,6 +29,37 @@ class ChallengeData(unittest.TestCase):
         fields, walked = chain(rows, CHALLENGE, 'OTS_A')
         self.assertEqual(fields, {'x': 1, 'y': 3, 'z': 4})
         self.assertEqual(walked, ['ots_a', 'own_the_spots', 'main'])
+
+    def test_teleport_events_resolve_their_locators_once(self):
+        def event(kind, a, b=None):
+            return {'type': kind, 'args': [a, b], 'mask': 0}
+        data = ({'intro': [event('Wait', '1'), event('TeleportLocalPlayer', 'start')], 'outro': 3},
+                [{'failures': [{'events': [event('TeleportLocalPlayer', 'obj'), event('TeleportLocalPlayer', 'start')]}]}],
+                [event('TeleportLocalPlayer', 'named', 'target'), event('TeleportLocalPlayer', 'missing')])
+        looked = []
+
+        def place(name):
+            looked.append(name)
+            if name == 'missing':
+                raise ValueError('locator missing: 0 records')
+            return {'locator': name, 'matrix': [[len(name)]]}
+        self.assertEqual(teleport_locators('t', data, place), {'start': [[5]], 'obj': [[3]]})
+        self.assertEqual(looked, ['start', 'obj', 'missing'], 'each name once; a named target (arg2) is not a locator')
+
+    def test_a_highlight_definition_reads_both_halves(self):
+        binary = b'\0' * 0x32 + b'highlight_film\0' + b'highlight_film_killed\0'
+        raw = bytearray(0x90)
+        struct.pack_into('>ff', raw, 0, 3.0, 0.5)
+        struct.pack_into('>I', raw, 0x10, 0x32)
+        raw[0x16] = 1
+        struct.pack_into('>3f', raw, 0x20, 1.0, 2.0, 3.0)
+        struct.pack_into('>3f', raw, 0x30, 0.0, 0.0, 1.0)
+        struct.pack_into('>I', raw, 0x50, 0x32 + len('highlight_film') + 1)
+        got = highlight_definition(bytes(raw), binary)
+        self.assertEqual((got['pre'], got['post']), (3.0, 0.5))
+        self.assertEqual(got['owned'], {'scene': 'highlight_film', 'located': True, 'position': [1.0, 2.0, 3.0], 'direction': [0.0, 0.0, 1.0]})
+        self.assertEqual((got['killed']['scene'], got['killed']['located']), ('highlight_film_killed', False))
+        self.assertIsNone(highlight_definition(b'\0' * 0x20, binary))
 
     def test_chain_stops_on_a_parent_loop(self):
         rows = {(CHALLENGE, 'a'): ('b', {}), (CHALLENGE, 'b'): ('a', {})}

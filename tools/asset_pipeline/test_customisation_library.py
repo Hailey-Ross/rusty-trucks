@@ -33,6 +33,9 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(library['errors'], [])
         self.assertEqual(len(library['models']), 480)
         self.assertEqual(len(library['tattoos']), 170)
+        # Custom graphics (b1051): 182 brand and 42 team logos.
+        kinds = [logo['kind'] for logo in library.get('logos', {}).values()]
+        self.assertEqual((kinds.count('brand'), kinds.count('team')), (182, 42))
         for part in library['models'].values():
             data = (assets / part['scene']).read_bytes()
             magic, version, size, text_size = struct.unpack_from('<4I', data)

@@ -98,7 +98,7 @@ fn app(hz: f32) -> App {
     app.add_plugins(MinimalPlugins);
     let settings = LivingWorldSettings { seed: 3, ..LivingWorldSettings::default() };
     let mut state = PopulationState::default();
-    state.install("Test", 1, &settings, LoadedData { config: PopulationConfig::retail(), census: None, skaters: None, roads: None, vehicles: None, npc: Default::default(), status: "peds test".into() });
+    state.install("Test", 1, &settings, LoadedData { config: PopulationConfig::retail(), census: None, skaters: None, roads: None, road_input: None, vehicles: None, npc: Default::default(), status: "peds test".into() });
     app.insert_resource(settings)
         .insert_resource(state)
         .insert_resource(data())
@@ -1100,7 +1100,7 @@ fn a_map_change_clears_the_ped_world_state_but_the_first_map_load_keeps_it() {
 #[test]
 fn a_new_map_install_continues_the_id_serials() {
     let settings = LivingWorldSettings { seed: 3, ..LivingWorldSettings::default() };
-    let loaded = || LoadedData { config: PopulationConfig::retail(), census: None, skaters: None, roads: None, vehicles: None, npc: Default::default(), status: "ids test".into() };
+    let loaded = || LoadedData { config: PopulationConfig::retail(), census: None, skaters: None, roads: None, road_input: None, vehicles: None, npc: Default::default(), status: "ids test".into() };
     let mut state = PopulationState::default();
     state.install("A", 1, &settings, loaded());
     assert_eq!(state.world.state(skate_core::living_world::Kind::Pedestrian).next_serial(), 1, "the first map starts at 1");

@@ -90,6 +90,45 @@ impl HostClock {
         Some(Pass { ticks, calls, clear_eq })
     }
 }
+/// `SFXObj_Bloom`'s update (`824ED840`, every pass): level = the larger of the presentation's bloom and the screen
+/// fade transition (the reel's BloomToWhite, 82795A70). Input 0 = level x 32767; below 1 the `fade_to_white` class
+/// (Sk8_moments) is released, else held, posted once with level x 100 (`824AF280`'s record).
+#[derive(Default)]
+pub(crate) struct Bloom {
+    node: Option<NodeId>,
+    class: Option<Option<usize>>,
+}
+
+impl Bloom {
+    pub(crate) const CLASS: &str = "fade_to_white";
+    pub(crate) const BANK: &str = "fade_to_white";
+
+    pub(crate) fn words(level: f32) -> [i32; 8] {
+        [0, 0, 4096, 25000, 0, 0, 32767, ((level * 100.0) as i32).clamp(0, 100)]
+    }
+
+    pub(crate) fn step(&mut self, m: &mut MixMap, shared: &Shared, level: f32) {
+        let input = ((level * 32767.0) as i32).clamp(0, 32767);
+        m.set_input(keys::BLOOM, 0, input);
+        if input >= 1 && self.node.is_some() {
+            return;
+        }
+        if input < 1 && self.node.is_none() {
+            return;
+        }
+        let Ok(mut rt) = super::timing::lock(shared, &super::timing::GAME_LOCK) else { return };
+        if input < 1 {
+            if let Some(node) = self.node.take() {
+                rt.release(node);
+            }
+            return;
+        }
+        if let Some(id) = *self.class.get_or_insert_with(|| rt.eval.class_id(Self::CLASS)) {
+            self.node = Some(rt.post(id, &Self::words(level)));
+        }
+    }
+}
+
 /// CSTATEMGR_Emitter's pool = the MixMap's Emitter instances.
 pub(crate) const EMITTER_STATES: usize = 5;
 
@@ -181,6 +220,8 @@ pub(crate) struct Native {
     /// Bank stem → runtime bank id.
     banks: HashMap<String, usize>,
     emitter_class: Option<usize>,
+    /// SFXObj_Bloom (`fade_to_white`).
+    bloom: Bloom,
     /// The MixMap, when the install has `MixMapSK8.mxb`.
     pub(crate) mixmap: Option<MixMap>,
     /// The host's clock (the physics steps).
@@ -325,6 +366,7 @@ impl Native {
             shared: Arc::new(Mutex::new(runtime)),
             banks: HashMap::new(),
             emitter_class: None,
+            bloom: Bloom::default(),
             mixmap,
             clock: HostClock::default(),
             frame_ticks: 0,
@@ -577,6 +619,9 @@ impl Native {
         let slide = load(self, SLIDE_BANKS);
         let tricks = load(self, TRICKS_BANKS);
         let treatment = load(self, TREATMENT_BANKS);
+        if let Err(e) = self.ensure_bank(library, Bloom::BANK) {
+            warn!("Game audio: {e}; the bloom transition stays silent (run setup to refresh the audio)");
+        }
         // With the tricks the foley utility is posted at boot, after Start_up_Play_ctl (`start`).
         if let Some(p) = &mut self.player {
             (p.rolling_on, p.rattle_on, p.slide_on, p.tricks_on, p.treatment_on) = (rolling, rattle, slide, tricks, treatment);
@@ -611,6 +656,7 @@ impl Native {
             shared: runtime,
             banks: HashMap::new(),
             emitter_class,
+            bloom: Bloom::default(),
             mixmap: None,
             clock: HostClock::default(),
             frame_ticks: 0,
@@ -868,6 +914,7 @@ pub(super) fn mixmap_frame(
         None => m.set_input(keys::REVERB, 5, 32767),
     }
     m.set_input(keys::PAUSE, 0, 0);
+    native.bloom.step(m, &native.shared, replay.reel_bloom());
     let (ticks, calls) = (pass.ticks, pass.calls);
     // The bed's turn / brake slews step once per console evaluation (`grain_bed::Bed::slew_calls`).
     if let Some(bed) = &mut native.bed {
@@ -1201,11 +1248,38 @@ mod tests {
         assert_eq!(azimuth(&turned, Vec3::new(10.0, 0.0, 0.0)), 0);
     }
 
+    /// SFXObj_Bloom: 824AF280's record at level x 100; the class is held from the first frame at or above 1/32767 and
+    /// released below it. Data-gated: `SKATE3_ASSET_ROOT` = the converted assets (MixMapSK8.mxb, Sk8_moments.csi).
+    #[test]
+    fn the_bloom_object_holds_fade_to_white_while_the_transition_runs() {
+        assert_eq!(Bloom::words(0.5), [0, 0, 4096, 25000, 0, 0, 32767, 50]);
+        assert_eq!(Bloom::words(3.0)[7], 100);
+        let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from) else { return };
+        let aems = root.join("private/audio/aems");
+        let file = skate_audio::mixmap::MixMapFile::parse(&std::fs::read(aems.join("MixMapSK8.mxb")).unwrap()).unwrap();
+        let mut m = MixMap::new(&file, &WorldInstances::RETAIL.mixmap_instances());
+        let shared: Shared = Arc::new(Mutex::new(Runtime::new()));
+        let project = Project::parse("Sk8_moments.csi", &std::fs::read(aems.join("Sk8_moments.csi")).unwrap()).unwrap();
+        shared.lock().unwrap().install_project(&project);
+        assert!(shared.lock().unwrap().eval.class_id(Bloom::CLASS).is_some(), "fade_to_white is a moments class");
+        let mut bloom = Bloom::default();
+        bloom.step(&mut m, &shared, 0.0);
+        assert!(bloom.node.is_none());
+        bloom.step(&mut m, &shared, 0.02);
+        let node = bloom.node;
+        assert!(node.is_some());
+        bloom.step(&mut m, &shared, 0.6);
+        assert_eq!(bloom.node, node, "held, not posted again");
+        bloom.step(&mut m, &shared, 0.0);
+        assert!(bloom.node.is_none());
+    }
+
     fn native(mixmap: Option<MixMap>) -> Native {
         Native {
             shared: Arc::new(Mutex::new(Runtime::new())),
             banks: HashMap::new(),
             emitter_class: None,
+            bloom: Bloom::default(),
             mixmap,
             clock: HostClock::default(),
             frame_ticks: 0,

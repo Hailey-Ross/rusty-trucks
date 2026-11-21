@@ -80,6 +80,8 @@ BANKS = (
     # Water emitters on the map's water (game_audio/water.rs) and splash tails.
     'water_lapping.abk', 'water_lapping_pond.abk', 'fountains_waterlaps_left.abk',
     'water_fountain.abk', 'ocean_wave_small.abk',
+    # SFXObj_Bloom's fade_to_white (the highlight reel's bloom-to-white transition, game_audio/native.rs).
+    'fade_to_white.abk',
     # The front-end sounds (class `fe` records, frontend_sounds below): the session marker's
     # cellphone UI plays from this Splice bank.
     'sk8_menu.bnk',

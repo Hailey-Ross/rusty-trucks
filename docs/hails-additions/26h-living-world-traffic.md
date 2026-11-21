@@ -1935,4 +1935,22 @@ proof1.tsv TRAFLIGHT2, controller 0: the first line (one tick in, 0.483 left) th
 
 **Verification.** Tests `a_mod_spawn_table_replaces_a_category_and_adds_cars_copied_from_existing_ones`, `vehicles_set_merge_and_reset_on_disable`, `patches_parse_validate_and_reject_unknown_fields`. In game (dev mod `mods/vehicles-tables-test`: every category spawns `my_cab`, a copy of `taxi01`; `.local/tools/mod-smoke-run.ps1`, 90 s free roam): 59 of 59 cars spawned were `my_cab` with the taxi model and GLB (`TRAFFIC_SPAWN`, debug log line added), 0 errors.
 
-**Open.** Routes for mods (a mod's own roads / lanes in the road network); multiplayer: the patch is host data, clients mirror the spawn records.
+**Open.** Multiplayer: the patch is host data, clients mirror the spawn records. Routes for mods: next section.
+
+<a id="routes-for-mods"></a>
+
+## Routes for mods: a mod's own roads (2026-11-20, PR 68 ask 611)
+
+**Problem.** A mod could change which cars spawn but not where they drive: the road network came only from the map's `roads.bin`.
+
+**Change (ours; retail's roads are map data only).** A `roads` world tuning domain (`sdk.world.set_tuning("roads", {roads = {name = {...}}})`, capability `world_tuning`; first writer wins per road name; the map's roads only when the mod stops):
+- A road is a center line (`points`, 2 to 256) from node `from` to node `to`, `lanes` each way (1 to 4, default 1), `lane_width` (2 to 8 m, 3.5), `speed_limit` (1 to 60 m/s, 11) and `two_way` (true). A two-way road is two segments over the same node ends with the lanes right of the line in each direction; a one-way road centres its lanes on the line. Straight pieces between the points; lane changes allowed (manoeuvre bit 0x02).
+- Nodes are named; roads sharing a node name meet there. Up to four road ends per node (the network's `ENDS`). Where roads arrive and leave, an unsignalled junction joins every arriving lane to each other leaving road, lane for lane (the last lane where the leaving road has fewer), never straight back the way it came; a node with one road end is a dead end, where cars leave as at a map edge.
+- Ids: segments and nodes hash the mod's names (FNV-1a over `mod_road:<kind>:<name>`), apart from the disc's.
+- In game: `PopulationState` keeps the map's road input (`roads_stock`) and rebuilds the network with the mods' roads (`set_road_patch`, also after every world load); a road the network refuses is logged and left out. A rebuild bumps `roads_revision`; `drive_traffic` then retires the cars (their cursors index the old network) and the census spawns new ones. `sdk.engine.inspect(key, "world_tuning:roads")` gives the segment and junction counts.
+
+**Files.** `crates/skate-core/src/living_world/traffic/mod_roads.rs`, `crates/skate-mods/src/world_tuning.rs` (`RoadsPatch`), `crates/skate-mods/src/api.lua`, `crates/skate-game/src/living_world/mod.rs`, `living_world/vehicles.rs`, `modding/world_tuning.rs`.
+
+**Verification.** Tests `a_mod_road_builds_on_its_own_and_lanes_sit_right_of_the_line`, `roads_meeting_at_a_node_get_a_junction_without_u_turns`, `bad_roads_are_left_out_and_named` (skate-core), `a_mod_road_rebuilds_the_network_and_the_cars_start_over` (skate-game), `patches_parse_validate_and_reject_unknown_fields` (skate-mods). Desktop smoke runs 2026-11-20 (dev mod `mods/roads-test`: a two-way 120 m square loop beside the start, `.local/tools/mod-smoke-run.ps1 -Map DownTown`): the network becomes the map's 46 segments plus the loop's 8 (`world_tuning:roads` inspect: 54 segments, 23 junctions, revision 1); traffic runs with no error; in 100 s all 65 car spawns were on the map's segments (`TRAFFIC_SPAWN ... segment` debug line), none on the loop.
+
+**Open.** Cars reach a mod road only where the census spawns them: a pass picks a random point on the ring around the player and spawns only when the point lies on a road inside a census record that allows traffic (retail's factory, skate-core `population.rs` `vehicle_spawns`), so a narrow standalone road beside the map's roads is rarely or never picked; a mod-side spawn weight or census record for its roads is the next step. Joining a mod road to the map's own junctions (their ends and connectors are disc data); signalled mod junctions; curved pieces (straight only).

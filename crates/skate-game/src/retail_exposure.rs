@@ -214,7 +214,7 @@ struct Pipeline {
     tone: CachedRenderPipelineId,
     settings: Buffer,
     state: Buffer,
-    /// The color grade (`ColourGrade`, 8 vec4) and a 1x1 depth texture used when the view's depth cannot be sampled.
+    /// The color grade (`ColourGrade`, 10 vec4) and a 1x1 depth texture used when the view's depth cannot be sampled.
     grade: Buffer,
     fallback_depth: TextureView,
     sampler: Sampler,
@@ -252,7 +252,7 @@ fn initialize(
                 sampler(SamplerBindingType::Filtering),
                 storage_buffer_read_only::<Vec4>(false),
                 texture_depth_2d(),
-                uniform_buffer::<[Vec4; 9]>(false),
+                uniform_buffer::<[Vec4; 10]>(false),
             ),
         ),
     );

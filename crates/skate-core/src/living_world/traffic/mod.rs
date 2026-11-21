@@ -7,6 +7,7 @@ pub mod graph;
 pub mod horn;
 pub mod junction;
 pub mod manoeuvre;
+pub mod mod_roads;
 pub mod passage;
 pub mod obstacles;
 pub mod signals;

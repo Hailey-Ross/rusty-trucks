@@ -3,10 +3,10 @@
 @group(0) @binding(1) var source_sampler: sampler;
 @group(0) @binding(2) var<storage, read> exposure: vec4<f32>;
 // The retail color grade (postfx_visualfxPS): near rows 0..2, far rows 3..5 (rgb . row.xyz + row.w), the depth
-// weights (mult.x, mult.y, add.x, add.y), (camera near, 0, 0, 0) and the replay tint RGBA (row 8). The base record is
-// the identity.
+// weights (mult.x, mult.y, add.x, add.y), (camera near, 0, 0, 0), the replay tint RGBA (row 8) and f_bloomColor
+// (row 9). The base record is the identity.
 @group(0) @binding(3) var depth: texture_depth_2d;
-@group(0) @binding(4) var<uniform> grade: array<vec4<f32>, 9>;
+@group(0) @binding(4) var<uniform> grade: array<vec4<f32>, 10>;
 
 fn graded(c: vec3<f32>, base: u32) -> vec3<f32> {
     let v = vec4<f32>(c, 1.0);
@@ -19,7 +19,10 @@ fn fragment(i: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let xe = max(c.rgb*exposure.x/2.5,vec3<f32>(0.0));
     let t = saturate(1.0-xe);
     let tm = max(xe*0.25+0.75,vec3<f32>(1.0))-t*t;
-    let curve = sqrt(max(tm*0.5,vec3<f32>(0.0)))*1.41;
+    var curve = sqrt(max(tm*0.5,vec3<f32>(0.0)))*1.41;
+    // visualfxPS before the matrices: toward the luma in the bloom color by f_bloomColor.w (b100 / b679).
+    let luma = dot(curve, vec3<f32>(0.3, 0.5, 0.2));
+    curve = curve + grade[9].w * (luma * grade[9].rgb - curve);
     // The color matrix after the curve, before the clamp: near and far mixed linearly in view depth (reverse-Z
     // infinite perspective: view depth = near / depth; depth 0 = far away).
     let size = vec2<f32>(textureDimensions(depth));

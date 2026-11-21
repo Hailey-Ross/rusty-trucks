@@ -3033,7 +3033,7 @@ mod world_audio_tests {
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"ambient_skaters":20}}), false),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"skater_trick_profiles":{"default":{"regular":[{"trick":400,"weight":1.0}]}}}}), false),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"skater_trick_profiles":{"default":{"nollie":[{"trick":117,"weight":-1.0}]}}}}), false),
-            (json!({"kind":"world_set_tuning","domain":"roads","patch":{}}), false),
+            (json!({"kind":"world_set_tuning","domain":"routes","patch":{}}), false),
             (json!({"kind":"world_reset_moved_props"}), true),
             (json!({"kind":"world_reset_prop","id":7}), true),
             (json!({"kind":"world_upright_prop","id":7}), true),

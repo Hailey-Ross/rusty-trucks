@@ -158,3 +158,16 @@ fn a_kill_beats_a_pending_owned_and_the_retail_values_are_data() {
     assert_eq!((p.total_film_time, p.prefilm_time, p.rules.no_boundary, p.allow_objective_failure), (30.0, 1.0, true, true));
     assert_eq!((Params::retail(Kind::Follow).ftl_window, Params::retail(Kind::Follow).competitors), (10.0, 1));
 }
+
+#[test]
+fn a_completed_objective_adds_its_highlight_and_the_reel_keeps_the_results_tier() {
+    let mut run = film();
+    to_running(&mut run);
+    let out = run.handle(Event::ObjectiveComplete { killed: false, last: false });
+    assert!(out.contains(&Command::AddHighlight { killed: false }), "{out:?}");
+    run.handle(Event::AllObjectivesComplete { killed: true });
+    let out = tick_until(&mut run, State::HighlightReel, 400);
+    let prepare = out.iter().position(|c| *c == Command::PrepareReel { killed: true });
+    let play = out.iter().position(|c| *c == Command::PlayHighlightReel);
+    assert!(prepare.is_some() && prepare < play, "the reel keeps the killed tier before it plays: {out:?}");
+}

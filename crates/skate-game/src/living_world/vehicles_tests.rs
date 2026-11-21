@@ -109,7 +109,7 @@ fn app() -> App {
     app.add_plugins(MinimalPlugins);
     let settings = LivingWorldSettings { seed: 5, ..LivingWorldSettings::default() };
     let mut state = PopulationState::default();
-    let loaded = LoadedData { config: PopulationConfig::retail(), census: None, skaters: None, roads: Some(road()), vehicles: None, npc: Default::default(), status: "traffic test".into() };
+    let loaded = LoadedData { config: PopulationConfig::retail(), census: None, skaters: None, roads: Some(road()), road_input: None, vehicles: None, npc: Default::default(), status: "traffic test".into() };
     state.install("Test", 1, &settings, loaded);
     let d = data();
     let traffic = TrafficState { clock: d.timings.map(SignalClock::new), data: d, ..Default::default() };
@@ -136,6 +136,25 @@ fn cars(app: &mut App) -> Vec<(TrafficCar, Transform, TrafficAudio, Vec3)> {
     let mut v: Vec<_> = q.iter(app.world()).map(|(c, m, a, vel)| (c.clone(), m.curr, a.clone(), vel.0)).collect();
     v.sort_by_key(|x| x.0.id);
     v
+}
+
+#[test]
+fn a_mod_road_rebuilds_the_network_and_the_cars_start_over() {
+    use skate_core::living_world::traffic::mod_roads::{segment_id, ModRoad};
+    let mut a = app();
+    run(&mut a, 0.1, 60.0);
+    spawn(&mut a, record(1, 0, 40.0, 1));
+    run(&mut a, 0.05, 60.0);
+    assert_eq!(cars(&mut a).len(), 1);
+    let road = ModRoad { name: "my_lane".into(), from: "a".into(), to: "b".into(), points: vec![[50.0, 0.0, 0.0], [50.0, 0.0, 120.0]],
+        lanes: 1, lane_width: 3.5, speed_limit: 11.0, two_way: true };
+    a.world_mut().resource_mut::<PopulationState>().set_road_patch(vec![road]);
+    run(&mut a, 0.05, 60.0);
+    assert!(cars(&mut a).is_empty(), "the cars on the old network go");
+    let state = a.world().resource::<PopulationState>();
+    let net = state.roads.as_ref().expect("network");
+    assert!(net.segments.iter().any(|s| s.id == segment_id("my_lane", false)) && net.segments.iter().any(|s| s.id == segment_id("my_lane", true)));
+    assert!(a.world().resource::<Seen>().0.iter().any(|e| matches!(e, TrafficEvent::Despawned { .. })));
 }
 
 #[test]

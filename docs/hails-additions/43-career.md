@@ -870,7 +870,11 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     `sl` / `sr` (`slxN` / `srxN`) keys. Tests `morph_rows_step_per_frame_clamped_and_the_body_row_splits_fat_and_thin`,
     the vault test (19 morphs, eye width, settings), the menu table data test (option 64 / 78 hashes).
   - A face row edit sets the face preset row to Custom (825FBAE8 after the morph post; the body row does not).
-  - NOT RETAIL YET: the looping move sound (FE sound 0x119E9CE644D5A9E1). Undo: see "Undo Changes" below.
+  - The move sound (2026-11-20) [code 825FBAE8, 825DFAF0, 82495828; data]: while the stick moves a morph row and
+    the value is inside its range, 825FBAE8 starts the `fe` record cas_slider (0x119E9CE644D5A9E1, flag S+0x1A81)
+    and stops it at either end or when the stick is let go. The disc's cas_slider (and cas_slider_end,
+    hom_score_scroll) has level 0, and the front-end queue 82495828 drops a request whose level is not above 0, so
+    the sound is silent in TU3 as read; ours does not play it. Undo: see "Undo Changes" below.
 - **Face presets** (2026-11-19; Ghidra 825FC7E8 option 95, 82604208, 82539048, 825FBAE8; recomp asm of 82538E78's
   callers; the PS3 recording at 3:32 shows "< Custom >" on entering Facial Presets):
   - [data] Class 0x3269B4F0F5E38E09 (b1038): the Custom row (index 0, ID_CAC_PRESET_CUSTOM) and ten rows per gender
@@ -889,12 +893,51 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     `the_face_preset_row_steps_the_gender_s_presets_through_custom` and the vault test (21 rows, male last 10, eye /
     skin color keys in their zones, 19 morphs 0..1).
   - NOT RETAIL YET: the row's own sounds.
+- **Base Outfit opt-in** (2026-11-20, user ask 713; ours, not retail): with the living world opt-in "Base Outfit"
+  (`SKATE_BASE_OUTFIT=1`, or the opt-ins page), Remove on a top (OuterTorso) or pants in the Merchandise grids leaves
+  the base part on instead of an empty slot: the bare torso in the look's skin tone (the sports bra on a female
+  skater) or the short shorts, the same parts the tattoo editors wear (`cas_host` `base_part`). Off, Remove clears the
+  slot as before. Test `with_the_base_outfit_opt_in_remove_leaves_the_sports_bra_and_shorts`.
+- **Custom graphics** (2026-11-20; research b1051 from Ghidra 82600AF8 / 825FE3C0 / 825FD9F0 / 825FAAF0 / 8253E228,
+  main checked the menu 30 rows in cas-enter.txt 1553..1655) [code, data]:
+  - Menu 30 (Edit Clothing) builds its rows on entry: Color (98) when the worn style's material is IsColourizable,
+    Style (99) unless the part is a board and only with more than one style, Add Graphic when the material is
+    IsLogoable (100 for a shirt, 103 for a board or hat), then Remove Graphic (104), always.
+  - 100 pushes the shirt's regions (menu 33: front, back, left arm, right arm, rows 111..114); a region keeps the
+    region, posts its camera (0x83044528 per region) and body target, and pushes the categories (menu 12). 103 posts
+    the option's camera and body targets and pushes the categories. Brand (101) lists the `logo_*` logos (182), Team
+    (102) the `team_logo_*` ones (42; retail adds up to 4 downloaded user logos when online), both in the asset
+    database's order, no "none" entry; `tattoo_*` and `team_brand_logo_*` are never listed.
+  - A pick puts the logo on the part at its default placement (0x830442B8: the shirt's rows 0 / 4 / 6 / 9 by region,
+    the board's 2, the hat's 3) and opens the part's Graphic Adjust (34 shirt, 35 board, 36 hat): the tattoo
+    editor's tick, sticks and fit; A pops to Merchandise (core_a_button), key 4 resets, no clothing key. The board's
+    and hat's editors post their cameras on entry. Remove (104) clears only that part's graphic.
+  - Ours: `customisation_library.py` exports `logos` (name, decal texture, stamp border, kind, database order, thumbnail);
+    `customiser_parts` loads their images with the tattoos' and stamps a profile's `graphics.<OuterTorso | SkateBoard |
+    Hat> {id, region, placement}` onto the part's IsLogoable material through the tattoo stamp path (the shirt's
+    region picks the constraint quadrant like the upper tattoo regions [inferred]); `cas_host` `build_wear_style_rows`,
+    `graphic_select`, `pick_graphic`, the grids 13 / 14, the editors in `tattoo_editor_key` / `tick_tattoo`. Data
+    a mod can replace: the logo lists, IsLogoable, the default rows and cameras. Needs a Refresh Game Files (the logos
+    export). Test `custom_graphics_go_rows_category_logo_editor_and_remove`.
+  - NOT RETAIL YET / open: the hat's body target (0x83044648 not dumped); the online user logos; whether retail draws
+    the graphic through the same shader path (not traced); not checked in game yet.
+- **Sounds** (2026-11-20) [code 825FC7E8, 825FD9F0; data: the `fe` records by key]: every row the Left / Right
+  handler takes (sliders, selectors, Edit Style rows, gesture slots, color rows, face presets, wear style) plays
+  core_nav_left (0xAD8BF9A0B4997B49) or core_nav_right (0xD8EE38A61C45EA28) at its common exit, also when a color
+  is already at its end, then refreshes the row (state 50). A on the graphic editors (menus 7 / 8; 34..36 with
+  their port) plays core_a_button (0x373D38D7EA167A71); a thumbnail pick on menu 10 plays core_a_button, or
+  core_error (0x47F720222F2CAED4) on a locked part. Ours: `cas_host` queues the keys in `sounds`, the stage sends
+  them as `FrontendSound` (the install's levels; a mod can change a record). Test
+  `a_color_row_starts_on_the_zones_default_steps_clamped_and_keeps_the_key` (the clamped step's sound).
 - **Undo Changes** (2026-11-19; Ghidra 825FE3C0, 82538F60, 82542D38): option 96 (Skin, Hair, Facial Hair, Eyes,
   Brow, Nose, Jaw, Mouth, Chin) restores the whole look from the copy above (82539048, the skater reloads); option
   97 (Body Shape only) copies the copy's 19 morph values back into the look, posts each (82538F60 / 82542D38) and
-  re-enters the menu, which takes a new copy [code]. Ours: `cas_host` `undo` from A on the row. Test
-  `undo_rows_put_back_the_look_from_entering_the_menu`. NOT RETAIL YET: the menu's other rows show the restored
-  values when highlighted (retail's redraw after the reload is not read).
+  re-enters the menu, which takes a new copy [code]. Option 96 sets state 5 (S+0x1800); when the reload is done the
+  load state handler 825FAAF0 (guess_CASScreen_UpdateLoadState) re-enters the current menu for state 5 (and for 6,
+  after the save fade) [code, Ghidra 2026-11-20], so every row redraws from the restored look. Ours: `cas_host`
+  `undo` from A on the row, then `reenter` (the face preset row's Custom too, also state 5): the stage sets the
+  menu's panel state again (`menu_refresh`). Test `undo_rows_put_back_the_look_from_entering_the_menu`. Checked in
+  game 2026-11-20: a dark skin pick, then Undo Changes, brings the light skin back.
 - **Hair style selector** (2026-11-19; research b1039 from the recomp, main verified the filter's setter (vtable
   82304518 +0x10 = 825F3C70) and its string 8230224C = "full", and the enter remap's 82202A78 = "full"):
   - [code] The "Hair Style Filter" (S+0xC7C) keeps the parts whose kind-2 index (82DDC998: the HairModelType at record
@@ -941,17 +984,44 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   `marquee_preview::body_bank` loads the gender's bank (the female bank for a female skater [inferred from the file
   names]) and plays the clip once, then the stand comes back [inferred: the rows' Bool 0x9C04CB22EB98D1CC, set on
   gesture rows only]. The gesture banks are layers [data]: their pose stores only some hierarchy parts (our full
-  scene clip parse refuses them, "pose leaves hierarchy parts unset"), so `SceneClip::parse_layer` returns the clip
-  and the bones its stored parts drive, and `marquee_preview::layered` puts those bones over the stand clip
+  scene clip parse refuses them, "pose leaves hierarchy parts unset"), and a stored part leaves components out (the
+  arm bones' translations), so `SceneClip::parse_layer` starts the layer's pose from the stand clip's first frame
+  (bones matched by name) and returns the clip and the bones its stored parts drive, and
+  `marquee_preview::layered` puts those bones over the stand clip
   (MARQUEE_STAND, matched by bone name, the stand looping under the gesture's frames). The row
   0xA774F79D33B6BE83 names `cas_gesturestand_cycle`, likely retail's base under gestures; that clip is in no
   installed bank (searched by its FastString name), so the stand is ours [inferred]. `cac_<gender>_axe` has no clip
   and no vault row. The PS3 recording shows the gesture on the skater as the slot changes (Bruce, Airplane).
   Tests `gesture_rows_step_the_unlocked_gestures_into_the_profiles_slots` (the posted row),
   `gesture_rows_play_from_the_gender_s_gesture_bank`, the data-gated `every_gesture_bank_parses_as_a_scene_clip`
-  (every bank parses as a layer and shares driven bones with the stand).
+  (every bank parses as a layer, shares driven bones with the stand and keeps every bone's length below the root's
+  children, the board aside).
+  - Fix (2026-11-20, found in the in-game check): the first gesture preview dropped the skater into a heap. The
+    layer's pose started from identity, so the components its parts leave out were zero (RIGHTFOREARM lost its 0.3 m
+    length, every bank); the asset test now checks bone lengths.
+  - Highlight (2026-11-20) [code, Ghidra 825FEDB8 / 82604AD0]: OnMenuHilight on menu 16 calls 82604AD0 with the
+    highlighted row's option: a gesture slot posts its gesture's body row, any other row CAS_Stand, then the
+    turntable goes back to 0; it also stops cas_slider. So a gesture plays as soon as its slot is highlighted, and
+    again on every post of the same row. Ours: `CasHost::hilight` -> `post_edit_style_body` (the step uses it too),
+    `body_posts` counts posts so the marquee replays one. Test `highlighting_an_edit_style_row_posts_its_gesture_or_the_stand`.
+  - The PS3 recording (9:05 to 9:23) [video]: on the gesture slots the skater stands without the board, faces the
+    camera on standing legs and only the upper body moves (Airplane: both arms straight out to the sides); the board
+    is back on Stance. The banks are recorded riding [data]: TRAJECTORY a 90 degree yaw from the stand's, the stored
+    hips and legs a wide riding stance, the clip moving SPINE and below only. Ours: the marquee hides the board
+    (SKATEBOARD_ROOT scaled to 0) while a gesture row is posted, and `layered` takes the gesture from SPINE down
+    (`GESTURE_LAYER_ROOT`), the root, hips, legs and board from the stand [inferred from the recording]. Checked in
+    game 2026-11-20 (Airplane highlighted, captures at 0.1 to 1.4 s): upright, facing the camera, no board.
+  - The arms (fixed 2026-11-20, measured): a gesture clip adds onto the skeleton's bind pose (the stand bank's pose
+    record, `SceneClip::parse_bind`), not onto the gesture bank's own stored pose. On the bank's pose the Airplane
+    started and ended with both arms up (arm direction y +0.95) and only came out to about 45 degrees; on the bind
+    pose it goes down (y -0.95 at 0 s), straight out to the sides (y 0.11 at 1.0 s), down (1.8 s), as in the
+    recording. The data-gated `every_gesture_bank_parses_as_a_scene_clip` asserts those three moments. Checked in
+    game (Airplane highlighted, captures at 1.23 s and 1.5 s): arms out level, then lowering. The base under the
+    gesture is still our stand (`cas_gesturestand_cycle`, row 0xA774F79D33B6BE83, is in no installed bank) with the
+    board hidden, and the gesture drives SPINE and below [inferred from the recording].
   After the post it calls PostMsg_PresCASCharacterRotate(1, [0x82165A10] = 0.0): the turntable goes back to 0
-  (ours too). Open: the other rows that post 0xAD454A0ECD0E2EDF (CAS_Stand) through 82604AD0.
+  (ours too). The rows that post 0xAD454A0ECD0E2EDF (CAS_Stand) through 82604AD0 are menu 16's other rows on
+  highlight (see "Highlight" above).
 - **Camera targets of the other menus** [code]: the tables 83044528 / 83044548 / 83044568 / 83044588 / 830445A8
   that 82600AF8 posts from belong to the tattoo / graphic adjust menus (7, 8, 34, 35, 36: indexed by the tattoo's
   location) and menu 11 (board graphics: the camera key comes from a vault record). They come with those features;
@@ -962,7 +1032,8 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   `the_info_panel_names_the_part_its_brand_and_unlock_and_marks_the_worn_one`,
   `a_pick_wears_the_part_and_remove_clears_the_slot`, `a_part_with_wear_styles_opens_menu_30_and_left_right_cycles_them`,
   `a_rested_highlight_previews_its_part_and_leaving_the_grid_takes_it_off`.
-- **NOT RETAIL YET.** Behind `SKATE_RETAIL_CAS=1` (the boot flow keeps our customizer otherwise): the lock check and
+- **On by default since 2026-11-20** (after the in-game checks; `SKATE_RETAIL_CAS=0` keeps our customizer). NOT
+  RETAIL YET at the time of this section: the lock check and
   the purchase popup 0x11E, the pack / DLC helper filters, the rec+0x24 / +0x34 flags that also open menu 30, the
   board graphic special case, the two "#Bryant" parts, retail's OuterTorso fallback on Remove (825377E0), the logo
   record walk (the logo name follows the disc's file names), menu 30's color row, the camera targets of the menus
