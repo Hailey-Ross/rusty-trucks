@@ -135,9 +135,11 @@ pub(crate) fn poll_controllers(mut input: ResMut<ControllerInput>,config:Res<cra
 
 /// Retail AI.PinAI on the local player (cMsgPinPlayer -> the skater's pin bit): the pad drives nothing from a
 /// contest's setup_round through the countdown and from end_round on, and in a race before GO and after the finish.
-/// Mods still override the actions on top (`override_actions`).
+/// A presentation's PinLocalPlayer posts the same message (8257C938). Mods still override the actions on top
+/// (`override_actions`).
 pub(crate) fn player_pinned(contests: Option<&crate::contest_host::Contests>, races: Option<&crate::race_host::Races>,
-    ftl: Option<&crate::ftl_host::FollowTheLeader>) -> bool {
+    ftl: Option<&crate::ftl_host::FollowTheLeader>, presenter: Option<&crate::presentation_run::Presenter>) -> bool {
+    presenter.is_some_and(crate::presentation_run::Presenter::player_pinned) ||
     ftl.is_some_and(crate::ftl_host::FollowTheLeader::player_pinned) ||
         contests.is_some_and(crate::contest_host::Contests::player_pinned) || races.is_some_and(|r| r.run.is_some() && !r.started)
 }
@@ -200,6 +202,7 @@ pub(crate) fn publish_actions(
     contests: Option<Res<crate::contest_host::Contests>>,
     races: Option<Res<crate::race_host::Races>>,
     ftl: Option<Res<crate::ftl_host::FollowTheLeader>>,
+    presenter: Option<Res<crate::presentation_run::Presenter>>,
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     mut physics: Option<ResMut<crate::physics::GamePhysics>>,
     mut pin_test: Local<PinTest>,
@@ -211,7 +214,7 @@ pub(crate) fn publish_actions(
     input.publish_actions();
     let tick = input.tick_input();
     let mut values=*tick.actions().values();
-    let pinned = player_pinned(contests.as_deref(), races.as_deref(), ftl.as_deref());
+    let pinned = player_pinned(contests.as_deref(), races.as_deref(), ftl.as_deref(), presenter.as_deref());
     if let Some(p) = physics.as_deref_mut() { p.set_pinned(pinned); }
     test_press(&mut values, pinned, skater.as_deref(), &mut pin_test);
     if pinned { values = [0.0; 18]; }

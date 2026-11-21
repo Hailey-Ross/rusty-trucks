@@ -80,6 +80,15 @@ OUT_OF_BOUNDS_TIME = _field('OutOfBoundsTime')
 OWNED_TIME = _field('OwnedItHUDDisplayTime')
 KILLED_TIME = _field('KilledItHUDDisplayTime')
 RETURN_MESSAGE = _field('CentralMessageHALIDReturnToChallengeArea')
+# The objectives_shared graph's central texts (C.<field>, read by its handlers; 2026-11-21): name -> field.
+CENTRAL_MESSAGES = {
+    'return_to_area': RETURN_MESSAGE,
+    'challenge_failed': _field('CentralMessageHALIDChallengeFailed'),
+    'line_timer_expired': _field('ModifiedCentralMessageHALIDLineTimerExpired'),
+    'out_of_bounds': _field('ModifiedCentralMessageHALIDOutOfBounds'),
+    'scored_low': _field('ModifiedCentralMessageHALIDScoredLow'),
+    'time_up': _field('ModifiedCentralMessageHALIDTimeUp'),
+}
 CHALLENGE_TYPE = _field('ChallengeType')  # eChallengeTypes (own the spot 9)
 TITLE = 'Hash_E2A50788B6C20C92'
 DESCRIPTION = 'Hash_6B0BD2BAE508B742'
@@ -529,12 +538,13 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
     def binary_of(row):
         return origin.get((row['class'], row['key'].casefold()), (None, None))[1]
 
-    framework = {}
+    framework, framework_binary = {}, {}
     for index, (archive, vlt_entry, bin_entry) in enumerate(frameworks):
-        data, _ = read_vault(archive, vlt_entry, bin_entry, f'framework/{index}')
+        data, framework_bin = read_vault(archive, vlt_entry, bin_entry, f'framework/{index}')
         for row in data['collections']:
             if row['class'] == PARAMS:
                 framework.setdefault(key_hash(row['key']), (row['parent'], row['fields']))
+                framework_binary.setdefault(key_hash(row['key']), framework_bin)
 
     cache = {}
 
@@ -889,11 +899,21 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
         if own_row is None:
             raise ValueError('no params row')
         p, seen, parent = dict(own_row['fields']), set(), own_row['parent']
+        # The challenge's HighlightDefinition (C.HighlightDefinition, b1005: the Hall of Meat's best bail clip) with
+        # the .bin its scene names point into: the row's own local vault, else the framework row it inherits from.
+        highlight = None
+        if (own_row['fields'].get(HIGHLIGHT) or {}).get('data'):
+            highlight = highlight_definition(bytes.fromhex(own_row['fields'][HIGHLIGHT]['data']), binary)
         while parent and key_hash(parent) not in seen and key_hash(parent) in framework:
             seen.add(key_hash(parent))
-            parent, more = framework[key_hash(parent)]
+            parent_hash = key_hash(parent)
+            parent, more = framework[parent_hash]
+            if highlight is None and (more.get(HIGHLIGHT) or {}).get('data'):
+                highlight = highlight_definition(bytes.fromhex(more[HIGHLIGHT]['data']), framework_binary.get(parent_hash))
             for name, value in more.items():
                 p.setdefault(name, value)
+        if highlight is None and (fields.get(HIGHLIGHT) or {}).get('data'):
+            highlight = highlight_definition(bytes.fromhex(fields[HIGHLIGHT]['data']), bank_binary)
         folder = work / 'hulls' / MISSIONS / hull
         if hull in hulls and not folder.is_dir():
             hulls[hull][0].extract_entries(hulls[hull][1], work / 'hulls')
@@ -1002,6 +1022,8 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
                           param=struct.unpack_from('>I', paths, 0x324)[0] if len(paths) >= 0x328 else 0),
             competitors=competitors,
             objective_volumes=sorted(volumes.values(), key=lambda v: v['name']),
+            highlight=highlight,
+            central_messages={k: v for k, v in ((k, ((p.get(f) or fields.get(f)) or {}).get('data')) for k, f in CENTRAL_MESSAGES.items()) if v},
             objectives=objectives)
 
     class_of = lambda name: 'Hash_%016X' % hash64(name)

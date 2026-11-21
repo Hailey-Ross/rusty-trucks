@@ -132,6 +132,8 @@ const CREDITS_MOVIE: &str = "source/screens/extras/credits";
 const CREDITS_FILE: &str = "credits.txt";
 /// The cheat dialog's popup callback (its choice changes nothing).
 const CHEAT_POPUP: &str = "cheat_code.dialog";
+/// Popup 0x12E's callback (827055E8: the team name request again).
+const EMPTY_TEAM_NAME_POPUP: &str = "boot.team_name_empty";
 /// The Video Calibration template (record 91) and its path; FE screen 51's init opens it (0x8260E868).
 const VIDEO_CALIBRATION: &str = "VideoCalibration";
 const VIDEO_CALIBRATION_PATH: &str = "options/videocal.swf";
@@ -2309,6 +2311,10 @@ fn update(
                 mod_events.push((owner.to_owned(), serde_json::json!({"name": "menu_popup", "key": key, "choice": event.choice})));
             } else if event.callback.starts_with("engine:") {
                 popup_mods.engine_choices.push((event.callback.clone(), event.choice));
+            } else if event.callback == EMPTY_TEAM_NAME_POPUP {
+                if let Some(b) = boot_entry.as_mut() {
+                    b.request = b.retry.take();
+                }
             } else if event.callback == VIDEO_CALIBRATION_POPUP {
                 if let Some(c) = cal.filter(|c| ms.stack.active(*c)) {
                     let action = ms.video_cal.popup_result(event.choice as u32, &ms.video_cal_rules);
@@ -2836,10 +2842,22 @@ fn update(
                             ms.stack.request(Layer::Main, Request::Close { screen: e });
                         }
                         if let Some(b) = boot_entry.as_mut().filter(|b| b.waiting && b.callback == r.callback) {
-                            // The boot flow's keyboards (team name, profile name). NOT RETAIL YET: an empty name keeps
-                            // the default (retail's team name shows popup 0x12E).
+                            // The boot flow's keyboards (team name, profile name). An empty team name (82705470 counts
+                            // bytes) shows popup 0x12E, whose OK asks again (827055E8).
                             info!("RETAIL_MENUS {} entered: {text:?}", r.callback);
-                            b.result = Some(Some(text.clone()).filter(|t| !t.trim().is_empty()));
+                            if text.is_empty() && r.callback == skate_core::text_entry::TEAM_NAME_CALLBACK {
+                                b.retry = Some(r.clone());
+                                ms.popups.push(skate_core::fe_popup::PopupRequest {
+                                    title: skate_core::text_entry::INVALID_TITLE.into(),
+                                    description: skate_core::text_entry::EMPTY_TEAM_NAME_TEXT.into(),
+                                    options: vec![skate_core::text_entry::INVALID_BUTTON.into()],
+                                    callback: EMPTY_TEAM_NAME_POPUP.into(),
+                                    ..Default::default()
+                                });
+                                ms.popup_dirty = true;
+                            } else {
+                                b.result = Some(Some(text.clone()).filter(|t| !t.trim().is_empty()));
+                            }
                         } else if r.callback == skate_core::text_entry::CHEAT_CALLBACK {
                             // The matcher (b304) on the current flags: entering a code toggles what is in effect.
                             let mut state = skate_core::cheats::CheatState::default();

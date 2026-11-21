@@ -375,6 +375,8 @@ pub(crate) struct Run {
     tick_carry: f32,
     /// Inside the discovery sphere last frame (retail 8255BEB8 diffs it per frame); None before the first look.
     in_discovery: Option<bool>,
+    /// The highlight group and its reel (b838: the completed line, played after the treatment).
+    reel: crate::ftl_host::ReelState,
 }
 
 /// What mods change (`sdk.challenges`, modding/challenges.rs): hidden challenges, value overrides by (mod, challenge),
@@ -578,7 +580,7 @@ fn start_run(challenges: &mut Challenges, volumes: &mut crate::trigger_volumes::
             let data = c.objectives.as_ref()
                 .and_then(|o| crate::challenge_objectives::DataObjectives::new(&c.id, &o.owned, volumes, Default::default()));
             let objectives = Objectives { data, ..Default::default() };
-            challenges.run = Some(Run { ots, challenge: c, objectives, tick_carry: 0., in_discovery: None });
+            challenges.run = Some(Run { ots, challenge: c, objectives, tick_carry: 0., in_discovery: None, reel: Default::default() });
         }
         Err(e) => warn!("SKATE_CHALLENGE {e}"),
     }
@@ -799,8 +801,10 @@ fn update(
     config: Res<crate::config::Config>,
     extras: (Option<Res<crate::input::ControllerInput>>, Option<Res<crate::physics::GamePhysics>>, Option<Res<crate::trick_guide_host::TrickGuideData>>, Option<ResMut<crate::camera::CameraRuntime>>, ResMut<crate::presentation_run::Presenter>),
     mut end_dialog: ResMut<crate::end_dialog_host::EndDialogScreen>,
+    reel_res: (Option<ResMut<crate::replay::Replay>>, Option<ResMut<crate::pause_man::ThePauseMan>>, Option<Res<crate::ftl_host::ChallengeTuning>>),
 ) {
     let (pad, physics, guide, mut camera, mut presenter) = extras;
+    let (mut replay, mut pause, tuning) = reel_res;
     use crate::ui_audio::SessionMarkerAction;
     let marker_flags: Vec<bool> = markers.read().filter_map(|m| match m.action {
         SessionMarkerAction::Returned => Some(true),
@@ -998,6 +1002,11 @@ fn update(
         commands.extend(run.ots.handle(Event::ExitDiscovery));
     }
     run.in_discovery = Some(inside);
+    run.reel.track_sequence(skater.scoring.sequence_active(), replay.as_deref());
+    if run.reel.step(replay.as_deref_mut(), pause.as_deref_mut(), &config.asset_root) {
+        info!("SKATE_CHALLENGE {} highlight reel complete", run.challenge.id);
+        commands.extend(run.ots.handle(Event::HighlightReelComplete));
+    }
     for s in banked {
         if let Some(e) = run.objectives.bank(s.score, s.wiped_out) {
             info!("SKATE_CHALLENGE sequence score={} points={} requirement={}", s.score, run.objectives.points, run.objectives.requirement);
@@ -1025,8 +1034,24 @@ fn update(
             }
             // The challenge HUD movies are exported; until they run, the HUD counts as loaded at once.
             Command::CreateHud => commands.extend(run.ots.handle(Event::HudLoaded)),
-            // The highlight reel is not ported: it completes at once (the run returns sooner than retail).
-            Command::PlayHighlightReel => commands.extend(run.ots.handle(Event::HighlightReelComplete)),
+            Command::AddHighlight => {
+                let def = run.challenge.objectives.as_ref().and_then(|o| o.owned.first()).and_then(|o| o.highlight.as_ref()).map(|h| h.definition());
+                match (def, replay.as_deref()) {
+                    (Some(def), Some(r)) => {
+                        // V.SequenceBeginTime: kept from the line's sequencebegin (the line has banked by now).
+                        let begin = run.reel.sequence_begin;
+                        let added = run.reel.add(&def, true, begin, r.last_time(), false, 2.0, 0.25, tuning.as_deref());
+                        info!("SKATE_CHALLENGE {} highlight added={added} {:?}", run.challenge.id, run.reel.highlights.list().last());
+                    }
+                    _ => info!("SKATE_CHALLENGE {} no highlight definition (Refresh Game Files) or no replay", run.challenge.id),
+                }
+            }
+            Command::RemoveAllHighlights => run.reel.highlights.clear(),
+            Command::PlayHighlightReel => {
+                if !run.reel.play(replay.as_deref_mut(), pause.as_deref_mut(), &config.asset_root, tuning.as_deref()) {
+                    commands.extend(run.ots.handle(Event::HighlightReelComplete));
+                }
+            }
             Command::Evaluation(on) => run.objectives.evaluating = on,
             Command::ResetObjectives => run.objectives.reset(),
             Command::SetPointRequirement(points) => run.objectives.requirement = points,
@@ -1085,6 +1110,9 @@ fn update(
             "completion": completion_name(completion)}));
         career.write(crate::career::ChallengeResult { challenge: id.clone(), completion, reactivate: true });
         *hud = ChallengeHudState::default();
+        if let Some(run) = challenges.run.as_mut() {
+            run.reel.stop(replay.as_deref_mut(), pause.as_deref_mut());
+        }
         challenges.run = None;
     }
     for e in mod_events {
@@ -1147,7 +1175,7 @@ pub(crate) fn install(app: &mut App) {
         .add_systems(PreUpdate, arm.after(crate::map_transition::MapTransitionSet).run_if(opted_in))
         .add_systems(Update, switch_off.run_if(not(opted_in)))
         .add_systems(Update, (sign_up.after(crate::teleporters::prompt).before(crate::retail_menu_stage::MenuStageSet), update.after(crate::trigger_volumes::TriggerSet).in_set(CareerResultSet)).chain().run_if(opted_in))
-        .add_systems(Update, (crate::presentation_run::tick, crate::presentation_run::play_sfx).chain().after(CareerResultSet).run_if(opted_in))
+        .add_systems(Update, (crate::presentation_run::tick, crate::presentation_run::play_sfx, crate::presentation_run::apply_sim_control).chain().after(CareerResultSet).run_if(opted_in))
         .add_systems(Startup, crate::presentation_run::load_speech);
 }
 

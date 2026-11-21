@@ -6632,7 +6632,7 @@
 8256E460	PresSimController_Reset	crates/skate-game/src/presentation_run.rs:99 (controller reset 8256E460, the challenge cleanup: the rate goes back to normal)
 8256E4C0	guess_Vt822FF600_SetFlagBits	Guess: sets byte +0xD and ors the argument into +0x10; slot at 822FF604
 8256E4D8	guess_Vt822FF600_ClearFlagBits	Guess: clears bits of +0x10 (byte +0xD); slot at 822FF608
-8256E4F0	guess_PresSimController_SetSimRate	Guess: rusty-trucks/crates/skate-game/src/camera/runtime.rs:32 (the presentation sim controllers rate (SetSimRate), posted every frame (8256E4F0))
+8256E4F0	PresSimController_Update	Presentation sim controller per-frame update (slot +0x50): posts OnRequestSetSimRate while +0x14 > 0; while +0xC (FixSkaterInAir) calls the local skater slot 30 and keeps its result; when +0xD (dirty) gives the skater slot 32 the mask +0x10 once.
 8256E638	guess_Vt822FF600_InitIntVector	Guess: initializes an int vector and pushes one value; slot at 822FF60C
 8256E648	guess_Vt822FF600_GetField7C	Guess: small getter on +0x7C; slot at 822FF618
 8256E660	guess_Vt822FF600_SlotStub	Guess: small slot at 822FF61C
@@ -6808,7 +6808,7 @@
 8257A7D8	MsgHandler_cMsgTeleportTransitionFinished_8257A3D8	Bus handler for cMsgTeleportTransitionFinished, subscribed by 8257A3D8 through MsgBus_Subscribe.
 8257A810	MsgHandler_cMsgSkaterTeleportComplete_8257A3D8	Bus handler for cMsgSkaterTeleportComplete, subscribed by 8257A3D8 through MsgBus_Subscribe.
 8257A888	PresEvent_GrantAchievementByName	hashes the achievement name (Attrib_StringHash64), finds it in attrib class 9CB9012080F727B9 and grants it when not yet granted
-8257A960	PresSessionMarker_Start	SessionMarker handler start (vtable 822FFDFC).
+8257A960	PresSessionMarker_Start	SessionMarker handler start (vtable 822FFDFC): EnableSet removes the local player from the TeleportManager list +0x48, DisableSet adds it, EnableUse / DisableUse the same on +0x98; done at once.
 8257AA28	PresSessionMarker_Undo	SessionMarker handler undo.
 8257AAE0	guess_NISEventServiceProvider_DtorBody	Unsubscribes the message +0x20 and sets the base vtable 822FFF20
 8257AB38	guess_NISEventServiceProvider_DeletingDtor	Guess: slot 0 of the NISEventServiceProvider vtable 822FFDD4 (stored last by NISEventServiceProvider_Ctor 8257ABA0); slot 0 is usually the deleting destructor here (slot0(obj, 1)); body not read.
@@ -6835,7 +6835,7 @@
 8257C820	PresWait_Start	Wait handler start: parses arg1 seconds and starts a timer (82D57C98), id at +0x1C.
 8257C878	MsgHandler_cMsgTimerExpired_8257C6F8	Bus handler for cMsgTimerExpired, subscribed by 8257C6F8 through MsgBus_Subscribe.
 8257C8B8	PresPin_Stop	Pin handler stop.
-8257C938	PresPin_Start	Pin handler start (vtable 822FFD5C).
+8257C938	PresPin_Start	Pin handler start (vtable 822FFD5C): posts cMsgPinPlayer(type == PinLocalPlayer), the same message AI_PinAI 8284ADC8 posts for the local player; done at once.
 8257C9D8	PresPin_Undo	Pin handler undo.
 8257CA78	guess_InlineVector_FreeHeapD	Frees the vector storage to pool +0x1BE4
 8257CAC8	guess_MapU32_InsertUniqueD	Tree insert unique on a 32 bit key
@@ -7184,9 +7184,9 @@
 82592298	guess_SkaterActor_GetField6ECEntry	Guess: returns an entry when +0x6EC is set, else 0
 825922C0	guess_SkaterActor_ApplyCASSettings	Guess: skater actor slot 3: reads the create-a-skater settings for the id from slot 11 (CAS_GetCACSettings) and applies them.
 82592390	guess_SkaterActor_DirectionFromChaser	Guess: rusty-trucks/crates/skate-game/src/physics/skater.rs:38 (82592390: normalize(skater - chaser), zero when coincident): a direction, not a distance
-82592468	guess_SkaterActor_IsInState200	Guess: skater slot 30: sets +0x770 bit 0x800000 and returns whether the physics state id (part +0x2C slot 5, +0x1C, +0xC) is 200.
+82592468	SkaterActor_FixInAirStep	Skater slot 30: sets actor +0x770 bit 23 (0x800000, published to the physics packet +10375 by 82593640) and returns whether the physics state category is 200 (air); the presentation sim controller update 8256E4F0 calls it each frame while FixSkaterInAir holds and keeps the fix only while it returns true.
 825924C0	guess_SkaterActor_ForceStateThree	Guess: skater slot 31: clears (+0x710) +0x734 field +0x1BC and, unless already 3, runs 82D755E0 and sets +0x1C0 = 3.
-82592510	SkaterActor_SetField774	Structural name: skater actor slot 32 stores its argument at +0x774.
+82592510	SkaterActor_SetInputRestriction	Skater slot 32: stores the presentation input restriction mask at actor +0x774, the word the riding input fill 825999F0 tests bit by bit (bit 11 push, 9 manual, 10 off-board, 0 steering, 6 wipeout).
 82592518	guess_SkaterActor_Part38_UnspawnOrReset	Guess: part +0x38 slot 57: for an AI skater in spawn state 2 calls AISpawner_UnspawnAI, else reads the driver path (8246E5C8) to reset.
 825926F8	SkaterActor_FadeInAfterSpawn	research/npc/fix2-cull.md:14 (sub_825926F8 sets +1868 = 0, spawn fade in; code)
 82592810	ActorPacket_CopyExternalPayload	crates/skate-core/src/animation/output/actor_packet.rs:1 (external payload copy 82592810)
@@ -10056,7 +10056,7 @@
 826647E8	DistanceMeter_GetDataFlagItem	crates/skate-core/src/challenges/distance_meter.rs:20 (DistanceMeter_GetData item 1, 826647E8: 0 red, 1 white)
 826648D0	guess_DistanceMeterHud_Tick	Guess: Challenge distance meter HUD: refreshes every 5th tick.
 82664938	HudCountdown_Stop	Countdown component (vtable 82306260) slot +0x40: clears running +0x34 and +0x38, then sets the HUD state of the movie id +0x1C to 1.
-82664990	guess_DistanceHud_Update	Guess: When active reads the player context value, rounds it up and refreshes the text
+82664990	HudCountdown_Update	Countdown component (vtable 82306260) slot +0x18: while running (+0x34) reads its timer, ceils it and sends HUD state 2 to the movie id +0x1C on each change; at 0 (GO) clears running without hiding (the hide is HudCountdown_Stop, slot +0x40). Not the distance HUD.
 82664AB0	guess_DistanceHud_Refresh	Guess: Reads the player context value for key +0xC, rounds it up and sets the text
 82664B90	hud_component_Ctor_82664B90	Constructor of class 'hud_component': called on the new block right after guess_Mem_AllocNamed with that tag (in 82659A10).
 82664C70	guess_HudComp_ShowAndRegister	Guess: HUD component slot (HudMinimap / HudComp vtables): calls slot +4, then registers +0x1C with the front end list (TheFrontEnd +0x14 slot +0x14)
@@ -23866,7 +23866,7 @@
 82BCCD30	guess_SGBehaviour_ScoringTrick_Reset	Guess: Clears +8, +0x18, sets +0x10 / +0x14 to 0 and +0x20 = +0x1C
 82BCCD80	LuaBind_CreateHighlightGroup	Lua binding CreateHighlightGroup
 82BCCDF8	LuaBind_DestroyHighlightGroup	Lua binding DestroyHighlightGroup; calls MapTree_RebalanceForErase, FixedPool_Free, MapTree_NextNode
-82BCCEB0	LuaBind_AddHighlightUsingDefinition	Lua binding AddHighlightUsingDefinition
+82BCCEB0	LuaBind_AddHighlightUsingDefinition	Lua binding AddHighlightUsingDefinition(group, definition, second_half, end_frame, start_frame = end, drop_oldest = false, id = -1, pre, post): arg 3 true picks the definition + 0x50 scene half (else + 0x10); pre / post (args 8 / 9) replace the definition values when greater; start = arg 5 minus pre frames (x 60.0 at 821FF080); calls 82BCDAA8.
 82BCD100	LuaBind_RemoveHighlight	Lua binding RemoveHighlight
 82BCD1C0	LuaBind_RemoveAllHighlights	Lua binding RemoveAllHighlights
 82BCD1F0	LuaBind_GetNumberOfHighlights	Lua binding GetNumberOfHighlights

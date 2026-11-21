@@ -316,7 +316,8 @@ const ADD_GRAPHIC: i32 = 103;
 const REMOVE_GRAPHIC: i32 = 104;
 const SHIRT_GRAPHIC_REGIONS: std::ops::RangeInclusive<i32> = 111..=114;
 /// Default placement rows of 0x830442B8: the shirt's per region (table 0x83044438), the board's 2, the hat's 3; the
-/// cameras (0x83044528 per shirt region, the board's and hat's rows) and the board's body target [data, b1051].
+/// cameras (0x83044528 per shirt region, the board's and hat's rows) and the body target the board and hat share
+/// (0x83044648 holds the same key) [data, b1051].
 const SHIRT_GRAPHIC_ROW: [usize; 4] = [0, 4, 6, 9];
 const SHIRT_GRAPHIC_CAMERAS: [&str; 4] = ["496CC99E42AD2C2F", "3F111150D2AFE8B5", "4EC0B69C787D6BDA", "A47411BBF4FCB5D5"];
 const BOARD_GRAPHIC_TARGETS: (&str, &str) = ("A9A4A1C434A3E055", "4A663E264EABE260");
@@ -1146,7 +1147,7 @@ impl CasHost {
     }
 
     /// Left / Right on an Edit Style row: Posture / Style wrap over 0..3, Stance toggles. NOT RETAIL YET: Posture's
-    /// body target re-post (no posture-specific rows yet).
+    /// re-post of the same body target (82539688 without a key), which restarts retail's stand clip.
     fn step_edit_style(&mut self, id: i32, right: bool) -> bool {
         let (key, next) = match id {
             POSTURE | SKATE_STYLE => {
@@ -1854,12 +1855,16 @@ impl CasHost {
                 self.menus[menu].options = (0..self.tattoo_categories.len().min(6) as i32).map(|i| TATTOO_CATEGORY_ROW + i).collect();
             }
             WEAR_STYLES => self.build_wear_style_rows(),
-            // The board's and hat's editors post their camera (and the board its body) on entry.
+            // The board's and hat's editors post their camera and body on entry (the hat's body 0x83044648, dumped
+            // 2026-11-21, is the board's row).
             BOARD_GRAPHIC_ADJUST => {
                 self.post_camera(BOARD_GRAPHIC_TARGETS.0.into());
                 self.body = BOARD_GRAPHIC_TARGETS.1.into();
             }
-            HAT_GRAPHIC_ADJUST => self.post_camera(HAT_GRAPHIC_CAMERA.into()),
+            HAT_GRAPHIC_ADJUST => {
+                self.post_camera(HAT_GRAPHIC_CAMERA.into());
+                self.body = BOARD_GRAPHIC_TARGETS.1.into();
+            }
             _ => {}
         }
         if matches!(menu, TOP_MENU | MERCHANDISE) {

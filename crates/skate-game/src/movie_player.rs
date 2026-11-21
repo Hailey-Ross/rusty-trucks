@@ -429,8 +429,20 @@ fn raise_apt(player: Res<MoviePlayer>, mut nodes: Query<&mut GlobalZIndex, With<
 #[derive(Component)]
 struct BootBackdrop;
 
-fn boot_backdrop(mut commands: Commands, player: Res<MoviePlayer>, backdrops: Query<Entity, With<BootBackdrop>>) {
-    let want = crate::career::boot_flow_covers() && !player.playing();
+/// Retail runs the boot flow before the world loads, so nothing simulates under its screens: ours holds the world
+/// step (a named hold on the pause manager, beside the mods' holds) while the flow covers the screen.
+const BOOT_FLOW_HOLD: &str = "engine:boot_flow";
+
+fn boot_backdrop(mut commands: Commands, player: Res<MoviePlayer>, backdrops: Query<Entity, With<BootBackdrop>>,
+    pause: Option<ResMut<crate::pause_man::ThePauseMan>>) {
+    let covers = crate::career::boot_flow_covers();
+    if let Some(mut p) = pause {
+        if p.mods.contains(BOOT_FLOW_HOLD) != covers {
+            p.hold_for_mod(BOOT_FLOW_HOLD, covers);
+            info!("BOOT_FLOW world step {}", if covers { "held" } else { "released" });
+        }
+    }
+    let want = covers && !player.playing();
     match (want, backdrops.iter().next()) {
         (true, None) => {
             commands.spawn((BootBackdrop, Name::new("boot flow backdrop"), GlobalZIndex(999), BackgroundColor(Color::BLACK),

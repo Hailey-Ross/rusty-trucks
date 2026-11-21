@@ -6,6 +6,10 @@
 use super::timers::{TimerId, Timers, TICKS_PER_SECOND};
 use super::{Completion, Flow};
 
+/// The countdown movie's GO: its intro timeline hides itself 60 frames on (2.0 s at 30 a second); see
+/// `Params::go_display_time`.
+pub const GO_DISPLAY_TIME: f32 = 2.0;
+
 /// One race's values from the setup export (challenges.json `races`) or a mod; graph constants as defaults.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Params {
@@ -20,8 +24,9 @@ pub struct Params {
     pub include_321: bool,
     pub countdown_delay: f32,
     pub countdown_time: f32,
-    /// Seconds GO stays on the countdown HUD after the start. NOT RETAIL YET: when retail hides hudcountdown after GO
-    /// is not decoded (b995 item 4); a default the export or a mod can replace.
+    /// Seconds GO stays on the countdown HUD after the start: the countdown component (vtable 82306260, update
+    /// 82664990) stops at 0 without hiding, and the movie's `intro` timeline reaches `invisible` / `nothing` 60 frames
+    /// on (2.0 s at 30 a second), so the hide after that changes nothing on screen. A mod can replace it.
     pub go_display_time: f32,
     /// RacePassTimerUpdate's period (run_heat, re-armed; b982 @384-481): the position DPO follows the standings.
     pub pass_refresh_time: f32,
@@ -47,7 +52,7 @@ impl Params {
             include_321: true,
             countdown_delay: 1.5,
             countdown_time: 3.0,
-            go_display_time: 1.0,
+            go_display_time: GO_DISPLAY_TIME,
             pass_refresh_time: 1.5,
             competitors: 1,
             end_round_time: 3.0,

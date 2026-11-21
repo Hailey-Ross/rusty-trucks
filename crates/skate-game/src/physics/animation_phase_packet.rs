@@ -22,6 +22,8 @@ pub(crate) struct AnimationProfile {
     pub ignore_respawn_reset_button: u8,
     pub force_braking: bool,
     pub suppress_transition: bool,
+    /// Actor +0x770 bit 23, set each frame by the presentation's FixSkaterInAir (skater slot 30, 82592468).
+    pub fix_in_air: bool,
     /// Optional gesture customization and external context are host policy.
     pub gesture_selections: Option<[u32; 4]>,
     pub suppress_up_gesture: bool,
@@ -57,6 +59,7 @@ impl AnimationProfile {
             ignore_respawn_reset_button: 0,
             force_braking: false,
             suppress_transition: false,
+            fix_in_air: false,
             gesture_selections: Some([0, 1, 2, 3]),
             //82B988B8 returns false when its optional context is absent.
             suppress_up_gesture: false,
@@ -125,8 +128,7 @@ impl AnimationPhaseOutput {
         actor_flags: u32,
     ) {
         let r = &mut self.reset;
-        //No external impulse provider: Actor1904 bit23 is inactive.
-        r.actor_flag_1904_bit23 = false;
+        r.actor_flag_1904_bit23 = profile.fix_in_air;
         r.actor_flag_1908_bit2 = profile.suppress_transition || actor_flags & (1 << 2) != 0;
         r.truck_tightness = profile.truck_tightness;
         r.wheel_hardness = profile.wheel_hardness;

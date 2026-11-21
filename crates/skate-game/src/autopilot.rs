@@ -120,7 +120,7 @@ pub(crate) fn engage(
     races: Option<ResMut<crate::race_host::Races>>,
     mut possessed: Query<(Has<Possessed>, &mut crate::living_world::npc_skaters::NpcReplay)>,
     contests: Option<Res<crate::contest_host::Contests>>,
-    ftl: Option<Res<crate::ftl_host::FollowTheLeader>>,
+    (ftl, presenter): (Option<Res<crate::ftl_host::FollowTheLeader>>, Option<Res<crate::presentation_run::Presenter>>),
 ) {
     let (Some(mut autopilot), Some(mut population), Some(index), Some(physics), Some(mut skater), Some(mut controls), Some(input)) =
         (autopilot, population, index, physics, skater, controls, input) else { return };
@@ -128,7 +128,7 @@ pub(crate) fn engage(
         return;
     }
     // A contest pins the player from setup_round through the countdown and again from end_round (retail PinAI).
-    autopilot.hold = crate::input::player_pinned(contests.as_deref(), races.as_deref(), ftl.as_deref());
+    autopilot.hold = crate::input::player_pinned(contests.as_deref(), races.as_deref(), ftl.as_deref(), presenter.as_deref());
     // Races (ours): the brain restarts at the start slot on every race start, waits for GO, and logs the result.
     if let Some(mut races) = races {
         if races.placements != autopilot.race_placements {

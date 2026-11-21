@@ -64,6 +64,8 @@ pub(crate) struct BootTextEntry {
     pub default_text: String,
     /// OK with this text, or `None` = cancel.
     pub result: Option<Option<String>>,
+    /// The team name's request again after popup 0x12E (empty name): its OK reopens the keyboard (827055E8).
+    pub retry: Option<skate_core::text_entry::TextEntryRequest>,
 }
 
 impl BootTextEntry {

@@ -130,6 +130,13 @@ pub(crate) struct FtlData {
     pub disable_time_limit_for_single_player: bool,
     #[serde(default)]
     pub disable_hom: bool,
+    /// C.HighlightDefinition (the Hall of Meat's best bail clip, b1005); exports before 2026-11-21 lack it.
+    #[serde(default)]
+    pub highlight: Option<crate::challenge_objectives::HighlightJson>,
+    /// The row's central texts (C.CentralMessageHALID* / ModifiedCentralMessageHALID*): return_to_area,
+    /// challenge_failed, line_timer_expired, out_of_bounds, scored_low, time_up.
+    #[serde(default)]
+    pub central_messages: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -379,13 +386,13 @@ impl FtlState {
     }
 }
 
-/// A film's highlights (cHighlightGroup) and its reel (research b1050).
+/// A challenge's highlights (cHighlightGroup) and its reel (research b1050): films, own the spot, Hall of Meat.
 #[derive(Default)]
-struct ReelState {
-    highlights: skate_core::challenges::highlights::Highlights,
+pub(crate) struct ReelState {
+    pub(crate) highlights: skate_core::challenges::highlights::Highlights,
     /// The replay time the running sequence began at (SequenceBegin: the highlight's start).
-    sequence_begin: f64,
-    in_sequence: bool,
+    pub(crate) sequence_begin: f64,
+    pub(crate) in_sequence: bool,
     /// The objectives that completed (tier, index) in order, one per AddHighlight that follows.
     completed: std::collections::VecDeque<(bool, usize)>,
     clips: std::collections::VecDeque<skate_core::challenges::highlights::Highlight>,
@@ -408,6 +415,94 @@ fn scene_cameras(asset_root: &std::path::Path) -> std::collections::HashMap<Stri
 }
 
 impl ReelState {
+    /// SequenceBegin (b933): the replay time a line began.
+    pub(crate) fn track_sequence(&mut self, in_sequence: bool, replay: Option<&crate::replay::Replay>) {
+        if in_sequence && !self.in_sequence {
+            self.sequence_begin = replay.map_or(0.0, |r| r.last_time());
+        }
+        self.in_sequence = in_sequence;
+    }
+
+    /// AddHighlightUsingDefinition (82BCCEB0) with replay times in seconds: `second_half` picks the definition's
+    /// +0x50 scene (Lua arg 3), the window runs from `begin` minus pre to `end` plus post (an override above 0
+    /// replaces the definition's). True when added.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn add(&mut self, def: &skate_core::challenges::highlights::HighlightDefinition, second_half: bool, begin: f64, end: f64,
+        drop_oldest: bool, pre: f32, post: f32, tuning: Option<&ChallengeTuning>) -> bool {
+        let fps = f64::from(self.highlights.rules.frames_per_second);
+        let frames = |t: f64| (t * fps).max(0.0) as u32;
+        if let Some(t) = tuning {
+            self.highlights.rules.slots = t.reel_slots;
+        }
+        self.highlights.add(def, second_half, frames(begin), frames(end), drop_oldest, pre, post)
+    }
+
+    /// PlayHighlightReel (82BCDDE8) over every highlight in the group: false when there is none (the reel is
+    /// complete at once). A mod may switch the reel off or change its transition (`challenges` tuning, ours).
+    pub(crate) fn play(&mut self, mut replay: Option<&mut crate::replay::Replay>, pause: Option<&mut crate::pause_man::ThePauseMan>,
+        asset_root: &std::path::Path, tuning: Option<&ChallengeTuning>) -> bool {
+        self.clips = self.highlights.list().to_vec().into();
+        self.play_prepared(replay.as_deref_mut(), pause, asset_root, tuning)
+    }
+
+    /// PlayHighlightReel with the clips already listed (a film's PrepareReel).
+    pub(crate) fn play_prepared(&mut self, mut replay: Option<&mut crate::replay::Replay>, pause: Option<&mut crate::pause_man::ThePauseMan>,
+        asset_root: &std::path::Path, tuning: Option<&ChallengeTuning>) -> bool {
+        if tuning.is_some_and(|t| !t.reel_enabled) {
+            self.clips.clear();
+        }
+        if let (Some(r), Some(t)) = (replay.as_deref_mut(), tuning) {
+            r.reel_transition_seconds = Some(t.reel_transition_seconds);
+        }
+        if self.next_clip(replay, asset_root) {
+            enter_replay_nis(pause);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A playing reel's frame: a clip that played out (cMsgNISComplete -> 82BCDFC0) pops the replay NIS's pause
+    /// modes (8285F720) and the next one starts (a skip ends the whole reel). True when the reel completed.
+    pub(crate) fn step(&mut self, mut replay: Option<&mut crate::replay::Replay>, mut pause: Option<&mut crate::pause_man::ThePauseMan>,
+        asset_root: &std::path::Path) -> bool {
+        if !self.playing || !replay.as_deref().is_none_or(|r| r.reel_done) {
+            return false;
+        }
+        if let Some(p) = pause.as_deref_mut() {
+            p.pop(skate_core::pause_man::mode::REPLAY_NIS);
+            p.pop(skate_core::pause_man::mode::NIS);
+        }
+        if let Some(r) = replay.as_deref_mut() {
+            r.reel_done = false;
+            if std::mem::take(&mut r.reel_skipped) {
+                self.clips.clear();
+            }
+        }
+        if self.next_clip(replay, asset_root) {
+            enter_replay_nis(pause);
+            false
+        } else {
+            true
+        }
+    }
+
+    /// The reel removed (a retry, an abandon): a playing clip stops and its pause modes go.
+    pub(crate) fn stop(&mut self, replay: Option<&mut crate::replay::Replay>, pause: Option<&mut crate::pause_man::ThePauseMan>) {
+        if self.playing {
+            if let Some(r) = replay {
+                r.stop_reel();
+            }
+            if let Some(p) = pause {
+                p.pop(skate_core::pause_man::mode::REPLAY_NIS);
+                p.pop(skate_core::pause_man::mode::NIS);
+            }
+        }
+        self.clips.clear();
+        self.playing = false;
+        self.played = 0;
+    }
+
     /// 82BCE0D8 / 82BCDFC0: starts the next clip on the replay as its NIS scene (the scene's camera take fitted to
     /// the window, `ReelShot`); false when none is left (the reel is complete). A scene with several takes and no cut
     /// list uses them in turn, clip by clip [inferred]; a scene without camera data keeps the recorded game camera.
@@ -680,31 +775,11 @@ fn update(
     let mut groups: Vec<&mut DataObjectives> = state.groups.iter_mut().map(|g| &mut g.objectives).collect();
     let fed = state.feed.step(&mut groups, &feed_input, state.evaluating);
     // SequenceBegin (b933): the replay time a line began, the start of the highlight its objective adds.
-    let in_sequence = skater.scoring.sequence_active();
-    if in_sequence && !state.reel.in_sequence {
-        state.reel.sequence_begin = replay.as_deref().map_or(0.0, |r| r.last_time());
-    }
-    state.reel.in_sequence = in_sequence;
-    // A reel clip played out: the next one (cMsgNISComplete -> 82BCDFC0), after the last the reel is complete.
-    if state.reel.playing && replay.as_deref().is_none_or(|r| r.reel_done) {
-        // NIS complete (8285F720) pops the replay NIS's pause modes.
-        if let Some(p) = pause.as_deref_mut() {
-            p.pop(skate_core::pause_man::mode::REPLAY_NIS);
-            p.pop(skate_core::pause_man::mode::NIS);
-        }
-        if let Some(r) = replay.as_deref_mut() {
-            r.reel_done = false;
-            // A skip ends the whole reel (82BCDFC0).
-            if std::mem::take(&mut r.reel_skipped) {
-                state.reel.clips.clear();
-            }
-        }
-        if state.reel.next_clip(replay.as_deref_mut(), &asset_root) {
-            enter_replay_nis(pause.as_deref_mut());
-        } else {
-            info!("SKATE_FTL {id} highlight reel complete");
-            commands.extend(state.run.handle(Event::HighlightReelComplete));
-        }
+    state.reel.track_sequence(skater.scoring.sequence_active(), replay.as_deref());
+    // A reel clip played out: the next one, after the last the reel is complete.
+    if state.reel.step(replay.as_deref_mut(), pause.as_deref_mut(), &asset_root) {
+        info!("SKATE_FTL {id} highlight reel complete");
+        commands.extend(state.run.handle(Event::HighlightReelComplete));
     }
     if state.evaluating {
         let events: Vec<(bool, GroupEvent)> = fed.into_iter().map(|(i, e)| (killed_of[i], e)).collect();
@@ -844,16 +919,23 @@ fn update(
                 }
                 Command::StartTimerHud { .. } => hud.show(Component::Timer, true),
                 Command::CentralMessage(m) => {
-                    let text = match m {
-                        Message::ObjectiveFailure => state.failure_text.clone().unwrap_or_else(|| FAILURE_TEXT.into()),
-                        // a film's boundary: the same retail text as own the spot's (ReturnToChallengeArea)
-                        Message::ReturnToArea => crate::challenges::RETURN_TO_AREA.into(),
-                        other => {
-                            info!("SKATE_FTL {id} central message {other:?} NOT RETAIL YET");
-                            continue;
-                        }
+                    // The row's text ids (C.CentralMessageHALID* in the first slot, ModifiedCentralMessageHALID* in the
+                    // second, objectives_shared).
+                    let row = |k: &str| state.data.central_messages.get(k).cloned();
+                    let (text, modified) = match m {
+                        Message::ObjectiveFailure => (Some(state.failure_text.clone().unwrap_or_else(|| FAILURE_TEXT.into())), false),
+                        Message::ReturnToArea => (Some(row("return_to_area").unwrap_or_else(|| crate::challenges::RETURN_TO_AREA.into())), false),
+                        Message::ChallengeFailed => (row("challenge_failed"), false),
+                        Message::LineTimerExpired => (row("line_timer_expired"), true),
+                        Message::OutOfBounds => (row("out_of_bounds"), true),
+                        Message::ScoredLow => (row("scored_low"), true),
+                        Message::TimeUp => (row("time_up"), true),
                     };
-                    central.write(crate::hud_central::CentralMessage::new(text));
+                    let Some(text) = text else {
+                        info!("SKATE_FTL {id} central message {m:?}: no text id in the export (Refresh Game Files)");
+                        continue;
+                    };
+                    central.write(if modified { crate::hud_central::CentralMessage::modified(text) } else { crate::hud_central::CentralMessage::new(text) });
                 }
                 // The highlights (research b1050): a window per completed objective with a HighlightDefinition, in
                 // replay frames (1/60 s); the reel plays the result's tier, each window as a replay clip.
@@ -863,13 +945,10 @@ fn update(
                         rows.get(i).and_then(|o| o.highlight.as_ref()).map(|h| h.definition())
                     });
                     if let (Some(def), Some(r)) = (def, replay.as_deref()) {
-                        let frames = |t: f64| (t * f64::from(state.reel.highlights.rules.frames_per_second)).max(0.0) as u32;
                         let begin = if state.reel.in_sequence { state.reel.sequence_begin } else { r.last_time() };
-                        if let Some(t) = tuning.as_deref() {
-                            state.reel.highlights.rules.slots = t.reel_slots;
-                        }
-                        // NOT RETAIL YET: the Lua call's drop-oldest argument (arg 6) is not read; ours drops.
-                        let added = state.reel.highlights.add(&def, killed, frames(begin), frames(r.last_time()), true, 0.0, 0.0);
+                        // objectives_shared objectivecomplete@515-521 (without AllowAutoHighlightTiming): arg 3 KilledIt,
+                        // no drop-oldest (arg 6 absent = false), no pre / post overrides.
+                        let added = state.reel.add(&def, killed, begin, r.last_time(), false, 0.0, 0.0, tuning.as_deref());
                         info!("SKATE_FTL {id} highlight added={added} {:?}", state.reel.highlights.list().last());
                     }
                 }
@@ -882,16 +961,7 @@ fn update(
                     info!("SKATE_FTL {id} highlight reel: {} clips", state.reel.clips.len());
                 }
                 Command::PlayHighlightReel => {
-                    // OURS: a mod may switch the reel off (`challenges` tuning `reel_enabled`).
-                    if tuning.as_deref().is_some_and(|t| !t.reel_enabled) {
-                        state.reel.clips.clear();
-                    }
-                    if let (Some(r), Some(t)) = (replay.as_deref_mut(), tuning.as_deref()) {
-                        r.reel_transition_seconds = Some(t.reel_transition_seconds);
-                    }
-                    if state.reel.next_clip(replay.as_deref_mut(), &asset_root) {
-                        enter_replay_nis(pause.as_deref_mut());
-                    } else {
+                    if !state.reel.play_prepared(replay.as_deref_mut(), pause.as_deref_mut(), &asset_root, tuning.as_deref()) {
                         queue.extend(state.run.handle(Event::HighlightReelComplete));
                     }
                 }

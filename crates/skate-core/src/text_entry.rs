@@ -59,6 +59,8 @@ pub enum EntryResult {
 }
 
 /// The warning popup's string ids (FE popup record 0x107).
+/// Popup 0x12E (record 8302C260): the team name keyboard's OK with an empty name (82705470 tests the byte length).
+pub const EMPTY_TEAM_NAME_TEXT: &str = "ID_TEAM_MANAGEMENT_EMPTY_TEAM_NAME";
 pub const INVALID_TITLE: &str = "ID_COMMON_WARNING_TITLE";
 pub const INVALID_TEXT: &str = "ID_VIRTUALKEYBOARD_ALPHA_NUMERIC_STRING_ERROR";
 pub const INVALID_BUTTON: &str = "ID_COMMON_OK";

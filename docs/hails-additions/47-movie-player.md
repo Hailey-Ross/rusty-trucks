@@ -162,12 +162,15 @@ FE 46 (after FE 10) asks for the team name with the existing keyboard (b1004 / b
 `ID_WELCOME_NEW_TEAM_HEADER` "Enter New Team Name", default `ID_WELCOME_NEW_TEAM_NAME` "New Team", 16 characters,
 mode 1, empty passed on (`TextEntryRequest::team_name`). OK writes the text into the career's team name, cancel keeps
 the default (82705470 / 82705528); the career is saved. The boot flow asks through `BootTextEntry` and the stage
-pushes FE 46. NOT RETAIL YET: an empty name keeps the default (retail shows popup 0x12E).
+pushes FE 46. An empty name (82705470 tests the byte length) shows popup 0x12E (record 8302C260, dumped 2026-11-21:
+`ID_COMMON_WARNING_TITLE`, `ID_TEAM_MANAGEMENT_EMPTY_TEAM_NAME`, one `ID_COMMON_OK`), whose OK (827055E8) opens the
+same keyboard again (`BootTextEntry::retry`, `EMPTY_TEAM_NAME_POPUP` in `retail_menu_stage.rs`).
 
 While the flow's screens are up (not during the customizer FE 67 opens) a black layer sits between the world and the
 raised APT composite and the gameplay HUD hides (`career::boot_flow_covers`, `movie_player::boot_backdrop`): retail
-runs the flow before the world loads, so its screens and the keyboard sit on black. NOT RETAIL YET: our world is
-already loaded and runs behind it. Status: written while the desktop was busy, not built yet.
+runs the flow before the world loads, so its screens and the keyboard sit on black. Our world is already loaded:
+since 2026-11-21 it is held while the flow covers the screen (`movie_player::boot_backdrop`, a named hold on the
+pause manager), so nothing simulates under the screens, as in retail. Status: written while the desktop was busy, not built yet.
 
 ### First team member
 

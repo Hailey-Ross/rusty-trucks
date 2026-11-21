@@ -228,7 +228,7 @@ impl TutorialRun {
             competitor_distances: [None; 4],
         };
         let mut groups: Vec<&mut DataObjectives> = self.objectives.as_mut().into_iter().collect();
-        let raw: Vec<GroupEvent> = self.feed.step(&mut groups, &feed_input, self.evaluating).into_iter().map(|(_, e)| e).collect();
+        let raw: Vec<GroupEvent> = self.feed.step(&mut groups, &feed_input, self.evaluating && presenter.objectives_evaluate()).into_iter().map(|(_, e)| e).collect();
         let mut events = Vec::new();
         self.take_events(raw, &mut events);
         if self.awaiting_teleport && !input.teleport_pending {

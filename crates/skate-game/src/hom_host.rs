@@ -28,6 +28,10 @@ pub(crate) struct HomState {
     bails_seen: u32,
     queued: Vec<Command>,
     dialog_open: bool,
+    /// The highlight group and its reel (the best bail, b1005).
+    reel: crate::ftl_host::ReelState,
+    /// HighlightStart: the replay time the last bail began (wipeout, single player).
+    highlight_start: f64,
 }
 
 fn volume_id(v: &Option<crate::challenges::Volume>) -> Option<u64> {
@@ -106,7 +110,8 @@ fn arm(mut ftl: ResMut<FollowTheLeader>, config: Res<crate::config::Config>, map
         data.time_limit, data.boundary.as_ref().map(|v| &v.name));
     let bails_seen = challenges.as_deref().map_or(0, |c| c.bails_closed);
     ftl.hom = Some(HomState { data, run, groups, evaluating: false, pinned: false, awaiting_teleport: false, carry: 0.0,
-        eval_carry: 0.0, feed: ObjectiveFeed::default(), last_state: 0, bails_seen, queued, dialog_open: false });
+        eval_carry: 0.0, feed: ObjectiveFeed::default(), last_state: 0, bails_seen, queued, dialog_open: false,
+        reel: Default::default(), highlight_start: 0.0 });
 }
 
 fn hud_component(c: HudComponent) -> Option<Component> {
@@ -136,6 +141,8 @@ fn update(
     time: Res<Time>,
     challenges: Option<Res<crate::challenges::Challenges>>,
     mut autopilot: Option<ResMut<crate::autopilot::Autopilot>>,
+    (mut replay, mut pause, tuning, config): (Option<ResMut<crate::replay::Replay>>, Option<ResMut<crate::pause_man::ThePauseMan>>,
+        Option<Res<crate::ftl_host::ChallengeTuning>>, Res<crate::config::Config>),
 ) {
     let entered: Vec<u64> = entered.read().filter(|e| e.body == crate::trigger_volumes::PLAYER)
         .filter_map(|e| u64::from_str_radix(&e.volume, 16).ok()).collect();
@@ -177,7 +184,13 @@ fn update(
     }
     let state_id = skater.physical_state_id();
     if state_id == 300 && state.last_state != 300 {
+        // HighlightStart = GetLastFrameNumberWritten: the bail's first frame.
+        state.highlight_start = replay.as_deref().map_or(0.0, |r| r.last_time());
         commands.extend(state.run.handle(Event::Wipeout));
+    }
+    if state.reel.step(replay.as_deref_mut(), pause.as_deref_mut(), &config.asset_root) {
+        info!("SKATE_HOM {id} highlight reel complete");
+        commands.extend(state.run.handle(Event::HighlightReelComplete));
     }
     state.last_state = state_id;
     if let Some(c) = shared.filter(|c| c.bails_closed != state.bails_seen) {
@@ -277,9 +290,17 @@ fn update(
             Command::StartCountdownHud { .. } => hud.show(Component::Countdown, true),
             Command::StartTimerHud { .. } => hud.show(Component::Timer, true),
             Command::ReturnToChallengeArea => {
-                central.write(crate::hud_central::CentralMessage::new(crate::challenges::RETURN_TO_AREA.to_string()));
+                let text = state.data.central_messages.get("return_to_area").cloned().unwrap_or_else(|| crate::challenges::RETURN_TO_AREA.to_string());
+                central.write(crate::hud_central::CentralMessage::new(text));
             }
-            Command::PlayHighlightReel => queue.extend(state.run.handle(Event::HighlightReelComplete)),
+            // HUD2.ShowCentralMessage(C.ModifiedCentralMessageHALIDScoredLow, eMessageColour.Red = 1) (hom_challenge
+            // didnotgetenoughpoints@19-25; colors b847).
+            Command::ScoredLow => match state.data.central_messages.get("scored_low") {
+                Some(text) => {
+                    central.write(crate::hud_central::CentralMessage { style: 1, ..crate::hud_central::CentralMessage::new(text.clone()) });
+                }
+                None => info!("SKATE_HOM {id} ScoredLow: no text id in the export (Refresh Game Files)"),
+            },
             Command::OpenContinueRetry => {
                 let result = state.run.competitor().result;
                 let (won, killed) = (result != Completion::Abandoned, result == Completion::Killed);
@@ -302,8 +323,34 @@ fn update(
                     }
                 }
             }
+            // AddHighlightUsingDefinition(group, C.HighlightDefinition, false (the +0x10 scene half), end, start):
+            // the bail just closed (single player: its first frame to the last written, the old one removed), or
+            // with none yet the last 180 frames (the highlight state, b1005).
+            Command::HighlightFromBail | Command::HighlightFromDefinition => {
+                let def = state.data.highlight.as_ref().map(|h| h.definition());
+                match (def, replay.as_deref()) {
+                    (Some(def), Some(r)) => {
+                        let end = r.last_time();
+                        let start = if c == Command::HighlightFromBail {
+                            state.reel.highlights.clear();
+                            state.highlight_start
+                        } else {
+                            end - 180.0 / f64::from(state.reel.highlights.rules.frames_per_second)
+                        };
+                        let added = state.reel.add(&def, false, start, end, false, 0.0, 0.0, tuning.as_deref());
+                        info!("SKATE_HOM {id} highlight added={added} {:?}", state.reel.highlights.list().last());
+                    }
+                    _ => info!("SKATE_HOM {id} no highlight definition (Refresh Game Files) or no replay"),
+                }
+            }
+            Command::RemoveAllHighlights => state.reel.highlights.clear(),
+            Command::PlayHighlightReel => {
+                if !state.reel.play(replay.as_deref_mut(), pause.as_deref_mut(), &config.asset_root, tuning.as_deref()) {
+                    queue.extend(state.run.handle(Event::HighlightReelComplete));
+                }
+            }
             Command::Complete(c) => finished = Some(c),
-            // NOT RETAIL YET (logged): the homscoring HUD group, the highlight reel, the DPO bar, ScoredLow's text,
+            // NOT RETAIL YET (logged): the homscoring HUD group, the DPO bar,
             // the session marker set at the countdown, the pause menu switches.
             other => info!("SKATE_HOM {id} {other:?}"),
         }
@@ -323,7 +370,8 @@ fn update(
         }
     }
     if let Some(c) = finished {
-        let done = ftl.hom.take().expect("the run");
+        let mut done = ftl.hom.take().expect("the run");
+        done.reel.stop(replay.as_deref_mut(), pause.as_deref_mut());
         info!("SKATE_HOM end {id} completion={c:?} best bail {}", done.run.competitor().highest_score);
         ftl.result = Some(format!("hom={id} completion={c:?}"));
         for h in [Component::Timer, Component::Countdown, Component::OwnedIt, Component::KilledIt, Component::Objective] {
