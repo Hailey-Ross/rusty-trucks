@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const DOMAINS: [&str; 13] = ["living_world", "props", "carry", "shadows", "backdrop", "respawn", "exposure", "ghost", "decals", "video_screens", "prop_sounds", "vehicles", "roads"];
+pub const DOMAINS: [&str; 14] = ["living_world", "props", "carry", "shadows", "backdrop", "respawn", "exposure", "ghost", "decals", "video_screens", "prop_sounds", "vehicles", "roads", "challenges"];
 
 /// Longest skater fade-in after a placement a mod may set (s).
 pub const MAX_GHOST_FADE_IN_SECONDS: f32 = 60.0;
@@ -133,12 +133,16 @@ pub struct LivingWorldPatch {
     pub zombie: Option<bool>,
 }
 
-/// One living-world kind: `enabled`, `density` (0..=4, 1 = retail).
+/// One living-world kind: `enabled`, `density` (0..=4, 1 = retail); peds and cars also `pool` (most alive at once,
+/// 0..=64; the disc's census limit by default) and `range_scale` (0.25..=4: the spawn ring and cull distance
+/// together, 1 = the disc's census ranges). Skaters ignore the last two (their count is `ambient_skaters`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KindPatch {
     pub enabled: Option<bool>,
     pub density: Option<f32>,
+    pub pool: Option<u32>,
+    pub range_scale: Option<f32>,
 }
 
 /// Free Play: `traffic` and `pedestrians` 0..=1 (retail steps of 0.1 behind No / Low / Medium / High),
@@ -1023,6 +1027,32 @@ impl RespawnPatch {
     }
 }
 
+/// Challenge presentation (ours; retail values as defaults, doc 42): the follow the leader distance meter and the
+/// films' highlight reel.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChallengesPatch {
+    /// The meter turns red above this share of the row's max distance (0..=1, retail 0.6).
+    pub meter_red_fraction: Option<f32>,
+    /// HUD ticks between meter refreshes (1..=60, retail 5).
+    pub meter_refresh_ticks: Option<u32>,
+    /// Whether a film's highlight reel plays (true); false completes it at once.
+    pub reel_enabled: Option<bool>,
+    /// Highlights a film keeps (1..=16, retail 4).
+    pub reel_slots: Option<u32>,
+    /// Seconds of each reel clip's bloom to white, each way (0..=5, retail 1.0).
+    pub reel_transition_seconds: Option<f32>,
+}
+
+impl ChallengesPatch {
+    pub fn validate(&self) -> bool {
+        self.meter_red_fraction.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+            && self.meter_refresh_ticks.is_none_or(|v| (1..=60).contains(&v))
+            && self.reel_slots.is_none_or(|v| (1..=16).contains(&v))
+            && self.reel_transition_seconds.is_none_or(|v| v.is_finite() && (0.0..=5.0).contains(&v))
+    }
+}
+
 /// Field-wise "first writer wins": `self` keeps its fields, `later` fills the gaps.
 pub trait Merge {
     fn merge(&mut self, later: &Self);
@@ -1333,6 +1363,12 @@ impl Merge for BackdropPatch {
     }
 }
 
+impl Merge for ChallengesPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; meter_red_fraction, meter_refresh_ticks, reel_enabled, reel_slots, reel_transition_seconds);
+    }
+}
+
 impl Merge for RespawnPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; air_timeout_ticks);
@@ -1444,7 +1480,9 @@ impl LivingWorldPatch {
                 t.mode.as_deref().is_none_or(|m| NPC_SKATER_TRICK_MODES.contains(&m))
                     && [t.gate_window, t.min_air_frames].into_iter().all(|v| v.is_none_or(|v| v <= MAX_TRICK_WINDOW))
             })
-            && [&self.skaters, &self.pedestrians, &self.vehicles].into_iter().flatten().all(|k| k.density.is_none_or(|d| d.is_finite() && (0.0..=4.0).contains(&d)))
+            && [&self.skaters, &self.pedestrians, &self.vehicles].into_iter().flatten().all(|k| k.density.is_none_or(|d| d.is_finite() && (0.0..=4.0).contains(&d))
+                && k.pool.is_none_or(|p| p <= 64)
+                && k.range_scale.is_none_or(|s| s.is_finite() && (0.25..=4.0).contains(&s)))
             && self.ambient_skaters.is_none_or(|n| n <= 8)
             && self.free_play.as_ref().is_none_or(|f| [f.traffic, f.pedestrians].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))))
             && self.npc_simulated.as_ref().is_none_or(|n| {
@@ -1612,6 +1650,7 @@ pub enum Patch {
     PropSounds(PropSoundsPatch),
     Vehicles(VehiclesPatch),
     Roads(RoadsPatch),
+    Challenges(ChallengesPatch),
 }
 
 /// Parse and validate a patch for `domain` (`None` = unknown domain, unknown field or bad value).
@@ -1630,6 +1669,7 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         "prop_sounds" => Patch::PropSounds(serde_json::from_value(patch.clone()).ok()?),
         "vehicles" => Patch::Vehicles(serde_json::from_value(patch.clone()).ok()?),
         "roads" => Patch::Roads(serde_json::from_value(patch.clone()).ok()?),
+        "challenges" => Patch::Challenges(serde_json::from_value(patch.clone()).ok()?),
         _ => return None,
     };
     let ok = match &p {
@@ -1646,6 +1686,7 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         Patch::PropSounds(p) => p.validate(),
         Patch::Vehicles(p) => p.validate(),
         Patch::Roads(p) => p.validate(),
+        Patch::Challenges(p) => p.validate(),
     };
     ok.then_some(p)
 }
@@ -1679,6 +1720,13 @@ mod tests {
         assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "a", "points": [[0, 0, 0], [0, 0, 50]]}}})), "a road needs two nodes");
         assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0]]}}})), "and two points");
         assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [1, 0, 0]], "lanes": 9}}})));
+        // Challenge presentation: the distance meter and the highlight reel.
+        assert!(valid_patch("challenges", &json!({"meter_red_fraction": 0.8, "meter_refresh_ticks": 1, "reel_enabled": false, "reel_slots": 8, "reel_transition_seconds": 0.5})));
+        assert!(valid_patch("challenges", &json!({})));
+        assert!(!valid_patch("challenges", &json!({"meter_red_fraction": 1.5})));
+        assert!(!valid_patch("challenges", &json!({"reel_slots": 0})));
+        assert!(!valid_patch("challenges", &json!({"reel_transition_seconds": 9})));
+        assert!(!valid_patch("challenges", &json!({"reel_fps": 30})), "unknown fields are refused");
         // A road's own traffic: up to 16 cars of named categories.
         assert!(valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [0, 0, 50]], "traffic": {"cars": 4, "categories": ["taxis"]}}}})));
         assert!(valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [0, 0, 50]], "traffic": {"cars": 2}}}})));

@@ -458,6 +458,10 @@ pub enum Command {
     /// Reset moved objects (doc 27, Object Dropper and reset): every dynamic prop away from its
     /// authored pose goes back to it (retail cMsgResetDMO per object).
     WorldResetMovedProps {},
+    /// Hold or release this mod's pause of the world step (ours): the skater, props, living world and mods'
+    /// fixed step stand still while any mod holds one, as during a film's PauseSimulation; released when the mod
+    /// stops.
+    WorldPauseSimulation { on: bool },
     /// Reset one dynamic prop (stable map id) to its authored pose (retail cMsgResetDMO).
     WorldResetProp { id: u32 },
     /// Upright one dynamic prop (stable map id): retail cMsgUprightDMO, the 2 s self-righting
@@ -855,6 +859,16 @@ pub enum Command {
     ChallengeStart {
         id: String,
     },
+    /// Play a presentation group of retail event types (`FadeOut`, `Wait`, `NIS`, `SFX`, `Speech`, `TeleportLocalPlayer`
+    /// ...): each event is `[type, arg1?, arg2?]`, as the disc's rows. Queued behind a playing group as retail queues.
+    PresentationPlay {
+        key: String,
+        events: Vec<Vec<String>>,
+    },
+    /// Stop this mod's group `key` (its run events are stopped, a queued one goes).
+    PresentationStop {
+        key: String,
+    },
     ChallengeAbort {},
     ChallengeEnable {
         id: String,
@@ -1006,7 +1020,7 @@ impl Command {
         match self {
             Self::RigPart {index,options} => *index<26 && options.as_ref().is_none_or(|o|o.validate()),
             Self::GraphGate {graph,target,index,..} => matches!(graph.as_str(),"action"|"motion") && matches!(target.as_str(),"state"|"transition"|"behavior") && *index<65536,
-            Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog") || crate::audio_tuning::valid_inspect(system) || crate::world_tuning::valid_inspect(system),
+            Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog"|"presentation") || crate::audio_tuning::valid_inspect(system) || crate::world_tuning::valid_inspect(system),
             Self::Request {key,command,token} => *token<=9_007_199_254_740_991 && crate::schema::valid_id(key) && !matches!(**command,Self::Request{..}) && command.validate(),
             Self::InputOverride {action,value} => (64..=81).contains(action) && value.is_none_or(|v|v.is_finite() && (-1.0..=1.0).contains(&v)),
             Self::InputRumble {pad,channel,low,high,rate} => pad.is_none_or(|p|p<4) && *channel<1024
@@ -1049,6 +1063,7 @@ impl Command {
                 && value.is_none_or(|v| v.is_finite() && (*float || (v.fract() == 0.0 && (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&v)))),
             Self::AudioSeed { .. } => true,
             Self::WorldResetMovedProps {} => true,
+            Self::WorldPauseSimulation { .. } => true,
             Self::WorldResetProp { .. } => true,
             Self::WorldUprightProp { .. } => true,
             Self::WorldSpawnProp { key, position, yaw, velocity, spin, .. } => crate::schema::valid_id(key)
@@ -1305,6 +1320,10 @@ impl Command {
             Self::TriggerRemove { key } | Self::TriggerUntrack { key } => crate::schema::valid_id(key),
             Self::TriggerEnable { id, .. } => valid_trigger_id(id),
             Self::ChallengeStart { id } | Self::ChallengeEnable { id, .. } => crate::schema::valid_id(id),
+            Self::PresentationPlay { key, events } => crate::schema::valid_id(key) && (1..=64).contains(&events.len())
+                && events.iter().all(|e| (1..=3).contains(&e.len()) && !e[0].is_empty() && e[0].len() <= 48 && e[0].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    && e[1..].iter().all(|a| a.len() <= 256)),
+            Self::PresentationStop { key } => crate::schema::valid_id(key),
             Self::ChallengeAbort {} => true,
             Self::MusicPlaylist { path, .. } => valid_package_path(path),
             Self::MusicSoundtrack { track } => track.is_none_or(|t| (1..=4096).contains(&t)),
@@ -1405,6 +1424,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::AudioSeed { .. } => "audio_seed",
         Command::WorldSetTuning { .. } => "world_set_tuning",
         Command::WorldResetMovedProps {} => "world_reset_moved_props",
+        Command::WorldPauseSimulation { .. } => "world_pause_simulation",
         Command::WorldResetProp { .. } => "world_reset_prop",
         Command::WorldUprightProp { .. } => "world_upright_prop",
         Command::WorldSpawnProp { .. } => "world_spawn_prop",
@@ -1487,6 +1507,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::MusicCaption { .. } => "music_caption",
         Command::MusicExternal { .. } => "music_external",
         Command::ChallengeStart { .. } => "challenge_start",
+        Command::PresentationPlay { .. } => "presentation_play",
+        Command::PresentationStop { .. } => "presentation_stop",
         Command::ChallengeAbort { .. } => "challenge_abort",
         Command::ChallengeEnable { .. } => "challenge_enable",
         Command::ChallengeConfigure { .. } => "challenge_configure",
@@ -1827,6 +1849,10 @@ impl Vm {
             // Tuning writes at run time (`sdk.audio.set_tuning`: player / world / bus / reverb domains).
             capabilities.set("audio_tuning", 1)?;
             capabilities.set("world_tuning", 1)?;
+            // sdk.world.pause_simulation: a mod's own pause of the world step.
+            capabilities.set("world_pause", 1)?;
+            // sdk.presentation: play groups of retail presentation events.
+            capabilities.set("presentation", 1)?;
         capabilities.set("replay", 1)?;
             // Retail menus (sdk.menus): edit the retail menu structure, handle any entry.
             capabilities.set("retail_menus", 1)?;
@@ -3020,7 +3046,7 @@ mod world_audio_tests {
     fn world_tuning_commands_deserialize_and_validate() {
         for (value, ok) in [
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_draw_distance":2.0}}), true),
-            (json!({"kind":"world_set_tuning","domain":"carry"}), true),
+            (json!({"kind":"world_set_tuning","domain":"carry"}), true), (json!({"kind":"world_pause_simulation","on":true}), true), (json!({"kind":"presentation_play","key":"intro","events":[["FadeOut","0.5"],["Wait","1"],["NIS","tut_sksc_01"],["FadeIn","0.5"]]}), true), (json!({"kind":"presentation_play","key":"intro","events":[]}), false), (json!({"kind":"presentation_play","key":"intro","events":[["Fade Out"]]}), false), (json!({"kind":"world_set_tuning","domain":"challenges","patch":{"reel_slots":6}}), true),
             (json!({"kind":"engine_inspect","system":"world_tuning:props"}), true),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"nope":1}}), false),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_tricks":{"mode":"recorded","min_air_frames":30},"skater_trick_profiles":{"default":{"regular":[{"trick":96,"weight":1.0}]}}}}), true),

@@ -61,6 +61,14 @@ pub(crate) fn set(world: &mut World, owner: &str, domain: &str, patch: Option<Va
 
 /// A mod stopped, failed or reloaded: its patches go and the domains it touched are rebuilt.
 pub(crate) fn clear_owner(world: &mut World, owner: &str) {
+    if let Some(mut p) = world.get_resource_mut::<crate::pause_man::ThePauseMan>() {
+        p.hold_for_mod(owner, false);
+    }
+    // The mod's presentation groups go with it (`sdk.presentation`).
+    if let Some(mut p) = world.get_resource_mut::<crate::presentation_run::Presenter>() {
+        let p = &mut *p;
+        p.manager.remove_owner(&format!("mod:{owner}"), &mut p.handlers);
+    }
     let Some(mut t) = world.remove_resource::<WorldTuning>() else { return };
     let touched: Vec<String> = t.entries.iter().filter(|(o, _, _)| o == owner).map(|(_, d, _)| d.clone()).collect();
     t.entries.retain(|(o, _, _)| o != owner);
@@ -72,6 +80,9 @@ pub(crate) fn clear_owner(world: &mut World, owner: &str) {
 
 /// Every mod went: every domain back to the shipped values (and the player's own choices).
 pub(crate) fn clear_all(world: &mut World) {
+    if let Some(mut p) = world.get_resource_mut::<crate::pause_man::ThePauseMan>() {
+        p.mods.clear();
+    }
     let had = world.remove_resource::<WorldTuning>().is_some_and(|t| !t.entries.is_empty());
     let empty = WorldTuning::default();
     if had {
@@ -209,6 +220,29 @@ fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
             }
             if let Some(mut s) = world.get_resource_mut::<crate::living_world::PopulationState>() {
                 s.set_vehicle_patch(p.entities, p.spawn_tables);
+            }
+        }
+        "challenges" => {
+            let p = t.merged(domain, |p| if let Patch::Challenges(p) = p { Some(p) } else { None });
+            let mut s = crate::ftl_host::ChallengeTuning::default();
+            if let Some(v) = p.meter_red_fraction {
+                s.meter.red_fraction = v;
+            }
+            if let Some(v) = p.meter_refresh_ticks {
+                s.meter.refresh_ticks = v;
+            }
+            if let Some(v) = p.reel_enabled {
+                s.reel_enabled = v;
+            }
+            if let Some(v) = p.reel_slots {
+                s.reel_slots = v as usize;
+            }
+            if let Some(v) = p.reel_transition_seconds {
+                s.reel_transition_seconds = v;
+            }
+            match world.get_resource_mut::<crate::ftl_host::ChallengeTuning>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
             }
         }
         "roads" => {
@@ -362,6 +396,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         if let Some(f) = patch {
             kind.enabled = f.enabled.unwrap_or(kind.enabled);
             kind.density = f.density.unwrap_or(kind.density);
+            kind.pool = f.pool.or(kind.pool);
+            kind.range_scale = f.range_scale.unwrap_or(kind.range_scale);
         }
     }
     if let Some(n) = p.ambient_skaters {
@@ -748,8 +784,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "skater_stance": s.skater_stance.iter().map(|(k, v)| (k.clone(), v.name())).collect::<std::collections::BTreeMap<_, _>>(),
                 "skater_stance_events": s.skater_stance_events,
                 "skaters": {"enabled": s.skaters.enabled, "density": s.skaters.density},
-                "pedestrians": {"enabled": s.pedestrians.enabled, "density": s.pedestrians.density},
-                "vehicles": {"enabled": s.vehicles.enabled, "density": s.vehicles.density},
+                "pedestrians": {"enabled": s.pedestrians.enabled, "density": s.pedestrians.density, "pool": s.pedestrians.pool, "range_scale": s.pedestrians.range_scale},
+                "vehicles": {"enabled": s.vehicles.enabled, "density": s.vehicles.density, "pool": s.vehicles.pool, "range_scale": s.vehicles.range_scale},
                 "ambient_skaters": s.ambient_skaters,
                 "zombie": s.zombie,
                 "free_play": s.free_play.map(|f| json!({"traffic": f.traffic, "pedestrians": f.pedestrians, "ai_skaters": f.ai_skaters})),
@@ -831,6 +867,9 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
         }),
         "backdrop" => world.get_resource::<BackdropSettings>().map_or(Value::Null, |s| json!({"visible": s.visible, "proxy_terrain": s.proxy_terrain})),
         "respawn" => world.get_resource::<RespawnSettings>().map_or(Value::Null, |s| json!({"air_timeout_ticks": s.air_timeout_ticks})),
+        "challenges" => world.get_resource::<crate::ftl_host::ChallengeTuning>().map_or(Value::Null, |s| json!({
+            "meter_red_fraction": s.meter.red_fraction, "meter_refresh_ticks": s.meter.refresh_ticks, "reel_enabled": s.reel_enabled,
+            "reel_slots": s.reel_slots, "reel_transition_seconds": s.reel_transition_seconds})),
         "exposure" => world.get_resource::<ExposureMeter>().map_or(Value::Null, |s| json!({"meter_weights": s.weights.to_array(), "meter_scale": s.scale})),
         "decals" => world.get_resource::<DecalSettings>().map_or(Value::Null, |s| json!({"opacity": s.opacity})),
         "prop_sounds" => world.get_resource::<crate::game_audio::prop_sounds::PropSoundSettings>().map_or(Value::Null, |s| json!({
@@ -962,6 +1001,44 @@ mod tests {
         assert_eq!(w.resource::<ExposureMeter>().scale, 2.515);
         clear_all(&mut w);
         assert_eq!(*w.resource::<ExposureMeter>(), ExposureMeter::default(), "mod disable restores retail");
+    }
+
+    /// A mod's presentation group (`sdk.presentation.play`, owner `mod:<id>`) stops when the mod stops; another
+    /// owner's group is kept.
+    #[test]
+    fn a_mods_presentation_group_goes_with_the_mod() {
+        use skate_core::presentation::{Event, Group};
+        let mut w = world();
+        w.insert_resource(crate::presentation_run::Presenter::default());
+        let wait = || vec![Event { kind: "Wait".into(), args: [Some("30".into()), None], mask: 0 }];
+        let mut p = w.resource_mut::<crate::presentation_run::Presenter>();
+        p.manager.start(Group { id: "mod:dev.a/intro".into(), owner: "mod:dev.a".into(), events: wait() });
+        p.manager.start(Group { id: "career/x".into(), owner: "career".into(), events: wait() });
+        clear_owner(&mut w, "dev.a");
+        let p = w.resource::<crate::presentation_run::Presenter>();
+        assert_eq!(p.manager.playing(), None, "the mod's playing group is stopped");
+        assert_eq!(p.manager.queued(), 1, "the career's group still waits");
+    }
+
+    /// The `challenges` domain: retail values until a mod patches them, first writer wins, back when it stops; and a
+    /// mod's pause of the world step goes with it.
+    #[test]
+    fn challenge_tuning_and_a_mod_pause_follow_the_owner() {
+        let mut w = world();
+        w.init_resource::<crate::pause_man::ThePauseMan>();
+        set(&mut w, "dev.a", "challenges", Some(json!({"reel_slots": 8, "reel_transition_seconds": 0.5, "meter_red_fraction": 0.9}))).unwrap();
+        set(&mut w, "dev.b", "challenges", Some(json!({"reel_slots": 2, "reel_enabled": false}))).unwrap();
+        let t = w.resource::<crate::ftl_host::ChallengeTuning>().clone();
+        assert_eq!((t.reel_slots, t.reel_transition_seconds, t.meter.red_fraction, t.reel_enabled), (8, 0.5, 0.9, false));
+        assert_eq!(read(&w, "challenges")["reel_slots"], json!(8));
+        w.resource_mut::<crate::pause_man::ThePauseMan>().hold_for_mod("dev.a", true);
+        assert!(!crate::pause_man::world_steps(w.get_resource::<crate::pause_man::ThePauseMan>()));
+        clear_owner(&mut w, "dev.a");
+        assert!(crate::pause_man::world_steps(w.get_resource::<crate::pause_man::ThePauseMan>()), "the pause went with the mod");
+        let t = w.resource::<crate::ftl_host::ChallengeTuning>().clone();
+        assert_eq!((t.reel_slots, t.reel_transition_seconds, t.reel_enabled), (2, crate::replay::REEL_TRANSITION_SECONDS, false));
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<crate::ftl_host::ChallengeTuning>(), crate::ftl_host::ChallengeTuning::default());
     }
 
     #[test]
@@ -1288,6 +1365,30 @@ mod tests {
         clear_all(&mut w);
         let s = w.resource::<LivingWorldSettings>();
         assert_eq!((s.free_play, s.pedestrians.density, s.ambient_skaters), (None, 1.0, 3));
+    }
+
+    /// A kind's `pool` and `range_scale` over the disc's census values (ours): the limit replaces the census one,
+    /// the scale stretches the spawn ring and cull together; both go when the mod stops.
+    #[test]
+    fn a_mod_sets_the_car_pool_and_scales_the_census_ranges() {
+        use skate_core::living_world::census::{CensusCircle, CensusRange};
+        let mut w = world();
+        set(&mut w, "dev.a", "living_world", Some(json!({"vehicles": {"pool": 40, "range_scale": 2.0}}))).unwrap();
+        let circle = CensusCircle { spawn_inner: 80.0, spawn_outer: 100.0, cull: 110.0, forward_offset: 0.0, speed_kmh: 0.0 };
+        let mut config = skate_core::living_world::PopulationConfig::retail();
+        config.vehicles.range = Some(CensusRange { slow: circle, fast: circle });
+        config.vehicles.pool = Some(15);
+        w.resource::<LivingWorldSettings>().apply(&mut config);
+        let r = config.vehicles.range.unwrap().slow;
+        assert_eq!((config.vehicles.pool, r.spawn_inner, r.spawn_outer, r.cull), (Some(40), 160.0, 200.0, 220.0));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"vehicles": {"pool": 65}}))).is_err());
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"vehicles": {"range_scale": 0.1}}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        let mut config = skate_core::living_world::PopulationConfig::retail();
+        config.vehicles.range = Some(CensusRange { slow: circle, fast: circle });
+        config.vehicles.pool = Some(15);
+        w.resource::<LivingWorldSettings>().apply(&mut config);
+        assert_eq!((config.vehicles.pool, config.vehicles.range.unwrap().slow.cull), (Some(15), 110.0), "the disc's values again");
     }
 
     #[test]

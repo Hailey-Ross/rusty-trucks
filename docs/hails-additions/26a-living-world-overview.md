@@ -93,8 +93,10 @@ reason), `npc_trick` (id, line, node, recorded, chosen), `npc_line_end` (id) and
 invalid values rejected, reset), skate-mods validation cases.
 
 Spawn tables and car models are the `vehicles` domain, a mod's own roads the `roads` domain (doc 26h
-[routes for mods](26h-living-world-traffic.md#routes-for-mods)). Not exposed yet: road district selection for mod
-maps (the loader picks the district by map name), census range overrides (`data_config`), joining a mod road to
+[routes for mods](26h-living-world-traffic.md#routes-for-mods); a road's `traffic` keeps cars of its own). The
+`challenges` domain holds the distance meter and highlight reel values (doc 42), and `sdk.world.pause_simulation`
+holds a mod's own pause of the world step (doc 42 "Paused simulation"). Not exposed yet: road district selection for mod
+maps (the loader picks the district by map name), per-field census range overrides (`range_scale` and `pool` per kind cover the ring, cull and limit), joining a mod road to
 the map's own junctions, behavior overrides. The ped mirrored-animation fix has no values.
 
 ## Credits

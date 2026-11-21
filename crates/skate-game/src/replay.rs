@@ -318,7 +318,7 @@ pub(crate) const REEL_TRANSITION_SECONDS: f32 = 1.0;
 fn tick_reel_transition(time: Res<Time<Real>>, mut replay: ResMut<Replay>) {
     if let Some(ReelPhase::Out(t)) = replay.reel_transition {
         let t = t + time.delta_secs();
-        replay.reel_transition = (t < REEL_TRANSITION_SECONDS).then_some(ReelPhase::Out(t));
+        replay.reel_transition = (t < replay.transition_seconds()).then_some(ReelPhase::Out(t));
     }
 }
 
@@ -380,6 +380,8 @@ pub(crate) struct Replay {
     pub reel_shot: Option<ReelShot>,
     /// The player skipped the reel clip (the host then ends the whole reel).
     pub reel_skipped: bool,
+    /// The transition's length each way (None: retail's [`REEL_TRANSITION_SECONDS`]; the `challenges` tuning).
+    pub reel_transition_seconds: Option<f32>,
     /// The clip's visual transition (REPLAYNISLOADSCREEN), None when it is over.
     pub reel_transition: Option<ReelPhase>,
     /// The clip waiting for its transition's white: (start, end, camera take, located place).
@@ -774,10 +776,18 @@ impl Replay {
         info!("REPLAY_REEL clip {:.2}..{:.2} s", self.cursor, end);
     }
 
+    pub(crate) fn transition_seconds(&self) -> f32 {
+        self.reel_transition_seconds.unwrap_or(REEL_TRANSITION_SECONDS).max(0.0)
+    }
+
     /// The transition's progress, 0 (clear) to 1 (full white): the value 82795A70 writes to the active screen
     /// fade block +0x18.
     pub(crate) fn reel_bloom(&self) -> f32 {
-        let x = |t: f32| (t / REEL_TRANSITION_SECONDS).clamp(0.0, 1.0);
+        let length = self.transition_seconds();
+        if length <= 0.0 {
+            return 0.0;
+        }
+        let x = |t: f32| (t / length).clamp(0.0, 1.0);
         match self.reel_transition {
             Some(ReelPhase::In(t)) => x(t),
             Some(ReelPhase::Out(t)) => 1.0 - x(t),
@@ -1307,7 +1317,7 @@ pub(crate) fn controls(
         // the full white (8281EF88 state 5), then starts playback and the reverse together (state 7).
         if let Some(ReelPhase::In(t)) = replay.reel_transition {
             let t = t + time.delta_secs();
-            if t < REEL_TRANSITION_SECONDS {
+            if t < replay.transition_seconds() {
                 replay.reel_transition = Some(ReelPhase::In(t));
                 return;
             }

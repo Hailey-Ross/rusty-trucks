@@ -222,8 +222,9 @@ challenge name.
 
 ## Change: the Challenges opt-in (`living_world/opt_ins.rs`)
 
-The challenges are off by default on hails-additions until they are finished: a **Challenges** row in the Graphics
-overlay's Opt-Ins (saved with the other opt-ins), or `SKATE_CHALLENGES=1` for a run (`SKATE_CHALLENGE=<id>` and
+The challenges are on by default on hails-additions (2026-11-20; off before): a **Career and Challenges** row in the
+Graphics overlay's Opt-Ins turns them off (saved with the other opt-ins; a choice saved earlier stays), and for one
+run `SKATE_CHALLENGES=0` turns them off and `SKATE_CHALLENGES=1` on (`SKATE_CHALLENGE=<id>` and
 `SKATE_VERIFY_CHALLENGE=<id>` turn it on too). While it is off nothing arms, no prompt shows and nothing is
 discovered or saved; switching it off mid-run drops the run, its HUD and the prompt, and switching it on arms the map
 again. The session log shows `OPT_IN_CHANGED challenges ...` like the other opt-ins. Not retail: an opt-in of ours.
@@ -630,6 +631,12 @@ course from the split centers).
   Ported hosts replace stubs with `set_engine`.
 - Wired to the tutorials (step 4, next section); the career is next. Tests: `presentation_run` (3: every type
   handled and unknown ones finish, Wait holds its seconds, a mod override and its removal).
+- **Lua (2026-11-20, ours).** `sdk.presentation.play(key, events)` (capability `presentation`) plays a group of the
+  retail event types, each `{type, arg1?, arg2?}` as the disc's rows (FadeOut / FadeIn, Wait, NIS by scene name,
+  Speech, SFX, TeleportLocalPlayer, CentralMessage, SetSimRate, the callout ...), as group `mod:<id>/<key>` with
+  retail's queue rules; `sdk.presentation.stop(key)` skips it and `sdk.presentation.state(key)` gives `{playing,
+  queued}`. The mod's groups are removed when it stops (`world_tuning::clear_owner`). Test
+  `a_mods_presentation_group_goes_with_the_mod`; the VM's command cases check the event shape.
 
 ### Presentation event export (2026-11-09; b964 §5 step 1, b943)
 
@@ -1423,7 +1430,7 @@ Races and contests (demos too) join the same prompt. `challenges.py` exported th
 
 **Skip (2026-11-20).** A counts only once the NIS load is back to state 0 (82820068 `guess_NISPlayer_CheckClipDone`: `+0xBC == 0`; state 8 returns to 0 one update after playback starts), so A is ignored while the white rises; the reel scenes' kinds (0x17020100 film / Replay_Film, 0x00020100 Replay_Generic) are not 0x0C / 0x0F / 0x12, so the 2.0 s minimum does not apply. A skip ends the reel while the reverse transition keeps running on its own clock (the transition object E+0x7A58 is not the NIS's): `tick_reel_transition`. Test `a_reel_clip_blooms_to_white_starts_at_the_peak_plays_under_the_clear_and_a_skips_it`.
 
-**Paused simulation (2026-11-20, research b1053).** Retail's PauseSimulation (LuaBind 828409C8, the KilledIt replay wait) pushes pause mode 5 on ThePauseMan (830CFE24, created by 8263FAB8; not an input map parser) [code]. The manager answers "paused" for a bit when its requests word (+0x104, all bits set at creation) and the top mode's mask (+0x100 = 821D98D8[mode]) both have it (82562148); mode 5's mask 0xFFFFFFE1 has bit 0, so GameSession_StepSimulation (8285C928) steps no world while it holds, and bits 1..4 (online score / sim, replay editor) run on. The audio manager is not a pause manager client, so the game keeps sounding on the frozen state. Ours: `skate_core::pause_man::PauseMan` (the mode stack, retail's mask table and query) as the resource `pause_man::ThePauseMan`; the film host pushes / pops mode 5 on PauseSimulation, each reel clip's replay NIS enter pushes 12 then 8 and its completion pops them (8285EC08 / 8285F720), the NIS player pushes 12 while a scene plays, and a run that ends pops its modes (OURS). While the world bit is paused the skater's simulation sets and the living world stop (`live`, `world_live`); `observe` keeps publishing the frozen state to the audio host each fixed step, and the replay records nothing new (no new pose). Tests `a_paused_simulation_stops_the_skater_and_the_world`, skate-core `the_top_mode_decides_and_a_pop_removes_every_entry`.
+**Paused simulation (2026-11-20, research b1053).** Retail's PauseSimulation (LuaBind 828409C8, the KilledIt replay wait) pushes pause mode 5 on ThePauseMan (830CFE24, created by 8263FAB8; not an input map parser) [code]. The manager answers "paused" for a bit when its requests word (+0x104, all bits set at creation) and the top mode's mask (+0x100 = 821D98D8[mode]) both have it (82562148); mode 5's mask 0xFFFFFFE1 has bit 0, so GameSession_StepSimulation (8285C928) steps no world while it holds, and bits 1..4 (online score / sim, replay editor) run on. The audio manager is not a pause manager client, so the game keeps sounding on the frozen state. Ours: `skate_core::pause_man::PauseMan` (the mode stack, retail's mask table and query) as the resource `pause_man::ThePauseMan`; the film host pushes / pops mode 5 on PauseSimulation, each reel clip's replay NIS enter pushes 12 then 8 and its completion pops them (8285EC08 / 8285F720), the NIS player pushes 12 while a scene plays, and a run that ends pops its modes (OURS). While the world bit is paused the skater's simulation sets and the living world stop (`live`, `world_live`); `observe` keeps publishing the frozen state to the audio host each fixed step, and the replay records nothing new (no new pose). Tests `a_paused_simulation_stops_the_skater_and_the_world`, skate-core `the_top_mode_decides_and_a_pop_removes_every_entry`. **Mods (ours).** `sdk.world.pause_simulation(on)` (capability `world_pause`) holds a pause of the world step per mod, kept apart from retail's modes so it never pops a film's mode 5 and released when the mod stops (`ThePauseMan::mods`; test `a_mod_pause_holds_by_owner_and_does_not_touch_the_retail_modes`). The `challenges` world tuning domain sets the reel: `reel_enabled` (false completes it at once), `reel_slots` (1..16, retail 4) and `reel_transition_seconds` (0..5 each way, retail 1.0; 0 = no transition) (`ftl_host::ChallengeTuning`; test `challenge_tuning_and_a_mod_pause_follow_the_owner`).
 
 What the world step covers (82859E70) [code]: game input, the physics world (islands, solvers, contacts, the player stages), the DMO props, every skater's manager phases, the living world update and managers, the AI spawner and the world script objects; presentation, camera, HUD, NIS, front end and audio run outside it. Ours freezes the same set: the skater's input / controls / physics sets (props step inside physics), the living world and the mods' fixed step (`on_fixed_update`, sdk/ENGINE_API.md). cMsgNISMgrICEMode (handler 8285FAD8: on pushes 12 then 8, off pops both) has no sender in the shipped game: no code builds it outside its own poster / Lua constructor, and no script or data file on the disc names it; a script hook only.
 
@@ -1451,7 +1458,7 @@ What the world step covers (82859E70) [code]: game input, the physics world (isl
 - `crates/skate-game/src/ftl_host.rs`: at the countdown's ShowHud(DistanceMeter) sets the meter up with the row's `max_follow_distance` and the distance to leader 1, then feeds it every frame; hidden at the end like the other components.
 - `crates/skate-game/src/retail_menus.rs`: `imperial()` (also used by the Stats panel).
 
-**OURS.** A row without a max gets -1 (never red); the HUD tick rate is taken as the FE cadence (60 Hz, doc 31). Mods cannot change `MeterTuning` yet (no API entry).
+**OURS.** A row without a max gets -1 (never red); the HUD tick rate is taken as the FE cadence (60 Hz, doc 31). Mods change `MeterTuning` through the `challenges` world tuning domain (`meter_red_fraction` 0..1, `meter_refresh_ticks` 1..60; ours, 2026-11-20).
 
 **Verification.** `red_above_sixty_percent_of_the_max`, `refreshes_every_fifth_tick_at_any_frame_rate` (skate-core), `the_distance_meter_shows_the_distance_and_turns_red` (the retail movie, ignored without the converted HUD). Not play-tested.
 

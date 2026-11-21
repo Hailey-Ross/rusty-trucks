@@ -1275,6 +1275,29 @@ fn apply_one(
                 physics.reset_moved_props();
             }
         }
+        Command::PresentationPlay { key, events } => {
+            let owner = format!("mod:{id}");
+            let events = events.into_iter().map(|e| {
+                let mut e = e.into_iter();
+                skate_core::presentation::Event { kind: e.next().unwrap_or_default(), args: [e.next(), e.next()], mask: 0 }
+            }).collect();
+            let group = skate_core::presentation::Group { id: format!("{owner}/{key}"), owner, events };
+            if let Some(mut p) = world.get_resource_mut::<crate::presentation_run::Presenter>() {
+                let started = p.manager.start(group);
+                info!("MODS {id} presentation {key}: {started:?}");
+            }
+        }
+        Command::PresentationStop { key } => {
+            if let Some(mut p) = world.get_resource_mut::<crate::presentation_run::Presenter>() {
+                let p = &mut *p;
+                p.manager.skip(&format!("mod:{id}/{key}"), &mut p.handlers);
+            }
+        }
+        Command::WorldPauseSimulation { on } => {
+            if world.get_resource_mut::<crate::pause_man::ThePauseMan>().is_some_and(|mut p| p.hold_for_mod(id, on)) {
+                info!("MODS {id} {} the world step", if on { "pauses" } else { "releases" });
+            }
+        }
         Command::AudioRule { key, rule } => crate::game_audio::set_rule(world, id, &key, rule, |world, path| audio::load_native_clip(world, mods, id, path))?,
         Command::WorldAudioSpawn { key, object, options } => world_audio::spawn(world, mods, id, key, object, options)?,
         Command::WorldAudioUpdate { key, options } => world_audio::update(world, mods, id, &key, options)?,

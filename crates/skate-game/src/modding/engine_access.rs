@@ -32,6 +32,8 @@ pub(super) fn inspect(world: &World, system: &str) -> Value {
         "scoring" => world.resource::<SkaterRuntime>().scoring.mod_catalog(),
         // Retail classes / functions / globals, loaded banks, the map's audio, sets, zones, overlays.
         "audio_catalog" => crate::game_audio::catalog(world),
+        // The presentation manager: the playing group and the queue length (`sdk.presentation.state`).
+        "presentation" => world.get_resource::<crate::presentation_run::Presenter>().map_or(Value::Null, |p| json!({"playing": p.manager.playing(), "queued": p.manager.queued()})),
         // A tuning domain (or a path inside it) as the game uses it now (`sdk.audio.tuning`).
         s if s.starts_with("audio_tuning:") => crate::game_audio::tuning_read(world, &s["audio_tuning:".len()..]),
         // A world tuning domain (living_world / props / carry / shadows / backdrop) as the game uses it now (`sdk.world.tuning`).
