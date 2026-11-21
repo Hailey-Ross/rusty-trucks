@@ -840,6 +840,7 @@ pub(super) fn mixmap_frame(
     cuts: (Option<Res<crate::presentation::Presentation>>, Option<Res<crate::map_transition::CurrentMap>>),
     teleport: Option<Res<crate::ui_audio::TeleportEffect>>,
     settings: Option<Res<super::AudioSettings>>,
+    presenter: Option<Res<crate::presentation_run::Presenter>>,
 ) {
     let _span = super::hitch_parts::span(super::hitch_parts::MIXMAP_FRAME);
     let _timing = super::timing::scope(&super::timing::MIXMAP_FRAME);
@@ -914,7 +915,10 @@ pub(super) fn mixmap_frame(
         None => m.set_input(keys::REVERB, 5, 32767),
     }
     m.set_input(keys::PAUSE, 0, 0);
-    native.bloom.step(m, &native.shared, replay.reel_bloom());
+    // SFXObj_Bloom's level: the reel transition, or the screen fade while no ICE scene sets the audio mode (8282A8F8).
+    let scene = crate::nis_player::playing() || replay.reel_shot.is_some();
+    let fade = presenter.as_deref().filter(|_| !scene).map_or(0.0, |p| p.fade_alpha());
+    native.bloom.step(m, &native.shared, replay.reel_bloom().max(fade));
     let (ticks, calls) = (pass.ticks, pass.calls);
     // The bed's turn / brake slews step once per console evaluation (`grain_bed::Bed::slew_calls`).
     if let Some(bed) = &mut native.bed {
