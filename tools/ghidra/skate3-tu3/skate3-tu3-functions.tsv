@@ -3918,6 +3918,7 @@
 82482780	guess_AudioMgr_ResolveAssetListsA	Guess: resolves the audio asset list handles 8302EE28.. from the id pairs 8302D4A4.. under the audio lock (same shape as guess_SkaterSfx_ResolveAssetHandles)
 82482B10	PostMsg_PlayMenuSound	Small function (180 bytes) that builds and posts cMsgPlayMenuSound (0x34FF4A33) through MsgBus_Post.
 82482BC8	PostMsg_StopMenuSound	Small function (132 bytes) that builds and posts cMsgStopMenuSound (0xB705E93B) through MsgBus_Post.
+82482C50	guess_AudioSystem_SetGameMode	Guess: AudioSystem vtable slot +0x50 (vtable 822FBE30): this+0x1D4 = arg; called by the ICE scene start 8282A8F8 and the ICELITE take update 8282BE58 with the scene's +0x1C (so non-zero while a scene plays); read by SFXObj_Bloom (screen fade counted only at 0), speech and crowd
 82482C68	guess_Speech_UpdateDuckUnlessMode5	Guess: asks the music system for mode 4 unless the audio mode is 5 and updates the speech duck
 82482CE8	guess_MusicSystem_OnNotifyCode11	Guess: Audio vtable 822FBE94 slot +0x64: acts when the arg is 0 and the audio singleton +0x2F0C8 is set (music-challenges.md line 171).
 82482D38	guess_Speech_SetMusicFieldAndTakeLine	Guess: stores +0x1E4, selects the music field and takes speech line slot 99
@@ -12891,14 +12892,14 @@
 82727E00	MsgHandler_cMsgCheatState_82726D88	Bus handler for cMsgCheatState, subscribed by 82726D88 through MsgBus_Subscribe.
 82727E18	MsgHandler_cMsgBrightnessValue_82726D88	Bus handler for cMsgBrightnessValue, subscribed by 82726D88 through MsgBus_Subscribe.
 82727E38	MsgHandler_cMsgFunMeterToggle_82726D88	Bus handler for cMsgFunMeterToggle, subscribed by 82726D88 through MsgBus_Subscribe.
-82727E50	MsgHandler_cMsgKilledItEffect_82726D88	Bus handler for cMsgKilledItEffect, subscribed by 82726D88 through MsgBus_Subscribe.
+82727E50	MsgHandler_cMsgKilledItEffect_82726D88	Bus handler for cMsgKilledItEffect (fields ActivateEffect +0x10, Saturation +0x14, Brightness +0x18, Contrast +0x1C, Duration +0x20): stores them at R (83083C5C) +0xE46 / +0xE48..+0xE54 and resets the timer +0xE58 to 0.0
 82727E90	SimThreadMsgMan_Ctor	Constructor of class 'SimThreadMsgMan': called on the new block right after guess_Mem_AllocNamed with that tag (in 826D35F8).
 82728238	guess_FlowState_UnsubscribeAll	Guess: Unsubscribes its message bus handlers.
 82728358	MsgHandler_Msg401FB250_82727E90	Bus handler for Msg401FB250, subscribed by 82727E90 through MsgBus_Subscribe.
 827283D8	MsgHandler_MsgC2E8C04E_82727E90	Bus handler for MsgC2E8C04E, subscribed by 82727E90 through MsgBus_Subscribe.
 82728458	MsgHandler_MsgF8E29B80_82727E90	Bus handler for MsgF8E29B80, subscribed by 82727E90 through MsgBus_Subscribe.
 82728538	MsgHandler_Msg84403B90_82727E90	Bus handler for Msg84403B90, subscribed by 82727E90 through MsgBus_Subscribe.
-82728608	MsgHandler_cMsgPauseSim_82727E90	Bus handler for cMsgPauseSim, subscribed by 82727E90 through MsgBus_Subscribe.
+82728608	MsgHandler_cMsgPauseSim_82727E90	Bus handler for cMsgPauseSim: field +0x10 set pushes input map mode (+0x14) on 830CFE24, else pops it
 82728628	guess_ManualTime_Init	Guess: binds the D394 default record, posts the start / end frames message and subscribes.
 82728770	guess_ManualTime_UpdateFromSticks	Guess: run-47 b5.txt: reads two input axes (query slots 0x378 / 0x374) against the dead zone 82165A00; when both are idle in states 5..8 it resets the state +0x40 and posts cMsgManualTimeControllerState (hash 03FCFF70, lua-m...
 82728A38	guess_ManualTime_EvalInputs	Guess: evaluates input query slots 0x374, 0x378 and 0x380.
@@ -14229,13 +14230,13 @@
 82795200	guess_PresCamera_PopFreeEntry	Guess: Takes the first free entry of the list 83083C38 +0x32228 (pool +0x32040)
 827952C8	guess_VisualTransition_SubscribeMessages	Subscribes 2 handlers through MsgBus_Subscribe (cMsgVisualTransitionBegin, cMsgVisualTransitionEnd); owner class guessed from the messages; 324 bytes.
 82795410	guess_VisualTransition_Begin	Unless one is running (+8), stores the callback (+0x14) and its argument (+0x18), marks it running and sets the length +0x10 to 4 for kind 6, else 1.
-82795498	guess_VisualTransition_SetCallback	Stores a callback +0x14 and argument +0x18; when no transition runs (+0x10 == 0) it calls it at once and clears.
+82795498	guess_VisualTransition_SetCallback	Starts the reverse of the running visual transition (direction 2: progress 1 -> 0 over its length) with a callback; with no transition kind (+0x10 == 0) calls the callback at once. Callers: the cMsgVisualTransitionEnd handler 827955B0, the NIS load update 8281EF88 (state 7), 8281FB00, 82820828
 82795588	MsgHandler_cMsgVisualTransitionBegin_827952C8	Bus handler for cMsgVisualTransitionBegin, subscribed by 827952C8 through MsgBus_Subscribe.
 827955B0	MsgHandler_cMsgVisualTransitionEnd_827952C8	Bus handler for cMsgVisualTransitionEnd, subscribed by 827952C8 through MsgBus_Subscribe.
 827955D0	Simulation_PostVisualTransitionComplete	Posts cMsgVisualTransitionComplete (0x16E328DD, record size 0x10) under the simulation lock (830CFD94 +0x50).
 82795658	guess_Vt82310E98_DeletingDtor	Guess: runs the 82310E98 dtor then frees when the flag bit is set
 827956C0	guess_Vt82310E98_Dtor	Guess: Sets vtable 82310E98 and deletes the owned object at +0xC through its slot 0.
-82795720	guess_NISMan_CreateTransition	Guess: allocates a transition object (vtables 82310DF0 and 82310DFC).
+82795720	guess_NISMan_CreateTransition	Creates the transition effect object for a kind: 4 = BloomToWhiteTransitionEffect (0x10 bytes, vtable 82310DFC, update 82795A70), 1..3 = ColorFadeTransitionEffect (vtable 82310DF0); length 1.0 (8231A844); byte +0xC = direction == 1 (rise)
 82795988	guess_TransitionFx_IsDone	Guess: transition effect done check (timer +4 <= 0.0), shared slot of the ColorFade / BloomToWhite effect vtables 82310DF0 / 82310DFC
 82795A70	guess_BloomToWhiteFx_Update	Guess: per-update step of the BloomToWhiteTransitionEffect (transition type 4, used for REPLAYNISLOADSCREEN): counts its 1.0 timer down by the step, writes the 0..1 progress (reversed by byte +0xC) to three render bloom / white values (83083C38 +0x7DC8 / +0x7DA8, 830CFDC4 +0x4B8)
 82795AD8	guess_Crowd_SetRenderTargetPass	Guess: Sets the render target and the pass state for the crowd render.
@@ -15166,7 +15167,7 @@
 827E0CF8	PostFxRecord_GetNearMultiply	post_fx record field getter near_multiply (Attrib_GetField, default 830D0850).
 827E0D50	PostFxRecord_GetNearSaturation	post_fx record field getter near_saturation.
 827E0DA8	guess_PostFx_FindCollection716E	Guess: finds the attrib collection of class 0x716E979EFF5B29C8 and inits the ref
-827E0E10	ScreenFade_GetActiveBlock	Returns the settings block +0x300 or the alternate block +0x320 when byte +0x370 is set (greenscreen).
+827E0E10	ScreenFade_GetActiveBlock	Returns the active screen fade sub-block: env+0x300 (E+0x7D90, override) when the ICE override gate env+0x370 (E+0x7E00) is set and greenscreen is off, else env+0x320 (E+0x7DB0, base). Field +0x18 = the BloomToWhite transition progress (82795A70 writes both blocks)
 827E0E68	ScreenFade_IsActive	Active flag of the same fade object; selects the NIS branch of the post FX update.
 827E0EF0	guess_FontPrinter_DrawWrapA	Guess: calls the printer begin slot +0x10, draw +0x60 and end +0x14
 827E0F88	guess_FontPrinter_DrawOp80Style	Guess: Sets style (slot +0x10), draws with slot +0x80, restores (slot +0x14).
@@ -15293,7 +15294,7 @@
 827F2A50	PostFx_DrawFastOrStereoUberPass	Selects fast_uber (E7AD7E62) or stereo_uber (C3F71558) and draws the post pass.
 827F2DC8	PostFx_DrawUberPass	Selects the uber technique (hash 49D79E31) and draws the post pass.
 827F3418	guess_PostFx_DrawPass400	Guess: Post pass drawn for mask bit 0x400 (cameraman notes), uses the NIS camera transform.
-827F3D20	PostFx_Update	research/b380-replay-look-path.md:53 (827F3D20 post FX update calls 827F5450 first then picks the 0x7A90 / 0x7C00 block; code high)
+827F3D20	PostFx_Update	Per-frame post FX update (PostFx_Update): environment block, color matrices (827F13D8) and bloom constants (827EF1F0); the screen fade block +0x18 (BloomToWhite) lowers the bloom input by 2.0 x it (82060C50)
 827F4C10	guess_PostFx_ReadBandField	Guess: reads attrib field 0xE385D93A8C0C3BB5 of the post FX record into +0xB60 (next to guess_PostFx_BuildBands)
 827F4D28	PostFx_SelectZombieMatrixA	crates/skate-game/src/colour_matrix.rs:2 (//! colour_matrix (identity) and colour_matrix_zombiemode (the zombie cheats tint, selected by 827F4D28)
 827F50B0	PostFx_DrawPassesByMask	Draws the post passes picked by mask bits: 0x4 default, 0x100 visualFX, 0x8, 0x200, 0x1 / 0x2 uber variants.
@@ -15612,12 +15613,12 @@
 8281EA80	guess_NISMan_FinishReload	Name from the messages it posts (cMsgNISFinishReload; 1 MsgBus_Post calls, 472 bytes); the rest of the body not read.
 8281EC58	guess_NISMan_TickUnload	Guess: checks the NIS unload state and world collision.
 8281EE00	guess_NISMan_PushFEState	Name from the messages it posts (cMsgNISFEPushState; 1 MsgBus_Post calls, 392 bytes); the rest of the body not read.
-8281EF88	guess_NISMan_UpdateLoad	Name from the messages it posts (cMsgNISWorldCollisionQuery, cMsgNISOnlineReady, cMsgNISLoadFinish, cMsgNISMgrPlayback, cMsgNISLoadingOverlay; 6 MsgBus_Post calls, 2932 bytes); the rest of the body not read.
+8281EF88	guess_NISMan_UpdateLoad	NIS manager load update, a state machine (+0xBC): state 5 waits until the visual transition (E+0x7A58) is no longer running (its white is up) and starts the NIS player; 6 waits for the streamer around the NIS camera; 7 starts the reverse transition (82795498 with callback 828208F0) and playback together, then 8. Posts cMsgNISWorldCollisionQuery / OnlineReady / LoadFinish / MgrPlayback / LoadingOverlay
 8281FB00	guess_NISMan_AllUnloaded	Name from the messages it posts (cMsgNISAllUnloaded; 1 MsgBus_Post calls, 516 bytes); the rest of the body not read.
 8281FD08	guess_NISMan_CompleteIfFinished	guess: asks the player object (+0x10 slot 11) for its state and, when it reports 6, finishes the scene and posts PostMsg_NISMgrComplete.
 8281FE68	guess_NISMan_CheckCurrentLoad	Guess: finds the load entry of the current NIS id 83068304.
 8281FFA0	guess_NISMan_SnapLocations	Guess: builds a transform and queries location snaps for up to 128 entries.
-82820068	guess_NISPlayer_CheckClipDone	When no clip is pending, asks the player whether the current clip +0xC0 finished and reads its time
+82820068	guess_NISPlayer_CheckClipDone	NIS skip gate: true only when the load state +0xBC is 0 (playing) and a clip +0xC0 is loaded and skippable (player vt+0x60, +0x10 vt+0x14); record kinds 0x0C / 0x0F / 0x12 also need 2.0 s played (82060C50); never during an online session in state 11. Used by the cMsgNISSkip handler 82822D88
 82820178	guess_NISMan_IsStreamIdle	1 when 83035508 +0x2C00 is clear and slot 0x2C of 830840F4 returns nonzero.
 82820218	guess_PresCamera_IsCaptureReady	Guess: returns whether the capture device 83035508 (+0x2C00) is ready when +0xC0 is zero
 828203A0	guess_PresCamera_IsCaptureReadyB	Guess: second capture readiness check (+0xC0 / +0xC4)
@@ -15643,7 +15644,7 @@
 82822CE0	MsgHandler_cMsgNISReleaseCameraHold_82821810	Bus handler for cMsgNISReleaseCameraHold, subscribed by 82821810 through MsgBus_Subscribe.
 82822D60	MsgHandler_cMsgNISFEPreloaded_82821810	Bus handler for cMsgNISFEPreloaded, subscribed by 82821810 through MsgBus_Subscribe.
 82822D78	MsgHandler_cMsgNISFEGo_82821810	Bus handler for cMsgNISFEGo, subscribed by 82821810 through MsgBus_Subscribe.
-82822D88	MsgHandler_cMsgNISSkip_82821810	Bus handler for cMsgNISSkip, subscribed by 82821810 through MsgBus_Subscribe.
+82822D88	MsgHandler_cMsgNISSkip_82821810	Bus handler for cMsgNISSkip: unless already skipped (+0xCE) and when 82820068 allows, stops the player (vt+0x98 when 830CFD78), sets +0xD0 = 3 and +0xCE = 1 (skipped)
 82822E58	MsgHandler_cMsgNISKill_82821810	Bus handler for cMsgNISKill, subscribed by 82821810 through MsgBus_Subscribe.
 82822E78	MsgHandler_cMsgNISOnlineContinue_82821810	Bus handler for cMsgNISOnlineContinue, subscribed by 82821810 through MsgBus_Subscribe.
 82822E88	MsgHandler_cMsgNISPhotoSelect_82821810	Bus handler for cMsgNISPhotoSelect, subscribed by 82821810 through MsgBus_Subscribe.
@@ -16114,8 +16115,8 @@
 82840600	LuaBind_NotifyChallengeRunning	retail Lua C binding NotifyChallengeRunning
 82840698	LuaBind_IsInChallenge	Lua binding IsInChallenge
 82840740	LuaBind_Ports	Lua binding Ports: builds a table of name and value pairs (enum)
-828409C8	LuaBind_PauseSimulation	retail Lua C binding PauseSimulation
-828409F8	LuaBind_UnpauseSimulation	retail Lua C binding UnpauseSimulation
+828409C8	LuaBind_PauseSimulation	retail Lua C binding PauseSimulation: pushes input map mode 5 on cInputMapParser 830CFE24 (mask 0xFFFFFFE1 from table 821D98D8)
+828409F8	LuaBind_UnpauseSimulation	retail Lua C binding UnpauseSimulation: pops input map mode 5 (830CFE24)
 82840A28	LuaBind_DisablePauseMenuAndBackpack	retail Lua C binding DisablePauseMenuAndBackpack
 82840A58	LuaBind_EnablePauseMenuAndBackpack	Lua binding EnablePauseMenuAndBackpack; calls Singleton830CFE1C_Get
 82840AB0	LuaBind_eSk8Characters	Lua binding eSk8Characters: builds a table of name and value pairs (enum)
@@ -16528,7 +16529,7 @@
 8285E7F8	guess_NISLoader_UnloadAll	posts cMsgNISUnloadAll (6B7C67B9) and clears +0x168 when a load is active
 8285E888	guess_NISLoader_LoadByName	copies the first name of the list to +0x4E, builds the request at +0x90 / +0x170, stores the id from the scene service at +0x258
 8285E968	guess_GameSession_StartMission	Guess: checks the session state and mission timer, inits the park pieces and starts the mission presentation (+0x46..+0x270, 83035200)
-8285EC08	guess_GameSession_PostVisualTransition	Guess: posts the visual transition message by the session flags (+0x46..+0x260)
+8285EC08	guess_GameSession_PostVisualTransition	Replay NIS enter: unless an NIS runs (+0x46) stores the skippable flag (+0x4D), sets FE +0xF0+0x18 bit 4, starts visual transition kind 6 (REPLAYNISLOADSCREEN = BloomToWhite), pushes input modes 12 and 8 and posts cMsgNISEnterReplay (research b1052)
 8285EE18	guess_GameSession_SmallBody	Guess: body with no calls (+0x10..+0x95)
 8285EF78	guess_GameSession_SwapPair	Guess: swaps +0x250 / +0x254
 8285F060	PostMsg_NISReleaseCameraHold	Small function (132 bytes) that builds and posts cMsgNISReleaseCameraHold (0xC7C08F45) through MsgBus_Post.

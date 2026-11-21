@@ -32932,3 +32932,4 @@ guess_SkaterLook_StaticFreeBuffers 0x82F99B20 f
 
 guess_BloomToWhiteFx_Update 0x82795A70 f
 guess_TransitionFx_IsDone 0x82795988 f
+guess_AudioSystem_SetGameMode 0x82482C50 f

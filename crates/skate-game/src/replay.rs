@@ -313,6 +313,15 @@ const MAX_FED_STEPS: usize = 8;
 /// The replay NIS entry transition's length (82795A70 ramps over the constant 1.0 at 8231A844; research b1052).
 pub(crate) const REEL_TRANSITION_SECONDS: f32 = 1.0;
 
+/// The reverse transition runs on its own clock (the transition object, E+0x7A58, outlives a skipped or finished
+/// NIS).
+fn tick_reel_transition(time: Res<Time<Real>>, mut replay: ResMut<Replay>) {
+    if let Some(ReelPhase::Out(t)) = replay.reel_transition {
+        let t = t + time.delta_secs();
+        replay.reel_transition = (t < REEL_TRANSITION_SECONDS).then_some(ReelPhase::Out(t));
+    }
+}
+
 /// The reel clip's transition: `In` blooms the current view to white before the clip, `Out` clears it while the
 /// clip plays (seconds into each).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -695,7 +704,9 @@ impl Replay {
         }
         self.active = false;
         self.reel_shot = None;
-        self.reel_transition = None;
+        if matches!(self.reel_transition, Some(ReelPhase::In(_))) {
+            self.reel_transition = None;
+        }
         self.reel_pending = None;
         self.editor = None;
         self.marker_ask = None;
@@ -729,14 +740,15 @@ impl Replay {
         end: f64,
         take: Option<(skate_core::camera_track::CameraTrack, Option<(Vec3, Vec3)>)>,
     ) {
-        if !self.active {
-            self.enter();
-        }
-        if !self.active {
+        if self.frames.is_empty() {
             self.reel_done = true;
             return;
         }
-        self.playing = false;
+        // The replay presentation is pushed only at load state 7 (8281EF88), so the white rises over the game, not
+        // the replay (its sound plays on: no replay mute, b375).
+        if self.active {
+            self.exit();
+        }
         self.reel_end = Some(self.cursor);
         self.reel_done = false;
         self.reel_transition = Some(ReelPhase::In(0.0));
@@ -747,6 +759,12 @@ impl Replay {
     /// transition together).
     fn start_pending_reel_clip(&mut self) {
         let Some((start, end, take)) = self.reel_pending.take() else { return };
+        self.enter();
+        if !self.active {
+            self.reel_end = None;
+            self.reel_done = true;
+            return;
+        }
         let (first, last) = self.bounds();
         self.seek(start);
         let end = end.clamp(first, last).max(self.cursor);
@@ -760,7 +778,7 @@ impl Replay {
     /// fade block +0x18.
     pub(crate) fn reel_bloom(&self) -> f32 {
         let x = |t: f32| (t / REEL_TRANSITION_SECONDS).clamp(0.0, 1.0);
-        match self.reel_transition.filter(|_| self.active) {
+        match self.reel_transition {
             Some(ReelPhase::In(t)) => x(t),
             Some(ReelPhase::Out(t)) => 1.0 - x(t),
             None => 0.0,
@@ -863,6 +881,7 @@ impl Plugin for ReplayPlugin {
                     .run_if(live),
             )
             .add_systems(PreUpdate, log_transport.after(controls))
+            .add_systems(PreUpdate, tick_reel_transition.before(controls))
             .add_systems(
                 PreUpdate,
                 controls
@@ -1274,33 +1293,26 @@ pub(crate) fn controls(
         let pad = input.raw_input();
         let pressed = pad.buttons & !replay.previous_buttons;
         replay.previous_buttons = pad.buttons;
-        if pressed & A != 0 || keys.just_pressed(KeyCode::Enter) {
+        // The skip counts only once the NIS load is back to state 0 (82820068), so not while the white rises; the
+        // reverse transition keeps running on its own (it is not the NIS's).
+        let rising = matches!(replay.reel_transition, Some(ReelPhase::In(_)));
+        if !rising && (pressed & A != 0 || keys.just_pressed(KeyCode::Enter)) {
             info!("REPLAY_REEL skipped at {:.2} s", replay.cursor);
             replay.reel_skipped = true;
-            replay.reel_transition = None;
-            replay.reel_pending = None;
             replay.cursor = end;
         }
         input.discard_gameplay();
         // REPLAYNISLOADSCREEN (8285EC08 kind 6 -> BloomToWhite, 82795A70, 1.0 s each way): the NIS load waits for
         // the full white (8281EF88 state 5), then starts playback and the reverse together (state 7).
-        let dt = time.delta_secs();
-        match replay.reel_transition {
-            Some(ReelPhase::In(t)) => {
-                let t = t + dt;
-                if t < REEL_TRANSITION_SECONDS {
-                    replay.reel_transition = Some(ReelPhase::In(t));
-                    return;
-                }
-                replay.reel_transition = Some(ReelPhase::Out(0.0));
-                replay.start_pending_reel_clip();
+        if let Some(ReelPhase::In(t)) = replay.reel_transition {
+            let t = t + time.delta_secs();
+            if t < REEL_TRANSITION_SECONDS {
+                replay.reel_transition = Some(ReelPhase::In(t));
                 return;
             }
-            Some(ReelPhase::Out(t)) => {
-                let t = t + dt;
-                replay.reel_transition = (t < REEL_TRANSITION_SECONDS).then_some(ReelPhase::Out(t));
-            }
-            None => {}
+            replay.reel_transition = Some(ReelPhase::Out(0.0));
+            replay.start_pending_reel_clip();
+            return;
         }
         let end = replay.reel_end.unwrap_or(end);
         replay.cursor = (replay.cursor + time.delta_secs_f64()).min(end);

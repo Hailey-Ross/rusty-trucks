@@ -49,10 +49,9 @@ fn a_highlight_reel_clip_plays_its_window_without_the_replay_screen() {
     }
     assert!((replay.last_time() - 9.9).abs() < 1e-9);
     replay.play_reel_clip(2.0, 50.0, None);
-    assert!(replay.active && !replay.playing && !replay.reel_done);
-    assert_eq!(replay.cursor, replay.last_time(), "the view before the clip while the white rises");
+    assert!(!replay.active && !replay.reel_done, "the white rises over the game, not the replay");
     replay.start_pending_reel_clip();
-    assert!(replay.playing);
+    assert!(replay.active && replay.playing);
     assert_eq!(replay.cursor, 2.0);
     assert_eq!(replay.reel_end, Some(replay.last_time()), "the end is clamped to the recording");
     replay.stop_reel();
@@ -72,7 +71,7 @@ fn a_reel_clip_blooms_to_white_starts_at_the_peak_plays_under_the_clear_and_a_sk
         .init_resource::<Time<Real>>()
         .init_resource::<crate::popup_host::PopupMods>()
         .add_message::<crate::ui_audio::FrontendSound>()
-        .add_systems(Update, controls);
+        .add_systems(Update, (tick_reel_transition, controls).chain());
     for i in 0..600 {
         app.world_mut().resource_mut::<Replay>().record(pose(i as f32), 1. / 60., false);
     }
@@ -83,15 +82,17 @@ fn a_reel_clip_blooms_to_white_starts_at_the_peak_plays_under_the_clear_and_a_sk
     };
     let take = skate_core::camera_track::CameraTrack { length: 2.0, keys: Vec::new(), segments: Vec::new() };
     app.world_mut().resource_mut::<Replay>().play_reel_clip(2.0, 6.0, Some((take, None)));
-    let before = app.world().resource::<Replay>().last_time();
     for _ in 0..30 {
         tick(&mut app, 0);
     }
     let r = app.world().resource::<Replay>();
-    assert_eq!(r.cursor, before, "the white rises over the view before the clip");
+    assert!(!r.active, "the white rises over the game, not the replay (heard: no replay mute)");
     assert!(r.reel_shot.is_none());
     assert!((r.reel_bloom() - 0.5).abs() < 0.02, "{}", r.reel_bloom());
-    let mut ticks = 30;
+    tick(&mut app, A);
+    tick(&mut app, 0);
+    assert!(!app.world().resource::<Replay>().reel_skipped, "A is ignored while the white rises (NIS still loading)");
+    let mut ticks = 32;
     while matches!(app.world().resource::<Replay>().reel_transition, Some(ReelPhase::In(_))) {
         tick(&mut app, 0);
         ticks += 1;
@@ -106,14 +107,14 @@ fn a_reel_clip_blooms_to_white_starts_at_the_peak_plays_under_the_clear_and_a_sk
     }
     let r = app.world().resource::<Replay>();
     assert!((r.cursor - 2.5).abs() < 0.02 && (r.reel_bloom() - 0.5).abs() < 0.02, "it plays while the white clears");
-    for _ in 0..32 {
-        tick(&mut app, 0);
-    }
-    let r = app.world().resource::<Replay>();
-    assert!(r.reel_transition.is_none() && r.reel_bloom() == 0.0 && r.cursor > 3.0);
     tick(&mut app, A);
     let r = app.world().resource::<Replay>();
     assert!(r.reel_done && r.reel_skipped && !r.active, "A skips: the clip ends and says so");
+    assert!(r.reel_bloom() > 0.45, "the clear keeps running after the skip");
+    for _ in 0..32 {
+        tick(&mut app, 0);
+    }
+    assert_eq!(app.world().resource::<Replay>().reel_bloom(), 0.0);
 }
 
 #[test]
