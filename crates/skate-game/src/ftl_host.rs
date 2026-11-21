@@ -476,7 +476,7 @@ fn update(
     mut end_dialog: Option<ResMut<crate::end_dialog_host::EndDialogScreen>>,
     mut autopilot: Option<ResMut<crate::autopilot::Autopilot>>,
     (time, menus, mut follow, mut presenter, mut replay): (Res<Time>, Option<Res<crate::retail_menus::RetailMenus>>, ResMut<crate::visual_indicators::FollowIndicators>, Option<ResMut<crate::presentation_run::Presenter>>, Option<ResMut<crate::replay::Replay>>),
-    (challenges, pad, physics, config): (Option<Res<crate::challenges::Challenges>>, Option<Res<crate::input::ControllerInput>>, Option<Res<crate::physics::GamePhysics>>, Option<Res<crate::config::Config>>),
+    (challenges, pad, physics, config, mut pause): (Option<Res<crate::challenges::Challenges>>, Option<Res<crate::input::ControllerInput>>, Option<Res<crate::physics::GamePhysics>>, Option<Res<crate::config::Config>>, Option<ResMut<crate::pause_man::ThePauseMan>>),
     (mut population, index, npc_transforms, mut clocks, mut commands_ecs, replays, mut brains): (
         Option<ResMut<crate::living_world::PopulationState>>,
         Option<Res<crate::living_world::npc_skaters::NpcSkaterIndex>>,
@@ -687,6 +687,11 @@ fn update(
     state.reel.in_sequence = in_sequence;
     // A reel clip played out: the next one (cMsgNISComplete -> 82BCDFC0), after the last the reel is complete.
     if state.reel.playing && replay.as_deref().is_none_or(|r| r.reel_done) {
+        // NIS complete (8285F720) pops the replay NIS's pause modes.
+        if let Some(p) = pause.as_deref_mut() {
+            p.pop(skate_core::pause_man::mode::REPLAY_NIS);
+            p.pop(skate_core::pause_man::mode::NIS);
+        }
         if let Some(r) = replay.as_deref_mut() {
             r.reel_done = false;
             // A skip ends the whole reel (82BCDFC0).
@@ -694,7 +699,9 @@ fn update(
                 state.reel.clips.clear();
             }
         }
-        if !state.reel.next_clip(replay.as_deref_mut(), &asset_root) {
+        if state.reel.next_clip(replay.as_deref_mut(), &asset_root) {
+            enter_replay_nis(pause.as_deref_mut());
+        } else {
             info!("SKATE_FTL {id} highlight reel complete");
             commands.extend(state.run.handle(Event::HighlightReelComplete));
         }
@@ -872,7 +879,9 @@ fn update(
                     info!("SKATE_FTL {id} highlight reel: {} clips", state.reel.clips.len());
                 }
                 Command::PlayHighlightReel => {
-                    if !state.reel.next_clip(replay.as_deref_mut(), &asset_root) {
+                    if state.reel.next_clip(replay.as_deref_mut(), &asset_root) {
+                        enter_replay_nis(pause.as_deref_mut());
+                    } else {
                         queue.extend(state.run.handle(Event::HighlightReelComplete));
                     }
                 }
@@ -896,8 +905,12 @@ fn update(
                 // LuaBind_PauseSimulation (828409C8): pause mode 5, whose mask has bit 0, so GameSession_StepSimulation
                 // stops stepping the worlds; audio is not a pause manager client and plays on.
                 Command::PauseSimulation(on) => {
-                    if let Some(r) = replay.as_deref_mut() {
-                        r.sim_paused = on;
+                    if let Some(p) = pause.as_deref_mut() {
+                        if on {
+                            p.push(skate_core::pause_man::mode::SIMULATION);
+                        } else {
+                            p.pop(skate_core::pause_man::mode::SIMULATION);
+                        }
                     }
                     info!("SKATE_FTL {id} simulation {}", if on { "paused" } else { "resumed" });
                 }
@@ -971,9 +984,11 @@ fn update(
         }
         info!("SKATE_FTL end {id} completion={c:?}");
         ftl.result = Some(format!("ftl={id} completion={c:?}"));
-        // OURS: a run that ends while paused (an abandon) does not leave the world frozen.
-        if let Some(r) = replay.as_deref_mut().filter(|r| r.sim_paused) {
-            r.sim_paused = false;
+        // OURS: a run that ends while paused (an abandon) does not leave its pause modes behind.
+        if let Some(p) = pause.as_deref_mut() {
+            for m in [skate_core::pause_man::mode::SIMULATION, skate_core::pause_man::mode::REPLAY_NIS, skate_core::pause_man::mode::NIS] {
+                p.pop(m);
+            }
         }
         for h in [Component::Timer, Component::Countdown, Component::OwnedIt, Component::KilledIt, Component::DistanceMeter] {
             hud.show(h, false);
@@ -981,6 +996,14 @@ fn update(
         if c != Completion::Abandoned || done.run.result() == Flow::Win {
             career.write(crate::career::ChallengeResult { challenge: id, completion: c, reactivate: false });
         }
+    }
+}
+
+/// The replay NIS enter (8285EC08): pause modes 12, then 8.
+fn enter_replay_nis(pause: Option<&mut crate::pause_man::ThePauseMan>) {
+    if let Some(p) = pause {
+        p.push(skate_core::pause_man::mode::NIS);
+        p.push(skate_core::pause_man::mode::REPLAY_NIS);
     }
 }
 

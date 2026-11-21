@@ -380,9 +380,6 @@ pub(crate) struct Replay {
     pub reel_shot: Option<ReelShot>,
     /// The player skipped the reel clip (the host then ends the whole reel).
     pub reel_skipped: bool,
-    /// A challenge paused the simulation (PauseSimulation: pause mode 5, research b1053): the worlds stop stepping
-    /// like during a replay, while audio plays on the frozen state.
-    pub sim_paused: bool,
     /// The clip's visual transition (REPLAYNISLOADSCREEN), None when it is over.
     pub reel_transition: Option<ReelPhase>,
     /// The clip waiting for its transition's white: (start, end, camera take, located place).
@@ -873,6 +870,7 @@ impl Plugin for ReplayPlugin {
         messages::track::<crate::world_audio::PedTazerEvent>(app);
         messages::track::<crate::world_audio::PedBodyFallEvent>(app);
         app.init_resource::<Replay>()
+            .init_resource::<crate::pause_man::ThePauseMan>()
             .add_systems(Update, apply_user_length)
             .configure_sets(
                 FixedUpdate,
@@ -900,8 +898,8 @@ impl Plugin for ReplayPlugin {
     }
 }
 
-fn live(replay: Res<Replay>) -> bool {
-    !replay.active && !replay.sim_paused
+fn live(replay: Res<Replay>, pause: Option<Res<crate::pause_man::ThePauseMan>>) -> bool {
+    !replay.active && crate::pause_man::world_steps(pause.as_deref())
 }
 
 /// Run condition: the living world's fixed steps freeze during a replay, as retail plays recorded data.
@@ -1251,8 +1249,8 @@ impl CameraGuard {
     const CUT_SECONDS: f64 = 0.25;
 }
 
-pub(crate) fn world_live(replay: Option<Res<Replay>>) -> bool {
-    replay.is_none_or(|r| !r.active && !r.sim_paused)
+pub(crate) fn world_live(replay: Option<Res<Replay>>, pause: Option<Res<crate::pause_man::ThePauseMan>>) -> bool {
+    replay.is_none_or(|r| !r.active) && crate::pause_man::world_steps(pause.as_deref())
 }
 
 /// `825EB998`'s gates we port: enough recorded (`8250B8F8`) and no FE fade on screen (825D5E90 / 825E8A08 together:

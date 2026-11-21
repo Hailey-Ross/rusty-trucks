@@ -463,13 +463,18 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   plays any scene by name through the NIS event, and a mod can override the NIS handler by name (registry).
 - **NOT RETAIL YET / open.** Skip (cMsgNISSkip / cMsgNISKill exist; the button and prompt are not read); whether
   the end is the scene length or the clip end (equal for the lessons); scenes with several actors (only the first
-  plays; the others need their own rigs); the player is not frozen or moved (retail pushes input mode 8); what
+  plays; the others need their own rigs); the player is not moved; what
   makes the retail demo look fisheye; NIS speech and subtitles inside scenes.
 - **Checked** (`.local/poc-tests/nis-run.ps1 -At 8 / -At 30`, SKATE_VERIFY_TUTORIAL=tut_sksc_01, muted): at 8 s
   Benny Fairfax pushes down the road seen from low behind (the recording's shot), no HUD; the scene ends at
   22.30 s, the player's own skater stands on the start pad and the Coach Frank tip "3 pushes = Max speed" shows.
   Tests: `presentation_run` (NIS holds its group until the end report, removal stops it), skate-data `scene_table`
   data-gated (cut list of tut_sksc_01, `take_at`).
+- **Paused simulation (2026-11-20, research b1053).** A basic NIS start (8285E968) pushes pause mode 12 on
+  ThePauseMan (830CFE24; formerly read as an input map parser) and NIS complete (8285F720) pops it; mode 12's mask
+  has bit 0, so the world step stops while the scene plays [code]. Ours: the NIS player pushes / pops
+  `pause_man::mode::NIS`; the skater's simulation and the living world freeze for the scene (doc 42 "Paused
+  simulation").
 - **Step 3, done 2026-11-18:** the objective HUD texts (doc 42 "Tutorial HUD").
 
 ### Step 4: skip (2026-11-18)

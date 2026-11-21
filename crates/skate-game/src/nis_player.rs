@@ -161,6 +161,10 @@ fn drive(world: &mut World, mut player: Local<Player>) {
                 }
                 player.running = Some(running);
                 PLAYING.store(true, std::sync::atomic::Ordering::Relaxed);
+                // Basic NIS start (8285E968): pause mode 12, which stops the world step while the scene plays.
+                if let Some(mut pause) = world.get_resource_mut::<crate::pause_man::ThePauseMan>() {
+                    pause.push(skate_core::pause_man::mode::NIS);
+                }
             }
             Some((scene, None)) => {
                 info!("NIS {name}: no actor clip ({} actors): done at once", scene.actors.len());
@@ -239,6 +243,10 @@ fn end(world: &mut World, player: &mut Player, why: &str) {
     let Some(running) = player.running.take() else { return };
     info!("NIS {} {why} at {:.2} s", running.scene.name, running.time);
     PLAYING.store(false, std::sync::atomic::Ordering::Relaxed);
+    // NIS complete (8285F720) pops mode 12.
+    if let Some(mut pause) = world.get_resource_mut::<crate::pause_man::ThePauseMan>() {
+        pause.pop(skate_core::pause_man::mode::NIS);
+    }
     if let (Some(fov), Some(camera)) = (running.fov, gameplay_camera(world)) {
         if let Some(mut projection) = world.get_mut::<Projection>(camera) {
             if let Projection::Perspective(p) = &mut *projection {
