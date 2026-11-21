@@ -833,6 +833,9 @@ impl VehiclesPatch {
 pub struct RoadsPatch {
     #[serde(default)]
     pub roads: BTreeMap<String, RoadPatch>,
+    /// The district whose map roads the network starts from (`roads.bin`; a mod's own map names a retail one, ""
+    /// for none, only the mods' roads); absent: the map's own district.
+    pub district: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -872,7 +875,8 @@ pub const MAX_MOD_ROADS: usize = 512;
 impl RoadsPatch {
     fn validate(&self) -> bool {
         let named = |s: &String| !s.is_empty() && s.len() <= 128;
-        self.roads.len() <= MAX_MOD_ROADS
+        self.district.as_ref().is_none_or(|d| d.len() <= 64 && d.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+            && self.roads.len() <= MAX_MOD_ROADS
             && self.roads.iter().all(|(name, r)| {
                 named(name) && named(&r.from) && named(&r.to) && r.from != r.to
                     && (2..=256).contains(&r.points.len())
@@ -887,6 +891,9 @@ impl RoadsPatch {
 
 impl Merge for RoadsPatch {
     fn merge(&mut self, b: &Self) {
+        if self.district.is_none() {
+            self.district.clone_from(&b.district);
+        }
         for (k, v) in &b.roads {
             self.roads.entry(k.clone()).or_insert_with(|| v.clone());
         }
@@ -1727,6 +1734,10 @@ mod tests {
         assert!(!valid_patch("challenges", &json!({"reel_slots": 0})));
         assert!(!valid_patch("challenges", &json!({"reel_transition_seconds": 9})));
         assert!(!valid_patch("challenges", &json!({"reel_fps": 30})), "unknown fields are refused");
+        // The road set and joining the map's junctions.
+        assert!(valid_patch("roads", &json!({"district": "DownTown", "roads": {"x": {"from": "map:nearest", "to": "b", "points": [[0, 0, 0], [0, 0, 50]]}}})));
+        assert!(valid_patch("roads", &json!({"district": ""})), "no map roads, only the mods'");
+        assert!(!valid_patch("roads", &json!({"district": "../etc"})));
         // A road's own traffic: up to 16 cars of named categories.
         assert!(valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [0, 0, 50]], "traffic": {"cars": 4, "categories": ["taxis"]}}}})));
         assert!(valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [0, 0, 50]], "traffic": {"cars": 2}}}})));

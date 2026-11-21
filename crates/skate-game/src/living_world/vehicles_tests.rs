@@ -492,3 +492,24 @@ fn the_car_is_drawn_on_the_ticks_the_skater_met_it() {
     let d = 0.2 + std::f32::consts::TAU - 6.0;
     assert!((wheel - (6.0 + d * 0.5)).abs() < 1e-5, "{wheel}");
 }
+
+/// A mod's road set (`roads` tuning `district`, ours): "" keeps only the mods' roads, None the map's own again; the
+/// joinable map junctions are listed for `map:<id>`.
+#[test]
+fn a_mods_road_set_replaces_or_drops_the_maps_roads() {
+    use skate_core::living_world::traffic::mod_roads::{with_mod_roads, ModRoad};
+    let road = |name: &str, from: &str, to: &str, points: Vec<[f32; 3]>| ModRoad { name: name.into(), from: from.into(), to: to.into(), points,
+        lanes: 1, lane_width: 3.5, speed_limit: 11.0, two_way: true, traffic: None };
+    let (map, _) = with_mod_roads(None, &[road("n", "a", "hub", vec![[0.0, 0.0, -80.0], [0.0, 0.0, 0.0]]), road("e", "hub", "c", vec![[0.0, 0.0, 0.0], [80.0, 0.0, 0.0]])]);
+    let mut s = PopulationState::default();
+    s.map_roads = Some(map.clone());
+    s.roads_stock = Some(map);
+    s.set_roads(Vec::new(), Some(String::new()), None);
+    assert_eq!((s.road_district(), s.roads.is_none()), (Some(""), true), "no map roads");
+    s.set_roads(vec![road("w", "x", "y", vec![[0.0, 0.0, 0.0], [-50.0, 0.0, 0.0]])], None, None);
+    assert_eq!(s.roads.as_ref().map(|r| r.segments.len()), Some(6), "the map's 4 segments plus the mod road's 2");
+    let joinable = s.joinable_junctions();
+    let hub = skate_core::living_world::traffic::mod_roads::node_id("hub");
+    assert_eq!(joinable.iter().find(|j| j.0 == hub).map(|j| j.2), Some(2), "the hub has two free ends");
+    assert_eq!(joinable.len(), 3, "the two-way roads' far ends are junctions too, each with three free ends");
+}

@@ -238,6 +238,8 @@ setup values: owned / killed points, out of bounds time, the owned / killed bann
 mod id order). Events: discovered, started, personal best, ended. Every hide and override belongs to one mod and goes
 when it stops. Multiplayer: the commands act on the local player's challenge; records stay per player.
 
+**A mod's own challenges (2026-11-20, ours).** `sdk.challenges.add(id, definition)` (capability `challenge_add`) builds an own the spot row as setup writes them (family `own_the_spots`, type 9): the boundary, spot and scoring boxes (center, full size, a turn about the up axis) as challenge trigger volumes, the start and sign-up places, the radii (10 / 100 m) and the points (1000 / 1500) and out of bounds time (5 s) by default, the title as the poster and HUD text; its id is `mod:<mod>/<id>`. It joins the list of its map (the loaded one by default) with its boundary armed at once, so it is discovered, signed up for, run, scored and saved like a disc challenge; `sdk.challenges.remove(id)` or the mod stopping takes it out with its volumes (a run of it is aborted), and it survives the first map's load (`arm` keeps the mods' rows). Test `a_mods_own_challenge_joins_the_map_and_goes_with_the_mod`; the VM checks the definition. Not there yet: the other families (races, contests, films) as mod rows, and a mod's own objective rows.
+
 ## Decision: objectives as data, not Lua
 
 Retail keeps each objective's completion condition as a small Lua predicate (`ObjectiveDefinition`, 1,606 rows, 681
@@ -1231,7 +1233,7 @@ popup; the map's Sign Up is not ported yet (retail's arrival path skips the post
 ## Moddability
 
 Challenge ids are the retail key strings. Mods read, start, abort, hide and re-tune challenges through
-`sdk.challenges` (see "the mod entry"); adding a whole new challenge (own volumes, start, points) is still open.
+`sdk.challenges` (see "the mod entry"); a whole new own the spot challenge comes from `sdk.challenges.add` (2026-11-20, below).
 
 ## Open questions
 

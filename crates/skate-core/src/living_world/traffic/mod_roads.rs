@@ -116,16 +116,96 @@ fn segment(road: &ModRoad, points: &[Vec3], id: SegmentId, from: (u64, u8), to: 
     (seg, starts, ends)
 }
 
+/// How far (m, on the ground) `map:nearest` looks for a map junction from the road's end point.
+pub const MAP_JOIN_RADIUS: f32 = 40.0;
+
+/// A node name that joins a junction of the map's own network: `map:nearest` (the closest free one within
+/// [`MAP_JOIN_RADIUS`] of the road's end) or `map:<junction id>` (hex with `0x`, or decimal, as the roads inspect lists).
+pub fn map_node(name: &str) -> Option<&str> {
+    name.strip_prefix("map:")
+}
+
+/// The ground position of a junction: the mean of its connectors' ends (or of the ends of the segments meeting it).
+pub fn junction_position(input: &RoadInput, j: &JunctionInput) -> Option<Vec3> {
+    let mut points: Vec<Vec3> = j.connectors.iter().flat_map(|c| [c.curve.start, c.curve.end]).collect();
+    if points.is_empty() {
+        for s in &input.segments {
+            if s.to_node == j.id.0 {
+                points.extend(s.pieces.last().map(|p| p.centre.end));
+            }
+            if s.from_node == j.id.0 {
+                points.extend(s.pieces.first().map(|p| p.centre.start));
+            }
+        }
+    }
+    (!points.is_empty()).then(|| {
+        let n = points.len() as f32;
+        let sum = points.iter().fold([0.0; 3], |a, p| [a[0] + p[0], a[1] + p[1], a[2] + p[2]]);
+        [sum[0] / n, sum[1] / n, sum[2] / n]
+    })
+}
+
+/// The lane centers of a segment at its start (`end` false) or its end.
+fn lane_points(s: &SegmentInput, end: bool) -> Vec<Vec3> {
+    let piece = if end { s.pieces.last() } else { s.pieces.first() };
+    let Some(p) = piece else { return Vec::new() };
+    let (l, r) = if end { (p.left_end, p.right_end) } else { (p.left_start, p.right_start) };
+    (0..s.lanes).map(|i| along(l, sub(r, l), (f32::from(i) + 0.5) / f32::from(s.lanes.max(1)))).collect()
+}
+
+/// A map junction and a free end of it for `map:<key>` at the road end `at`.
+fn map_end(out: &RoadInput, positions: &[Option<Vec3>], taken: &BTreeMap<usize, Vec<u8>>, key: &str, at: Vec3) -> Result<(usize, u8), String> {
+    let free = |ji: usize| -> Option<u8> {
+        let j = &out.junctions[ji];
+        (0..ENDS as u8).find(|&e| j.approaches[usize::from(e)].is_none() && j.exits[usize::from(e)].is_none()
+            && !taken.get(&ji).is_some_and(|t| t.contains(&e)))
+    };
+    let ji = if key == "nearest" {
+        let mut best: Option<(usize, f32)> = None;
+        for (ji, p) in positions.iter().enumerate() {
+            let Some(p) = p else { continue };
+            let d = ((p[0] - at[0]).powi(2) + (p[2] - at[2]).powi(2)).sqrt();
+            if d <= MAP_JOIN_RADIUS && !out.junctions[ji].signalled && free(ji).is_some() && best.is_none_or(|(_, b)| d < b) {
+                best = Some((ji, d));
+            }
+        }
+        best.map(|(ji, _)| ji).ok_or_else(|| format!("no free unsignalled map junction within {MAP_JOIN_RADIUS} m"))?
+    } else {
+        let id = key.strip_prefix("0x").map_or_else(|| key.parse::<u64>().ok(), |h| u64::from_str_radix(h, 16).ok())
+            .ok_or_else(|| format!("bad map junction id {key}"))?;
+        out.junctions.iter().position(|j| j.id.0 == id).ok_or_else(|| format!("no map junction {key}"))?
+    };
+    if out.junctions[ji].signalled {
+        return Err(format!("map junction {:#x} has traffic lights", out.junctions[ji].id.0));
+    }
+    let e = free(ji).ok_or_else(|| format!("map junction {:#x} has no free end", out.junctions[ji].id.0))?;
+    Ok((ji, e))
+}
+
+/// Give back a refused road's map slot.
+fn release(taken: &mut BTreeMap<usize, Vec<u8>>, n: (u64, u8, Option<usize>)) {
+    if let Some(ji) = n.2 {
+        if let Some(t) = taken.get_mut(&ji) {
+            if let Some(i) = t.iter().position(|&e| e == n.1) {
+                t.remove(i);
+            }
+        }
+    }
+}
 /// `stock` plus the mods' roads. A road without two distinct points or a node with more than four road ends is left
 /// out (named in the returned warnings). Where a node has roads arriving and leaving, an unsignalled junction joins
 /// every arriving lane to each leaving road (lane for lane, the last lane where it has fewer), except straight back
-/// along the same road; a node with one road end is a dead end (cars leave there, as at a map edge).
+/// along the same road; a node with one road end is a dead end (cars leave there, as at a map edge). A `map:` node
+/// ([`map_node`]) joins one of the map's own unsignalled junctions at a free end: its lanes get connectors to every
+/// exit of the junction and every approach gets connectors onto it, lane for lane as above.
 pub fn with_mod_roads(stock: Option<&RoadInput>, roads: &[ModRoad]) -> (RoadInput, Vec<String>) {
     let mut out = stock.cloned().unwrap_or(RoadInput { segments: Vec::new(), junctions: Vec::new() });
     let mut warnings = Vec::new();
-    // Each node's ends in road order: (road name, the road's end at this node).
+    let positions: Vec<Option<Vec3>> = out.junctions.iter().map(|j| junction_position(&out, j)).collect();
+    // Each mod node's ends in road order; each map junction's end slots taken by mod roads.
     let mut ends: BTreeMap<u64, Vec<String>> = BTreeMap::new();
-    struct Arm { node: u64, end: u8, lanes: u8, points: Vec<Vec3>, arriving: bool, road: String, speed: f32 }
+    let mut taken: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
+    struct Arm { node: u64, end: u8, lanes: u8, points: Vec<Vec3>, arriving: bool, road: String, speed: f32, map: Option<usize> }
     let mut arms: Vec<Arm> = Vec::new();
     for road in roads {
         let points: Vec<Vec3> = road.points.iter().copied().fold(Vec::new(), |mut v, p| {
@@ -138,35 +218,73 @@ pub fn with_mod_roads(stock: Option<&RoadInput>, roads: &[ModRoad]) -> (RoadInpu
             warnings.push(format!("road {}: needs two points, a lane and two different nodes", road.name));
             continue;
         }
-        let (a, b) = (node_id(&road.from), node_id(&road.to));
-        let free = |ends: &BTreeMap<u64, Vec<String>>, n: u64| ends.get(&n).map_or(0, Vec::len) < ENDS;
-        if !free(&ends, a) || !free(&ends, b) {
+        // A map end claims a junction's free slot at once, so the road's other end sees it taken.
+        let mut claim = |name: &str, at: Vec3, taken: &mut BTreeMap<usize, Vec<u8>>| -> Result<(u64, u8, Option<usize>), String> {
+            match map_node(name) {
+                Some(key) => {
+                    let (ji, e) = map_end(&out, &positions, taken, key, at)?;
+                    taken.entry(ji).or_default().push(e);
+                    Ok((out.junctions[ji].id.0, e, Some(ji)))
+                }
+                None => Ok((node_id(name), u8::MAX, None)),
+            }
+        };
+        let (first, last) = (points[0], points[points.len() - 1]);
+        let a = match claim(&road.from, first, &mut taken) {
+            Ok(a) => a,
+            Err(e) => {
+                warnings.push(format!("road {}: {e}", road.name));
+                continue;
+            }
+        };
+        let b = match claim(&road.to, last, &mut taken) {
+            Ok(b) if b.2.is_some() && b.2 == a.2 => {
+                release(&mut taken, a);
+                release(&mut taken, b);
+                warnings.push(format!("road {}: both ends at one map junction", road.name));
+                continue;
+            }
+            Ok(b) => b,
+            Err(e) => {
+                release(&mut taken, a);
+                warnings.push(format!("road {}: {e}", road.name));
+                continue;
+            }
+        };
+        let full = |ends: &BTreeMap<u64, Vec<String>>, n: (u64, u8, Option<usize>)| n.2.is_none() && ends.get(&n.0).map_or(0, Vec::len) >= ENDS;
+        if full(&ends, a) || full(&ends, b) {
+            release(&mut taken, a);
+            release(&mut taken, b);
             warnings.push(format!("road {}: a node has four roads already", road.name));
             continue;
         }
-        let mut take = |n: u64| {
-            let list = ends.entry(n).or_default();
+        let mut slot = |n: (u64, u8, Option<usize>)| -> u8 {
+            if n.2.is_some() {
+                return n.1;
+            }
+            let list = ends.entry(n.0).or_default();
             list.push(road.name.clone());
             (list.len() - 1) as u8
         };
-        let (ea, eb) = (take(a), take(b));
+        let (ea, eb) = (slot(a), slot(b));
+        let (a, b) = ((a.0, a.2), (b.0, b.2));
         let id = segment_id(&road.name, false);
         let inner = if road.two_way { 0.0 } else { -road.lane_width * f32::from(road.lanes) * 0.5 };
-        let (seg, starts, ends_at) = segment(road, &points, id, (a, ea), (b, eb), inner);
-        arms.push(Arm { node: a, end: ea, lanes: road.lanes, points: starts, arriving: false, road: road.name.clone(), speed: road.speed_limit });
-        arms.push(Arm { node: b, end: eb, lanes: road.lanes, points: ends_at, arriving: true, road: road.name.clone(), speed: road.speed_limit });
+        let (seg, starts, ends_at) = segment(road, &points, id, (a.0, ea), (b.0, eb), inner);
+        arms.push(Arm { node: a.0, end: ea, lanes: road.lanes, points: starts, arriving: false, road: road.name.clone(), speed: road.speed_limit, map: a.1 });
+        arms.push(Arm { node: b.0, end: eb, lanes: road.lanes, points: ends_at, arriving: true, road: road.name.clone(), speed: road.speed_limit, map: b.1 });
         out.segments.push(seg);
         if road.two_way {
             let back: Vec<Vec3> = points.iter().rev().copied().collect();
             let bid = segment_id(&road.name, true);
-            let (seg, starts, ends_at) = segment(road, &back, bid, (b, eb), (a, ea), 0.0);
-            arms.push(Arm { node: b, end: eb, lanes: road.lanes, points: starts, arriving: false, road: road.name.clone(), speed: road.speed_limit });
-            arms.push(Arm { node: a, end: ea, lanes: road.lanes, points: ends_at, arriving: true, road: road.name.clone(), speed: road.speed_limit });
+            let (seg, starts, ends_at) = segment(road, &back, bid, (b.0, eb), (a.0, ea), 0.0);
+            arms.push(Arm { node: b.0, end: eb, lanes: road.lanes, points: starts, arriving: false, road: road.name.clone(), speed: road.speed_limit, map: b.1 });
+            arms.push(Arm { node: a.0, end: ea, lanes: road.lanes, points: ends_at, arriving: true, road: road.name.clone(), speed: road.speed_limit, map: a.1 });
             out.segments.push(seg);
         }
     }
     for (&node, _) in &ends {
-        let here: Vec<&Arm> = arms.iter().filter(|a| a.node == node).collect();
+        let here: Vec<&Arm> = arms.iter().filter(|a| a.node == node && a.map.is_none()).collect();
         let (arriving, leaving): (Vec<&Arm>, Vec<&Arm>) = here.iter().partition(|a| a.arriving);
         if arriving.is_empty() || leaving.is_empty() {
             continue;
@@ -197,6 +315,63 @@ pub fn with_mod_roads(stock: Option<&RoadInput>, roads: &[ModRoad]) -> (RoadInpu
         }
         let speed = here.iter().map(|a| a.speed).fold(f32::MAX, f32::min);
         out.junctions.push(JunctionInput { id: JunctionId(node), signalled: false, speed, approaches, exits, connectors });
+    }
+    // Mod roads at the map's junctions: (end, lanes, lane points, speed, road) per side; the map's own ends from the
+    // segments meeting the junction.
+    for (&ji, _) in &taken {
+        let jid = out.junctions[ji].id.0;
+        let speed = out.junctions[ji].speed;
+        let mut map_in: Vec<(u8, u8, Vec<Vec3>, f32, String)> = Vec::new();
+        let mut map_out: Vec<(u8, u8, Vec<Vec3>, f32, String)> = Vec::new();
+        for e in 0..ENDS as u8 {
+            if out.junctions[ji].approaches[usize::from(e)].is_some() {
+                if let Some(s) = out.segments.iter().find(|s| s.to_node == jid && s.to_end == e) {
+                    map_in.push((e, s.lanes, lane_points(s, true), s.speed_limit, format!("map:{}", s.id.0)));
+                }
+            }
+            if out.junctions[ji].exits[usize::from(e)].is_some() {
+                if let Some(s) = out.segments.iter().find(|s| s.from_node == jid && s.from_end == e) {
+                    map_out.push((e, s.lanes, lane_points(s, false), s.speed_limit, format!("map:{}", s.id.0)));
+                }
+            }
+        }
+        let here: Vec<&Arm> = arms.iter().filter(|a| a.map == Some(ji)).collect();
+        let mod_in: Vec<(u8, u8, Vec<Vec3>, f32, String)> = here.iter().filter(|a| a.arriving).map(|a| (a.end, a.lanes, a.points.clone(), a.speed, a.road.clone())).collect();
+        let mod_out: Vec<(u8, u8, Vec<Vec3>, f32, String)> = here.iter().filter(|a| !a.arriving).map(|a| (a.end, a.lanes, a.points.clone(), a.speed, a.road.clone())).collect();
+        let j = &mut out.junctions[ji];
+        for (e, lanes, _, _, _) in &mod_in {
+            j.approaches[usize::from(*e)] = Some(EndInput { lanes: *lanes, lane_connectors: vec![Vec::new(); usize::from(*lanes)] });
+        }
+        for (e, lanes, _, _, _) in &mod_out {
+            j.exits[usize::from(*e)] = Some(EndInput { lanes: *lanes, lane_connectors: vec![Vec::new(); usize::from(*lanes)] });
+        }
+        // New pairs: a mod approach into every exit, a map approach into the mod exits; never back along the same road.
+        let pairs = mod_in.iter().flat_map(|a| map_out.iter().chain(&mod_out).map(move |b| (a, b)))
+            .chain(map_in.iter().flat_map(|a| mod_out.iter().map(move |b| (a, b))));
+        for (a, b) in pairs {
+            if a.4 == b.4 || a.0 == b.0 || a.2.is_empty() || b.2.is_empty() {
+                continue;
+            }
+            for lane in 0..a.1 {
+                let to_lane = lane.min(b.1 - 1);
+                let index = j.connectors.len() as u32;
+                let (Some(from), Some(to)) = (a.2.get(usize::from(lane)), b.2.get(usize::from(to_lane))) else { continue };
+                j.connectors.push(ConnectorInput {
+                    index, entry_speed: a.3.min(b.3).min(speed), from_end: a.0, from_lane: lane, to_end: b.0, to_lane,
+                    curve: Curve::straight(*from, *to),
+                });
+                if let Some(end) = j.approaches[usize::from(a.0)].as_mut() {
+                    if let Some(l) = end.lane_connectors.get_mut(usize::from(lane)) {
+                        l.push(index);
+                    }
+                }
+                if let Some(end) = j.exits[usize::from(b.0)].as_mut() {
+                    if let Some(l) = end.lane_connectors.get_mut(usize::from(to_lane)) {
+                        l.push(index);
+                    }
+                }
+            }
+        }
     }
     (out, warnings)
 }
@@ -242,6 +417,44 @@ mod tests {
         assert!(hub.connectors.iter().all(|c| c.from_end != c.to_end));
         assert!(input.junctions.iter().all(|j| j.id != JunctionId(node_id("b"))), "a one-road node is a dead end");
         RoadNetwork::build(&input).expect("the merged input builds");
+    }
+
+    /// `map:` nodes join the map's own junctions: a free end, connectors from the new road into every exit and from
+    /// every approach onto it, never back along the same road; `nearest` and an id both work; a signalled junction or
+    /// one with no free end refuses.
+    #[test]
+    fn a_mod_road_joins_a_junction_of_the_maps_network() {
+        // The "map": a hub with two two-way roads (ends 0 and 1 taken).
+        let map = [
+            road("north", "a", "hub", vec![[0.0, 0.0, -100.0], [0.0, 0.0, 0.0]], true),
+            road("east", "hub", "c", vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]], true),
+        ];
+        let (stock, w) = with_mod_roads(None, &map);
+        assert!(w.is_empty());
+        let hub = JunctionId(node_id("hub"));
+        let before = stock.junctions.iter().find(|j| j.id == hub).unwrap().connectors.len();
+        let joined = [road("west", "map:nearest", "far", vec![[-5.0, 0.0, 0.0], [-100.0, 0.0, 0.0]], true)];
+        let (input, warnings) = with_mod_roads(Some(&stock), &joined);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let j = input.junctions.iter().find(|j| j.id == hub).unwrap();
+        assert!(j.approaches[2].is_some() && j.exits[2].is_some(), "the free end 2");
+        // west in -> north out, east out; north in, east in -> west out: 4 new one-lane connectors.
+        assert_eq!(j.connectors.len(), before + 4);
+        assert!(j.connectors.iter().all(|c| c.from_end != c.to_end));
+        let west = input.segments.iter().find(|s| s.id == segment_id("west", false)).unwrap();
+        assert_eq!((west.from_node, west.from_end), (hub.0, 2));
+        RoadNetwork::build(&input).expect("the joined network builds");
+        // By id (decimal or hex) too.
+        let by_id = [road("west", &format!("map:{:#x}", hub.0), "far", vec![[-5.0, 0.0, 0.0], [-100.0, 0.0, 0.0]], true)];
+        assert!(with_mod_roads(Some(&stock), &by_id).1.is_empty());
+        // Too far, signalled, or full.
+        let far = [road("west", "map:nearest", "far", vec![[-500.0, 0.0, 0.0], [-600.0, 0.0, 0.0]], true)];
+        assert_eq!(with_mod_roads(Some(&stock), &far).1.len(), 1);
+        let mut lights = stock.clone();
+        lights.junctions.iter_mut().for_each(|j| j.signalled = true);
+        assert!(with_mod_roads(Some(&lights), &by_id).1[0].contains("traffic lights"));
+        let three: Vec<ModRoad> = (0..3).map(|i| road(&format!("w{i}"), "map:nearest", &format!("f{i}"), vec![[-5.0, 0.0, i as f32], [-100.0, 0.0, i as f32 * 20.0]], true)).collect();
+        assert_eq!(with_mod_roads(Some(&stock), &three).1.len(), 1, "two free ends: the third road is refused");
     }
 
     #[test]

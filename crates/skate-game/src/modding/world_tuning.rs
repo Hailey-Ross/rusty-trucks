@@ -252,8 +252,9 @@ fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
                 speed_limit: r.speed_limit.unwrap_or(11.0), two_way: r.two_way.unwrap_or(true),
                 traffic: r.traffic.map(|t| skate_core::living_world::traffic::mod_roads::ModRoadTraffic { cars: t.cars, categories: t.categories }),
             }).collect();
+            let root = world.get_resource::<crate::config::Config>().map(|c| c.asset_root.clone());
             if let Some(mut s) = world.get_resource_mut::<crate::living_world::PopulationState>() {
-                s.set_road_patch(roads);
+                s.set_roads(roads, p.district, root.as_deref());
             }
         }
         _ => {}
@@ -884,7 +885,9 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
         }
         "roads" => world.get_resource::<crate::living_world::PopulationState>().map_or(Value::Null, |s| json!({
             "segments": s.roads.as_ref().map_or(0, |r| r.segments.len()), "junctions": s.roads.as_ref().map_or(0, |r| r.junctions.len()),
-            "revision": s.roads_revision})),
+            "revision": s.roads_revision, "district": s.road_district(),
+            // The map junctions a mod road can join (`map:<id>`): id, ground position, free ends.
+            "map_junctions": s.joinable_junctions().into_iter().map(|(id, p, free)| json!({"id": format!("{id:#x}"), "position": p, "free_ends": free})).collect::<Vec<_>>()})),
         _ => Value::Null,
     }
 }
