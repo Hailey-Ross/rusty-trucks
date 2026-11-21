@@ -752,8 +752,8 @@ fn setup(
     );
     if let Some(mut living) = living {
         living.set_user_draw_distance(settings.npc_draw_distance);
-        // Saved choices, plus any `SKATE_*=1` of this run (not saved).
-        living.set_user_opt_ins(settings.opt_ins.or(crate::living_world::opt_ins::OptIns::from_env()));
+        // Saved choices, plus any `SKATE_*=1` of this run, minus any `SKATE_*=0` (neither saved).
+        living.set_user_opt_ins(settings.opt_ins.or(crate::living_world::opt_ins::OptIns::from_env()).without_env_offs());
     }
     window
         .resolution

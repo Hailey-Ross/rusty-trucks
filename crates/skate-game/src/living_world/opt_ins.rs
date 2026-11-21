@@ -74,7 +74,7 @@ impl OptIn {
 }
 
 /// The player's choices. NPC Skater Physics is on by default (user 2026-10-25, USER-ASKS 338: "Lets turn on by default
-/// with the ability to toggle it off"); the others are off.
+/// with the ability to toggle it off"), and so are Career and Challenges (2026-11-20); the others are off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct OptIns {
@@ -88,7 +88,7 @@ pub(crate) struct OptIns {
 
 impl Default for OptIns {
     fn default() -> Self {
-        Self { zombie: false, npc_physics: true, visualize_grabs: false, vehicle_flee: false, challenges: false, base_outfit: false }
+        Self { zombie: false, npc_physics: true, visualize_grabs: false, vehicle_flee: false, challenges: true, base_outfit: false }
     }
 }
 
@@ -122,6 +122,17 @@ impl OptIns {
         }
     }
     /// Either one on (saved choice or this run's variable).
+    /// An opt-in whose `SKATE_*` variable is "0" is off for this run (an automated run without challenges).
+    pub(crate) fn without_env_offs(self) -> Self {
+        let mut s = self;
+        for o in OptIn::ALL {
+            if std::env::var(o.env()).is_ok_and(|v| v == "0") {
+                s.set(o, false);
+            }
+        }
+        s
+    }
+
     pub(crate) fn or(self, other: Self) -> Self {
         let mut s = self;
         for o in OptIn::ALL {
@@ -189,8 +200,8 @@ mod tests {
     #[test]
     fn choices_round_trip_and_default_npc_physics_on() {
         assert_eq!(serde_json::from_str::<OptIns>("{}").unwrap(), OptIns::default());
-        assert_eq!(OptIns::default(), OptIns { zombie: false, npc_physics: true, visualize_grabs: false, vehicle_flee: false, challenges: false, base_outfit: false }, "USER-ASKS 338");
-        let mut s = OptIns { npc_physics: false, ..OptIns::default() };
+        assert_eq!(OptIns::default(), OptIns { zombie: false, npc_physics: true, visualize_grabs: false, vehicle_flee: false, challenges: true, base_outfit: false }, "USER-ASKS 338; challenges on by default (2026-11-20)");
+        let mut s = OptIns { npc_physics: false, challenges: false, ..OptIns::default() };
         for o in OptIn::ALL {
             assert!(!s.get(o));
             s.set(o, true);

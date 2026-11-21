@@ -476,7 +476,7 @@ fn update(
     mut end_dialog: Option<ResMut<crate::end_dialog_host::EndDialogScreen>>,
     mut autopilot: Option<ResMut<crate::autopilot::Autopilot>>,
     (time, menus, mut follow, mut presenter, mut replay): (Res<Time>, Option<Res<crate::retail_menus::RetailMenus>>, ResMut<crate::visual_indicators::FollowIndicators>, Option<ResMut<crate::presentation_run::Presenter>>, Option<ResMut<crate::replay::Replay>>),
-    (challenges, pad, physics, config, mut pause): (Option<Res<crate::challenges::Challenges>>, Option<Res<crate::input::ControllerInput>>, Option<Res<crate::physics::GamePhysics>>, Option<Res<crate::config::Config>>, Option<ResMut<crate::pause_man::ThePauseMan>>),
+    (challenges, pad, physics, config, mut pause, tuning): (Option<Res<crate::challenges::Challenges>>, Option<Res<crate::input::ControllerInput>>, Option<Res<crate::physics::GamePhysics>>, Option<Res<crate::config::Config>>, Option<ResMut<crate::pause_man::ThePauseMan>>, Option<Res<ChallengeTuning>>),
     (mut population, index, npc_transforms, mut clocks, mut commands_ecs, replays, mut brains): (
         Option<ResMut<crate::living_world::PopulationState>>,
         Option<Res<crate::living_world::npc_skaters::NpcSkaterIndex>>,
@@ -865,6 +865,9 @@ fn update(
                     if let (Some(def), Some(r)) = (def, replay.as_deref()) {
                         let frames = |t: f64| (t * f64::from(state.reel.highlights.rules.frames_per_second)).max(0.0) as u32;
                         let begin = if state.reel.in_sequence { state.reel.sequence_begin } else { r.last_time() };
+                        if let Some(t) = tuning.as_deref() {
+                            state.reel.highlights.rules.slots = t.reel_slots;
+                        }
                         // NOT RETAIL YET: the Lua call's drop-oldest argument (arg 6) is not read; ours drops.
                         let added = state.reel.highlights.add(&def, killed, frames(begin), frames(r.last_time()), true, 0.0, 0.0);
                         info!("SKATE_FTL {id} highlight added={added} {:?}", state.reel.highlights.list().last());
@@ -879,6 +882,13 @@ fn update(
                     info!("SKATE_FTL {id} highlight reel: {} clips", state.reel.clips.len());
                 }
                 Command::PlayHighlightReel => {
+                    // OURS: a mod may switch the reel off (`challenges` tuning `reel_enabled`).
+                    if tuning.as_deref().is_some_and(|t| !t.reel_enabled) {
+                        state.reel.clips.clear();
+                    }
+                    if let (Some(r), Some(t)) = (replay.as_deref_mut(), tuning.as_deref()) {
+                        r.reel_transition_seconds = Some(t.reel_transition_seconds);
+                    }
                     if state.reel.next_clip(replay.as_deref_mut(), &asset_root) {
                         enter_replay_nis(pause.as_deref_mut());
                     } else {
@@ -966,12 +976,13 @@ fn update(
         }
     }
     if let Some(meter) = state.meter.as_mut().filter(|_| hud.is_shown(Component::DistanceMeter)) {
-        let tuning = skate_core::challenges::distance_meter::MeterTuning::default();
-        meter.advance(time.delta_secs(), distances[0].unwrap_or(meter.shown), &tuning);
+        let default = skate_core::challenges::distance_meter::MeterTuning::default();
+        let meter_tuning = tuning.as_deref().map_or(&default, |t| &t.meter);
+        meter.advance(time.delta_secs(), distances[0].unwrap_or(meter.shown), meter_tuning);
         let now = crate::hud_challenge::DistanceHud {
             metres: meter.shown,
             imperial: menus.as_deref().is_some_and(crate::retail_menus::imperial),
-            flag: meter.flag(&tuning),
+            flag: meter.flag(meter_tuning),
         };
         if hud.distance != now {
             hud.distance = now;
@@ -999,6 +1010,27 @@ fn update(
     }
 }
 
+/// The `challenges` world tuning (ours, doc 42; retail values by default): the distance meter and the highlight reel.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub(crate) struct ChallengeTuning {
+    pub meter: skate_core::challenges::distance_meter::MeterTuning,
+    pub reel_enabled: bool,
+    pub reel_slots: usize,
+    pub reel_transition_seconds: f32,
+}
+
+impl Default for ChallengeTuning {
+    fn default() -> Self {
+        let rules = skate_core::challenges::highlights::Rules::default();
+        Self {
+            meter: skate_core::challenges::distance_meter::MeterTuning::default(),
+            reel_enabled: true,
+            reel_slots: rules.slots,
+            reel_transition_seconds: crate::replay::REEL_TRANSITION_SECONDS,
+        }
+    }
+}
+
 /// The replay NIS enter (8285EC08): pause modes 12, then 8.
 fn enter_replay_nis(pause: Option<&mut crate::pause_man::ThePauseMan>) {
     if let Some(p) = pause {
@@ -1009,6 +1041,7 @@ fn enter_replay_nis(pause: Option<&mut crate::pause_man::ThePauseMan>) {
 
 pub(crate) fn register(app: &mut App) {
     app.init_resource::<FollowTheLeader>()
+        .init_resource::<ChallengeTuning>()
         .add_systems(PreUpdate, arm.after(crate::map_transition::MapTransitionSet).run_if(crate::challenges::opted_in))
         .add_systems(Update, update.after(crate::challenges::CareerResultSet).run_if(crate::challenges::opted_in));
 }

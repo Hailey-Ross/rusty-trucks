@@ -380,7 +380,7 @@ function sdk.audio.frontend(name) submit{kind="audio_frontend",name=name} end
 function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",amount=amount} end
 
 -- World tuning (capability world_tuning): patch the living world ("living_world": npc_draw_distance, npc_grind_disttocog,
--- skater_fade, skater_line_chain, skater_path, ped_fade, skater_clips, skater_blend_seconds, skater_stance, skater_stance_events, ped_obstacles, npc_skater_props, ped_vehicle_contact, npc_tricks, skater_trick_profiles, npc_simulated, skaters, pedestrians, vehicles, ambient_skaters, free_play), dynamic props ("props": default / by_template prop tuning, collision_box)
+-- skater_fade, skater_line_chain, skater_path, ped_fade, skater_clips, skater_blend_seconds, skater_stance, skater_stance_events, ped_obstacles, npc_skater_props, ped_vehicle_contact, npc_tricks, skater_trick_profiles, npc_simulated, skaters, pedestrians, vehicles = {enabled, density 0..4, pool 0..64 (peds / cars: most alive at once), range_scale 0.25..4 (peds / cars: spawn ring and cull together)}, ambient_skaters, free_play), challenge presentation ("challenges": meter_red_fraction 0..1 (0.6), meter_refresh_ticks 1..60 (5), reel_enabled (true), reel_slots 1..16 (4), reel_transition_seconds 0..5 (1.0)), dynamic props ("props": default / by_template prop tuning, collision_box)
 -- or prop carrying ("carry": grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed,
 -- turn_rate, grip_reach, linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller,
 -- lever_rotation, lever_yaw, mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal, hold_box_extents,
@@ -426,6 +426,10 @@ function sdk.world.reset_prop(id) submit{kind="world_reset_prop",id=id} end
 function sdk.world.upright_prop(id) submit{kind="world_upright_prop",id=id} end
 -- Convenience (not a retail action): reset_prop for every moved or placed prop.
 function sdk.world.reset_moved_props() submit{kind="world_reset_moved_props"} end
+-- Hold (true) or release (false) this mod's pause of the world step (sdk.capabilities.world_pause >= 1): the
+-- skater, props, the living world and every mod's on_fixed_update stand still while any mod holds one, as during
+-- a film's PauseSimulation; on_update, the camera, HUD and sound keep running. Released when the mod stops.
+function sdk.world.pause_simulation(on) submit{kind="world_pause_simulation",on=on ~= false} end
 -- Create a dynamic prop mid-game: a copy of map prop `from` (stable map id: model, collision,
 -- physics) at opts.position {x, y, z}, turned opts.yaw radians, thrown at opts.velocity {x, y, z}
 -- m/s with opts.spin {x, y, z} rad/s (arrays). The same key again replaces it; the mod's props go on disable.
@@ -646,6 +650,15 @@ function sdk.challenges.get(id)
 end
 function sdk.challenges.run() return as_table(challenge_snapshot().run) end
 function sdk.challenges.start(id) submit{kind="challenge_start",id=id} end
+-- Presentation groups (sdk.capabilities.presentation >= 1; ours, retail's event types): play a list of events,
+-- each {type, arg1?, arg2?} as the disc's rows, e.g. {{"FadeOut", "0.5"}, {"Wait", "1"}, {"NIS", "tut_sksc_01"},
+-- {"FadeIn", "0.5"}} (also Speech, SFX, TeleportLocalPlayer, CentralMessage, SetSimRate, ShowTutorialCalloutHUD ...).
+-- One group plays at a time; a new one waits behind it (up to 8). The group is "mod:<your id>/<key>"; it is
+-- stopped when the mod stops. sdk.presentation.state(key) asks for {playing, queued} (sdk.commands.result(key)).
+sdk.presentation = { version = 1 }
+function sdk.presentation.play(key, events) submit{kind="presentation_play",key=key,events=events} end
+function sdk.presentation.stop(key) submit{kind="presentation_stop",key=key} end
+function sdk.presentation.state(key) sdk.engine.inspect(key, "presentation") end
 function sdk.challenges.abort() submit{kind="challenge_abort"} end
 function sdk.challenges.set_enabled(id, enabled) submit{kind="challenge_enable",id=id,enabled=enabled ~= false} end
 function sdk.challenges.configure(id, options) submit{kind="challenge_configure",id=id,options=non_empty(options)} end

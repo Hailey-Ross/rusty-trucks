@@ -62,11 +62,38 @@ pub(crate) enum NetRole {
 pub(crate) struct KindSetting {
     pub enabled: bool,
     pub density: f32,
+    /// A mod's population limit (None: the disc's census limit).
+    #[serde(default)]
+    pub pool: Option<u32>,
+    /// A mod's scale of the spawn ring and cull distance (1: the disc's census ranges).
+    #[serde(default = "one")]
+    pub range_scale: f32,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 impl Default for KindSetting {
     fn default() -> Self {
-        Self { enabled: true, density: 1.0 }
+        Self { enabled: true, density: 1.0, pool: None, range_scale: 1.0 }
+    }
+}
+
+/// A mod's pool and range scale over the disc's census values of a kind.
+fn apply_kind_overrides(kind: &KindSetting, config: &mut skate_core::living_world::config::CensusKindConfig) {
+    if let Some(p) = kind.pool {
+        config.pool = Some(p);
+        config.initial_pool = config.initial_pool.map(|i| i.min(p));
+    }
+    if (kind.range_scale - 1.0).abs() > f32::EPSILON {
+        if let Some(r) = config.range.as_mut() {
+            for c in [&mut r.slow, &mut r.fast] {
+                c.spawn_inner *= kind.range_scale;
+                c.spawn_outer *= kind.range_scale;
+                c.cull *= kind.range_scale;
+            }
+        }
     }
 }
 
@@ -277,6 +304,8 @@ impl LivingWorldSettings {
         config.pedestrians.density = self.pedestrians.density;
         config.vehicles.enabled = on && self.vehicles.enabled;
         config.vehicles.density = self.vehicles.density;
+        apply_kind_overrides(&self.pedestrians, &mut config.pedestrians);
+        apply_kind_overrides(&self.vehicles, &mut config.vehicles);
     }
 }
 
