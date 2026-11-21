@@ -23,6 +23,7 @@ pub mod fe_stack;
 pub mod menus;
 pub mod challenge_map;
 pub mod career;
+pub mod pause_man;
 pub mod presentation;
 pub mod presentation_fade;
 pub mod challenges;

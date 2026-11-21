@@ -117,24 +117,34 @@ fn a_reel_clip_blooms_to_white_starts_at_the_peak_plays_under_the_clear_and_a_sk
     assert_eq!(app.world().resource::<Replay>().reel_bloom(), 0.0);
 }
 
-/// PauseSimulation (pause mode 5: the mask's bit 0 stops GameSession_StepSimulation): the skater's simulation and the
-/// living world stop like during a replay; resuming steps them again.
+/// ThePauseMan's world bit (GameSession_StepSimulation): PauseSimulation (mode 5) and an NIS (12, the replay NIS 12 + 8)
+/// stop the skater's simulation and the living world; they step again once no such mode is on top.
 #[test]
 fn a_paused_simulation_stops_the_skater_and_the_world() {
     #[derive(Resource, Default)]
     struct Steps(u32, u32);
+    use skate_core::pause_man::mode;
     let mut app = App::new();
-    app.init_resource::<Replay>().init_resource::<Steps>().add_systems(
+    app.init_resource::<Replay>().init_resource::<crate::pause_man::ThePauseMan>().init_resource::<Steps>().add_systems(
         Update,
         ((|mut s: ResMut<Steps>| s.0 += 1).run_if(live), (|mut s: ResMut<Steps>| s.1 += 1).run_if(world_live)),
     );
+    fn pm(app: &mut App) -> Mut<'_, crate::pause_man::ThePauseMan> {
+        app.world_mut().resource_mut::<crate::pause_man::ThePauseMan>()
+    }
     app.update();
-    app.world_mut().resource_mut::<Replay>().sim_paused = true;
+    pm(&mut app).push(mode::SIMULATION);
     app.update();
+    pm(&mut app).push(mode::NIS);
+    pm(&mut app).push(mode::REPLAY_NIS);
     app.update();
     let s = app.world().resource::<Steps>();
-    assert_eq!((s.0, s.1), (1, 1), "nothing steps while paused");
-    app.world_mut().resource_mut::<Replay>().sim_paused = false;
+    assert_eq!((s.0, s.1), (1, 1), "nothing steps while paused or during an NIS");
+    pm(&mut app).pop(mode::REPLAY_NIS);
+    pm(&mut app).pop(mode::NIS);
+    app.update();
+    assert_eq!(app.world().resource::<Steps>().0, 1, "mode 5 still holds after the NIS");
+    pm(&mut app).pop(mode::SIMULATION);
     app.update();
     let s = app.world().resource::<Steps>();
     assert_eq!((s.0, s.1), (2, 2));

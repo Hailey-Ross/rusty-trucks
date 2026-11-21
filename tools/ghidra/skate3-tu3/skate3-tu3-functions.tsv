@@ -16528,7 +16528,7 @@
 8285E760	guess_NISLoader_GetLoadState	0 when nothing (or another id) is loaded, else 1, or 2 when +0x25C is set
 8285E7F8	guess_NISLoader_UnloadAll	posts cMsgNISUnloadAll (6B7C67B9) and clears +0x168 when a load is active
 8285E888	guess_NISLoader_LoadByName	copies the first name of the list to +0x4E, builds the request at +0x90 / +0x170, stores the id from the scene service at +0x258
-8285E968	guess_GameSession_StartMission	Guess: checks the session state and mission timer, inits the park pieces and starts the mission presentation (+0x46..+0x270, 83035200)
+8285E968	guess_GameSession_StartMission	Guess: checks the session state and mission timer, inits the park pieces and starts the mission presentation (+0x46..+0x270, 83035200); pushes pause mode 12 on ThePauseMan (830CFE24): the world step stops while the scene plays (b1053)
 8285EC08	guess_GameSession_PostVisualTransition	Replay NIS enter: unless an NIS runs (+0x46) stores the skippable flag (+0x4D), sets FE +0xF0+0x18 bit 4, starts visual transition kind 6 (REPLAYNISLOADSCREEN = BloomToWhite), pushes input modes 12 and 8 and posts cMsgNISEnterReplay (research b1052)
 8285EE18	guess_GameSession_SmallBody	Guess: body with no calls (+0x10..+0x95)
 8285EF78	guess_GameSession_SwapPair	Guess: swaps +0x250 / +0x254
@@ -16542,7 +16542,7 @@
 8285F598	NISMan_PostSetSceneCharacterViewMode	Stores the first flag at +0x25D and posts cMsgSetSceneCharacterViewMode (0xF00F5033, record size 0x14) with two flag bytes; used by LuaBind_EnterNISReplayUsingDefinition.
 8285F628	PostMsg_SetSceneCharacterViewAnim	Small function (140 bytes) that builds and posts cMsgSetSceneCharacterViewAnim (0x58B0BD5C) through MsgBus_Post.
 8285F6B8	guess_NISMan_AddPlayerIndex	Appends a word to the vector at +0x138..+0x140 (grows with guess_PtrVector_InsertGrow); called by LuaBind_SubmitNISPlayerIndex.
-8285F720	guess_NISMan_Complete	Name from the messages it posts (cMsgNISChallengeNotify, cMsgNISComplete; 1 MsgBus_Post calls, 652 bytes); the rest of the body not read.
+8285F720	guess_NISMan_Complete	Name from the messages it posts (cMsgNISChallengeNotify, cMsgNISComplete; 1 MsgBus_Post calls, 652 bytes); the rest of the body not read; pops pause mode 8 when +0x134 and mode 12 on ThePauseMan (b1053)
 8285F9B0	MsgHandler_cMsgNISMgrPlayback_8285DCA8	Handler subscribed for cMsgNISMgrPlayback (0xB0F2D44F) by 8285DCA8.
 8285FA20	MsgHandler_cMsgNISMgrComplete_8285DCA8	Handler subscribed for cMsgNISMgrComplete (0x62F1478B) by 8285DCA8.
 8285FAD8	MsgHandler_cMsgNISMgrICEMode_8285DCA8	Handler subscribed for cMsgNISMgrICEMode (0xA3088244) by 8285DCA8.
