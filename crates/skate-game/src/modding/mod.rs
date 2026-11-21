@@ -673,7 +673,10 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
 
 fn fixed(world: &mut World) {
     let _span = bevy::log::tracing::info_span!("mods.fixed").entered();
-    if world.resource::<crate::replay::Replay>().active {
+    // A replay, or a paused world step (ThePauseMan: retail's step also stops the world script objects, 82859E70).
+    if world.resource::<crate::replay::Replay>().active
+        || !crate::pause_man::world_steps(world.get_resource::<crate::pause_man::ThePauseMan>())
+    {
         return;
     }
     let dt = world.resource::<Time<Fixed>>().delta_secs_f64();
