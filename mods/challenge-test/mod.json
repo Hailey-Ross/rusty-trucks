@@ -1,0 +1,10 @@
+{
+  "id": "dev-challenge-test",
+  "api": 2,
+  "name": "Mod Challenge Test (dev)",
+  "version": "0.1.0",
+  "author": "Hails",
+  "description": "Dev only, for branch world/challenges (doc 42, a mod's own challenges): adds an own the spot challenge around the player's start, starts it and logs CHALLENGE_TEST lines with the list entry and the run. Disabling it removes the challenge.",
+  "entry": "main.lua",
+  "enabled_by_default": false
+}

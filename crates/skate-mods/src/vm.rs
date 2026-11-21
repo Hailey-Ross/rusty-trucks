@@ -160,6 +160,12 @@ impl TriggerShapeOptions {
 }
 
 /// A mod's change to one challenge's values (`sdk.challenges.configure`): unset fields keep the setup data's value.
+/// A challenge id a mod may name: a disc row's (`ots_dwtn_01`) or a mod's own (`mod:<mod id>/<id>`).
+pub fn valid_challenge_id(id: &str) -> bool {
+    crate::schema::valid_id(id)
+        || id.strip_prefix("mod:").and_then(|r| r.split_once('/')).is_some_and(|(m, i)| crate::schema::valid_id(m) && crate::schema::valid_id(i))
+}
+
 /// A box of a mod's challenge: center, full size (m) and a turn about the up axis (radians).
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -1385,7 +1391,7 @@ impl Command {
             }
             Self::TriggerRemove { key } | Self::TriggerUntrack { key } => crate::schema::valid_id(key),
             Self::TriggerEnable { id, .. } => valid_trigger_id(id),
-            Self::ChallengeStart { id } | Self::ChallengeEnable { id, .. } => crate::schema::valid_id(id),
+            Self::ChallengeStart { id } | Self::ChallengeEnable { id, .. } => valid_challenge_id(id),
             Self::PresentationPlay { key, events } => crate::schema::valid_id(key) && (1..=64).contains(&events.len())
                 && events.iter().all(|e| (1..=3).contains(&e.len()) && !e[0].is_empty() && e[0].len() <= 48 && e[0].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
                     && e[1..].iter().all(|a| a.len() <= 256)),
@@ -1416,7 +1422,7 @@ impl Command {
             Self::ChallengeAdd { id, definition } => crate::schema::valid_id(id) && definition.validate(),
             Self::ChallengeRemove { id } => crate::schema::valid_id(id),
             Self::ChallengeConfigure { id, options } => {
-                crate::schema::valid_id(id) && options.as_ref().is_none_or(ChallengeOptions::validate)
+                valid_challenge_id(id) && options.as_ref().is_none_or(ChallengeOptions::validate)
             }
             Self::TriggerTrack { key, options } => {
                 crate::schema::valid_id(key) && options.as_ref().is_none_or(TriggerTrackOptions::validate)
@@ -3118,7 +3124,7 @@ mod world_audio_tests {
     fn world_tuning_commands_deserialize_and_validate() {
         for (value, ok) in [
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_draw_distance":2.0}}), true),
-            (json!({"kind":"world_set_tuning","domain":"carry"}), true), (json!({"kind":"world_pause_simulation","on":true}), true), (json!({"kind":"challenge_add","id":"plaza","definition":{"title":"Plaza","boundary":{"center":[0,0,0],"size":[60,20,60]},"spot":{"center":[0,0,0],"size":[10,4,10],"yaw":0.5},"start":{"position":[0,0,-20]}}}), true), (json!({"kind":"challenge_add","id":"plaza","definition":{"title":"","boundary":{"center":[0,0,0],"size":[60,20,60]},"spot":{"center":[0,0,0],"size":[10,4,10]},"start":{"position":[0,0,-20]}}}), false), (json!({"kind":"challenge_add","id":"plaza","definition":{"title":"x","boundary":{"center":[0,0,0],"size":[0,20,60]},"spot":{"center":[0,0,0],"size":[10,4,10]},"start":{"position":[0,0,-20]}}}), false), (json!({"kind":"presentation_play","key":"intro","events":[["FadeOut","0.5"],["Wait","1"],["NIS","tut_sksc_01"],["FadeIn","0.5"]]}), true), (json!({"kind":"presentation_play","key":"intro","events":[]}), false), (json!({"kind":"presentation_play","key":"intro","events":[["Fade Out"]]}), false), (json!({"kind":"world_set_tuning","domain":"challenges","patch":{"reel_slots":6}}), true),
+            (json!({"kind":"world_set_tuning","domain":"carry"}), true), (json!({"kind":"world_pause_simulation","on":true}), true), (json!({"kind":"challenge_start","id":"mod:dev-challenge-test/plaza"}), true), (json!({"kind":"challenge_start","id":"mod:/plaza"}), false), (json!({"kind":"challenge_add","id":"plaza","definition":{"title":"Plaza","boundary":{"center":[0,0,0],"size":[60,20,60]},"spot":{"center":[0,0,0],"size":[10,4,10],"yaw":0.5},"start":{"position":[0,0,-20]}}}), true), (json!({"kind":"challenge_add","id":"plaza","definition":{"title":"","boundary":{"center":[0,0,0],"size":[60,20,60]},"spot":{"center":[0,0,0],"size":[10,4,10]},"start":{"position":[0,0,-20]}}}), false), (json!({"kind":"challenge_add","id":"plaza","definition":{"title":"x","boundary":{"center":[0,0,0],"size":[0,20,60]},"spot":{"center":[0,0,0],"size":[10,4,10]},"start":{"position":[0,0,-20]}}}), false), (json!({"kind":"presentation_play","key":"intro","events":[["FadeOut","0.5"],["Wait","1"],["NIS","tut_sksc_01"],["FadeIn","0.5"]]}), true), (json!({"kind":"presentation_play","key":"intro","events":[]}), false), (json!({"kind":"presentation_play","key":"intro","events":[["Fade Out"]]}), false), (json!({"kind":"world_set_tuning","domain":"challenges","patch":{"reel_slots":6}}), true),
             (json!({"kind":"engine_inspect","system":"world_tuning:props"}), true),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"nope":1}}), false),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_tricks":{"mode":"recorded","min_air_frames":30},"skater_trick_profiles":{"default":{"regular":[{"trick":96,"weight":1.0}]}}}}), true),
