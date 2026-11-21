@@ -6465,7 +6465,7 @@
 82561D50	guess_FPS_RaceFieldCount	Guess: reads the race type record and a field count.
 82562088	guess_AssetMan_ReleasePresArena	Guess: Takes the locked hash entry and deregisters the presentation arena
 825620D8	Vt822FE3F8_DeletingDtor	deleting destructor that sets vtable 822FE3F8 and frees on flag bit 0; structural name, the class behind vtable 822FE3F8 is not named yet (listed as CameraAttribManager slot 2 in run-3, which ran past that class's vtable)
-82562148	guess_OnlineScore_ReleaseAndCheck	Releases the reference +4 and checks the count +0x104
+82562148	guess_PauseMan_IsNotPaused	Guess: ThePauseMan query: true when (requests +0x104 & mode mask +0x100 & bit) == 0, so the bit's system runs. Callers: GameSession_StepSimulation and IsScoreReleased (bit 1), PlayerUI_TransformPacket (1), online score / sim (4), replay editor font and photo (8). Was guess_OnlineScore_ReleaseAndCheck
 825621E8	guess_StreamerStall_SubscribeA	Subscribes 1 handlers through MsgBus_Subscribe (cMsgStreamerStalledPresToPres); owner class guessed from the messages; 380 bytes.
 82562368	guess_RealTimeController_DeletingDtorB	Guess: Unsubscribes +0x5C from the message bus, sets vtable 822FFAF0 and frees when bit 0 of the flags is set
 825623F0	guess_PhotoReplay_DetectFreezeFrame	Name from the messages it posts (cMsgFreezeFrameDetected, cMsgPhotoReplayComplete; 2 MsgBus_Post calls, 564 bytes); the rest of the body not read.
@@ -11887,10 +11887,10 @@
 826DAA28	guess_GameApp_EnterInputMode3	Guess: atomically sets +0x44 = 3, pops input map mode 0x10 and sets +0x20
 826DAB98	guess_Vault_LoadVaultList	Guess: uses the pattern *.vaultlist.xml
 826DAFF0	guess_GameSession_UpdateInputModes	Guess: pushes an int and pops an input mode.
-826DB498	guess_IntVector_InitAndPushBack	Calls 824ADB78 on +4, then appends the int argument to the vector at +8 (grow when full).
-826DB530	guess_InputMapParser_PopMode	Guess: under the lock word +4 removes the given mode from the mode stack +8..+0xC (pair of guess_InputMapParser_PushMode2).
-826DB638	guess_InputMapParser_PushMode2	Guess: pushes mode 2 onto the mode stack (+8..+0x10) under a lock word at +4 and sets +0x100 from table 821D98D8.
-826DB640	guess_InputMapParser_PopMode2	Guess: calls 826DB530 with mode 2 (the pop matching guess_InputMapParser_PushMode2).
+826DB498	guess_PauseMan_PushMode	Guess: ThePauseMan (830CFE24): pushes a pause mode on the stack +8..+0xC and sets the mask +0x100 = table 821D98D8[top mode] (mode 5 0xFFFFFFE1, 8 0xFFFFFFE1, 12 0xFFFFFFF1, 0 none). Was guess_IntVector_InitAndPushBack
+826DB530	guess_PauseMan_PopMode	Guess: ThePauseMan: removes every entry of the given pause mode from the stack and sets the mask +0x100 from the new top (0 when empty). Was guess_InputMapParser_PopMode
+826DB638	guess_PauseMan_PushMode2	Guess: ThePauseMan: pushes pause mode 2. Was guess_InputMapParser_PushMode2
+826DB640	guess_PauseMan_PopMode2	Guess: ThePauseMan: pops pause mode 2. Was guess_InputMapParser_PopMode2
 826DB648	guess_RefVector_AddUnique	Releases a reference and adds the id to the vector +4 unless present
 826DB6E0	guess_Player_ReleaseSpawnRefsBody	Guess: releases a reference and the list at +4.
 826DB7C8	guess_GameSession_BindSlotsForKind	For 15 table entries at 830209DC (0x420 bytes apart) whose kind matches and whose slot is empty, fills the slot (8298C768).
@@ -12899,7 +12899,7 @@
 827283D8	MsgHandler_MsgC2E8C04E_82727E90	Bus handler for MsgC2E8C04E, subscribed by 82727E90 through MsgBus_Subscribe.
 82728458	MsgHandler_MsgF8E29B80_82727E90	Bus handler for MsgF8E29B80, subscribed by 82727E90 through MsgBus_Subscribe.
 82728538	MsgHandler_Msg84403B90_82727E90	Bus handler for Msg84403B90, subscribed by 82727E90 through MsgBus_Subscribe.
-82728608	MsgHandler_cMsgPauseSim_82727E90	Bus handler for cMsgPauseSim: field +0x10 set pushes input map mode (+0x14) on 830CFE24, else pops it
+82728608	MsgHandler_cMsgPauseSim_82727E90	Bus handler for cMsgPauseSim: field +0x10 set pushes the pause mode +0x14 on ThePauseMan (830CFE24), else pops it
 82728628	guess_ManualTime_Init	Guess: binds the D394 default record, posts the start / end frames message and subscribes.
 82728770	guess_ManualTime_UpdateFromSticks	Guess: run-47 b5.txt: reads two input axes (query slots 0x378 / 0x374) against the dead zone 82165A00; when both are idle in states 5..8 it resets the state +0x40 and posts cMsgManualTimeControllerState (hash 03FCFF70, lua-m...
 82728A38	guess_ManualTime_EvalInputs	Guess: evaluates input query slots 0x374, 0x378 and 0x380.
@@ -16115,8 +16115,8 @@
 82840600	LuaBind_NotifyChallengeRunning	retail Lua C binding NotifyChallengeRunning
 82840698	LuaBind_IsInChallenge	Lua binding IsInChallenge
 82840740	LuaBind_Ports	Lua binding Ports: builds a table of name and value pairs (enum)
-828409C8	LuaBind_PauseSimulation	retail Lua C binding PauseSimulation: pushes input map mode 5 on cInputMapParser 830CFE24 (mask 0xFFFFFFE1 from table 821D98D8)
-828409F8	LuaBind_UnpauseSimulation	retail Lua C binding UnpauseSimulation: pops input map mode 5 (830CFE24)
+828409C8	LuaBind_PauseSimulation	retail Lua C binding PauseSimulation: pushes pause mode 5 on ThePauseMan 830CFE24 (mask 0xFFFFFFE1: bit 0 set, so GameSession_StepSimulation stops stepping the worlds; bits 1..4 clear)
+828409F8	LuaBind_UnpauseSimulation	retail Lua C binding UnpauseSimulation: pops pause mode 5 (ThePauseMan 830CFE24)
 82840A28	LuaBind_DisablePauseMenuAndBackpack	retail Lua C binding DisablePauseMenuAndBackpack
 82840A58	LuaBind_EnablePauseMenuAndBackpack	Lua binding EnablePauseMenuAndBackpack; calls Singleton830CFE1C_Get
 82840AB0	LuaBind_eSk8Characters	Lua binding eSk8Characters: builds a table of name and value pairs (enum)
@@ -16504,7 +16504,7 @@
 8285C670	SimController_Ctor	Constructor of class 'SimController': called on the new block right after guess_Mem_AllocNamed with that tag (in 826D7070).
 8285C7C8	guess_SimController_DeletingDtor	Guess: slot 0 of the SimController vtable 82315270 (stored last by SimController_Ctor 8285C670); slot 0 is usually the deleting destructor here (slot0(obj, 1)); body not read.
 8285C8C0	guess_GameSession_IsScoreReleased	Guess: True when the online score is released and the timer +0x1330 passed 1 second.
-8285C928	GameSession_StepSimulation	research/b958-timer-order.md:99 (game-state update 826D78B0 calls the sim tick 8285C928 once per call); decompile: run-57/b4.txt calls guess_Simulation_StepWorldsByMask
+8285C928	GameSession_StepSimulation	Sim tick of the game state update (826D78B0 calls it once per call): steps the worlds (guess_Simulation_StepWorldsByMask) only while ThePauseMan bit 1 is not paused (82562148); paused, it restarts its timer and steps nothing
 8285CC28	guess_GameSession_ApplyPendingFlags	Guess: applies the pending flags at +0x1360, sets 8308417F, restarts the timer on bit 0.
 8285CCD8	guess_SimController_PushRecord	appends a 0x10C-byte record to the vector at +0x18 (grows via 8266FF60)
 8285CD18	guess_GameSession_UpdateScoreSubmit	Guess: Score submit step while +0x132C is clear.
