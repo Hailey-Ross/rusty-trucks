@@ -392,6 +392,10 @@ function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",a
 -- spawn_tables = {category = {entity, ...}} replaces what a census category spawns ({} = none), models = {entity =
 -- livingworld_models record}, glbs = {model record = GLB path}, paint_gain, retail 1; names as in vehicles.json,
 -- sdk.engine.inspect(key, "world_tuning:vehicles") lists the live tables; cars already on the road keep theirs)
+-- or the mod's own roads ("roads": roads = {name = {from = node, to = node, points = {{x, y, z}, ...} 2..256,
+-- lanes 1..4 each way (1), lane_width 2..8 m (3.5), speed_limit 1..60 m/s (11), two_way (true)}}; roads sharing
+-- a node name meet in a junction there, a node with one road is a dead end; the cars start over on the new
+-- network; sdk.engine.inspect(key, "world_tuning:roads") gives the segment and junction counts)
 -- or the dynamic shadow floor on the baked world ("shadows": world_floor =
 -- {r, g, b}, each 0..1, retail {0.05, 0.09, 0.13}; prop_floor 0..1, how dark props get in a building's shade,
 -- and prop_window, meters around the camera, both from the disc, retail 0.06 and 28.8) or the district backdrop ("backdrop": visible,

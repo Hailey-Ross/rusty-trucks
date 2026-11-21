@@ -34,16 +34,33 @@ impl SceneClip {
 
     /// The clip record named `name` (ASCII case ignored), or the bank's first clip with `None`.
     pub fn parse_named(bytes: Vec<u8>, name: Option<&str>) -> Result<Self, String> {
-        Self::parse_parts(bytes, name, false).map(|(clip, _)| clip)
+        Self::parse_parts(bytes, name, None).map(|(clip, _)| clip)
     }
 
-    /// A layer bank (miscload's `gesture/cac_<gender>_<name>.abin`): its pose stores only some hierarchy parts.
-    /// The first clip, and per bone whether a stored pose or clip part drives it (the rest is left to a base clip).
-    pub fn parse_layer(bytes: Vec<u8>) -> Result<(Self, Vec<bool>), String> {
-        Self::parse_parts(bytes, None, true)
+    /// A layer bank (miscload's `gesture/cac_<gender>_<name>.abin`): the first clip added onto `bind` (the skeleton's
+    /// bind pose, [`Self::parse_bind`] of the base bank; bones matched by name), and per bone whether a clip part
+    /// drives it (the rest is left to the base clip).
+    pub fn parse_layer(bytes: Vec<u8>, bind: &SceneClip) -> Result<(Self, Vec<bool>), String> {
+        Self::parse_parts(bytes, None, Some(bind))
     }
 
-    fn parse_parts(bytes: Vec<u8>, name: Option<&str>, layer: bool) -> Result<(Self, Vec<bool>), String> {
+    /// The bank's stored pose alone (the skeleton's bind pose a clip's deltas add onto), as a one-frame clip.
+    pub fn parse_bind(bytes: Vec<u8>) -> Result<Self, String> {
+        let bank = Bank::parse(bytes).map_err(|e| e.to_string())?;
+        let hierarchy = bank.hierarchy().ok_or("Scene clip has no hierarchy")?;
+        let (header, pose) = bank.records().iter().find_map(|r| match &r.data {
+            RecordData::Pose(p) => Some((r.header.clone(), p.clone())),
+            _ => None,
+        }).ok_or("Scene clip bank has no pose")?;
+        if header.codec() != Codec::Raw {
+            return Err(format!("{}: pose codec {:?} is not RAW", header.name, header.codec()));
+        }
+        let identity = [1.0f32, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0].map(f32::to_bits);
+        let (mut frames, _) = fill(&bank, &pose.parts, 1, vec![vec![identity; hierarchy.bone_count as usize]], true)?;
+        Ok(Self { name: header.name.clone(), bone_names: hierarchy.bone_names.clone(), parents: hierarchy.parents.clone(), fps: 30.0, frames: vec![frames.remove(0)] })
+    }
+
+    fn parse_parts(bytes: Vec<u8>, name: Option<&str>, layer: Option<&SceneClip>) -> Result<(Self, Vec<bool>), String> {
         let bank = Bank::parse(bytes).map_err(|e| e.to_string())?;
         let hierarchy = bank.hierarchy().ok_or("Scene clip has no hierarchy")?;
         let bones = hierarchy.bone_count as usize;
@@ -74,8 +91,16 @@ impl SceneClip {
             return Err(format!("{}: invalid frame rate", header.name));
         }
         let identity = [1.0f32, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0].map(f32::to_bits);
-        let (mut base, posed) = fill(&bank, &pose.parts, 1, vec![vec![identity; bones]], !layer)
-            .map_err(|e| format!("{} pose: {e}", header.name))?;
+        let seed: Vec<SampleWords> = hierarchy.bone_names.iter().map(|n| layer
+            .and_then(|b| b.bone_names.iter().position(|m| m.eq_ignore_ascii_case(n)).and_then(|j| b.frames.first()?.get(j).copied()))
+            .unwrap_or(identity)).collect();
+        // A layer's clip adds onto the skeleton's bind pose (`layer`, the base bank's pose), not onto its own bank's
+        // pose: with its own the gestures start and end with the arms up, on the bind pose they go down, out, down as
+        // in the PS3 recording [measured: test every_gesture_bank_parses_as_a_scene_clip].
+        let (mut base, posed) = match layer {
+            Some(_) => (vec![seed], vec![false; hierarchy.parts.len()]),
+            None => fill(&bank, &pose.parts, 1, vec![seed], true).map_err(|e| format!("{} pose: {e}", header.name))?,
+        };
         let base = base.remove(0);
         let (deltas, moved) = fill(&bank, &clip.parts, count as usize, vec![vec![identity; bones]; count as usize], false)
             .map_err(|e| format!("{}: {e}", header.name))?;

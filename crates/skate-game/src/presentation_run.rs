@@ -29,6 +29,10 @@ pub struct Presenter {
     pub cast_out: Arc<Mutex<Vec<CastSpeech>>>,
     /// The NIS player's requests and its end report (`nis_player`).
     pub nis: Arc<Mutex<NisHost>>,
+    /// `fe` record names the SFX events asked for (`play_sfx`).
+    pub sfx: Arc<Mutex<Vec<String>>>,
+    /// The TeleportLocalPlayer request and its end report.
+    pub teleport: Arc<Mutex<TeleportHost>>,
     /// Groups that finished or were removed (`presentationeventgroupfinished`), for owners that wait on a group
     /// (the career's Execute); the newest 64 kept.
     finished: Vec<String>,
@@ -58,7 +62,12 @@ impl Default for Presenter {
         }
         let nis = Arc::new(Mutex::new(NisHost::default()));
         handlers.set_engine("NIS", Box::new(NisHandler { host: nis.clone() }));
-        Self { manager: Manager::default(), handlers, fade, callout, sim, grants, speech, speech_out, cast_out, nis, finished: Vec::new(), driven: false }
+        let sfx = Arc::new(Mutex::new(Vec::new()));
+        handlers.set_engine("SFX", Box::new(SfxHandler { out: sfx.clone() }));
+        let teleport = Arc::new(Mutex::new(TeleportHost::default()));
+        handlers.set_engine("TeleportLocalPlayer", Box::new(TeleportHandler { host: teleport.clone() }));
+        Self { manager: Manager::default(), handlers, fade, callout, sim, grants, speech, speech_out, cast_out, nis, sfx, teleport,
+            finished: Vec::new(), driven: false }
     }
 }
 
@@ -548,6 +557,77 @@ impl Handler for NisHandler {
     }
 }
 
+/// SFX (type 65, research b874): hash64(arg1) to the audio object's vt+0x2C(hash, 0), the call Audio_PlayFeSound makes,
+/// so it plays the `fe` record named arg1; done at once.
+pub struct SfxHandler {
+    out: Arc<Mutex<Vec<String>>>,
+}
+
+impl Handler for SfxHandler {
+    fn start(&mut self, event: &Event) {
+        if let (Some(name), Ok(mut out)) = (event.args[0].clone().filter(|n| !n.is_empty()), self.out.lock()) {
+            info!("PRESENTATION SFX {name}");
+            out.push(name);
+        }
+    }
+}
+
+/// The scene's teleport request and its end report (`challenges.rs` resolves the locator and moves the skater).
+#[derive(Default, Debug)]
+pub struct TeleportHost {
+    /// A locator name the game has not taken yet.
+    pub request: Option<String>,
+    /// The teleport is done (or could not be made).
+    pub finished: bool,
+}
+
+/// TeleportLocalPlayer (type 8, start 8257A628, research b874): with arg2 empty, a teleport to locator arg1 with
+/// the 0.5 s transition (82D54C90), done when the transition ends (8257A7D8). NOT RETAIL YET: arg2 (a named target
+/// through the teleport subsystem's vt+0x24) is logged and done at once; no exported row sets it.
+pub struct TeleportHandler {
+    host: Arc<Mutex<TeleportHost>>,
+}
+
+impl Handler for TeleportHandler {
+    fn start(&mut self, event: &Event) {
+        let Ok(mut h) = self.host.lock() else { return };
+        let target = event.args[0].clone().filter(|n| !n.is_empty());
+        if event.args[1].as_deref().is_some_and(|a| !a.is_empty()) || target.is_none() {
+            info!("PRESENTATION TeleportLocalPlayer {:?} (not ported: done at once)", event.args);
+            h.request = None;
+            h.finished = true;
+            return;
+        }
+        info!("PRESENTATION TeleportLocalPlayer {target:?}");
+        h.request = target;
+        h.finished = false;
+    }
+    fn is_done(&mut self, _event: &Event) -> bool {
+        self.host.lock().map(|h| h.finished).unwrap_or(true)
+    }
+    fn stop(&mut self, _event: &Event) {
+        if let Ok(mut h) = self.host.lock() {
+            h.request = None;
+            h.finished = true;
+        }
+    }
+}
+
+/// Plays the SFX events' records. A teleport request no running tutorial took this frame (another owner's group)
+/// is done at once, as before its port. NOT RETAIL YET: teleports outside the tutorials.
+pub(crate) fn play_sfx(presenter: Option<bevy::prelude::Res<Presenter>>, mut sounds: bevy::prelude::MessageWriter<crate::ui_audio::FrontendSound>) {
+    let Some(p) = presenter else { return };
+    for name in p.sfx.lock().map(|mut o| std::mem::take(&mut *o)).unwrap_or_default() {
+        sounds.write(crate::ui_audio::FrontendSound::named(&name));
+    }
+    if let Ok(mut t) = p.teleport.lock() {
+        if let Some(name) = t.request.take() {
+            info!("PRESENTATION TeleportLocalPlayer {name}: no tutorial runs (not ported here: done at once)");
+            t.finished = true;
+        }
+    }
+}
+
 /// A type whose host is not ported yet: logged, done at once (NOT RETAIL YET for the waiting types such as NIS, FMV,
 /// Speech, which retail holds until their end message).
 pub struct Stub;
@@ -769,6 +849,24 @@ mod tests {
         p.reset_callout();
         crate::hud_challenge::take_callout(&mut hud, &p, None);
         assert_eq!((hud.callout.states.last(), hud.callout.sent), (Some(&-20), 3));
+    }
+
+    #[test]
+    fn sfx_queues_its_record_and_a_teleport_holds_its_group_until_the_move_ends() {
+        let mut p = Presenter::default();
+        p.manager.start(group("a", vec![ev("SFX", Some("tutorial_off")), ev("TeleportLocalPlayer", Some("tut_sksc_02_startlocator_01"))]));
+        let out = p.update(0.0);
+        assert_eq!(p.sfx.lock().unwrap().as_slice(), ["tutorial_off".to_string()]);
+        assert!(out.is_empty(), "the teleport holds the group");
+        assert_eq!(p.teleport.lock().unwrap().request.as_deref(), Some("tut_sksc_02_startlocator_01"));
+        p.teleport.lock().unwrap().request = None;
+        assert!(p.update(1.0 / 60.0).is_empty(), "taken, still moving");
+        p.teleport.lock().unwrap().finished = true;
+        assert!(matches!(p.update(1.0 / 60.0).as_slice(), [Out::GroupFinished(id)] if id == "a"));
+        let mut named = ev("TeleportLocalPlayer", Some("x"));
+        named.args[1] = Some("target".into());
+        p.manager.start(group("b", vec![named]));
+        assert!(matches!(p.update(0.0).as_slice(), [Out::GroupFinished(id)] if id == "b"), "a named target is done at once");
     }
 
     #[test]

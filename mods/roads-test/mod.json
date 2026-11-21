@@ -1,0 +1,10 @@
+{
+  "id": "dev-roads-test",
+  "api": 2,
+  "name": "Mod Roads Test (dev)",
+  "version": "0.1.0",
+  "author": "Hails",
+  "description": "Dev only, for branch world/challenges (doc 26h, Routes for mods): adds a two-way square loop of four roads beside the player's start and logs ROADS_TEST lines with the network's counts. Disabling it puts the map's roads back.",
+  "entry": "main.lua",
+  "enabled_by_default": false
+}

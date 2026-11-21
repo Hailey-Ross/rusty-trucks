@@ -405,6 +405,11 @@ pub(crate) struct PopulationState {
     /// The loaded catalog before mods' `vehicles` tuning (new entities, spawn tables); `vehicles` = this + the patch.
     vehicles_stock: Option<skate_core::living_world::VehicleCatalog>,
     vehicle_patch: (std::collections::BTreeMap<String, String>, std::collections::BTreeMap<String, Vec<String>>),
+    /// The map's road input before mods' `roads` tuning, the mods' roads, and a count of network rebuilds (traffic
+    /// clears its cars when it changes: their cursors index the old network).
+    roads_stock: Option<skate_core::living_world::traffic::RoadInput>,
+    road_patch: Vec<skate_core::living_world::traffic::mod_roads::ModRoad>,
+    pub roads_revision: u64,
     /// Replay-tier lines and voices of the loaded district (milestone 3).
     pub npc: npc_skaters::NpcData,
     /// The ranges from `tables.json` (re-applied after settings changes).
@@ -434,6 +439,9 @@ impl Default for PopulationState {
             vehicles: None,
             vehicles_stock: None,
             vehicle_patch: Default::default(),
+            roads_stock: None,
+            road_patch: Vec::new(),
+            roads_revision: 0,
             npc: npc_skaters::NpcData::default(),
             data_config: PopulationConfig::retail(),
             loaded_for: None,
@@ -478,6 +486,10 @@ impl PopulationState {
         self.census = data.census;
         self.skaters = data.skaters;
         self.roads = data.roads;
+        self.roads_stock = data.road_input;
+        if !self.road_patch.is_empty() {
+            self.patch_roads();
+        }
         self.vehicles_stock = data.vehicles;
         self.patch_vehicles();
         self.npc = data.npc;
@@ -489,6 +501,30 @@ impl PopulationState {
     pub(crate) fn set_vehicle_patch(&mut self, entities: std::collections::BTreeMap<String, String>, tables: std::collections::BTreeMap<String, Vec<String>>) {
         self.vehicle_patch = (entities, tables);
         self.patch_vehicles();
+    }
+
+    /// Mods' `roads` tuning (their own roads), kept across world loads; the network is rebuilt and the cars start over.
+    pub(crate) fn set_road_patch(&mut self, roads: Vec<skate_core::living_world::traffic::mod_roads::ModRoad>) {
+        if roads == self.road_patch {
+            return;
+        }
+        self.road_patch = roads;
+        self.patch_roads();
+    }
+
+    fn patch_roads(&mut self) {
+        use skate_core::living_world::traffic::{mod_roads, RoadNetwork};
+        let (input, warnings) = mod_roads::with_mod_roads(self.roads_stock.as_ref(), &self.road_patch);
+        for w in warnings {
+            warn!("LIVING_WORLD roads tuning: {w}");
+        }
+        let empty = input.segments.is_empty();
+        self.roads = if empty { None } else {
+            RoadNetwork::build(&input).map_err(|e| warn!("LIVING_WORLD roads tuning: {e}; the map's roads only")).ok()
+                .or_else(|| self.roads_stock.as_ref().and_then(|s| RoadNetwork::build(s).ok()))
+        };
+        self.roads_revision += 1;
+        info!("LIVING_WORLD roads: {} segments ({} mod roads)", self.roads.as_ref().map_or(0, |r| r.segments.len()), self.road_patch.len());
     }
 
     fn patch_vehicles(&mut self) {
@@ -522,6 +558,8 @@ pub(crate) struct LoadedData {
     pub census: Option<CensusMap>,
     pub skaters: Option<SkaterData>,
     pub roads: Option<skate_core::living_world::traffic::RoadNetwork>,
+    /// The map's road input the network was built from (mods' roads are added to it).
+    pub road_input: Option<skate_core::living_world::traffic::RoadInput>,
     pub vehicles: Option<skate_core::living_world::VehicleCatalog>,
     pub npc: npc_skaters::NpcData,
     pub status: String,
@@ -595,18 +633,17 @@ pub(crate) fn load_data(asset_root: &Path, district: &str) -> LoadedData {
     // Roads and vehicle entities (milestone V2). The file holds every district, but the districts
     // are separate worlds overlapping in x / z (doc 26, "Cars flying off"): only the loaded
     // district's roads join the network, or cars land on another district's road in the air.
-    let roads = std::fs::read(dir.join("roads.bin")).ok().and_then(|b| {
-        let built = skate_data::roads::RoadGraph::parse(&b).map_err(|e| e.to_string()).and_then(|g| match g.district_traffic_input(district) {
-            Some(input) => skate_core::living_world::traffic::RoadNetwork::build(&input).map(Some).map_err(|e| e.to_string()),
-            None => Ok(None),
-        });
-        built.map_err(|e| status.push(format!("roads: {e}"))).ok().flatten()
+    let road_input = std::fs::read(dir.join("roads.bin")).ok().and_then(|b| {
+        skate_data::roads::RoadGraph::parse(&b).map(|g| g.district_traffic_input(district)).map_err(|e| status.push(format!("roads: {e}"))).ok().flatten()
+    });
+    let roads = road_input.as_ref().and_then(|input| {
+        skate_core::living_world::traffic::RoadNetwork::build(input).map_err(|e| status.push(format!("roads: {e}"))).ok()
     });
     let vehicles = std::fs::read(dir.join("vehicles.json")).ok().and_then(|b| skate_data::living_world::vehicle_catalog(&b).map_err(|e| status.push(e.to_string())).ok());
     if let Some(first) = status.first_mut() {
         first.push_str(&format!(", roads {}, vehicle entities {}", roads.as_ref().map_or(0, |r| r.segments.len()), vehicles.as_ref().map_or(0, |v| v.entities.len())));
     }
-    LoadedData { config, census, skaters, roads, vehicles, npc, status: status.join("; ") }
+    LoadedData { config, census, skaters, roads, road_input, vehicles, npc, status: status.join("; ") }
 }
 
 /// `characters_marquee` voice ids by character key (`skater_profiles.json` `characters.*.voice`).

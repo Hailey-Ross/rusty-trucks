@@ -84,11 +84,11 @@ struct Viewer {
     saved: Option<Option<String>>,
     shown: Option<Skater>,
     clip: Option<Option<Arc<SceneClip>>>,
-    /// The bank and clip `clip` was loaded for (FE 15's body targets change it).
-    clip_key: Option<(String, String)>,
-    /// A play-once body target's clip that played out (the stand shows again) and the body clip posted last.
-    once_done: Option<String>,
-    last_body: Option<String>,
+    /// The bank and clip `clip` was loaded for (FE 15's body targets change it), and whether the board is hidden.
+    clip_key: Option<(String, String, bool)>,
+    /// A play-once body target (clip, post) that played out (the stand shows again) and the body posted last.
+    once_done: Option<(String, u32)>,
+    last_body: Option<(String, u32)>,
     /// SKATE_TRACE_MARQUEE only: the bone transforms written last frame.
     written: Vec<(Entity, Transform)>,
     bindings: Option<AnimationStatus>,
@@ -112,10 +112,42 @@ impl Plugin for MarqueePreviewPlugin {
     }
 }
 
-/// `layer`'s driven bones over `base`, matched by bone name, at the layer's frames and rate (the base loops).
+/// The board bone scaled to nothing, its trucks and wheels with it.
+fn without_board(mut clip: SceneClip) -> SceneClip {
+    if let Some(b) = clip.bone_names.iter().position(|n| n.eq_ignore_ascii_case("SKATEBOARD_ROOT")) {
+        for frame in &mut clip.frames {
+            for s in &mut frame[b][0..3] {
+                *s = 0.0f32.to_bits();
+            }
+        }
+    }
+    clip
+}
+
+/// The bone a gesture layer starts at: it and its descendants take the gesture.
+const GESTURE_LAYER_ROOT: &str = "SPINE";
+
+/// Whether `bone` is `root` or below it in `clip`'s hierarchy.
+fn under(clip: &SceneClip, mut bone: usize, root: &str) -> bool {
+    loop {
+        if clip.bone_names[bone].eq_ignore_ascii_case(root) {
+            return true;
+        }
+        match usize::try_from(clip.parents[bone]) {
+            Ok(p) if p != bone && p < clip.bone_names.len() => bone = p,
+            _ => return false,
+        }
+    }
+}
+
+/// `layer`'s driven bones from SPINE down over `base`, matched by bone name, at the layer's frames and rate (the
+/// base loops). The gesture banks are recorded riding: their TRAJECTORY faces 90 degrees away from the stand's and
+/// their stored hips and legs are a riding stance, while the PS3 recording shows the gestures facing the camera
+/// on standing legs, so the root, hips, legs and board stay the base's [inferred from the recording].
 fn layered(base: &SceneClip, layer: &SceneClip, driven: &[bool]) -> SceneClip {
-    let from: Vec<Option<usize>> = base.bone_names.iter()
-        .map(|n| layer.bone_names.iter().position(|l| l.eq_ignore_ascii_case(n)).filter(|&i| driven.get(i) == Some(&true)))
+    let from: Vec<Option<usize>> = base.bone_names.iter().enumerate()
+        .map(|(b, n)| layer.bone_names.iter().position(|l| l.eq_ignore_ascii_case(n))
+            .filter(|&i| driven.get(i) == Some(&true) && under(base, b, GESTURE_LAYER_ROOT)))
         .collect();
     let frames = (0..layer.frames.len()).map(|i| {
         let at = ((i as f32 / layer.fps * base.fps) as usize) % base.frames.len().max(1);
@@ -182,15 +214,19 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
     }
     stage_camera(world, &mut viewer, &stage);
     // FE 15's body target: the row's clip, yaw and place (82532800).
-    let body_clip = body.as_ref().map(|b| b.clip.clone());
+    let body_clip = body.as_ref().map(|b| (b.clip.clone(), b.post));
     if viewer.last_body != body_clip {
         viewer.last_body = body_clip;
         viewer.once_done = None;
+        viewer.time = 0.0;
     }
+    // While a gesture row is posted the board is hidden (the PS3 recording: no board on the gesture slots, back on
+    // Stance). Retail's base under gestures, `cas_gesturestand_cycle`, is in no installed bank [inferred].
+    let hide_board = body.as_ref().is_some_and(|b| b.once);
     let mut once = false;
     let mut first_clip = false;
     if let Some(body) = &body {
-        let done = body.once && viewer.once_done.as_deref() == Some(body.clip.as_str());
+        let done = body.once && viewer.once_done.as_ref().is_some_and(|(c, p)| *c == body.clip && *p == body.post);
         if let Some((bank, clip)) = body_bank(&body.clip, male).filter(|_| !done) {
             stage.bank = bank;
             first_clip = clip.is_none();
@@ -200,8 +236,8 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
         stage.heading_degrees = body.yaw_degrees;
         stage.position = stage.origin + Vec3::from_array(body.position);
     }
-    if viewer.clip_key.as_ref() != Some(&(stage.bank.clone(), stage.clip.clone())) {
-        viewer.clip_key = Some((stage.bank.clone(), stage.clip.clone()));
+    if viewer.clip_key.as_ref() != Some(&(stage.bank.clone(), stage.clip.clone(), hide_board)) {
+        viewer.clip_key = Some((stage.bank.clone(), stage.clip.clone(), hide_board));
         viewer.clip = None;
         viewer.bound_for = None;
         viewer.time = 0.0;
@@ -216,14 +252,16 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
         // A gesture bank is a layer over the stand: its parts' bones on top of the stand clip [inferred: the banks'
         // poses store only some parts; retail's gesture stand cycle is not in the install].
         let parsed = if first_clip {
-            read(&path).and_then(SceneClip::parse_layer).and_then(|(layer, driven)| {
-                read(&anim.join(&stand.0)).and_then(|b| SceneClip::parse_named(b, Some(&stand.1)))
-                    .map(|base| layered(&base, &layer, &driven))
-            })
+            read(&anim.join(&stand.0)).and_then(|b| Ok((SceneClip::parse_named(b.clone(), Some(&stand.1))?, SceneClip::parse_bind(b)?)))
+                .and_then(|(base, bind)| {
+                    read(&path).and_then(|b| SceneClip::parse_layer(b, &bind)).map(|(layer, driven)| layered(&base, &layer, &driven))
+                })
         } else {
             read(&path).and_then(|b| SceneClip::parse_named(b, Some(&stage.clip)))
         };
         parsed
+            .map(|c| if hide_board { without_board(c) } else { c })
+            .inspect(|c| info!("MARQUEE_VIEWER clip {} ({:.2} s, once {once}, board hidden {hide_board})", stage.clip, c.duration()))
             .inspect_err(|e| warn!("MARQUEE_VIEWER clip {} in {}: {e}", stage.clip, path.display()))
             .ok().map(Arc::new)
     }).clone();
@@ -237,7 +275,8 @@ fn drive(world: &mut World, mut viewer: Local<Viewer>) {
     }
     let dt = world.resource::<Time<Real>>().delta_secs();
     viewer.time = if once {
-        if viewer.time + dt >= clip.duration() {
+        if viewer.time + dt >= clip.duration() && viewer.once_done.is_none() {
+            info!("MARQUEE_VIEWER played {} once", clip.name);
             viewer.once_done = viewer.last_body.clone();
         }
         (viewer.time + dt).min(clip.duration())
@@ -395,13 +434,38 @@ mod tests {
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
             count += 1;
-            match SceneClip::parse_layer(std::fs::read(&path).unwrap()) {
+            let bind = SceneClip::parse_bind(std::fs::read(root.join("private/stock/data/anim").join(&stage.bank)).unwrap()).unwrap();
+            match SceneClip::parse_layer(std::fs::read(&path).unwrap(), &bind) {
                 Ok((clip, driven)) => {
                     let merged = layered(&stand, &clip, &driven);
+                    // The Airplane as in the PS3 recording (9:05..9:23): arms down at the start and the end, straight
+                    // out to the sides in the middle.
+                    if path.to_string_lossy().contains("cac_female_airplane") {
+                        let at = |n: &str| merged.bone_names.iter().position(|b| b == n).unwrap();
+                        let arm_y = |t: f32| {
+                            let g = crate::trick_guide_scene::pose(&merged, t).unwrap();
+                            let p = |n: &str| crate::animation::native_matrix(g[at(n)]).w_axis.truncate();
+                            [(p("RIGHTHAND") - p("RIGHTARM")).normalize().y, (p("LEFTHAND") - p("LEFTARM")).normalize().y]
+                        };
+                        assert!(arm_y(0.0).iter().all(|y| *y < -0.8), "down at the start: {:?}", arm_y(0.0));
+                        assert!(arm_y(1.0).iter().all(|y| y.abs() < 0.3), "out to the sides: {:?}", arm_y(1.0));
+                        assert!(arm_y(1.8).iter().all(|y| *y < -0.8), "down at the end: {:?}", arm_y(1.8));
+                    }
                     let shared = stand.bone_names.iter().filter(|n| clip.bone_names.iter().enumerate()
                         .any(|(i, l)| driven[i] && l.eq_ignore_ascii_case(n))).count();
                     if clip.duration() <= 0.0 || shared == 0 || merged.frames.len() != clip.frames.len() {
                         failures.push(format!("{}: {shared} bones shared with the stand", path.display()));
+                    }
+                    // Bones keep their length: a part the clip moves but the pose leaves out must not collapse.
+                    let length = |w: &[u32; 10]| (w[7..10].iter().map(|b| f32::from_bits(*b).powi(2)).sum::<f32>()).sqrt();
+                    // Root children and the board move freely.
+                    let worst = merged.frames.iter().flat_map(|f| f.iter().zip(&stand.frames[0]).enumerate()
+                        .filter(|(b, _)| stand.parents[*b] > 0 && !stand.bone_names[*b].to_ascii_uppercase().contains("SKATEBOARD"))
+                        .map(|(b, (m, s))| ((length(m) - length(s)).abs(), b))).fold((0.0f32, 0), |a, x| if x.0 > a.0 { x } else { a });
+                    if worst.0 > 0.05 {
+                        let name = &stand.bone_names[worst.1];
+                        let mode = clip.bone_names.iter().position(|l| l.eq_ignore_ascii_case(name)).map(|i| driven[i]);
+                        failures.push(format!("{}: bone {} {name} ({mode:?}) length changes by {:.3}", path.display(), worst.1, worst.0));
                     }
                 }
                 // Unused banks without a clip (cac_<gender>_axe: no vault row names it).

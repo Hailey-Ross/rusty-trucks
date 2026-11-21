@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const DOMAINS: [&str; 12] = ["living_world", "props", "carry", "shadows", "backdrop", "respawn", "exposure", "ghost", "decals", "video_screens", "prop_sounds", "vehicles"];
+pub const DOMAINS: [&str; 13] = ["living_world", "props", "carry", "shadows", "backdrop", "respawn", "exposure", "ghost", "decals", "video_screens", "prop_sounds", "vehicles", "roads"];
 
 /// Longest skater fade-in after a placement a mod may set (s).
 pub const MAX_GHOST_FADE_IN_SECONDS: f32 = 60.0;
@@ -822,6 +822,57 @@ impl VehiclesPatch {
     }
 }
 
+/// A mod's own roads (ask 611, "routes for mods"; ours, not retail): road name -> its center line and lanes, joined
+/// at named nodes (`skate_core::living_world::traffic::mod_roads`). Empty = the map's roads only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoadsPatch {
+    #[serde(default)]
+    pub roads: BTreeMap<String, RoadPatch>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoadPatch {
+    /// Node names the road runs from and to (roads sharing a node name meet in a junction there).
+    pub from: String,
+    pub to: String,
+    /// The center line in world meters, 2 to 256 points.
+    pub points: Vec<[f32; 3]>,
+    /// Lanes each way (1 to 4, default 1), lane width in meters (2 to 8, default 3.5), speed limit in m/s (1 to 60,
+    /// default 11), and whether the road runs both ways (default true).
+    pub lanes: Option<u8>,
+    pub lane_width: Option<f32>,
+    pub speed_limit: Option<f32>,
+    pub two_way: Option<bool>,
+}
+
+/// Roads one patch may add.
+pub const MAX_MOD_ROADS: usize = 512;
+
+impl RoadsPatch {
+    fn validate(&self) -> bool {
+        let named = |s: &String| !s.is_empty() && s.len() <= 128;
+        self.roads.len() <= MAX_MOD_ROADS
+            && self.roads.iter().all(|(name, r)| {
+                named(name) && named(&r.from) && named(&r.to) && r.from != r.to
+                    && (2..=256).contains(&r.points.len())
+                    && r.points.iter().flatten().all(|v| v.is_finite() && v.abs() <= MAX_NUMBER)
+                    && r.lanes.is_none_or(|l| (1..=4).contains(&l))
+                    && r.lane_width.is_none_or(|w| w.is_finite() && (2.0..=8.0).contains(&w))
+                    && r.speed_limit.is_none_or(|s| s.is_finite() && (1.0..=60.0).contains(&s))
+            })
+    }
+}
+
+impl Merge for RoadsPatch {
+    fn merge(&mut self, b: &Self) {
+        for (k, v) in &b.roads {
+            self.roads.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExposurePatch {
@@ -1544,6 +1595,7 @@ pub enum Patch {
     VideoScreens(VideoScreensPatch),
     PropSounds(PropSoundsPatch),
     Vehicles(VehiclesPatch),
+    Roads(RoadsPatch),
 }
 
 /// Parse and validate a patch for `domain` (`None` = unknown domain, unknown field or bad value).
@@ -1561,6 +1613,7 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         "video_screens" => Patch::VideoScreens(serde_json::from_value(patch.clone()).ok()?),
         "prop_sounds" => Patch::PropSounds(serde_json::from_value(patch.clone()).ok()?),
         "vehicles" => Patch::Vehicles(serde_json::from_value(patch.clone()).ok()?),
+        "roads" => Patch::Roads(serde_json::from_value(patch.clone()).ok()?),
         _ => return None,
     };
     let ok = match &p {
@@ -1576,6 +1629,7 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         Patch::VideoScreens(p) => p.validate(),
         Patch::PropSounds(p) => p.validate(),
         Patch::Vehicles(p) => p.validate(),
+        Patch::Roads(p) => p.validate(),
     };
     ok.then_some(p)
 }
@@ -1605,6 +1659,10 @@ mod tests {
         assert!(!valid_patch("vehicles", &json!({"entities": {"a": "a"}})));
         assert!(!valid_patch("vehicles", &json!({"paint_gain": -1.0})));
         assert!(!valid_patch("vehicles", &json!({"routes": {}})));
+        assert!(valid_patch("roads", &json!({"roads": {"loop_a": {"from": "a", "to": "b", "points": [[0, 0, 0], [0, 0, 50]], "lanes": 2, "two_way": false}}})));
+        assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "a", "points": [[0, 0, 0], [0, 0, 50]]}}})), "a road needs two nodes");
+        assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0]]}}})), "and two points");
+        assert!(!valid_patch("roads", &json!({"roads": {"x": {"from": "a", "to": "b", "points": [[0, 0, 0], [1, 0, 0]], "lanes": 9}}})));
         // The NPC skaters' obstacle avoider.
         assert!(valid_patch("living_world", &json!({"npc_avoid": {"enabled": false, "speed_margin": 2.0, "radius_pedestrian": 12.0, "cone": 1.0, "max_entries": 8}})));
         assert!(!valid_patch("living_world", &json!({"npc_avoid": {"cone": 4.0}})));
@@ -1724,7 +1782,8 @@ mod tests {
         assert!(!valid_patch("respawn", &json!({"air_timeout_ticks": -1})));
         assert!(!valid_patch("respawn", &json!({"air_timeout": 300})));
         assert!(valid_inspect("world_tuning:respawn"));
-        assert!(!valid_patch("roads", &json!({})));
+        assert!(!valid_patch("routes", &json!({})));
+        assert!(valid_patch("roads", &json!({})), "an empty roads patch is the map's roads only");
         assert!(valid_inspect("world_tuning:carry") && !valid_inspect("world_tuning:x"));
     }
 

@@ -254,6 +254,12 @@ pub enum Command {
     ResetObjectives,
     FailAllObjectives,
     RemoveAllHighlights,
+    /// ObjectiveComplete with the objective's highlight (b933): AddHighlight(the group's tier, its definition, start =
+    /// the sequence's first frame, end = now). The host knows which objective and its definition.
+    AddHighlight { killed: bool },
+    /// The HighlightReel enter before PlayHighlightReel: keep the result's tier, else the first owned objective's
+    /// highlight (`highlights::Highlights::reel`).
+    PrepareReel { killed: bool },
     CentralMessage(Message),
     Speech(Speech),
     KilledItEffect(bool),
@@ -528,6 +534,7 @@ impl FilmRun {
                 }
             }
             State::HighlightReel => {
+                out.push(Command::PrepareReel { killed: self.result == Flow::Kill });
                 out.push(Command::Speech(Speech::BeginReplay));
                 out.push(Command::PlayHighlightReel);
             }
@@ -645,10 +652,11 @@ impl FilmRun {
                     out.push(Command::CentralMessage(Message::ReturnToArea));
                 }
             }
-            (State::ChallengeRunning, Event::ObjectiveComplete { last, .. }) if !self.locked_out && self.ids.owned_pending.is_none() => {
+            (State::ChallengeRunning, Event::ObjectiveComplete { killed, last }) if !self.locked_out && self.ids.owned_pending.is_none() => {
                 if !last {
                     out.push(Command::Speech(Speech::CompleteAnObjective));
                 }
+                out.push(Command::AddHighlight { killed });
                 self.completed_one = true;
             }
             (State::ChallengeRunning, Event::AllObjectivesComplete { killed }) if !self.locked_out || killed => {

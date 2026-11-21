@@ -254,6 +254,8 @@ pub(crate) struct FtlState {
     feed: crate::challenge_objectives::ObjectiveFeed,
     /// The autopilot's area lines were looked up for this run (films).
     area_checked: bool,
+    /// The highlights and the highlight reel (research b1050).
+    reel: ReelState,
 }
 
 #[derive(Resource, Default)]
@@ -365,7 +367,7 @@ fn start(ftl: &mut FollowTheLeader, wanted: &str, config: &crate::config::Config
     let commands = run.start();
     info!("SKATE_FTL {wanted}: {} objective groups (killed it: {})", groups.len(), groups.iter().any(|g| g.killed));
     let mut state = FtlState { data, run, groups, evaluating: false, leader, awaiting_teleport: false, band: Some(FollowerBand::default()),
-        carry: 0.0, eval_carry: 0.0, leader_last: None, leader_speed: 0.0, leader_path: Vec::new(), last_state: 0, failure_text: None, dialog_open: false, dialog_seconds: 0.0, leaders_in_end: Vec::new(), follow_indicators: Vec::new(), meter: None, queued: Vec::new(), feed: Default::default(), area_checked: false };
+        carry: 0.0, eval_carry: 0.0, leader_last: None, leader_speed: 0.0, leader_path: Vec::new(), last_state: 0, failure_text: None, dialog_open: false, dialog_seconds: 0.0, leaders_in_end: Vec::new(), follow_indicators: Vec::new(), meter: None, queued: Vec::new(), feed: Default::default(), area_checked: false, reel: Default::default() };
     // The first commands run on the next update with the frame's resources.
     state.pending(commands);
     ftl.run = Some(state);
@@ -374,6 +376,59 @@ fn start(ftl: &mut FollowTheLeader, wanted: &str, config: &crate::config::Config
 impl FtlState {
     fn pending(&mut self, commands: Vec<Command>) {
         self.queued.extend(commands);
+    }
+}
+
+/// A film's highlights (cHighlightGroup) and its reel (research b1050).
+#[derive(Default)]
+struct ReelState {
+    highlights: skate_core::challenges::highlights::Highlights,
+    /// The replay time the running sequence began at (SequenceBegin: the highlight's start).
+    sequence_begin: f64,
+    in_sequence: bool,
+    /// The objectives that completed (tier, index) in order, one per AddHighlight that follows.
+    completed: std::collections::VecDeque<(bool, usize)>,
+    clips: std::collections::VecDeque<skate_core::challenges::highlights::Highlight>,
+    playing: bool,
+    /// The clips played so far this reel (the take a scene with several and no cut list uses).
+    played: usize,
+    /// The NIS scenes' camera takes by scene name (scene_000.bin + ice_000.bin), loaded on the first reel.
+    scenes: Option<std::collections::HashMap<String, Vec<skate_core::camera_track::CameraTrack>>>,
+}
+
+/// Every NIS scene's ICE camera takes by name (lower case), from the install's scene table.
+fn scene_cameras(asset_root: &std::path::Path) -> std::collections::HashMap<String, Vec<skate_core::camera_track::CameraTrack>> {
+    let dir = asset_root.join("private/hud/scene");
+    let (Ok(table), Ok(ice)) = (std::fs::read(dir.join("scene_000.bin")), std::fs::read(dir.join("ice_000.bin"))) else { return Default::default() };
+    let Ok(scenes) = skate_data::scene_table::parse(&table) else { return Default::default() };
+    scenes.iter().filter_map(|s| {
+        let tracks = skate_data::ice_camera::scene_tracks(&ice, s.hash).ok().filter(|t| !t.is_empty())?;
+        Some((s.name.to_ascii_lowercase(), tracks))
+    }).collect()
+}
+
+impl ReelState {
+    /// 82BCE0D8 / 82BCDFC0: starts the next clip on the replay as its NIS scene (the scene's camera take fitted to
+    /// the window, `ReelShot`); false when none is left (the reel is complete). A scene with several takes and no cut
+    /// list uses them in turn, clip by clip [inferred]; a scene without camera data keeps the recorded game camera.
+    fn next_clip(&mut self, replay: Option<&mut crate::replay::Replay>, asset_root: &std::path::Path) -> bool {
+        let (Some(clip), Some(replay)) = (self.clips.pop_front(), replay) else {
+            self.playing = false;
+            self.played = 0;
+            return false;
+        };
+        let fps = f64::from(self.highlights.rules.frames_per_second);
+        let (start, end) = (f64::from(clip.start) / fps, f64::from(clip.end) / fps);
+        let scenes = self.scenes.get_or_insert_with(|| scene_cameras(asset_root));
+        let track = scenes.get(&clip.scene.scene.to_ascii_lowercase())
+            .and_then(|takes| takes.get(self.played % takes.len().max(1))).cloned();
+        let located = clip.scene.located.then(|| (Vec3::from_array(clip.scene.position), Vec3::from_array(clip.scene.direction)));
+        info!("SKATE_FTL highlight clip {} frames {}..{} camera {}", clip.scene.scene, clip.start, clip.end,
+            if track.is_some() { "scene take" } else { "game camera (no scene take)" });
+        replay.play_reel_clip(start, end, track.map(|track| (track, located)));
+        self.played += 1;
+        self.playing = true;
+        true
     }
 }
 
@@ -420,8 +475,8 @@ fn update(
     mut hud: ResMut<ChallengeHudState>,
     mut end_dialog: Option<ResMut<crate::end_dialog_host::EndDialogScreen>>,
     mut autopilot: Option<ResMut<crate::autopilot::Autopilot>>,
-    (time, menus, mut follow, mut presenter): (Res<Time>, Option<Res<crate::retail_menus::RetailMenus>>, ResMut<crate::visual_indicators::FollowIndicators>, Option<ResMut<crate::presentation_run::Presenter>>),
-    (challenges, pad, physics): (Option<Res<crate::challenges::Challenges>>, Option<Res<crate::input::ControllerInput>>, Option<Res<crate::physics::GamePhysics>>),
+    (time, menus, mut follow, mut presenter, mut replay): (Res<Time>, Option<Res<crate::retail_menus::RetailMenus>>, ResMut<crate::visual_indicators::FollowIndicators>, Option<ResMut<crate::presentation_run::Presenter>>, Option<ResMut<crate::replay::Replay>>),
+    (challenges, pad, physics, config): (Option<Res<crate::challenges::Challenges>>, Option<Res<crate::input::ControllerInput>>, Option<Res<crate::physics::GamePhysics>>, Option<Res<crate::config::Config>>),
     (mut population, index, npc_transforms, mut clocks, mut commands_ecs, replays, mut brains): (
         Option<ResMut<crate::living_world::PopulationState>>,
         Option<Res<crate::living_world::npc_skaters::NpcSkaterIndex>>,
@@ -450,6 +505,7 @@ fn update(
         return;
     };
     let id = state.data.id.clone();
+    let asset_root = config.as_ref().map(|c| c.asset_root.clone()).unwrap_or_default();
     let mut commands = std::mem::take(&mut state.queued);
     // The end options dialog: its pick feeds Continue / Retry; the autopilot continues after a short look.
     if state.dialog_open {
@@ -623,8 +679,29 @@ fn update(
     let killed_of: Vec<bool> = state.groups.iter().map(|g| g.killed).collect();
     let mut groups: Vec<&mut DataObjectives> = state.groups.iter_mut().map(|g| &mut g.objectives).collect();
     let fed = state.feed.step(&mut groups, &feed_input, state.evaluating);
+    // SequenceBegin (b933): the replay time a line began, the start of the highlight its objective adds.
+    let in_sequence = skater.scoring.sequence_active();
+    if in_sequence && !state.reel.in_sequence {
+        state.reel.sequence_begin = replay.as_deref().map_or(0.0, |r| r.last_time());
+    }
+    state.reel.in_sequence = in_sequence;
+    // A reel clip played out: the next one (cMsgNISComplete -> 82BCDFC0), after the last the reel is complete.
+    if state.reel.playing && replay.as_deref().is_none_or(|r| r.reel_done) {
+        if let Some(r) = replay.as_deref_mut() {
+            r.reel_done = false;
+            // A skip ends the whole reel (82BCDFC0).
+            if std::mem::take(&mut r.reel_skipped) {
+                state.reel.clips.clear();
+            }
+        }
+        if !state.reel.next_clip(replay.as_deref_mut(), &asset_root) {
+            info!("SKATE_FTL {id} highlight reel complete");
+            commands.extend(state.run.handle(Event::HighlightReelComplete));
+        }
+    }
     if state.evaluating {
         let events: Vec<(bool, GroupEvent)> = fed.into_iter().map(|(i, e)| (killed_of[i], e)).collect();
+        let finished: Vec<bool> = events.iter().filter(|(_, e)| *e == GroupEvent::AllComplete).map(|(k, _)| *k).collect();
         for g in &mut state.groups {
             let o = &mut g.objectives;
             for (competitor, on) in o.follow_indicator.drain(..) {
@@ -647,6 +724,9 @@ fn update(
             match e {
                 GroupEvent::Completed(i) => {
                     info!("SKATE_FTL {id} objective {i} complete (killed it group: {killed}) {}", rows.get(i).map_or("", |o| o.key.as_str()));
+                    // ObjectiveComplete to the machine (b933): the partial-objective speech and its highlight.
+                    state.reel.completed.push_back((killed, i));
+                    commands.extend(state.run.handle(Event::ObjectiveComplete { killed, last: finished.contains(&killed) }));
                 }
                 GroupEvent::AllComplete => {
                     info!("SKATE_FTL {id} all objectives complete (killed it group: {killed})");
@@ -768,7 +848,34 @@ fn update(
                     };
                     central.write(crate::hud_central::CentralMessage::new(text));
                 }
-                Command::PlayHighlightReel => queue.extend(state.run.handle(Event::HighlightReelComplete)),
+                // The highlights (research b1050): a window per completed objective with a HighlightDefinition, in
+                // replay frames (1/60 s); the reel plays the result's tier, each window as a replay clip.
+                Command::AddHighlight { killed } => {
+                    let def = state.reel.completed.pop_front().filter(|(k, _)| *k == killed).and_then(|(k, i)| {
+                        let rows = if k { &state.data.objectives.killed } else { &state.data.objectives.owned };
+                        rows.get(i).and_then(|o| o.highlight.as_ref()).map(|h| h.definition())
+                    });
+                    if let (Some(def), Some(r)) = (def, replay.as_deref()) {
+                        let frames = |t: f64| (t * f64::from(state.reel.highlights.rules.frames_per_second)).max(0.0) as u32;
+                        let begin = if state.reel.in_sequence { state.reel.sequence_begin } else { r.last_time() };
+                        // NOT RETAIL YET: the Lua call's drop-oldest argument (arg 6) is not read; ours drops.
+                        let added = state.reel.highlights.add(&def, killed, frames(begin), frames(r.last_time()), true, 0.0, 0.0);
+                        info!("SKATE_FTL {id} highlight added={added} {:?}", state.reel.highlights.list().last());
+                    }
+                }
+                Command::RemoveAllHighlights => state.reel.highlights.clear(),
+                Command::PrepareReel { killed } => {
+                    let fallback = state.data.objectives.owned.iter().find_map(|o| o.highlight.as_ref()).map(|h| h.definition());
+                    let fps = f64::from(state.reel.highlights.rules.frames_per_second);
+                    let last = replay.as_deref().map_or(0, |r| (r.last_time() * fps) as u32);
+                    state.reel.clips = state.reel.highlights.reel(killed, fallback.as_ref(), last).into();
+                    info!("SKATE_FTL {id} highlight reel: {} clips", state.reel.clips.len());
+                }
+                Command::PlayHighlightReel => {
+                    if !state.reel.next_clip(replay.as_deref_mut(), &asset_root) {
+                        queue.extend(state.run.handle(Event::HighlightReelComplete));
+                    }
+                }
                 Command::OpenContinueRetry => {
                     let killed = state.run.result() == Flow::Kill;
                     let won = killed || state.run.result() == Flow::Win;
@@ -789,6 +896,8 @@ fn update(
                 other => info!("SKATE_FTL {id} {other:?}"),
             }
         }
+        // A completion the machine ignored (locked out) adds no highlight.
+        state.reel.completed.clear();
         // The waits the machine polls: assets (none to load), the leader's existence (spawned at once or never).
         match state.run.state() {
             State::WaitForAssetLoad => commands.extend(state.run.handle(Event::AssetsLoaded)),
@@ -901,7 +1010,7 @@ mod tests {
         ObjectiveData { key: key.into(), activation: 0, triggers, points_valid: None,
             condition: serde_json::json!({"locals": 0, "body": [{"return": {"api": "ObjectiveTrigger.IsInVolume",
                 "args": [{"lit": "1"}, {"lit": format!("DIST_DownTown|{volume}")}]}}]}),
-            failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true }
+            failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None }
     }
 
     #[test]

@@ -4338,7 +4338,7 @@
 824AEE60	guess_SFXCTL_3DObjPos_UpdateListenerParams	Guess: run-20/b3-b4: object position and velocity against the listener (830CFDD4); writes controller params 0xD / 0xE and sets bits 0x80000000 / 0x40000000 of param 0xF when a value crosses between frames
 824AF1C8	AttribRef_InitClassB29C3B2C13D96482	Structural: binds an AttribRef to Attrib collection (class 0xB29C3B2C13D96482, key 0xD7EDBD362D7D2152) with the shared default 830D0850.
 824AF240	guess_SFXObj_GetInputU15	Guess: Shared SFXObj slot: same lookup masked to 15 bits
-824AF280	guess_SFXObj_ResolveLocString	Guess: resolves a localized audio asset string under the mutex
+824AF280	guess_FadeToWhite_InitRecord	Guess: builds the fade_to_white class record (4096, 25000, 32767, level clamped 0..100) and resolves the class by its audio name entry (8302D6C4: fade_to_white 796A13CC)
 824AF368	guess_SFXObj_LoadSurfaceAssetA	Guess: Finds the localized surface asset under the mutex and loads it
 824AF498	guess_SFXClass_InitFootDragParams	Guess: run-35 b3 + d4: name table 8302D4A4 starts with Class_foot_drag (string, hash pairs resolved to asset ids)
 824AF678	guess_SFXClass_InitWheelSkidParams	Guess: run-35 b3 + d4: name table 8302D4AC starts with Class_wheels_skid
@@ -4942,7 +4942,7 @@
 824ED640	SFXObj_Bloom_Create	Factory for class SFXObj_Bloom: allocates 0x24 bytes under the name tag SFXObj_Bloom and constructs it
 824ED750	SFXObj_Bloom_DeletingDtor	Deleting destructor of SFXObj_Bloom: runs its destructor body and frees the block when bit 0 of the flag is set
 824ED7B8	SFXObj_Bloom_DtorBody	Destructor body of SFXObj_Bloom: sets vtable 822FC9B0, releases the held sound object at +0x20 and sets the base vtable 8231633C
-824ED840	guess_SFXObj_ReloadLocString	Guess: releases the sound ref, frees and reallocates from the locked heap and resolves the localized string (+0xC..+0x20)
+824ED840	SFXObj_Bloom_Update	SFXObj_Bloom's update: level = max(presentation bloom B+0x30C4, AudioSystem +0x4B8 = the BloomToWhite transition); owner input 0 = level x 32767; below 1 releases the fade_to_white post (+0x20), else posts it once with level x 100 (824AF280)
 824ED9E8	guess_AudioBus_UpdateWhenBound	Guess: when +0x20 is set calls slot 0x3C and handles a negative result
 824EDAD8	SFXObj_VU_Create	Factory for class SFXObj_VU: allocates 0x24 bytes under the name tag SFXObj_VU and constructs it
 824EDBE8	guess_SFXObj_LockedReadFields	Guess: reads fields 778205B5D178A261 / 9358382E1EFEB068 under the lock
@@ -5975,7 +5975,7 @@
 8253DEA0	guess_CAS_FormatPairName	Guess: formats the two asset names of entry +0xB0 / +0xB4 and upper cases the result
 8253E018	AttribRef_InitCollectionBD77229E	Inits an Attrib reference to collection key 0xBD77229E4122863E (default record 830D0850 when missing).
 8253E080	guess_CAS_FindAssetByPrefix	Guess: counts asset db matches and searches names for a fixed prefix.
-8253E228	guess_FE_ListCollectionKeysBD77	Guess: Lists every collection key of the Attrib class 0xBD77229E4122863E into a vector.
+8253E228	guess_FE_ListCollectionKeysBD77	Guess: Lists the collection keys of the Attrib class 0xBD77229E4122863E (cac_stamp_zone) whose category equals the given part type into a vector (custom graphics, b1051).
 8253E3D8	guess_CASGraphics_BuildDesignList	Guess: fills the tattoo design list of a category and location (menu 11 enter)
 8253E4D8	CasAssetDb_ClassifyLogoPart	sorts a CAS part name by its prefix "logo_", "team_logo_", "tattoo_" or "team_brand_logo_", counts matches in the asset DB and inserts the part into the 0x190 byte vector (attrib 345C8861CFA6BCA5)
 8253EA80	CasAssetDb_AddUserLogoSlots	formats "ID_CAC_USERGEN_LOGO_%d" names and inserts a part record for each user made logo
@@ -8698,7 +8698,7 @@
 825F9990	guess_FE_ScreenFactoryBody_DeletingDtor	Guess: deleting destructor next to guess_FE_ScreenFactoryBody
 825F99F8	guess_FE_ScreenFactoryBody_Teardown	Guess: frees the Attrib collections and inline vectors built by guess_FE_ScreenFactoryBody (field 0x5BB)
 825FAA48	guess_CAC_PostThumbnailEvent	Guess: unless the 821FFB68 check passes or flag bit 0 is set, posts event 0x1E through 830CFDC4 slot 0x3C.
-825FAAF0	guess_CASScreen_UpdateLoadState	Guess: the screen load state machine; states 9 / 10 apply a loaded graphic default placement and push the editor
+825FAAF0	guess_CASScreen_UpdateLoadState	Guess: the screen load state machine (S+0x1800, reset to 0 after); states 5 (look reload: Undo, Custom preset) and 6 (save) re-enter the current menu, states 9 / 10 apply a loaded graphic default placement and push the editor
 825FAFF0	guess_TeammateCas_EnterApply	Guess: resets the slot look if flagged (83067058), starts the edit controller (82535D10) and sets state +0x1800 = 3.
 825FB0F8	guess_FE_TeammateCas_ApplyAndReset	Guess: Copies the profile id, resets the skater look if needed, applies the teammate CAS and clears +0x1A80.
 825FB1D0	guess_FE_TeammateCasScreen_OnExit	Guess: Slot 6 of 82303940: stores the current look record and clears +0x1A81.
@@ -8721,7 +8721,7 @@
 825FE0E0	CASScreen_PickUpperTattooRegion	an upper body tattoo region pick: the stamp location 1 word = the region, placement reset, region camera, clothing off, push the categories
 825FE280	CASScreen_PickLowerTattooRegion	a lower body tattoo region pick: the stamp location 2 word = the region, placement reset, region camera, clothing off, push the categories
 825FE3C0	CASScreen_OnMenuSelect	Create-a-Skater A on a menu row (Game.OnMenuSelect): pushes the row target; C++ branches for the tattoo region / category menus 4 / 5 / 6 and others
-825FEDB8	guess_FE_TeammateCasScreen_OnListHilight	Guess: Slot 17 of 82303940: on page 10 picks the item +0x1798 [n] into +0x17A8.
+825FEDB8	guess_CASScreen_OnMenuHilight	Guess: Slot 17 of 82303940 (OnMenuHilight): on menu 10 picks the item +0x1798 [n] into +0x17A8 and restarts the preview wait; on menu 16 (Edit Style) posts the row's body through 82604AD0 (a gesture slot plays its gesture); stops the cas_slider sound.
 825FEEA0	guess_HudCASEditor_ApplySelectedAsset	Guess: in screen 10 finds the asset by key and resolves it.
 825FF018	guess_CAC_GetItemTextAt	Item text of a CAC row; page 0x20 reads a record from +0x17F0, others the option table.
 825FF160	guess_CAC_GetDescriptionTextAt	Description text of a CAC row; page 0xB reads 400 byte records at +0x17E0.
@@ -14236,6 +14236,8 @@
 82795658	guess_Vt82310E98_DeletingDtor	Guess: runs the 82310E98 dtor then frees when the flag bit is set
 827956C0	guess_Vt82310E98_Dtor	Guess: Sets vtable 82310E98 and deletes the owned object at +0xC through its slot 0.
 82795720	guess_NISMan_CreateTransition	Guess: allocates a transition object (vtables 82310DF0 and 82310DFC).
+82795988	guess_TransitionFx_IsDone	Guess: transition effect done check (timer +4 <= 0.0), shared slot of the ColorFade / BloomToWhite effect vtables 82310DF0 / 82310DFC
+82795A70	guess_BloomToWhiteFx_Update	Guess: per-update step of the BloomToWhiteTransitionEffect (transition type 4, used for REPLAYNISLOADSCREEN): counts its 1.0 timer down by the step, writes the 0..1 progress (reversed by byte +0xC) to three render bloom / white values (83083C38 +0x7DC8 / +0x7DA8, 830CFDC4 +0x4B8)
 82795AD8	guess_Crowd_SetRenderTargetPass	Guess: Sets the render target and the pass state for the crowd render.
 82795B90	guess_VectorU32_ResizeZero	Guess: resizes a word vector, new ones zero.
 82795C10	guess_PresGame_FreeBucketArray	Guess: clears the buckets and frees the bucket array at +4 to the pool at +0x1AA0

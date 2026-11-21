@@ -40,10 +40,43 @@ pub(crate) struct ObjectiveData {
     pub title_arg: Option<String>,
     #[serde(default = "shown")]
     pub display_in_hud: bool,
+    /// HighlightDefinition (research b1050): the replay window and scenes of this objective's highlight; absent in
+    /// an export from before it.
+    #[serde(default)]
+    pub highlight: Option<HighlightJson>,
 }
 
 fn shown() -> bool {
     true
+}
+
+/// `challenges.py` `highlight_definition`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct HighlightJson {
+    pub pre: f32,
+    pub post: f32,
+    pub owned: SceneJson,
+    pub killed: SceneJson,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SceneJson {
+    pub scene: String,
+    #[serde(default)]
+    pub located: bool,
+    #[serde(default)]
+    pub position: [f32; 3],
+    #[serde(default)]
+    pub direction: [f32; 3],
+}
+
+impl HighlightJson {
+    pub(crate) fn definition(&self) -> skate_core::challenges::highlights::HighlightDefinition {
+        let scene = |s: &SceneJson| skate_core::challenges::highlights::SceneDef {
+            scene: s.scene.clone(), located: s.located, position: s.position, direction: s.direction,
+        };
+        skate_core::challenges::highlights::HighlightDefinition { pre: self.pre, post: self.post, owned: scene(&self.owned), killed: scene(&self.killed) }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -576,7 +609,7 @@ mod tests {
         triggers[12] = true;
         ObjectiveData { key: key.into(), activation, triggers, condition: serde_json::json!({"locals": 0, "body": body}),
             points_valid: None, failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(),
-            title_id: None, title_arg: None, display_in_hud: true }
+            title_id: None, title_arg: None, display_in_hud: true, highlight: None }
     }
 
     /// Hall of Meat rows with activation mode 4 (b967): the bail opening arms them, `Wipeout.IsWipeoutOver` reads the
@@ -664,11 +697,11 @@ mod tests {
                 condition: serde_json::json!({"locals": 0, "body": [{"return": {"api": "ObjectiveTrigger.EnteredVolume",
                     "args": [{"lit": "1"}, {"lit": "DIST_DownTown|ots_a_spotvolume_01"}]}}]}),
                 points_valid: Some(serde_json::json!({"locals": 0, "body": [{"return": {"api": "ObjectivePoints.IsSequenceNewlyCompletePoints", "args": []}}]})),
-                failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true },
+                failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None },
             ObjectiveData { key: "global_points_objective".into(), activation: 0, triggers: points_triggers,
                 condition: serde_json::json!({"locals": 0, "body": [{"return": {"cmp": "ge", "args": [
                     {"api": "GetGroupAccumulatedPoints", "args": []}, {"api": "GetGroupPointsRequirement", "args": []}]}}]}),
-                points_valid: None, failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true },
+                points_valid: None, failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None },
         ]
     }
 
@@ -699,7 +732,7 @@ mod tests {
                 "args": [{"lit": "1"}, {"lit": "DIST_DownTown|ftl_end"}]}}]}),
             failures: vec![never], failures_inline: vec![InlineFailure { condition: Some(serde_json::json!({"locals": 0, "body": [{"return":
                 {"cmp": "ge", "args": [{"api": "Leader.GetDistanceToNearestAISkater", "args": []}, {"lit": 40.0}]}}]})), text: None }],
-            failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true };
+            failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None };
         let mut d = DataObjectives::new("ftl", std::slice::from_ref(&row), vec![("ftl_end".into(), 7)], Default::default()).unwrap();
         d.activate_first();
         d.skater.competitor_distances = [Some(25.0), None, None, None];

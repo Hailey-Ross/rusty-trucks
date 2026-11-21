@@ -211,6 +211,16 @@ fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
                 s.set_vehicle_patch(p.entities, p.spawn_tables);
             }
         }
+        "roads" => {
+            let p = t.merged(domain, |p| if let Patch::Roads(p) = p { Some(p) } else { None });
+            let roads = p.roads.into_iter().map(|(name, r)| skate_core::living_world::traffic::mod_roads::ModRoad {
+                name, from: r.from, to: r.to, points: r.points, lanes: r.lanes.unwrap_or(1), lane_width: r.lane_width.unwrap_or(3.5),
+                speed_limit: r.speed_limit.unwrap_or(11.0), two_way: r.two_way.unwrap_or(true),
+            }).collect();
+            if let Some(mut s) = world.get_resource_mut::<crate::living_world::PopulationState>() {
+                s.set_road_patch(roads);
+            }
+        }
         _ => {}
     }
 }
@@ -832,6 +842,9 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             world.get_resource::<crate::living_world::vehicles::VehicleOverrides>().map_or(Value::Null, |o| json!({
                 "spawn_tables": tables, "entities": o.bases, "models": o.models, "glbs": o.glbs, "paint_gain": o.paint_gain.unwrap_or(1.0)}))
         }
+        "roads" => world.get_resource::<crate::living_world::PopulationState>().map_or(Value::Null, |s| json!({
+            "segments": s.roads.as_ref().map_or(0, |r| r.segments.len()), "junctions": s.roads.as_ref().map_or(0, |r| r.junctions.len()),
+            "revision": s.roads_revision})),
         _ => Value::Null,
     }
 }

@@ -40,6 +40,102 @@ fn rolling_window_is_the_retail_ninety_seconds_with_variable_cadence() {
 }
 
 #[test]
+fn a_highlight_reel_clip_plays_its_window_without_the_replay_screen() {
+    let mut replay = Replay::default();
+    replay.play_reel_clip(0.0, 1.0, None);
+    assert!(replay.reel_done && !replay.active, "nothing recorded: done at once");
+    for i in 0..100 {
+        replay.record(pose(i as f32), 0.1, false);
+    }
+    assert!((replay.last_time() - 9.9).abs() < 1e-9);
+    replay.play_reel_clip(2.0, 50.0, None);
+    assert!(replay.active && !replay.playing && !replay.reel_done);
+    assert_eq!(replay.cursor, replay.last_time(), "the view before the clip while the white rises");
+    replay.start_pending_reel_clip();
+    assert!(replay.playing);
+    assert_eq!(replay.cursor, 2.0);
+    assert_eq!(replay.reel_end, Some(replay.last_time()), "the end is clamped to the recording");
+    replay.stop_reel();
+    assert!(!replay.active && replay.reel_end.is_none());
+}
+
+#[test]
+fn a_reel_clip_blooms_to_white_starts_at_the_peak_plays_under_the_clear_and_a_skips_it() {
+    use crate::input::ControllerInput;
+    use skate_core::input::xbox::XboxState;
+    let mut app = App::new();
+    app.init_resource::<Replay>()
+        .init_resource::<ControllerInput>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
+        .init_resource::<Time<Real>>()
+        .init_resource::<crate::popup_host::PopupMods>()
+        .add_message::<crate::ui_audio::FrontendSound>()
+        .add_systems(Update, controls);
+    for i in 0..600 {
+        app.world_mut().resource_mut::<Replay>().record(pose(i as f32), 1. / 60., false);
+    }
+    let tick = |app: &mut App, buttons: u16| {
+        app.world_mut().resource_mut::<ControllerInput>().sample_raw_for_test(XboxState { buttons, triggers: [0; 2], left: [0; 2], right: [0; 2] });
+        app.world_mut().resource_mut::<Time<Real>>().advance_by(std::time::Duration::from_secs_f64(1. / 60.));
+        app.world_mut().run_schedule(Update);
+    };
+    let take = skate_core::camera_track::CameraTrack { length: 2.0, keys: Vec::new(), segments: Vec::new() };
+    app.world_mut().resource_mut::<Replay>().play_reel_clip(2.0, 6.0, Some((take, None)));
+    let before = app.world().resource::<Replay>().last_time();
+    for _ in 0..30 {
+        tick(&mut app, 0);
+    }
+    let r = app.world().resource::<Replay>();
+    assert_eq!(r.cursor, before, "the white rises over the view before the clip");
+    assert!(r.reel_shot.is_none());
+    assert!((r.reel_bloom() - 0.5).abs() < 0.02, "{}", r.reel_bloom());
+    let mut ticks = 30;
+    while matches!(app.world().resource::<Replay>().reel_transition, Some(ReelPhase::In(_))) {
+        tick(&mut app, 0);
+        ticks += 1;
+        assert!(ticks <= 62, "the rise lasts 1.0 s");
+    }
+    let r = app.world().resource::<Replay>();
+    assert_eq!(r.cursor, 2.0, "the clip starts at full white");
+    assert!(r.reel_shot.as_ref().is_some_and(|s| s.start == 2.0 && s.end == 6.0), "with its camera take");
+    assert!(r.reel_bloom() > 0.98);
+    for _ in 0..30 {
+        tick(&mut app, 0);
+    }
+    let r = app.world().resource::<Replay>();
+    assert!((r.cursor - 2.5).abs() < 0.02 && (r.reel_bloom() - 0.5).abs() < 0.02, "it plays while the white clears");
+    for _ in 0..32 {
+        tick(&mut app, 0);
+    }
+    let r = app.world().resource::<Replay>();
+    assert!(r.reel_transition.is_none() && r.reel_bloom() == 0.0 && r.cursor > 3.0);
+    tick(&mut app, A);
+    let r = app.world().resource::<Replay>();
+    assert!(r.reel_done && r.reel_skipped && !r.active, "A skips: the clip ends and says so");
+}
+
+#[test]
+fn a_reel_shot_places_its_take_around_the_replayed_skater() {
+    use skate_core::camera_track::{CameraKey, CameraSegment, CameraSpace, CameraTrack};
+    let key = |time: f32, eye: [f32; 3]| CameraKey { time, eye, look: [0.0; 3], lens_mm: 24.0, ..Default::default() };
+    // ICE (x, y, z) is engine (z, x, y): eye 2 m ahead in x, 1 m up.
+    let track = |mode: u8| CameraTrack { length: 2.0, keys: vec![key(0.0, [2.0, 0.0, 1.0]), key(2.0, [2.0, 0.0, 1.0])],
+        segments: vec![CameraSegment { eye_space: CameraSpace { mode, avatar: 4 }, look_space: CameraSpace { mode, avatar: 4 }, ..Default::default() }] };
+    let root = Transform::from_xyz(10.0, 0.0, 5.0).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    let shot = |mode: u8, located| ReelShot { track: track(mode), start: 1.0, end: 4.0, located };
+    let eye = |s: &ReelShot| s.camera(2.0, &root).unwrap().0.translation;
+    assert!(eye(&shot(2, None)).distance(Vec3::new(10.0, 1.0, 7.0)) < 1e-4, "SPACE 2: the skater's position, no rotation");
+    assert!(eye(&shot(0, None)).distance(Vec3::new(12.0, 1.0, 5.0)) < 1e-4, "SPACE 0: the skater's frame");
+    let located = shot(3, Some((Vec3::new(-50.0, 3.0, 0.0), Vec3::Z)));
+    assert!(eye(&located).distance(Vec3::new(-50.0, 4.0, 2.0)) < 1e-4, "SPACE 3: the highlight's located place");
+    let (pose, fov) = shot(2, None).camera(2.0, &root).unwrap();
+    assert!((pose.forward().as_vec3() - (root.translation - pose.translation).normalize()).length() < 1e-4, "it looks at the skater");
+    assert!(fov > 0.5 && fov < 1.5);
+}
+
+#[test]
 fn scrubbing_interpolates_shared_pose_and_camera_without_recording() {
     let mut replay = Replay::default();
     replay.enter();

@@ -57,6 +57,7 @@ fn data() -> LoadedData {
         census: None,
         skaters: Some(SkaterData { lines, characters, ..Default::default() }),
         roads: None,
+        road_input: None,
         vehicles: None,
         // Two characters carry a stance-table record (regular / goofy); the rest are unmapped.
         npc: NpcData { lines: Arc::new(replay), voices, records: [("pro_0".to_owned(), "chris_cole".to_owned()), ("pro_1".to_owned(), "josh_kalis".to_owned())].into(), tricks: Default::default() },

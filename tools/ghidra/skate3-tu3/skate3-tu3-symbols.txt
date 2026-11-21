@@ -4337,7 +4337,7 @@ SFXCTL_3DObjPos_Update 0x824AEC70 f
 guess_SFXCTL_3DObjPos_UpdateListenerParams 0x824AEE60 f
 AttribRef_InitClassB29C3B2C13D96482 0x824AF1C8 f
 guess_SFXObj_GetInputU15 0x824AF240 f
-guess_SFXObj_ResolveLocString 0x824AF280 f
+guess_FadeToWhite_InitRecord 0x824AF280 f
 guess_SFXObj_LoadSurfaceAssetA 0x824AF368 f
 guess_SFXClass_InitFootDragParams 0x824AF498 f
 guess_SFXClass_InitWheelSkidParams 0x824AF678 f
@@ -4941,7 +4941,7 @@ guess_SFXObj_NISCharacter_CacheParams 0x824ED548 f
 SFXObj_Bloom_Create 0x824ED640 f
 SFXObj_Bloom_DeletingDtor 0x824ED750 f
 SFXObj_Bloom_DtorBody 0x824ED7B8 f
-guess_SFXObj_ReloadLocString 0x824ED840 f
+SFXObj_Bloom_Update 0x824ED840 f
 guess_AudioBus_UpdateWhenBound 0x824ED9E8 f
 SFXObj_VU_Create 0x824EDAD8 f
 guess_SFXObj_LockedReadFields 0x824EDBE8 f
@@ -8720,7 +8720,7 @@ guess_FE_ShowOnlineDownloadingPopup 0x825FE000 f
 CASScreen_PickUpperTattooRegion 0x825FE0E0 f
 CASScreen_PickLowerTattooRegion 0x825FE280 f
 CASScreen_OnMenuSelect 0x825FE3C0 f
-guess_FE_TeammateCasScreen_OnListHilight 0x825FEDB8 f
+guess_CASScreen_OnMenuHilight 0x825FEDB8 f
 guess_HudCASEditor_ApplySelectedAsset 0x825FEEA0 f
 guess_CAC_GetItemTextAt 0x825FF018 f
 guess_CAC_GetDescriptionTextAt 0x825FF160 f
@@ -32929,3 +32929,6 @@ StaticInit_RegisterSGCondition_IsPreviousShot 0x82F93B18 f
 StaticInit_RegisterSGCondition_IsCameraInBadCollision 0x82F93B58 f
 StaticInit_RegisterSGBehaviour_CameraChooseShot 0x82F93B98 f
 guess_SkaterLook_StaticFreeBuffers 0x82F99B20 f
+
+guess_BloomToWhiteFx_Update 0x82795A70 f
+guess_TransitionFx_IsDone 0x82795988 f

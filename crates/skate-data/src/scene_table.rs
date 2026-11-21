@@ -111,6 +111,25 @@ mod tests {
     }
 
     /// Data-gated: `SKATE3_SCENE_DIR=<install>/assets/private/hud/scene` (scene_000.bin, ice_000.bin, anim/).
+    /// The highlight reel's scenes (research b1050): no actors, camera takes the reel places around the replayed
+    /// skater. Data-gated like the test below.
+    #[test]
+    fn the_replay_scenes_carry_their_camera_takes() {
+        let Some(dir) = std::env::var_os("SKATE3_SCENE_DIR").map(std::path::PathBuf::from) else { return };
+        let scenes = parse(&std::fs::read(dir.join("scene_000.bin")).unwrap()).unwrap();
+        let ice = std::fs::read(dir.join("ice_000.bin")).unwrap();
+        let takes = |name: &str| {
+            let s = scenes.iter().find(|s| s.name.eq_ignore_ascii_case(name)).unwrap();
+            assert!(s.actors.is_empty(), "{name}");
+            crate::ice_camera::scene_tracks(&ice, s.hash).unwrap()
+        };
+        let space = |t: &skate_core::camera_track::CameraTrack| (t.segments[0].eye_space.mode, t.segments[0].eye_space.avatar);
+        let film = takes("film_generic");
+        assert_eq!((film.len(), space(&film[0])), (1, (2, 4)), "at the skater's position");
+        let generic = takes("highlight_generic");
+        assert_eq!(generic.iter().map(space).collect::<Vec<_>>(), [(2, 4), (0, 1), (0, 1)], "three takes, two in the player's frame");
+        assert_eq!(space(&takes("Replay_Film_Generic_Med")[0]).0, 3, "a located scene");
+    }
     #[test]
     fn the_disc_table_parses() {
         let Some(dir) = std::env::var_os("SKATE3_SCENE_DIR").map(std::path::PathBuf::from) else { return };

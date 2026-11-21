@@ -320,6 +320,23 @@ def prepare(config):
     misc=next((p for p in catalog['components'] if p['slot']=='Misc'),None)
     variants=((m,v) for m in (misc or {}).get('models',[]) for lod in m.get('lods',[])
               for group in lod.get('material_instances',[]) for v in group)
+    # The custom graphics' logos (research b1051): brand `logo_*` and team `team_logo_*` materials of the same object,
+    # in database order; `tattoo_*` and `team_brand_logo_*` are never listed.
+    logos={}
+    for model,variant in list(variants):
+        name=variant['name'].lower()
+        kind='team' if name.startswith('team_logo_') else 'brand' if name.startswith('logo_') else None
+        if kind is None or variant['id'] in logos:continue
+        try:
+            mat=catalog['materials'][variant['id']]
+            tex={t['channel']:t['id'] for t in mat['textures']}
+            logos[variant['id']]=dict(name=friendly(variant['name']),texture=texture(tex['decal']),
+                bounds=[float(v) for v in mat['flags']['cas.StampBorderConstraint'].split(',')],
+                kind=kind,order=len(logos),thumbnail=(model['name']+'_'+variant['name']).lower())
+        except CONTENT_ERRORS as error:
+            errors.append(dict(logo=variant.get('id'),error=str(error)))
+    variants=((m,v) for m in (misc or {}).get('models',[]) for lod in m.get('lods',[])
+              for group in lod.get('material_instances',[]) for v in group)
     for model,variant in variants:
         try:
             mid=variant['id'];mat=catalog['materials'][mid]
@@ -349,7 +366,7 @@ def prepare(config):
             colours.append(dict(name=row['key'][:-9].replace('_',' ').title(),
                 rgb=struct.unpack('>4f',bytes.fromhex(row['fields']['Hash_7827ED970A88B70C']['data']))[:3]))
     colours.sort(key=lambda c:c['name'])
-    library=dict(version=3,colours=colours,tattoos=tattoos,models=model_data,materials=mat_data,defaults={'male':male,'female':female},
+    library=dict(version=3,colours=colours,tattoos=tattoos,logos=logos,models=model_data,materials=mat_data,defaults={'male':male,'female':female},
                  morphs=recipe_base['morph_assembly']['live_targets'],errors=errors)
     (cache/config.get('library_index','library.json')).write_text(json.dumps(library,separators=(',',':')))
     print('LIBRARY_READY',len(model_data),len(mat_data),'errors',errors,flush=True)

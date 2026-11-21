@@ -49,6 +49,9 @@ pub(crate) struct TutorialData {
     pub presentation: PresentationCounts,
     #[serde(default)]
     pub objectives: Vec<ObjectiveData>,
+    /// The TeleportLocalPlayer events' locators by name (the export resolves them in the tutorial's map).
+    #[serde(default)]
+    pub locators: std::collections::HashMap<String, [[f32; 4]; 4]>,
 }
 
 #[derive(Deserialize)]
@@ -382,7 +385,8 @@ mod tests {
             objectives: vec![ObjectiveData { key: "tut_test_0".into(), activation: 0, triggers: gate, points_valid: None,
                 condition: serde_json::json!({"locals": 0, "body": [{"return": {"api": "ObjectiveTrigger.IsInVolume",
                     "args": [{"lit": "1"}, {"lit": "DIST_SkateSchool|tut_test_gate_01"}]}}]}),
-                failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true }],
+                failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None }],
+            locators: Default::default(),
         }
     }
 

@@ -56,6 +56,11 @@ pub(crate) struct Tattoo {
     /// The design's Create-a-Skater thumbnail, `fe\cas\logos\<thumbnail>` (<model>_<variant>, lower case).
     #[serde(default)]
     pub thumbnail: String,
+    /// A custom graphic's list ("brand" / "team", research b1051) and its place in the asset database's order.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub order: u32,
 }
 #[derive(Default, Deserialize)]
 pub(crate) struct Library {
@@ -65,9 +70,22 @@ pub(crate) struct Library {
     pub morphs: Vec<String>,
     #[serde(default)]
     pub tattoos: HashMap<String, Tattoo>,
+    /// The custom graphics' logos (brand and team), stamped like tattoos onto shirts, boards and hats.
+    #[serde(default)]
+    pub logos: HashMap<String, Tattoo>,
     #[serde(default)]
     pub colours: Vec<Colour>,
 }
+
+impl Library {
+    /// A tattoo design or a custom graphic's logo by its material id.
+    pub fn stamp(&self, id: &str) -> Option<&Tattoo> {
+        self.tattoos.get(id).or_else(|| self.logos.get(id))
+    }
+}
+
+/// The parts a custom graphic goes on (research b1051): the shirt (look 0, four regions), the board (3), the hat (4).
+pub(crate) const GRAPHIC_SLOTS: [&str; 3] = ["OuterTorso", "SkateBoard", "Hat"];
 #[derive(Resource, Default)]
 pub(crate) struct Parts {
     pub library: Library,
@@ -181,6 +199,19 @@ impl Parts {
                             .is_ok_and(|p| p.iter().all(|x| x.is_finite()) && p[1] > 0.0)
                 {
                     return Err("Invalid tattoo".into());
+                }
+            }
+        }
+        if let Some(parts) = profile["graphics"].as_object() {
+            for (slot, v) in parts {
+                if !GRAPHIC_SLOTS.contains(&slot.as_str())
+                    || v["id"].as_str().is_some_and(|id| !lib.logos.contains_key(id))
+                    || v["region"].as_u64().is_some_and(|r| r > if slot == "OuterTorso" { 3 } else { 0 })
+                    || !v["placement"].is_null()
+                        && !serde_json::from_value::<[f32; 4]>(v["placement"].clone())
+                            .is_ok_and(|p| p.iter().all(|x| x.is_finite()) && p[1] > 0.0)
+                {
+                    return Err("Invalid graphic".into());
                 }
             }
         }
@@ -476,7 +507,12 @@ impl Parts {
             material.base.base_color = Color::linear_rgb(a[0], a[1], a[2]);
         }
         let slot = if part.slot == "OuterTorso" && part.flag("TopType").is_empty() { "Arm" } else { &part.slot };
-        let stamp = &profile["tattoos"][slot];
+        // A custom graphic on a shirt, board or hat (research b1051) goes on a logoable material the way a tattoo
+        // does; the shirt's region picks the constraint quadrant like the upper tattoo regions [inferred].
+        let graphic = &profile["graphics"][part.slot.as_str()];
+        let logo = source.flag("IsLogoable").eq_ignore_ascii_case("true") && graphic["id"].is_string();
+        let stamp = if logo { graphic } else { &profile["tattoos"][slot] };
+        let side = if logo { [2u64, 3, 0, 1].get(graphic["region"].as_u64().unwrap_or(0) as usize).copied().unwrap_or(2) } else { stamp["side"].as_u64().unwrap_or(0) };
         let mut extension = SkinStamp {
             hair_opacity: material.extension.hair_opacity.clone(),
             retail: material.extension.retail.clone(), retail_mask: material.extension.retail_mask.clone(),
@@ -491,8 +527,8 @@ impl Parts {
         extension.retail.highlight_tint = zone.and_then(|z| profile["colour_highlights"].get(z.to_string()))
             .and_then(|v| serde_json::from_value::<[f32; 3]>(v.clone()).ok())
             .map_or(Vec4::ZERO, |b| Vec4::new(b[0], b[1], b[2], 1.0));
-        if let Some((tid,t)) = stamp["id"].as_str().and_then(|id| self.library.tattoos.get(id).map(|t|(id,t))) {
-            let key=match stamp["side"].as_u64().unwrap_or(0) {1=>"StampUVConstraintQ4",2=>"StampUVConstraintQ1",3=>"StampUVConstraintQ2",_=>"StampUVConstraintQ3"};
+        if let Some((tid,t)) = stamp["id"].as_str().and_then(|id| self.library.stamp(id).map(|t|(id,t))) {
+            let key=match side {1=>"StampUVConstraintQ4",2=>"StampUVConstraintQ1",3=>"StampUVConstraintQ2",_=>"StampUVConstraintQ3"};
             let bounds:Vec<f32>=part.flag(key).split(',').filter_map(|n|n.parse().ok()).collect();
             if let Ok(bounds)=<[f32;4]>::try_from(bounds) {
                 let (transform,rectangle)=crate::customiser_material::placement(bounds,t.bounds);
@@ -513,7 +549,7 @@ impl Parts {
         self.materials.get(mid).is_some_and(|(_,images)|images.iter().all(|h|server.is_loaded_with_dependencies(h.id())))
     }
     pub(crate) fn tattoos_ready(&self, profile: &Value, server: &AssetServer) -> bool {
-        profile["tattoos"].as_object().into_iter().flat_map(|v|v.values()).all(|v|
+        profile["tattoos"].as_object().into_iter().chain(profile["graphics"].as_object()).flat_map(|v|v.values()).all(|v|
             v["id"].as_str().is_none_or(|id|self.tattoos.get(id).is_some_and(|h|server.is_loaded_with_dependencies(h.id()))))
     }
     pub fn warm(&mut self, id: &str, server: &AssetServer, materials: &mut Assets<SkaterMaterial>) {
@@ -609,6 +645,7 @@ pub(crate) fn setup(
     let tattoos = library
         .tattoos
         .iter()
+        .chain(&library.logos)
         .map(|(id, t)| {
             (
                 id.clone(),
@@ -934,7 +971,7 @@ mod online_tests {
         let mut parts=Parts::default();
         parts.library.models.insert("body".into(),Part{slot:"Arm".into(),name:"body".into(),flags:HashMap::from([("StampUVConstraintQ3".into(),"0,0,1,1".into())]),materials:vec!["skin".into()],scene:String::new()});
         parts.library.materials.insert("skin".into(),Material{name:"skin".into(),flags:HashMap::from([("SkinTone".into(),"fair".into())]),diffuse:String::new(),normal:None,rough:None,alpha:false,opacity:None,tint:[1.;3],metallic:0.,roughness:0.5,lighting:None});
-        parts.library.tattoos.insert("ink".into(),Tattoo{name:"ink".into(),texture:String::new(),bounds:[0.,0.,1.,1.],category:String::new(),thumbnail:String::new()});
+        parts.library.tattoos.insert("ink".into(),Tattoo{name:"ink".into(),texture:String::new(),bounds:[0.,0.,1.,1.],category:String::new(),thumbnail:String::new(),kind:String::new(),order:0});
         let mut images=Assets::<Image>::default();let image=images.add(Image::default());parts.tattoos.insert("ink".into(),image.clone());
         let mut materials=Assets::<SkaterMaterial>::default();
         let handle=materials.add(SkaterMaterial{base:StandardMaterial{normal_map_texture:Some(image.clone()),base_color_texture:Some(image.clone()),..default()},extension:SkinStamp {
