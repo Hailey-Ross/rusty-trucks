@@ -116,6 +116,7 @@ fn update(
     validation: Res<validation::Validation>,
     replay: Res<crate::replay::Replay>,
     mut events: MessageWriter<crate::ui_audio::SessionMarkerEvent>,
+    presenter: Option<Res<crate::presentation_run::Presenter>>,
 ) {
     use crate::ui_audio::{SessionMarkerAction, SessionMarkerEvent};
     if replay.active {
@@ -162,13 +163,17 @@ fn update(
         && state != 104
         && deck.basis.columns[1][1] > 0.71)
         || (p.state.category_12 == 500 && state == 500);
+    // A presentation's DisableSetSessionMarker / DisableUseSessionMarker (the TeleportManager's lists, 8257A960).
+    let (set_blocked, use_blocked) = presenter.as_deref().map_or((false, false), |p| p.marker_blocks());
     session.can_place = modifier
+        && !set_blocked
         && state_allowed
         && p.surface_default_mode != 8
         && validation.check(physics.world(), transform[3]);
     session.can_return = session
         .marker
         .is_some_and(|m| m.generation == map.generation)
+        && !use_blocked
         && !matches!(state, 104 | 502);
     session.visible = modifier;
     // A retained Pad publication must not turn one .pressed into repeated sets.

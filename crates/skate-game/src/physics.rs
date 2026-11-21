@@ -367,6 +367,11 @@ impl GamePhysics {
     pub(crate) fn set_pinned(&mut self, pinned: bool) {
         self.animation_profile.force_braking = pinned;
     }
+    /// FixSkaterInAir (sim controller 8256E4F0 -> skater slot 30, 82592468): actor +0x770 bit 23 for this frame,
+    /// published as packet +10375 (the air selector's hold, `flags_2468` bit 3).
+    pub(crate) fn set_fixed_in_air(&mut self, fixed: bool) {
+        self.animation_profile.fix_in_air = fixed;
+    }
     pub(crate) fn set_difficulty(&mut self, difficulty: crate::difficulty::Difficulty) {
         // Actor publication carries this selector into the next physical packet.
         // Keep the board, active trick, equipment preferences and controller history.

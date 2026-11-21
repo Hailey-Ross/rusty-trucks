@@ -47,6 +47,7 @@ fn owning_it_completes_as_owned_after_the_reel() {
     let mut ots = running(0);
     let out = ots.handle(Event::AllObjectivesComplete { points: 1200 });
     assert!(out.contains(&Command::ShowHud(HudComponent::OwnedIt, true)));
+    assert!(out.contains(&Command::AddHighlight), "the completed line is the reel's highlight (b838 step 4)");
     assert_eq!(ots.state(), State::HighlightReel);
     assert!(ticks(&mut ots, 2.9).is_empty() || ots.state() == State::HighlightReel);
     let out = ticks(&mut ots, 0.2);

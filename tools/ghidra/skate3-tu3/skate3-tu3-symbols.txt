@@ -6630,7 +6630,7 @@ guess_TelemetryManager_InitListB 0x8256E438 f
 PresSimController_Reset 0x8256E460 f
 guess_Vt822FF600_SetFlagBits 0x8256E4C0 f
 guess_Vt822FF600_ClearFlagBits 0x8256E4D8 f
-guess_PresSimController_SetSimRate 0x8256E4F0 f
+PresSimController_Update 0x8256E4F0 f
 guess_Vt822FF600_InitIntVector 0x8256E638 f
 guess_Vt822FF600_GetField7C 0x8256E648 f
 guess_Vt822FF600_SlotStub 0x8256E660 f
@@ -7182,9 +7182,9 @@ guess_SkaterActor_Part38_IsListedPlayer 0x82592220 f
 guess_SkaterActor_GetField6ECEntry 0x82592298 f
 guess_SkaterActor_ApplyCASSettings 0x825922C0 f
 guess_SkaterActor_DirectionFromChaser 0x82592390 f
-guess_SkaterActor_IsInState200 0x82592468 f
+SkaterActor_FixInAirStep 0x82592468 f
 guess_SkaterActor_ForceStateThree 0x825924C0 f
-SkaterActor_SetField774 0x82592510 f
+SkaterActor_SetInputRestriction 0x82592510 f
 guess_SkaterActor_Part38_UnspawnOrReset 0x82592518 f
 SkaterActor_FadeInAfterSpawn 0x825926F8 f
 ActorPacket_CopyExternalPayload 0x82592810 f
@@ -10054,7 +10054,7 @@ guess_CentralMessageHud_UpdateTimer 0x82664550 f
 DistanceMeter_GetDataFlagItem 0x826647E8 f
 guess_DistanceMeterHud_Tick 0x826648D0 f
 HudCountdown_Stop 0x82664938 f
-guess_DistanceHud_Update 0x82664990 f
+HudCountdown_Update 0x82664990 f
 guess_DistanceHud_Refresh 0x82664AB0 f
 hud_component_Ctor_82664B90 0x82664B90 f
 guess_HudComp_ShowAndRegister 0x82664C70 f

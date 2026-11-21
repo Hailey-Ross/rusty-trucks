@@ -33,6 +33,10 @@ pub struct Presenter {
     pub sfx: Arc<Mutex<Vec<String>>>,
     /// The TeleportLocalPlayer request and its end report.
     pub teleport: Arc<Mutex<TeleportHost>>,
+    /// The pin, the session marker blocks and the central messages.
+    pub player: Arc<Mutex<PlayerHost>>,
+    /// The Replay request and its end report.
+    pub replay: Arc<Mutex<ReplayHost>>,
     /// Groups that finished or were removed (`presentationeventgroupfinished`), for owners that wait on a group
     /// (the career's Execute); the newest 64 kept.
     finished: Vec<String>,
@@ -52,6 +56,21 @@ impl Default for Presenter {
         let sim = Arc::new(Mutex::new(SimControl::default()));
         handlers.set_engine("SetSimRate", Box::new(SimRateHandler { host: sim.clone(), set: true }));
         handlers.set_engine("RestoreSimRate", Box::new(SimRateHandler { host: sim.clone(), set: false }));
+        for (kind, op) in [("FixSkaterInAir", SimOp::Fix), ("UnfixSkaterInAir", SimOp::Unfix), ("EvaluateObjectivesWhileSimPaused", SimOp::Eval),
+            ("StopEvaluatingObjectivesWhileSimPaused", SimOp::StopEval), ("PauseSim", SimOp::Pause), ("UnpauseSim", SimOp::Unpause),
+            ("EnableInputRestriction", SimOp::Restrict), ("ClearInputRestrictions", SimOp::ClearRestrict)] {
+            handlers.set_engine(kind, Box::new(SimStateHandler { host: sim.clone(), op }));
+        }
+        let player = Arc::new(Mutex::new(PlayerHost::default()));
+        handlers.set_engine("PinLocalPlayer", Box::new(PinHandler { host: player.clone(), pin: true }));
+        handlers.set_engine("UnpinLocalPlayer", Box::new(PinHandler { host: player.clone(), pin: false }));
+        for (kind, use_list, block) in [("EnableSetSessionMarker", false, false), ("DisableSetSessionMarker", false, true),
+            ("EnableUseSessionMarker", true, false), ("DisableUseSessionMarker", true, true)] {
+            handlers.set_engine(kind, Box::new(SessionMarkerHandler { host: player.clone(), use_list, block }));
+        }
+        handlers.set_engine("CentralMessage", Box::new(CentralHandler { host: player.clone() }));
+        let replay = Arc::new(Mutex::new(ReplayHost::default()));
+        handlers.set_engine("Replay", Box::new(ReplayHandler { host: replay.clone() }));
         let grants = Arc::new(Mutex::new(Vec::new()));
         handlers.set_engine("GrantAchievement", Box::new(GrantHandler { grants: grants.clone() }));
         let speech = Arc::new(Mutex::new(SpeechLines::default()));
@@ -67,7 +86,7 @@ impl Default for Presenter {
         let teleport = Arc::new(Mutex::new(TeleportHost::default()));
         handlers.set_engine("TeleportLocalPlayer", Box::new(TeleportHandler { host: teleport.clone() }));
         Self { manager: Manager::default(), handlers, fade, callout, sim, grants, speech, speech_out, cast_out, nis, sfx, teleport,
-            finished: Vec::new(), driven: false }
+            player, replay, finished: Vec::new(), driven: false }
     }
 }
 
@@ -109,11 +128,36 @@ impl Presenter {
         self.sim.lock().ok().and_then(|s| (s.timestep > 0.0).then_some(s.timestep))
     }
 
-    /// Controller reset (8256E460, the challenge's cleanup): the rate goes back to normal.
+    /// Controller reset (8256E460, the challenge's cleanup): rate back to normal, unfixed, restrictions cleared (not
+    /// the pause or the evaluation flag). Ours also drops a PauseSim the tutorial left (its groups are removed
+    /// without the undo that would unpause), so an abandoned lesson never leaves the world frozen.
     pub fn reset_sim(&mut self) {
         if let Ok(mut s) = self.sim.lock() {
             s.restore();
+            s.fix_in_air = false;
+            s.input_mask = 0;
+            if s.paused {
+                s.pause_ops.push(false);
+            }
         }
+        if let Ok(mut p) = self.player.lock() {
+            p.pinned = false;
+        }
+    }
+
+    /// A pinned local player (PinLocalPlayer), for `input::player_pinned`.
+    pub fn player_pinned(&self) -> bool {
+        self.player.lock().is_ok_and(|p| p.pinned)
+    }
+
+    /// The session marker blocks (set, use) for the local player.
+    pub fn marker_blocks(&self) -> (bool, bool) {
+        self.player.lock().map(|p| (p.set_marker_blocked, p.use_marker_blocked)).unwrap_or((false, false))
+    }
+
+    /// Objectives are evaluated: the world steps, or EvaluateObjectivesWhileSimPaused holds.
+    pub fn objectives_evaluate(&self) -> bool {
+        self.sim.lock().is_ok_and(|s| !s.world_paused || s.eval_while_paused)
     }
 
     /// The tutorial ended: the callout hides (its instruction goes back to the reset state, 82D29B18).
@@ -403,14 +447,34 @@ impl Handler for GrantHandler {
     }
 }
 
-/// The presentation sim controller (owner +0x1C8, research b900 §5, b902 §2): its rate as a timestep (0 = not set).
-/// FixSkaterInAir, PauseSim, input restrictions and objective evaluation while paused are not ported (logged stubs).
+/// The presentation sim controller (owner +0x1C8, research b900 §5, b902 §2): its rate as a timestep (0 = not set),
+/// the fix in air (+0xC), the input restriction mask (+0x10), objective evaluation while paused (controller +8 ->
+/// +0x80) and the PauseSim requests for the pause manager (mode 5).
 #[derive(Default)]
 pub struct SimControl {
     pub timestep: f32,
+    pub fix_in_air: bool,
+    pub input_mask: u32,
+    pub eval_while_paused: bool,
+    /// PauseSim (true: push mode 5, 8256E638) and UnpauseSim (false: remove every mode 5 entry, 825621A8) in order,
+    /// for `apply_sim_control`.
+    pub pause_ops: Vec<bool>,
+    /// Mode 5 entries this controller pushed and has not removed (so a tutorial's end can drop them).
+    pub paused: bool,
+    /// The world does not step (the pause manager's simulation bit), as of the last `apply_sim_control`.
+    pub world_paused: bool,
 }
 
 impl SimControl {
+    /// Handler stop 82579B90: unfix, evaluation off, unpause, rate restored, restrictions cleared.
+    pub fn stop_all(&mut self) {
+        self.fix_in_air = false;
+        self.eval_while_paused = false;
+        self.pause_ops.push(false);
+        self.restore();
+        self.input_mask = 0;
+    }
+
     /// vt+0x80: +0x14 = 0, so the controller stops posting and the sim returns to 1/60 about 2 ticks later.
     pub fn restore(&mut self) {
         if self.timestep > 0.0 {
@@ -452,7 +516,193 @@ impl Handler for SimRateHandler {
     }
     fn stop(&mut self, _event: &Event) {
         if let Ok(mut s) = self.host.lock() {
-            s.restore();
+            s.stop_all();
+        }
+    }
+}
+
+/// The sim controller's other types (b900 §5): all done at once; undo per type; stop resets everything (82579B90).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimOp {
+    /// FixSkaterInAir 35 (vt+0x64, 82561D40: +0xC = 1) / UnfixSkaterInAir 36 (vt+0x68).
+    Fix,
+    Unfix,
+    /// EvaluateObjectivesWhileSimPaused 43 / StopEvaluating... 44 (vt+0x84(1 / 0)).
+    Eval,
+    StopEval,
+    /// PauseSim 45 (vt+0x74) / UnpauseSim 46 (vt+0x78).
+    Pause,
+    Unpause,
+    /// EnableInputRestriction 51 (vt+0x6C(atoi(arg1)): mask |= arg) / ClearInputRestrictions 52 (vt+0x70: mask = 0).
+    Restrict,
+    ClearRestrict,
+}
+
+pub struct SimStateHandler {
+    host: Arc<Mutex<SimControl>>,
+    op: SimOp,
+}
+
+impl Handler for SimStateHandler {
+    fn start(&mut self, event: &Event) {
+        let Ok(mut s) = self.host.lock() else { return };
+        match self.op {
+            SimOp::Fix => s.fix_in_air = true,
+            SimOp::Unfix => s.fix_in_air = false,
+            SimOp::Eval => s.eval_while_paused = true,
+            SimOp::StopEval => s.eval_while_paused = false,
+            SimOp::Pause => s.pause_ops.push(true),
+            SimOp::Unpause => s.pause_ops.push(false),
+            SimOp::Restrict => s.input_mask |= event.args[0].as_deref().map(atoi).unwrap_or(0) as u32,
+            SimOp::ClearRestrict => s.input_mask = 0,
+        }
+        info!("PRESENTATION {} {:?} (mask {:#x})", event.kind, event.args[0], s.input_mask);
+    }
+    fn undo(&mut self, _event: &Event) {
+        let Ok(mut s) = self.host.lock() else { return };
+        match self.op {
+            SimOp::Fix => s.fix_in_air = false,
+            SimOp::Eval => s.eval_while_paused = false,
+            SimOp::Pause => s.pause_ops.push(false),
+            SimOp::Restrict => s.input_mask = 0,
+            _ => {}
+        }
+    }
+    fn stop(&mut self, _event: &Event) {
+        if let Ok(mut s) = self.host.lock() {
+            s.stop_all();
+        }
+    }
+}
+
+/// C atoi: leading spaces, a sign, then digits; anything else ends it (0 with no digits).
+fn atoi(text: &str) -> i32 {
+    let t = text.trim_start();
+    let (neg, rest) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let n = rest.bytes().take_while(u8::is_ascii_digit).fold(0i64, |n, d| (n * 10 + i64::from(d - b'0')).min(i64::from(i32::MAX) + 1));
+    (if neg { -n } else { n }) as i32
+}
+
+/// The local player's presentation state outside the sim controller: the pin (cMsgPinPlayer) and the session
+/// marker blocks (the TeleportManager's lists +0x48 set / +0x98 use, 82D55710..82D558B8).
+#[derive(Default, Debug)]
+pub struct PlayerHost {
+    pub pinned: bool,
+    pub set_marker_blocked: bool,
+    pub use_marker_blocked: bool,
+    /// CentralMessage text ids for the central HUD (slot 1).
+    pub central: Vec<String>,
+}
+
+/// PinLocalPlayer 6 / UnpinLocalPlayer 7 (8257C938): posts cMsgPinPlayer(type == Pin), the message AI.PinAI posts
+/// for the local player (8284ADC8), so the same pin as a contest's or race's; done at once. Undo (8257C9D8): only a
+/// Pin unpins. Stop (8257C8B8): always unpins.
+pub struct PinHandler {
+    host: Arc<Mutex<PlayerHost>>,
+    pin: bool,
+}
+
+impl Handler for PinHandler {
+    fn start(&mut self, event: &Event) {
+        if let Ok(mut h) = self.host.lock() {
+            h.pinned = self.pin;
+        }
+        info!("PRESENTATION {}", event.kind);
+    }
+    fn undo(&mut self, _event: &Event) {
+        if self.pin {
+            if let Ok(mut h) = self.host.lock() {
+                h.pinned = false;
+            }
+        }
+    }
+    fn stop(&mut self, _event: &Event) {
+        if let Ok(mut h) = self.host.lock() {
+            h.pinned = false;
+        }
+    }
+}
+
+/// Enable / DisableSetSessionMarker 11 / 12 and Enable / DisableUseSessionMarker 13 / 14 (8257A960): Disable adds the
+/// local player to the list, Enable removes it; undo does the opposite (8257AA28); done at once.
+pub struct SessionMarkerHandler {
+    host: Arc<Mutex<PlayerHost>>,
+    use_list: bool,
+    block: bool,
+}
+
+impl SessionMarkerHandler {
+    fn set(&self, block: bool) {
+        if let Ok(mut h) = self.host.lock() {
+            if self.use_list {
+                h.use_marker_blocked = block;
+            } else {
+                h.set_marker_blocked = block;
+            }
+        }
+    }
+}
+
+impl Handler for SessionMarkerHandler {
+    fn start(&mut self, event: &Event) {
+        self.set(self.block);
+        info!("PRESENTATION {}", event.kind);
+    }
+    fn undo(&mut self, _event: &Event) {
+        self.set(!self.block);
+    }
+}
+
+/// CentralMessage 23 (HUD group 82578A80): arg1 (null: ID_COMMON_UNKNOWN) into the central HUD's first slot; done
+/// at once. Undo / stop: nothing.
+pub struct CentralHandler {
+    host: Arc<Mutex<PlayerHost>>,
+}
+
+impl Handler for CentralHandler {
+    fn start(&mut self, event: &Event) {
+        let id = event.args[0].clone().filter(|a| !a.is_empty()).unwrap_or_else(|| "ID_COMMON_UNKNOWN".into());
+        info!("PRESENTATION CentralMessage {id}");
+        if let Ok(mut h) = self.host.lock() {
+            h.central.push(id);
+        }
+    }
+}
+
+/// The Replay request and its end (`replay.rs` plays the window as a reel clip).
+#[derive(Default, Debug)]
+pub struct ReplayHost {
+    /// Seconds back from now a Replay asked for, not taken yet.
+    pub request: Option<f64>,
+    pub finished: bool,
+}
+
+/// Replay 19 (the NIS handler 8257ACA0's replay key, b874 §2): the NIS player replays the last atoi(arg1) seconds
+/// (now - arg1 * 60 ticks .. now); done on the scene's end (cMsgNISChallengeNotify). Stop: the scene stops.
+pub struct ReplayHandler {
+    host: Arc<Mutex<ReplayHost>>,
+}
+
+impl Handler for ReplayHandler {
+    fn start(&mut self, event: &Event) {
+        let seconds = event.args[0].as_deref().map(atoi).unwrap_or(0).max(0);
+        info!("PRESENTATION Replay last {seconds} s");
+        if let Ok(mut h) = self.host.lock() {
+            h.request = Some(f64::from(seconds));
+            h.finished = false;
+        }
+    }
+    fn is_done(&mut self, _event: &Event) -> bool {
+        self.host.lock().map(|h| h.finished).unwrap_or(true)
+    }
+    fn stop(&mut self, _event: &Event) {
+        if let Ok(mut h) = self.host.lock() {
+            h.request = None;
+            h.finished = true;
         }
     }
 }
@@ -624,6 +874,66 @@ pub(crate) fn play_sfx(presenter: Option<bevy::prelude::Res<Presenter>>, mut sou
         if let Some(name) = t.request.take() {
             info!("PRESENTATION TeleportLocalPlayer {name}: no tutorial runs (not ported here: done at once)");
             t.finished = true;
+        }
+    }
+}
+
+/// The sim controller's per-frame update (8256E4F0) and the other hosts' game side: the PauseSim requests on the
+/// pause manager, the restriction mask on the actor (+0x774, skater slot 32), the fix in air (skater slot 30: bit 23
+/// this frame, kept while the skater is in the air, state category 200), the Replay window, the central messages.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_sim_control(
+    presenter: Option<bevy::prelude::Res<Presenter>>,
+    mut pause: Option<bevy::prelude::ResMut<crate::pause_man::ThePauseMan>>,
+    mut controls: Option<bevy::prelude::ResMut<crate::physics::PlayerControls>>,
+    mut physics: Option<bevy::prelude::ResMut<crate::physics::GamePhysics>>,
+    skater: Option<bevy::prelude::Res<crate::physics::SkaterRuntime>>,
+    mut replay: Option<bevy::prelude::ResMut<crate::replay::Replay>>,
+    mut central: bevy::prelude::MessageWriter<crate::hud_central::CentralMessage>,
+    mut replaying: bevy::prelude::Local<bool>,
+) {
+    let Some(p) = presenter else { return };
+    if let Ok(mut s) = p.sim.lock() {
+        for push in std::mem::take(&mut s.pause_ops) {
+            if let Some(m) = pause.as_deref_mut() {
+                if push {
+                    m.push(skate_core::pause_man::mode::SIMULATION);
+                } else {
+                    m.pop(skate_core::pause_man::mode::SIMULATION);
+                }
+            }
+            s.paused = push;
+        }
+        s.world_paused = !crate::pause_man::world_steps(pause.as_deref());
+        if let Some(c) = controls.as_deref_mut() {
+            c.actor_flags = s.input_mask;
+        }
+        let airborne = skater.as_deref().is_some_and(|k| k.player_input.physical.state.category_12 == 200);
+        if let Some(ph) = physics.as_deref_mut() {
+            ph.set_fixed_in_air(s.fix_in_air);
+        }
+        if s.fix_in_air {
+            s.fix_in_air = airborne;
+        }
+    }
+    if let Ok(mut h) = p.player.lock() {
+        for id in std::mem::take(&mut h.central) {
+            central.write(crate::hud_central::CentralMessage::new(id));
+        }
+    }
+    if let (Ok(mut h), Some(r)) = (p.replay.lock(), replay.as_deref_mut()) {
+        if let Some(seconds) = h.request.take() {
+            let now = r.last_time();
+            r.reel_done = false;
+            r.play_reel_clip(now - seconds, now, None);
+            *replaying = true;
+        } else if *replaying && h.finished {
+            r.stop_reel();
+            *replaying = false;
+        } else if *replaying && r.reel_done {
+            r.reel_done = false;
+            h.finished = true;
+            *replaying = false;
         }
     }
 }
@@ -886,6 +1196,56 @@ mod tests {
         p.manager.start(group("d", vec![ev("SetSimRate", Some("junk"))]));
         p.update(0.0);
         assert_eq!(p.sim_timestep(), None, "an unreadable rate is ignored");
+    }
+
+    #[test]
+    fn a_lesson_pins_restricts_pauses_and_blocks_the_marker_until_undone() {
+        let mut p = Presenter::default();
+        p.manager.start(group("intro", vec![ev("EnableInputRestriction", Some("8191")), ev("PinLocalPlayer", None),
+            ev("DisableUseSessionMarker", None), ev("PauseSim", None), ev("FixSkaterInAir", None),
+            ev("EvaluateObjectivesWhileSimPaused", None), ev("CentralMessage", None)]));
+        p.update(0.0);
+        assert!(p.player_pinned());
+        assert_eq!(p.marker_blocks(), (false, true));
+        {
+            let s = p.sim.lock().unwrap();
+            assert_eq!(s.input_mask, 8191);
+            assert!(s.fix_in_air && s.eval_while_paused);
+            assert_eq!(s.pause_ops, vec![true]);
+        }
+        assert_eq!(p.player.lock().unwrap().central, vec!["ID_COMMON_UNKNOWN".to_owned()], "a null id reads the unknown one");
+        p.manager.start(group("hint", vec![ev("EnableInputRestriction", Some("2048")), ev("UnpinLocalPlayer", None),
+            ev("EnableUseSessionMarker", None), ev("UnpauseSim", None), ev("UnfixSkaterInAir", None),
+            ev("StopEvaluatingObjectivesWhileSimPaused", None)]));
+        p.update(0.0);
+        assert!(!p.player_pinned());
+        assert_eq!(p.marker_blocks(), (false, false));
+        let s = p.sim.lock().unwrap();
+        assert_eq!(s.input_mask, 8191 | 2048, "restrictions add up until cleared");
+        assert!(!s.fix_in_air && !s.eval_while_paused);
+        assert_eq!(s.pause_ops, vec![true, false]);
+    }
+
+    #[test]
+    fn a_skipped_lesson_group_undoes_its_pause_pin_and_restriction() {
+        let mut p = Presenter::default();
+        p.manager.start(group("a", vec![ev("PauseSim", None), ev("PinLocalPlayer", None), ev("EnableInputRestriction", Some("7")),
+            ev("Wait", Some("5"))]));
+        p.update(0.0);
+        let mut handlers = std::mem::take(&mut p.handlers);
+        p.manager.skip("a", &mut handlers);
+        p.handlers = handlers;
+        assert!(!p.player_pinned());
+        let s = p.sim.lock().unwrap();
+        assert_eq!(s.input_mask, 0);
+        assert_eq!(s.pause_ops, vec![true, false], "PauseSim's undo unpauses");
+    }
+
+    #[test]
+    fn atoi_reads_like_c() {
+        assert_eq!(atoi("8191"), 8191);
+        assert_eq!(atoi("  -3x"), -3);
+        assert_eq!(atoi("junk"), 0);
     }
 
     /// A mono 16-bit wav of `seconds` at 48 kHz.

@@ -101,7 +101,8 @@ out-of-bounds time are challenge parameters, not bank fields (see the export sec
   enough points.
 - Commands: teleport to the start locator (`travel_ex`, on board), objectives reset / evaluation / requirement, the
   completion recorded per challenge for the session (the tier only moves up), the HUD (below). The HUD counts as
-  loaded at once and the highlight reel completes at once.
+  loaded at once; the highlight reel plays the completed line (2026-11-21, "Own the spot and Hall of Meat" under
+  Highlight reel).
 - Leaving the discovery sphere (distance from the challenge locator > `discovery_radius`, checked every frame as
   retail 8255BEB8 does) sends exit discovery, which abandons the run.
 - The out-of-bounds time and the banner times come from the export's challenge parameters (own the spot: 5 s,
@@ -335,8 +336,10 @@ and `SKATE_REPORT_CHILD=1`) so a test run never covers what the user has open. N
   manual carrier's seconds held), GetNumPushes (push contacts as the skater-pushed message, objective +0x4C0),
   GetPumpingAcceleration / IsLastPumpUserControlled (the ground pump controller) and Grind.IsGrindingGUID (the
   current rail's [spline id, type signature], kept by the grind provider; the argument is a decimal id). The start
-  activates the first objective [inferred]. The result goes to the career. NOT RETAIL YET: presentation, the
-  tutorial HUD and the end options are answered at once. A tutorial whose rows call an API function that is not
+  activates the first objective [inferred]. The result goes to the career. The presentation (intro, restart,
+  outro, failure and hint groups) runs on the presentation manager ("Tutorial presentation" and "The lessons' hold
+  on the player" below; ActivateMinimalScoringHUD is the one intro type still a stub), the end options on the
+  retail end dialog. NOT RETAIL YET: the tutorial HUD counts as loaded at once. A tutorial whose rows call an API function that is not
   ported does not run (logged with the missing names): an unported call errors and an erroring completion
   condition counts as complete in retail, so it would finish at once.
 - Failure and hint rows (research b938, b940, b942): the export adds per objective `failures` (FailureObjectivesWithEvents)
@@ -485,8 +488,11 @@ course from the split centers).
   them into whole seconds (`ChallengeHudState::countdown`) and shows `Component::Countdown`; at the start it shows 0
   (GO) and hides after `Params::go_display_time`. `hud_challenge` sends SetState(2) on each new value and SetState(1) to
   hide; `Countdown_IsInStadium` answers false (races are not stadium events).
-- NOT RETAIL YET: when retail hides hudcountdown after GO is not decoded; `go_display_time` = 1.0 s is ours (data a
-  mod can change).
+- After GO (2026-11-21) [code 82664990, data]: the countdown component's update (vtable 82306260 slot +0x18)
+  sends SetState(2) on each whole-second change of its timer and simply stops running at 0; only its Stop (slot +0x40,
+  82664938, the component switched off) sends SetState(1). The movie hides the number itself: `intro` (frame 1)
+  plays to `invisible` (60) and stops at `nothing` (61), 2.0 s at 30 a second. So `go_display_time` is 2.0 s (was
+  our 1.0, which cut GO short); the hide after it changes nothing on screen. A mod can change it.
 - ShowCountdown (disc movie, read 2026-11-08): `mcNumber.gotoAndStop(r)` on the frame labels "#3" (frame 0), "#2" (10),
   "#1" (20); for "#0" `mcNumber.gotoAndStop(FELanguage.GetLanguage())` on the language label ("English" 30, "Spanish"
   40, ...); then `mcCountdownText.gotoAndPlay("intro")` and the sound. Our movie runtime matched labels exactly, so
@@ -625,9 +631,10 @@ course from the split centers).
 
 - skate-game `presentation_run::Registry` implements the manager's `Handlers` by type name: all 73 retail types
   (skate-core `presentation::EVENT_TYPES`, the export's order, b874) have a handler, so no group stalls on an unported
-  type. `Wait` (type 4, 8257C820) is ported: arg1 seconds of game time [code b900]. The rest are logged stubs, done at
-  once (`PRESENTATION stub <type>`); NOT RETAIL YET for the waiting types (NIS, FMV, Speech, Teleport, Fade, which retail
-  holds until their end message). An unknown name logs and finishes.
+  type. `Wait` (type 4, 8257C820) is ported: arg1 seconds of game time [code b900]. A type without a host is a logged
+  stub, done at once (`PRESENTATION stub <type>`); the hosts ported since are listed under "Tutorial presentation"
+  (NIS, Speech, Teleport, Fade and Replay wait for their end as retail does; FMV is still a stub). An unknown name
+  logs and finishes.
 - Moddability: `set_mod(mod, type, handler)` adds a type or overrides a retail one while the mod is on; `remove_mod`
   drops them and the engine handler is back (run `Manager::remove_owner` first so the mod's running events stop).
   Ported hosts replace stubs with `set_engine`.
@@ -687,8 +694,11 @@ course from the split centers).
 - The manager runs once per frame on the frame's game time (the tutorial's 60 Hz ticks), plus zero-time passes so an
   instant group finishes in the frame it starts. Completion and abandon remove the tutorial's groups (82DBA8F8): the
   running event stops, queued ones go unplayed.
-- NOT RETAIL YET: the types without a port are logged stubs done at once; the manager runs only while a tutorial
-  runs. Ported since: callouts, speech, NIS, sim rate, achievements, and (2026-11-20) SFX and TeleportLocalPlayer:
+- NOT RETAIL YET: the types without a port are logged stubs done at once (left in the tutorial lists:
+  ActivateMinimalScoringHUD, its trick display bytes' reader not found; WorldScriptCommand in the Hall of Meat
+  intros); the manager runs only while a tutorial runs. Ported since: callouts, speech, NIS, sim rate, achievements,
+  (2026-11-20) SFX and TeleportLocalPlayer, and (2026-11-21) the sim controller's other types, the pin, the session
+  marker blocks, CentralMessage and Replay (next section):
   - SFX (65) [code b874]: hash64(arg1) to the audio object's vt+0x2C, the call Audio_PlayFeSound makes, so it plays
     the `fe` record named arg1 (the lessons use tutorial_off 35, tutorial_pause 15, tutorial_freeze 14,
     tutorial_slowmo 11, all in the install); done at once. `presentation_run::SfxHandler`, played by `play_sfx`.
@@ -700,6 +710,42 @@ course from the split centers).
   - Tests `sfx_queues_its_record_and_a_teleport_holds_its_group_until_the_move_ends`,
     `test_teleport_events_resolve_their_locators_once`. Tests: `tutorial_run` (the intro holds the teleport for its Wait, abandon removes
   the tutorial's groups; the existing run test with count-only lists).
+
+<a id="tutorial-player-control"></a>
+
+### The lessons' hold on the player (2026-11-21; b900 §3 to §5, b902 §2, this pass)
+
+- Retail [code]: the sim controller (owner +0x1C8) takes FixSkaterInAir / Unfix (+0xC), EvaluateObjectivesWhileSimPaused
+  / Stop (controller +8 -> +0x80), PauseSim (pause mode 5 push, 8256E638) / UnpauseSim (every mode 5 entry removed,
+  825621A8), EnableInputRestriction (`mask |= atoi(arg1)`, dirty) / ClearInputRestrictions (mask 0). Its update
+  (8256E4F0) gives the local player's skater the mask once when dirty (skater slot 32, 82592510: actor +0x774) and,
+  while fixed, calls skater slot 30 (82592468) each frame: actor +0x770 bit 23 set, and the fix stays only while the
+  physics state category is 200 (air). Actor +0x774 is the word the riding input fill (825999F0) tests bit by bit
+  (bit 11 push, bit 9 manual, bit 10 off-board, bit 0 steering, bit 6 wipeout, ...); bit 23 reaches the physics packet
+  (+10375, 82593640) as the air selector's hold (`flags_2468` bit 3). Undo: fix -> unfix, evaluation off, pause ->
+  unpause, restriction -> clear; the handler's stop (82579B90) resets all five. The lessons use masks 8191 (Ollie
+  Timing, with the pin) and 2047 (Pumping Transition), and FixSkaterInAir after the freeze sound in the Advanced
+  Grinds / Air Tricks hints.
+- PinLocalPlayer / Unpin (8257C938) post cMsgPinPlayer(type == Pin), the message `AI.PinAI` posts for the local player
+  (8284ADC8), so it is the contests' and races' pin. Undo unpins only after a Pin; stop always unpins.
+- Enable / DisableSetSessionMarker and Enable / DisableUseSessionMarker (8257A960): Disable adds the local player to the
+  TeleportManager's list (+0x48 set, +0x98 use; 82D55710 / 82D55828), Enable removes it; undo the opposite. Where the
+  lists are read was not found (a recomp scan for loads of those offsets finds only the manager's own add / remove /
+  clear); ours reads them as "may not place / may not return" [inferred from the names].
+- CentralMessage (23): arg1 (null: `ID_COMMON_UNKNOWN`) into the central HUD's first slot. Replay (19): the NIS player
+  replays the last atoi(arg1) seconds; the event waits for the scene's end.
+- Ours: `presentation_run::SimControl` (fix, mask, evaluation flag, pause requests), `SimStateHandler` (eight types),
+  `PlayerHost` with `PinHandler`, `SessionMarkerHandler`, `CentralHandler`; `ReplayHandler` with `ReplayHost`;
+  `apply_sim_control` each frame: the pause requests on `ThePauseMan`, the mask into `PlayerControls::actor_flags`
+  (the intents already ported read it), the fix into the physics profile (`GamePhysics::set_fixed_in_air`, packet
+  +10375), the central messages, the Replay window as a reel clip on the instant replay (done when it ends).
+  `input::player_pinned` includes the presentation's pin; the session marker's place / return read the blocks;
+  tutorial objectives evaluate while the world steps or while EvaluateObjectivesWhileSimPaused holds. A lesson's
+  end (the controller reset 8256E460: rate, fix, mask) also drops a PauseSim the lesson left and the pin (OURS: the
+  groups are removed without the undo that would release them, so an abandoned lesson never leaves the world
+  frozen).
+- Tests: `a_lesson_pins_restricts_pauses_and_blocks_the_marker_until_undone`,
+  `a_skipped_lesson_group_undoes_its_pause_pin_and_restriction`, `atoi_reads_like_c`.
 
 <a id="presentation-fade"></a>
 
@@ -890,8 +936,9 @@ course from the split centers).
   `Presenter::sim_timestep` / `reset_sim` (tutorial cleanup); the challenge system posts
   `SimulationRateRequest { timestep, ticks: 1 }` each frame into `CameraRuntime::presentation_rate_requests`, applied
   with the camera's requests by the physics clock (`physics/clock.rs`), not online (as the camera's).
-- NOT RETAIL YET: FixSkaterInAir, PauseSim / UnpauseSim, input restrictions and objective evaluation while paused
-  are still logged stubs; whether our audio follows the slower ticks is not checked.
+- FixSkaterInAir, PauseSim / UnpauseSim, input restrictions and objective evaluation while paused: ported
+  2026-11-21 ("The lessons' hold on the player" above). Open: whether our audio follows the slower ticks is not
+  checked.
 - Tests: `presentation_run` (a rate holds until RestoreSimRate or reset, an unreadable rate is ignored); the clock's
   own tests cover the 30 Hz period.
 - Laptop presentation-sim-rate (2026-11-10 08:38): build OK, presentation 6, tutorial 2, clock 8 pass. All 22
@@ -1408,7 +1455,9 @@ Races and contests (demos too) join the same prompt. `challenges.py` exported th
 
 **Anywhere films' objectives (2026-11-20, b961 §1, b1050).** Their objective rows resolve only in `data/db/skatercollections`; `challenges.py` now reads that vault last, as the lowest-priority bank, so every challenge bank's own rows win. Checked on the disc (export alone, 4.5 s): the ten `film_anyw_*` rows get 1 to 7 owned objectives each (before: none) and their highlight definitions; the only other change in challenges.json is the race gates' ribbon color key, now named `default` instead of `Hash_D7EDBD362D7D2152` (the same row: hash64("default"); the game resolves both). Needs a Refresh Game Files; not played yet.
 
-**Not yet (NOT RETAIL YET, logged).** The out-of-bounds central text id (ModifiedCentralMessage(OutOfBounds)) is not decoded. The highlight reel's scene cameras (see "Highlight reel" below). Film objectives that call unported API (b961 §2: spin degrees, trick groups, unique tricks, ResetAllObjectives, manual distance and others) keep those rows from starting until the calls are ported.
+**Central texts (2026-11-21)** [data: objectives_shared and hom_challenge constants, the handlers' calls]: every central message the graphs show is a row field, `C.CentralMessageHALID<ReturnToChallengeArea | ChallengeFailed>` in the first slot and `C.ModifiedCentralMessageHALID<LineTimerExpired | OutOfBounds | ScoredLow | TimeUp>` in the second; the Hall of Meat shows its ScoredLow through ShowCentralMessage in red (eMessageColour.Red = 1, b847). The export writes them per row (`central_messages`), `ftl_host` / `hom_host` show them (an export without them logs the message). Needs a Refresh Game Files.
+
+**Not yet (NOT RETAIL YET, logged).** The highlight reel's scene cameras (see "Highlight reel" below). Film objectives that call unported API (b961 §2: spin degrees, trick groups, unique tricks, ResetAllObjectives, manual distance and others) keep those rows from starting until the calls are ported.
 
 <a id="highlight-reel"></a>
 
@@ -1436,7 +1485,11 @@ Races and contests (demos too) join the same prompt. `challenges.py` exported th
 
 What the world step covers (82859E70) [code]: game input, the physics world (islands, solvers, contacts, the player stages), the DMO props, every skater's manager phases, the living world update and managers, the AI spawner and the world script objects; presentation, camera, HUD, NIS, front end and audio run outside it. Ours freezes the same set: the skater's input / controls / physics sets (props step inside physics), the living world and the mods' fixed step (`on_fixed_update`, sdk/ENGINE_API.md). cMsgNISMgrICEMode (handler 8285FAD8: on pushes 12 then 8, off pops both) has no sender in the shipped game: no code builds it outside its own poster / Lua constructor, and no script or data file on the disc names it; a script hook only.
 
-**NOT RETAIL YET.** The Lua call's drop-oldest argument is not read (ours drops); own the spot and Hall of Meat still complete their reels at once.
+**Own the spot and Hall of Meat (2026-11-21).** Retail [data: the state graphs `own_the_spot` (b838) and `hom_challenge` (disassembled this pass); code 82BCCEB0 for the arguments]: own the spot adds one highlight when the line completes, `AddHighlightUsingDefinition(group, the first owned objective's HighlightDefinition, true, last frame written, SequenceBeginTime, false, -1, 2.0, 0.25)`, and plays the group after the treatment wait; its restart removes them. Lua arg 3 true picks the definition's +0x50 scene half (82BCCEB0: `def + 0x50` when true, else `+0x10`), arg 4 is the end frame, arg 5 the start, args 8 / 9 override pre / post when above 0. Hall of Meat (single player): the wipeout keeps the bail's first frame (HighlightStart); a bail that beats the best score while the run is not complete replaces the highlight, and so does completing the objectives (C.HighlightDefinition, false, last frame written, HighlightStart); the highlight state adds one over the last 180 frames when none exists, then plays the group. Ours: `ftl_host::ReelState` is shared (`track_sequence`, `add` in replay seconds, `play`, `play_prepared` for the films' PrepareReel, `step`, `stop`); `ots.rs` emits `AddHighlight` (completion) and `RemoveAllHighlights` (restart); `challenges.rs` and `hom_host.rs` host the commands, step the reel each frame and stop it when the run ends; the export adds the challenge's `highlight` to Hall of Meat rows (`challenges.py` `follow`, own local row, else its framework parent, else the bank chain). Needs a Refresh Game Files (challenges) for the definitions; without them the reel completes at once with a log line. Test `owning_it_completes_as_owned_after_the_reel` (the AddHighlight).
+
+**The films' call (2026-11-21)** [data: objectives_shared `objectivecomplete`@345-551]: every AddHighlightUsingDefinition the graph makes passes drop-oldest false (arg 6 false, or absent), so a full group adds nothing; ours now does the same. Without the objective's AllowAutoHighlightTiming (`useAutoTime`) the call is (group, definition, KilledIt, completion frame, SequenceBeginTime), as ours.
+
+**NOT RETAIL YET.** The AllowAutoHighlightTiming branch: spot / anywhere photos add the +0x50 half with pre 2.0 / post 0.25 when KilledIt, else the +0x10 half with 0.25 / 0.25; other films pick a kill-it highlight by HighlightKillOnlyInMasterObjective / HighlightKillItObjectiveNum / the objectives added so far and use pre 2.5 / post 0.5 for it (@423-481). The field is not exported, so ours always takes the plain call.
 
 **Verification.** Tests `highlights` (window math and overrides, 4 slots and drop-oldest, the tier and fallback), `a_completed_objective_adds_its_highlight_and_the_reel_keeps_the_results_tier` (film_run), `a_highlight_reel_clip_plays_its_window_without_the_replay_screen` (replay), `test_a_highlight_definition_reads_both_halves` (export). Not checked in game yet (needs a Refresh Game Files for the export field).
 

@@ -649,7 +649,7 @@ fn leaderboard_scores(hud: &mut ChallengeHudState, round: &[f32]) {
 fn contest_hud(state: &mut ContestState, hud: &mut ChallengeHudState, dt: f32) {
     let seconds = match state.run.countdown_hud_ticks() {
         Some(t) => Some((t.max(0) + TICKS_PER_SECOND as i32 - 1) / TICKS_PER_SECOND as i32),
-        None if state.run.state() == State::RunRound && state.go_shown < 1.0 && hud.is_shown(Component::Countdown) => {
+        None if state.run.state() == State::RunRound && state.go_shown < skate_core::challenges::race_run::GO_DISPLAY_TIME && hud.is_shown(Component::Countdown) => {
             state.go_shown += dt;
             Some(0)
         }

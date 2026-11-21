@@ -688,8 +688,11 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   "locked" (82202428) before "dlc" before "none". Change: `CasHost::locked` (the career's `Unlocks`, copied in by
   `cas_look` while the screen is open; with the career's gating off, the default, nothing is locked), "locked" in
   the option / info types, a locked pick stays on the grid. The highlight preview still shows a locked part
-  (825FEEA0 has no lock test). Test `a_part_with_an_ungranted_unlock_is_locked_and_cannot_be_picked`. NOT RETAIL YET:
-  the error sound (its name is not known, only the hash) and the DLC purchase popup 0x11E.
+  (825FEEA0 has no lock test). Test `a_part_with_an_ungranted_unlock_is_locked_and_cannot_be_picked`. The error
+  sound plays by its key (core_error, 0x47F720222F2CAED4). The DLC purchase popup 0x11E opens only for a part whose
+  DlcID parses to numbers; the export (refresh 2026-11-21, with the DLC installed) has no part with a DlcID (all 4595
+  empty), so it can never open, in retail either, on these parts; a mod part that sets one shows the "dlc"
+  type and is picked normally (no popup, no store).
 - **Fix: the world stops behind Create-a-Skater** (2026-11-19): the skater on the CAS set jumped around (seen while
   the boot flow's first Create-a-Skater ran; worse the deeper into the menus). Measured with `SKATE_TRACE_MARQUEE=1`
   (marquee_preview.rs: the rig root, one end bone and one mid bone per frame, and how many bound bones another system
@@ -897,7 +900,7 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     preset sets `morphs.<target>` and picks its colors like the color rows (skin texture, eye material). Unset reads as Custom [video; the ctor leaves the pick empty]. Test
     `the_face_preset_row_steps_the_gender_s_presets_through_custom` and the vault test (21 rows, male last 10, eye /
     skin color keys in their zones, 19 morphs 0..1).
-  - NOT RETAIL YET: the row's own sounds.
+  - Sounds: core_nav_left / core_nav_right on each step (see "Sounds" below, 2026-11-20).
 - **Base Outfit opt-in** (2026-11-20, user ask 713; ours, not retail): with the living world opt-in "Base Outfit"
   (`SKATE_BASE_OUTFIT=1`, or the opt-ins page), Remove on a top (OuterTorso) or pants in the Merchandise grids leaves
   the base part on instead of an empty slot: the bare torso in the look's skin tone (the sports bra on a female
@@ -924,8 +927,12 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
     `graphic_select`, `pick_graphic`, the grids 13 / 14, the editors in `tattoo_editor_key` / `tick_tattoo`. Data
     a mod can replace: the logo lists, IsLogoable, the default rows and cameras. Needs a Refresh Game Files (the logos
     export). Test `custom_graphics_go_rows_category_logo_editor_and_remove`.
-  - NOT RETAIL YET / open: the hat's body target (0x83044648 not dumped); the online user logos; whether retail draws
-    the graphic through the same shader path (not traced); not checked in game yet.
+  - The online user logos: retail adds the downloaded ones only while online, so an offline game lists none, as
+    ours does (the engine has no online service).
+  - The hat's body target (0x83044648, dumped 2026-11-21) is key 0x4A663E264EABE260, the board's row; the hat
+    editor now posts it with its camera.
+  - NOT RETAIL YET / open: whether retail draws the graphic through
+    the same shader path (not traced); not checked in game yet.
 - **Sounds** (2026-11-20) [code 825FC7E8, 825FD9F0; data: the `fe` records by key]: every row the Left / Right
   handler takes (sliders, selectors, Edit Style rows, gesture slots, color rows, face presets, wear style) plays
   core_nav_left (0xAD8BF9A0B4997B49) or core_nav_right (0xD8EE38A61C45EA28) at its common exit, also when a color
@@ -978,7 +985,10 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   (saved on exit Yes), the sliders start from the profile. Test
   `edit_style_rows_write_the_profiles_posture_style_stance_and_the_sliders_its_truck_and_wheel`; the gesture rows
   write the profile's `gestures` "0" / "3" / "2" / "1" (test `gesture_rows_step_the_unlocked_gestures_into_the_profiles_slots`).
-  NOT RETAIL YET: Posture's body target re-post, the Left / Right sounds, retail's slider defaults (0.7 is ours).
+  The Left / Right sounds are ported ("Sounds" below) and 0.7 is retail's slider default (0x3F333333 at
+  82593988 / 94). Posture's re-post (2026-11-21, recomp asm of 825FC7E8 at 825FD190): after the store at look
+  +0x2018 it calls 82539688 with no key, which posts the look's current body target again (+0x10), so the animator
+  rebuilds the same row. NOT RETAIL YET: ours keeps the stand playing (retail's rebuild restarts the clip).
 - **Gesture preview** (2026-11-19) [code 82604AD0 recomp asm + ctor 825F4B98 Ghidra, data]: after a gesture slot
   steps, 82604AD0 takes the slot's gesture index, reads the 64-bit key at S+0x1838 + 16 * index (the ctor's table:
   label at +0, key at +8, e.g. AIRGUITAR 0xBCACFFAA652FAC9B .. YARDSALE 0xBD81B91A70FB59B1), stores it in the look

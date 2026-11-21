@@ -89,6 +89,11 @@ pub enum Command {
     SetPointRequirement(i32),
     SetHighScore(i32),
     MarkIntroSeen,
+    /// AddHighlightUsingDefinition(group, the first owned objective's HighlightDefinition, true (the +0x50 scene
+    /// half), last frame written, SequenceBeginTime, false, -1, 2.0, 0.25): the line that completed (b838).
+    AddHighlight,
+    /// RemoveAllHighlights (the restart state).
+    RemoveAllHighlights,
     PlayHighlightReel,
     Complete(Completion),
 }
@@ -363,6 +368,7 @@ impl Ots {
             }
             State::Restart => {
                 out.push(Command::ResetObjectives);
+                out.push(Command::RemoveAllHighlights);
                 self.update_hud(0, out);
                 self.locked_out = false;
                 out.push(Command::PauseMenu(true));
@@ -417,6 +423,7 @@ impl Ots {
                 self.result = flow;
                 self.update_hud(points, out);
                 self.score = points;
+                out.push(Command::AddHighlight);
                 self.change(State::ChallengeCleanup);
             }
             (State::ChallengeRunning, Message::Event(NotEnoughPoints { points })) if !self.locked_out => {
