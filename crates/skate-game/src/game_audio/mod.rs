@@ -484,8 +484,7 @@ impl Plugin for GameAudioPlugin {
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
             .add_systems(FixedUpdate, record_replay_audio.after(skate_events::observe).after(crate::presentation::capture))
-            .add_systems(PreUpdate, feed_replay_audio.after(crate::replay::controls))
-            .add_systems(
+            .add_systems(PreUpdate, feed_replay_audio.after(crate::replay::controls))            .add_systems(
                 Update,
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
                 // the ticks and the local update, then the beds (retail's process / tick / update).

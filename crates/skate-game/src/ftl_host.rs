@@ -893,6 +893,14 @@ fn update(
                     }
                 }
                 Command::Complete(c) => finished = Some(c),
+                // LuaBind_PauseSimulation (828409C8): pause mode 5, whose mask has bit 0, so GameSession_StepSimulation
+                // stops stepping the worlds; audio is not a pause manager client and plays on.
+                Command::PauseSimulation(on) => {
+                    if let Some(r) = replay.as_deref_mut() {
+                        r.sim_paused = on;
+                    }
+                    info!("SKATE_FTL {id} simulation {}", if on { "paused" } else { "resumed" });
+                }
                 other => info!("SKATE_FTL {id} {other:?}"),
             }
         }
@@ -963,6 +971,10 @@ fn update(
         }
         info!("SKATE_FTL end {id} completion={c:?}");
         ftl.result = Some(format!("ftl={id} completion={c:?}"));
+        // OURS: a run that ends while paused (an abandon) does not leave the world frozen.
+        if let Some(r) = replay.as_deref_mut().filter(|r| r.sim_paused) {
+            r.sim_paused = false;
+        }
         for h in [Component::Timer, Component::Countdown, Component::OwnedIt, Component::KilledIt, Component::DistanceMeter] {
             hud.show(h, false);
         }

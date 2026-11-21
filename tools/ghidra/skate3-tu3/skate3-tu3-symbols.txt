@@ -6463,7 +6463,7 @@ guess_ChallengeCamera_NoOpB 0x82561D18 f
 guess_FPS_RaceFieldCount 0x82561D50 f
 guess_AssetMan_ReleasePresArena 0x82562088 f
 Vt822FE3F8_DeletingDtor 0x825620D8 f
-guess_OnlineScore_ReleaseAndCheck 0x82562148 f
+guess_PauseMan_IsNotPaused 0x82562148 f
 guess_StreamerStall_SubscribeA 0x825621E8 f
 guess_RealTimeController_DeletingDtorB 0x82562368 f
 guess_PhotoReplay_DetectFreezeFrame 0x825623F0 f
@@ -11885,10 +11885,10 @@ guess_GameFlow_EnterRealTimeB 0x826DA6C8 f
 guess_GameApp_EnterInputMode3 0x826DAA28 f
 guess_Vault_LoadVaultList 0x826DAB98 f
 guess_GameSession_UpdateInputModes 0x826DAFF0 f
-guess_IntVector_InitAndPushBack 0x826DB498 f
-guess_InputMapParser_PopMode 0x826DB530 f
-guess_InputMapParser_PushMode2 0x826DB638 f
-guess_InputMapParser_PopMode2 0x826DB640 f
+guess_PauseMan_PushMode 0x826DB498 f
+guess_PauseMan_PopMode 0x826DB530 f
+guess_PauseMan_PushMode2 0x826DB638 f
+guess_PauseMan_PopMode2 0x826DB640 f
 guess_RefVector_AddUnique 0x826DB648 f
 guess_Player_ReleaseSpawnRefsBody 0x826DB6E0 f
 guess_GameSession_BindSlotsForKind 0x826DB7C8 f
