@@ -39,6 +39,9 @@ return {on_fixed_update = function()
 end}
 ```
 
+`on_fixed_update` does not run while the world stands still: during a replay, and while the game pauses the
+world step (a challenge's PauseSimulation, an NIS scene, a highlight reel clip). `on_update` keeps running.
+
 ## Native player movement and session authority
 
 `sdk.player.teleport({position={x,y,z}, heading=radians, velocity={x,y,z}, ground_fit=true, on_board=true})`

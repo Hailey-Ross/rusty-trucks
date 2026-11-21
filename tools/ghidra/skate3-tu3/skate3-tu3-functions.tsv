@@ -16483,7 +16483,7 @@
 82858290	guess_GameFlow_CreateWorldSystems	Guess: b3.txt: calls LivingWorld_Init, PostOfficeRouter_Ctor, CrowdPositionBuffer_CreateSingleton, VisualIndicatorMgr_Create, TeamSkateWith_Init and message subscriptions; much wider than a crowd buffer
 82858810	AttributesPool_CreateAndLoad	Creates the 0x1C-byte "Andale::TheAttributesPool" singleton 830D0020 (tag 8209C004), loads it (82BC0C38 with 8209BDB8) and then reads further setup records.
 82859AF8	guess_GameSession_ShutdownPres	Guess: clears the skater presentation tree and erases ids.
-82859E70	guess_Simulation_StepWorldsByMask	Guess: run-30 b16: mask bit 0 / 1 counted at +0x10 / +0x14; steps physics world +0xBC (islands +0x24 / +0x28, solvers +8 / +0xC), DMO +0x104, SkaterMgr +0xC4 phases, AISpawner_ResetAll; in the Simulation unit next to Simulat...
+82859E70	guess_Simulation_StepWorldsByMask	Guess: the world step (GameSession_StepSimulation, only while ThePauseMan bit 1 runs): mask bit 0 / 1 counted at +0x10 / +0x14; game input manager, physics world +0xBC (islands, solver iterations, contacts, batches, player stages, dependency tree, solver), DMO +0x104 ownership / reset, SkaterMgr +0xC4 begin / wait / end phases and post-step, living world update / managers / frame, AI spawner, schema flush, world script objects +300, park setup, net remote transforms, challenge area / volume lanes
 8285A3C0	guess_Simulation_Tick	Guess: b15: called by 8285CC28 with the Simulation (session +8) and the pending mask +0x1360; uses the same Simulation fields as 82859E70 (+0x90 / +0x91 / +0xBC / +0xC4 / +0xD4) and calls guess_SkaterMgr_ResetSkatersByMask
 8285A6D8	guess_Simulation_UpdateOnline	Guess: b15: called by 8285CC28 with the Simulation (session +8) and the mask; drives the async loader, URL map, online score release and guess_GameSession_UpdateOnlineBody
 8285A870	GameModeObj_IsOnline	notes/peds-re.md:185 (vfunc 0 of 823152F4 = IsOnline byte 830B7AE8+323); decompile: run-55/d4.txt returns DAT_830B7C2B
@@ -16545,7 +16545,7 @@
 8285F720	guess_NISMan_Complete	Name from the messages it posts (cMsgNISChallengeNotify, cMsgNISComplete; 1 MsgBus_Post calls, 652 bytes); the rest of the body not read; pops pause mode 8 when +0x134 and mode 12 on ThePauseMan (b1053)
 8285F9B0	MsgHandler_cMsgNISMgrPlayback_8285DCA8	Handler subscribed for cMsgNISMgrPlayback (0xB0F2D44F) by 8285DCA8.
 8285FA20	MsgHandler_cMsgNISMgrComplete_8285DCA8	Handler subscribed for cMsgNISMgrComplete (0x62F1478B) by 8285DCA8.
-8285FAD8	MsgHandler_cMsgNISMgrICEMode_8285DCA8	Handler subscribed for cMsgNISMgrICEMode (0xA3088244) by 8285DCA8.
+8285FAD8	MsgHandler_cMsgNISMgrICEMode_8285DCA8	Handler for cMsgNISMgrICEMode (0xA3088244): on (+0x10) sets +0x45, pushes pause mode 12, sends the online round sync, pushes 8; off pops 8 and 12, unpauses (online) and clears +0x45. No sender in the shipped game (b1053)
 8285FB80	PostMsg_NISStartReload	Small function (244 bytes) that builds and posts cMsgNISStartReload (0xD0D31C09) through MsgBus_Post.
 8285FC88	MsgHandler_cMsgNISTransitionOutComplete_8285DCA8	Handler subscribed for cMsgNISTransitionOutComplete (0x539A09BB) by 8285DCA8.
 8285FCD0	MsgHandler_cMsgNISTransitionInBegin_8285DCA8	Handler subscribed for cMsgNISTransitionInBegin (0xF640BBEE) by 8285DCA8.
