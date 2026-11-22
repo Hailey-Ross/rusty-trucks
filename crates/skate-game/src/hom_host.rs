@@ -337,7 +337,7 @@ fn update(
                         } else {
                             end - 180.0 / f64::from(state.reel.highlights.rules.frames_per_second)
                         };
-                        let added = state.reel.add(&def, false, start, end, false, 0.0, 0.0, tuning.as_deref());
+                        let added = state.reel.add(&def, false, false, start, end, false, 0.0, 0.0, tuning.as_deref());
                         info!("SKATE_HOM {id} highlight added={added} {:?}", state.reel.highlights.list().last());
                     }
                     _ => info!("SKATE_HOM {id} no highlight definition (Refresh Game Files) or no replay"),

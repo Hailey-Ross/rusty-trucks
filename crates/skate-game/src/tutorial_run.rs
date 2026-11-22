@@ -385,7 +385,7 @@ mod tests {
             objectives: vec![ObjectiveData { key: "tut_test_0".into(), activation: 0, triggers: gate, points_valid: None,
                 condition: serde_json::json!({"locals": 0, "body": [{"return": {"api": "ObjectiveTrigger.IsInVolume",
                     "args": [{"lit": "1"}, {"lit": "DIST_SkateSchool|tut_test_gate_01"}]}}]}),
-                failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None }],
+                failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None, auto_highlight_timing: false }],
             locators: Default::default(),
         }
     }

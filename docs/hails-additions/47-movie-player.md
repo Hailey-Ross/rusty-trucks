@@ -182,9 +182,45 @@ keys (8274CA90 returns 0); the menu's pick (82650EC0) first asks for the profile
 then 826513E8 runs the row: Customize opens FE 15 on the player, Presets FE 68, Play posts 0x8F (the step is done).
 Ours (`skate_core::career::first_team_member`, `welcome_host.rs`, the boot flow): the profile name is our player name
 (`Multiplayer::set_player_name`, the name others see); Customize opens our customizer and the step ends when it closes
-(retail re-opens FE 67, which closes itself and posts 0x8F); Play ends the step. NOT RETAIL YET: Presets continues like
-Play (no FE 68 preset list); GetTeamData has no logo or photo assets (FE 63 logos and the player photo build are not
-ported); the menu shows at once (no photo build). Status: written while the desktop was busy, not built or run yet.
+(retail re-opens FE 67, which closes itself and posts 0x8F); Presets opens FE 68 (below) and the step ends when it
+closes, the same way; Play ends the step. NOT RETAIL YET: GetTeamData has no logo or photo assets (FE 63 logos and the
+player photo build are not ported); the menu shows at once (no photo build). Status: written while the desktop was busy,
+not built or run yet.
+
+### Preset skaters
+
+FE 68 ImportSkater (template 114, `TeamSkater_Selection/import_skater`, in the menu export since 2026-11-22; research
+b986; Ghidra vtable 82305678, decoded 2026-11-22) [code + data]:
+- **Opening (82653460).** FE 67's Presets row opens it on slot 0, mode 2. It loads group 5 of the resource manager's
+  skater lists (`progression_preset_teammate`, sorted by the localized name; group 2, community skaters, too when
+  online).
+- **Show (82653648).** The movie gets SetState 10 (the list), 11 (the preview photo) and, in mode 2, 20 (the first
+  teammate background).
+- **Rows (`ImportSkaters.GetSkaters`, 825C3E20).** [count, texts, header flags]: each group with rows gives its title as
+  a header (`ID_PRESET_LISTING_TITLE`), then its rows' names. With no rows at all: `#NO SKATERS` / `#NOT A SKATER`.
+  The list index counts the headers (82654F10), so preset N is row N + 1.
+- **Highlight (82653750).** SetState 31 (no gamercard; 30 only for community skaters), then 11.
+- **Pick (826536D0).** While idle it keeps the row and asks popup 0x125 (`ID_COMMON_WARNING_TITLE`,
+  `ID_CONFIRM_USE_PRESET`, No / Yes; mode 0 asks 0x123 `ID_IMPORT_SKATER_CONFIRM_IMPORT`). Yes (82654EA8) starts
+  loading.
+- **Apply (82653960).** It loads the row's preset (8255A518 -> `SavedRecipe<id>.bin`) and copies it into the slot
+  (8257DC48). It rebuilds the skater and the slot's photos, then pops the screen. Only mode 0 posts message
+  0x478AA499 on the way out.
+- **B (82654270, button 3).** It pops the screen while idle (`core_b_button`).
+
+Ours (`skate_core::career::import_skater`; `ImportSkaterScreen` and the natives in `welcome_host.rs`; the stage in
+`retail_menu_stage.rs`): the same rows, order, popup, B and states. Yes puts the preset's profile on the player through
+the customizer (`apply_player_preset` in `career.rs`: resolved, worn and saved as the outfit, like a Create-a-Skater
+save). Mods reach the rows through the teammate preset data (the vault rows and recipe files; `sdk.career` lists
+them). NOT RETAIL YET:
+- No preview photos are built (the slot photo states of 82653960). `IsPreviewPhotoLoaded` answers true with no
+  picture, so no load wheel spins.
+- Community skaters (group 2, online) are not listed.
+- The slot's team photos are not rebuilt after the pick.
+
+**Verification.** `import_skater` tests (rows and headers, index to row, the confirm and B rules);
+`welcome_host::the_preset_list_answers_its_rows_while_open`. Needs a Refresh Game Files for the movie. Not run in game
+yet.
 
 FE 11 Coach Frank (after coach_frank_intro; b1010): `bootflow/coachfrank` (template 10) asks "Would you like to stay
 here and learn the basics with Coach Frank?" with a Yes / No picker; every key goes to the picker and its

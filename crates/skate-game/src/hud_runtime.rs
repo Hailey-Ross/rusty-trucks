@@ -217,6 +217,12 @@ impl Runtime {
         }
         Ok(())
     }
+    /// A screen event: the controller's `SetState(state)`.
+    pub fn set_state(&mut self, state: u32) -> Result<(), String> {
+        self.vm.begin_update();
+        self.vm.call_method(self.controller, "SetState", vec![Value::Number(state as f64)], &mut self.bindings)?;
+        self.drain()
+    }
     pub fn update(
         &mut self,
         input: Input,
@@ -274,5 +280,41 @@ impl Runtime {
         self.vm
             .collect(self.bindings.movie.instances.keys().copied())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The trickdisplay movie's SetState for the minimal scoring HUD: 20 / 21 hide / show the multiplier, 24 / 25
+    /// the score (presentation_run::TrickDisplayParts). The controller's mScreen is the movie root.
+    #[test]
+    #[ignore = "requires the converted HUD via SKATE3_ASSET_ROOT"]
+    fn set_state_hides_and_shows_the_multiplier_and_the_score() {
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("asset root"));
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("private/hud/runtime/trickdisplay.json")).unwrap()).unwrap();
+        let input = Input { sequence_score: 0, line_score: 0, sequence_timer: 0, line_time: 0.0, line_capacity: 1.0,
+            multiplier: 1.0, clean: false, sketchy: false, stance: [false; 4], trick_name: String::new(),
+            trick_metrics: [Value::Undefined, Value::Undefined, Value::Undefined, Value::Undefined, Value::Undefined],
+            context_tricks: Vec::new() };
+        let mut hud = Runtime::load(&json, input).unwrap();
+        let get = |hud: &Runtime, path: &[&str]| {
+            let mut at = Value::Object(hud.bindings.movie.root);
+            for key in path {
+                at = match at {
+                    Value::Object(o) => hud.vm.get(o, key),
+                    _ => Value::Undefined,
+                };
+            }
+            at
+        };
+        let multiplier = ["multiplier_mc", "_visible"];
+        let score = ["mcScoreModes", "mcScore", "_visible"];
+        for (state, path, shown) in [(20, &multiplier[..], false), (21, &multiplier[..], true), (24, &score[..], false), (25, &score[..], true)] {
+            hud.set_state(state).unwrap();
+            assert_eq!(get(&hud, path), Value::Bool(shown), "SetState({state})");
+        }
     }
 }

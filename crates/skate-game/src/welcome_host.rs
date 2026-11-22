@@ -51,6 +51,22 @@ pub(crate) struct FirstTeamMemberScreen {
     pub pending: Option<skate_core::career::first_team_member::Choice>,
 }
 
+/// FE 68 ImportSkater, opened by FE 67's Presets row (slot 0, mode 2): the preset rows (key, name text id) the stage
+/// lists in retail's order, the screen's logic, and the preset Yes picked for the boot flow to apply.
+#[derive(Resource, Default)]
+pub(crate) struct ImportSkaterScreen {
+    pub open: bool,
+    pub logic: skate_core::career::import_skater::ImportSkater,
+    pub presets: Vec<(String, String)>,
+    pub apply: Option<String>,
+}
+
+impl ImportSkaterScreen {
+    pub(crate) fn start(&mut self, slot: usize, mode: u32, presets: Vec<(String, String)>) {
+        *self = Self { open: true, logic: skate_core::career::import_skater::ImportSkater::new(slot, mode), presets, apply: None };
+    }
+}
+
 /// A keyboard (FE 46) the boot flow asks the stage for, and its answer.
 #[derive(Resource, Default)]
 pub(crate) struct BootTextEntry {
@@ -86,6 +102,10 @@ pub(crate) struct WelcomeHost {
     pub photo: String,
     /// Rows picked this update (`Game.OnMenuSelect`).
     pub picks: Vec<i64>,
+    /// Rows highlighted this update (`Game.OnMenuHilight`).
+    pub hilights: Vec<i64>,
+    /// FE 68 is open: the list `ImportSkaters.GetSkaters` gives (text, header).
+    pub import_rows: Option<Vec<(String, bool)>>,
 }
 
 impl WelcomeHost {
@@ -104,12 +124,31 @@ impl WelcomeHost {
                 _ => {}
             }
         }
+        if let Some(rows) = &self.import_rows {
+            match (object, method) {
+                // 825C3E20: [count, texts, header flags].
+                ("ImportSkaters", "GetSkaters") => {
+                    let texts = rows.iter().map(|(t, _)| Value::Text(t.clone())).collect();
+                    let headers = rows.iter().map(|(_, h)| Value::Bool(*h)).collect();
+                    let items = vec![Value::Number(rows.len() as f64), Value::Object(vm.array(texts)?), Value::Object(vm.array(headers)?)];
+                    return Ok(Some(Value::Object(vm.array(items)?)));
+                }
+                // 825C4258 / 825C42D0: the row's preview photo. NOT RETAIL YET: no preview photos are built (states
+                // 0 / 1 of 82653960), so every row reads as loaded with no picture (no endless load wheel).
+                ("ImportSkaters", "IsPreviewPhotoLoaded") => return Ok(Some(Value::Bool(true))),
+                ("ImportSkaters", "GetPreviewPhotoAssetId") => return Ok(Some(Value::Text("0".into()))),
+                _ => {}
+            }
+        }
         if !self.open {
             return Ok(None);
         }
         Ok(Some(match (object, method) {
             ("Game", "OnMenuGetItemEnabled") => Value::Bool(true),
-            ("Game", "OnMenuHilight") => Value::Undefined,
+            ("Game", "OnMenuHilight") => {
+                self.hilights.push(args.get(1).map_or(-1, |v| i64::from(crate::apt_vm::to_integer(v))));
+                Value::Undefined
+            }
             ("Game", "OnMenuSelect") => {
                 self.picks.push(args.get(1).map_or(-1, |v| i64::from(crate::apt_vm::to_integer(v))));
                 Value::Undefined
@@ -144,5 +183,20 @@ mod tests {
         let Some(Value::Object(list)) = h.call(&mut vm, "TeamManagement", "GetTeamData", &[]).unwrap() else { panic!("array") };
         assert_eq!(vm.get(list, "1"), Value::Text("#mtnbound".into()));
         assert_eq!(vm.get(list, "2"), Value::Text("logo_object_team_logo_cat_skate_mat".into()));
+    }
+
+    #[test]
+    fn the_preset_list_answers_its_rows_while_open() {
+        let mut vm = Vm::new();
+        let mut h = WelcomeHost::default();
+        assert_eq!(h.call(&mut vm, "ImportSkaters", "GetSkaters", &[]).unwrap(), None);
+        h.import_rows = Some(vec![("ID_PRESET_LISTING_TITLE".into(), true), ("ID_TEAMMATE_PRESET_01".into(), false)]);
+        let Some(Value::Object(list)) = h.call(&mut vm, "ImportSkaters", "GetSkaters", &[]).unwrap() else { panic!("array") };
+        assert_eq!(vm.get(list, "0"), Value::Number(2.0));
+        let Value::Object(texts) = vm.get(list, "1") else { panic!("texts") };
+        let Value::Object(headers) = vm.get(list, "2") else { panic!("headers") };
+        assert_eq!((vm.get(texts, "1"), vm.get(headers, "0"), vm.get(headers, "1")),
+            (Value::Text("ID_TEAMMATE_PRESET_01".into()), Value::Bool(true), Value::Bool(false)));
+        assert_eq!(h.call(&mut vm, "ImportSkaters", "IsPreviewPhotoLoaded", &[Value::Number(1.0)]).unwrap(), Some(Value::Bool(true)));
     }
 }

@@ -59,16 +59,15 @@ pub(crate) struct MarqueeView {
     pub male: bool,
 }
 
-/// The bank a body target's clip is in, None = the stage's own clip. CAS_Stand keeps the stage's MARQUEE_STAND: the
-/// PS3 recording (3:00-10:15) shows the skater holding the board on the whole-body rows, and the only clip named
-/// CAS_STAND (cac_viewer_<male|female>.abin) stands without it, so which clip retail's animator plays for CAS_Stand
-/// is open. CAS_SINGLE_POSE_1..8 are only in sk83_marquee_viewer [inferred]. A gesture row names the male clip
-/// (`cac_male_<gesture>`); its bank is miscload's `gesture/cac_<gender>_<gesture>.abin` (one clip each, the gender
-/// swap [inferred from the file names]). Returns the bank and the clip name, None = the bank's first clip.
+/// The bank a body target's clip is in, None = the stage's own clip. The CAS animator's bank is
+/// `cac_edit_<male|female>` (loaded by gender, 82532E58; the animator takes it in 82532408): CAS_Stand, the posture
+/// stands and CAS_Single_Pose_1..8. A gesture row names the male clip (`cac_male_<gesture>`); its bank is miscload's
+/// `gesture/cac_<gender>_<gesture>.abin` (one clip each, the gender swap [inferred from the file names]). Returns the
+/// bank and the clip name, None = the bank's first clip.
 fn body_bank(clip: &str, male: bool) -> Option<(String, Option<String>)> {
     let lower = clip.to_ascii_lowercase();
-    if lower.starts_with("cas_single_pose_") {
-        return Some(("sk83_marquee_viewer.abin".into(), Some(clip.into())));
+    if lower.starts_with("cas_stand") || lower.starts_with("cas_single_pose_") {
+        return Some((format!("cac_edit_{}.abin", if male { "male" } else { "female" }), Some(clip.into())));
     }
     let gesture = lower.strip_prefix("cac_male_").or_else(|| lower.strip_prefix("cac_female_"))?;
     Some((format!("gesture/cac_{}_{gesture}.abin", if male { "male" } else { "female" }), None))
@@ -414,11 +413,12 @@ mod tests {
     }
 
     #[test]
-    fn gesture_rows_play_from_the_gender_s_gesture_bank() {
+    fn body_rows_play_from_the_gender_s_cas_or_gesture_bank() {
         assert_eq!(body_bank("cac_male_spock", false), Some(("gesture/cac_female_spock.abin".into(), None)));
         assert_eq!(body_bank("cac_male_spock", true), Some(("gesture/cac_male_spock.abin".into(), None)));
-        assert_eq!(body_bank("CAS_Single_Pose_3", true).map(|b| b.0), Some("sk83_marquee_viewer.abin".into()));
-        assert_eq!(body_bank("CAS_Stand", true), None);
+        assert_eq!(body_bank("CAS_Single_Pose_3", true), Some(("cac_edit_male.abin".into(), Some("CAS_Single_Pose_3".into()))));
+        assert_eq!(body_bank("CAS_Stand_Buff", false), Some(("cac_edit_female.abin".into(), Some("CAS_Stand_Buff".into()))));
+        assert_eq!(body_bank("MARQUEE_STAND", true), None);
     }
 
     #[test]

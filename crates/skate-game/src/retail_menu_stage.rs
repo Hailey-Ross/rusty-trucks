@@ -175,6 +175,11 @@ const TEAM_MANAGEMENT: (&str, &str, &str) = ("source/screens/TeamSkater_Selectio
 const CREATE_A_SKATER: (&str, &str, &str) = ("source/screens/cas/createskater", "cas/createskater.swf", "CreateASkater");
 /// FE 67 FirstTeamMember, "Start your team!" (template 113; research b1004).
 const FIRST_TEAM_MEMBER: (&str, &str, &str) = ("source/screens/TeamSkater_Selection/team_management_boot", "TeamSkater_Selection/team_management_boot.swf", "FirstTeamMember");
+/// FE 68 ImportSkater (template 114), the preset list of FE 67's Presets row; its confirm popup's callback.
+const IMPORT_SKATER: (&str, &str, &str) = ("source/screens/TeamSkater_Selection/import_skater", "TeamSkater_Selection/import_skater.swf", "ImportSkater");
+const IMPORT_SKATER_POPUP: &str = "boot.use_preset";
+/// The preset group's title (group 5 of the resource manager, 82558438).
+const PRESET_LISTING_TITLE: &str = "ID_PRESET_LISTING_TITLE";
 /// The end dialog and reward screens open on the stage, on by default (seen drawing 2026-11-14: the end dialog and the
 /// reward summary in game, the milestone / teammate cards on the stage tests). `SKATE_RETAIL_END_SCREENS=0` turns
 /// them off (the old continue / accept at once).
@@ -296,6 +301,11 @@ pub(crate) struct MenuStage {
     ftm_open: bool,
     ftm_shown: bool,
     ftm_frames: u32,
+    /// FE 68 ImportSkater's AS id, whether it is open / shown, and updates since it opened.
+    ims_id: Option<i32>,
+    ims_open: bool,
+    ims_shown: bool,
+    ims_frames: u32,
     /// FE 63 TeamManagement's AS id, whether it is open / shown, updates since it opened, and its natives (with the
     /// logo rows, kept between updates).
     team_id: Option<i32>,
@@ -854,6 +864,10 @@ fn setup(
                 ftm_open: false,
                 ftm_shown: false,
                 ftm_frames: 0,
+                ims_id: templates.iter().position(|n| n == IMPORT_SKATER.2).filter(|_| movies.movies.contains_key(IMPORT_SKATER.0)).map(|i| 600 + i as i32),
+                ims_open: false,
+                ims_shown: false,
+                ims_frames: 0,
                 team_id: templates.iter().position(|n| n == TEAM_MANAGEMENT.2).filter(|_| movies.movies.contains_key(TEAM_MANAGEMENT.0)).map(|i| 600 + i as i32),
                 team_open: false,
                 team_shown: false,
@@ -882,6 +896,7 @@ fn setup(
                     morph_settings: cas_vault.4.1,
                     tattoo_categories: cas_vault.5,
                     face_presets: cas_vault.6,
+                    posture_stands: cas_vault.7,
                     ..crate::cas_host::CasHost::new(tables.as_ref().map(|t| t.cas_menus.clone()).unwrap_or_default(),
                         tables.as_ref().map(|t| t.cas_options.clone()).unwrap_or_default())
                 },
@@ -1002,7 +1017,7 @@ fn update(
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry, mut marquee): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>, ResMut<crate::marquee_preview::MarqueeView>),
     // Popups; the instant replay feed and whether the retail replay screen shows (one parameter: Bevy's 16).
-    (mut popup_mods, replay_feed, mut replay_ui, mut look_screen, mut music_link, mut movie_chyron, movie_subtitle, mut welcome_screen, mut boot_entry, mut coach_screen, mut ftm_screen, mut logo_screen, photo, mut cas_screen): (
+    (mut popup_mods, replay_feed, mut replay_ui, mut look_screen, mut music_link, mut movie_chyron, movie_subtitle, mut welcome_screen, mut boot_entry, mut coach_screen, mut ftm_screen, mut logo_screen, photo, mut cas_screen, mut ims_screen): (
         ResMut<crate::popup_host::PopupMods>,
         Option<Res<crate::replay::ReplayFeed>>,
         Option<ResMut<crate::replay::RetailReplayUi>>,
@@ -1017,6 +1032,7 @@ fn update(
         Option<ResMut<crate::team_management_host::TeamLogoScreen>>,
         Option<Res<crate::skater_photo::SkaterPhoto>>,
         Option<ResMut<crate::cas_host::CasScreen>>,
+        Option<ResMut<crate::welcome_host::ImportSkaterScreen>>,
     ),
     // Challenge Map travel; cheats out, typed text in and the zombie flag the cheat toggles; FE 62's characters and
     // its requests out.
@@ -1366,6 +1382,36 @@ fn update(
         fe.welcome.first_team_member = ftm_screen.as_ref().filter(|_| ms.ftm_open).map(|f| {
             (f.team_name.clone(), f.profile_name.clone(), crate::team_management_host::team_logo_asset(&fe.team.logos, f.logo.as_deref()))
         });
+        // FE 68 ImportSkater: opened by FE 67's Presets row, closed by B or once a preset is applied.
+        let mut wanted_ims = ims_screen.as_ref().is_some_and(|s| s.open);
+        if wanted_ims && ms.ims_id.is_none() {
+            warn!("RETAIL_MENUS ImportSkater screen not in this install (Refresh Game Files adds it): skipped");
+            if let Some(s) = ims_screen.as_mut() {
+                s.open = false;
+            }
+            wanted_ims = false;
+        }
+        if let Some(id) = ms.ims_id.filter(|_| wanted_ims != ms.ims_open) {
+            if wanted_ims {
+                info!("RETAIL_MENUS open {} (FE 68)", IMPORT_SKATER.2);
+                // Group 5 sorted by the localized name (825588A0 sort 1, comparator 8255A698).
+                if let Some(s) = ims_screen.as_mut() {
+                    let text = |id: &str| fe.language.get(id).cloned().unwrap_or_else(|| id.to_owned());
+                    s.presets.sort_by_cached_key(|(_, name)| text(name));
+                }
+                open_screen(&mut ms.stage, IMPORT_SKATER.1, IMPORT_SKATER.2, &mut fe)?;
+            } else {
+                close(&mut ms.stage, id, &mut fe)?;
+            }
+            ms.ims_open = wanted_ims;
+            ms.ims_shown = false;
+            ms.ims_frames = 0;
+        }
+        let ims_groups = ims_screen.as_ref().filter(|_| ms.ims_open).map(|s| vec![skate_core::career::import_skater::Group {
+            title: PRESET_LISTING_TITLE.into(),
+            rows: s.presets.iter().map(|(_, name)| (name.clone(), true)).collect(),
+        }]);
+        fe.welcome.import_rows = ims_groups.as_deref().map(skate_core::career::import_skater::rows);
         // FE 63 TeamManagement, the new career's forced logo pick: opened by the boot flow, closed on the pick.
         let mut wanted_team = logo_screen.as_ref().is_some_and(|s| s.open);
         if wanted_team && (ms.team_id.is_none() || fe.team.logos.is_empty()) {
@@ -1427,7 +1473,7 @@ fn update(
             ms.cas_frames = 0;
             ms.cas_state = None;
         }
-        fe.welcome.open = ms.welcome_open || ms.coach_open || ms.ftm_open;
+        fe.welcome.open = ms.welcome_open || ms.coach_open || ms.ftm_open || ms.ims_open;
         fe.welcome.team_state = welcome_screen.as_ref().map_or(0, |w| w.logic.team_state());
         let auto =ms.auto_open && time.elapsed_secs() > 4.0;
         ms.auto_open &= !auto;
@@ -1436,7 +1482,7 @@ fn update(
         }
         ms.injected_triggers = [0.0; 2];
         ms.injected_stick = 0.0;
-        if ms.stack.input_target().is_some() || ms.end_open.is_some() || ms.reward_open.is_some() || ms.poster_open || ms.welcome_open || ms.coach_open || ms.ftm_open || ms.team_open || ms.cas_open {
+        if ms.stack.input_target().is_some() || ms.end_open.is_some() || ms.reward_open.is_some() || ms.poster_open || ms.welcome_open || ms.coach_open || ms.ftm_open || ms.ims_open || ms.team_open || ms.cas_open {
             match ms.injected.pop_front().flatten() {
                 Some(k @ (INJECTED_LT | INJECTED_RT)) => ms.injected_triggers[(k - INJECTED_LT) as usize] = 1.0,
                 Some(INJECTED_SL) => ms.injected_stick = -1.0,
@@ -1509,6 +1555,22 @@ fn update(
                             ms.stage.call_path("_global.ScreenManager.UpdateInput",
                                 vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())], &mut fe)?;
                         }
+                    }
+                }
+                continue;
+            }
+            // ImportSkater (82654270): B pops it while idle (core_b_button); every other key goes to the movie's list.
+            if let (true, Some(id), None) = (ms.ims_open, ms.ims_id, ms.stack.input_target()) {
+                if ms.ims_shown {
+                    let back = key == APT_PREVIOUS && ims_screen.as_mut().is_some_and(|s| s.logic.back());
+                    if back {
+                        sounds.write(FrontendSound::named("core_b_button"));
+                        if let Some(s) = ims_screen.as_mut() {
+                            s.open = false;
+                        }
+                    } else {
+                        ms.stage.call_path("_global.ScreenManager.UpdateInput",
+                            vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())], &mut fe)?;
                     }
                 }
                 continue;
@@ -2311,6 +2373,23 @@ fn update(
                 mod_events.push((owner.to_owned(), serde_json::json!({"name": "menu_popup", "key": key, "choice": event.choice})));
             } else if event.callback.starts_with("engine:") {
                 popup_mods.engine_choices.push((event.callback.clone(), event.choice));
+            } else if event.callback == IMPORT_SKATER_POPUP {
+                // 82654EA8: Yes loads the picked row's preset (the boot flow applies it and the screen closes).
+                if let Some(s) = ims_screen.as_mut() {
+                    if s.logic.answer(event.choice as i64) {
+                        let groups = [skate_core::career::import_skater::Group {
+                            title: PRESET_LISTING_TITLE.into(),
+                            rows: s.presets.iter().map(|(_, name)| (name.clone(), true)).collect(),
+                        }];
+                        let key = s.logic.pick.and_then(|i| skate_core::career::import_skater::locate(&groups, i)).map(|(_, row)| s.presets[row].0.clone());
+                        info!("RETAIL_MENUS ImportSkater confirmed: {key:?}");
+                        match key {
+                            Some(key) => s.apply = Some(key),
+                            // A header row: nothing to load (8255A518 index out of range); the screen stays idle.
+                            None => s.logic = skate_core::career::import_skater::ImportSkater::new(s.logic.slot, s.logic.mode),
+                        }
+                    }
+                }
             } else if event.callback == EMPTY_TEAM_NAME_POPUP {
                 if let Some(b) = boot_entry.as_mut() {
                     b.request = b.retry.take();
@@ -2404,6 +2483,47 @@ fn update(
                 info!("RETAIL_MENUS FirstTeamMember row {row}");
                 if let Some(f) = ftm_screen.as_mut() {
                     f.picked = Some(row);
+                }
+            }
+        }
+        // FE 68: on show 82653648 sets states 10 (the rows), 11 (the preview) and, in mode 2, 20; a pick asks to confirm
+        // (826536D0); a highlight sets 31 on a row (no gamercard for presets) and 11 (82653750).
+        let hilights = std::mem::take(&mut fe.welcome.hilights);
+        if let Some(id) = ms.ims_id.filter(|_| ms.ims_open) {
+            use skate_core::career::import_skater as ims;
+            ms.ims_frames += 1;
+            let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
+            let intro = take_call(&mut fe, &format!("Game.OnScreenIntroComplete({id})"));
+            if !ms.ims_shown && (loaded || intro || ms.ims_frames > SHOW_FALLBACK_FRAMES) {
+                info!("RETAIL_MENUS show ImportSkater {id} (loaded {loaded}, intro {intro}, frames {})", ms.ims_frames);
+                ms.ims_shown = true;
+                ms.stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text(id.to_string()), Value::Text("true".into())], &mut fe)?;
+                set_state(&mut ms.stage, id, ims::STATE_UPDATE_SKATERS, &mut fe)?;
+                set_state(&mut ms.stage, id, ims::STATE_UPDATE_PREVIEW_PHOTO, &mut fe)?;
+                if ims_screen.as_ref().is_some_and(|s| s.logic.mode == ims::MODE_FIRST_TEAM_MEMBER) {
+                    set_state(&mut ms.stage, id, ims::STATE_FIRST_TEAMMATE_BACKGROUND, &mut fe)?;
+                }
+            }
+            let groups = ims_groups.as_deref().unwrap_or_default();
+            for row in hilights {
+                if usize::try_from(row).ok().and_then(|r| ims::locate(groups, r)).is_some() {
+                    set_state(&mut ms.stage, id, ims::STATE_HIDE_GAMERCARD, &mut fe)?;
+                }
+                set_state(&mut ms.stage, id, ims::STATE_UPDATE_PREVIEW_PHOTO, &mut fe)?;
+            }
+            for row in std::mem::take(&mut fe.welcome.picks) {
+                let Some(s) = ims_screen.as_mut() else { continue };
+                if let Some(text) = usize::try_from(row).ok().and_then(|r| s.logic.select(r)) {
+                    info!("RETAIL_MENUS ImportSkater row {row}: confirm");
+                    ms.popups.remove_callback(IMPORT_SKATER_POPUP);
+                    ms.popups.push(skate_core::fe_popup::PopupRequest {
+                        title: ims::CONFIRM_TITLE.into(),
+                        description: text.into(),
+                        options: ims::CONFIRM_BUTTONS.iter().map(|b| (*b).into()).collect(),
+                        callback: IMPORT_SKATER_POPUP.into(),
+                        ..Default::default()
+                    });
+                    ms.popup_dirty = true;
                 }
             }
         }

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.asset_pipeline.challenges import (CHALLENGE, DEFINITION, ENTERED, GROUP, KILLED_TIME, OBJECTIVES,
+from tools.asset_pipeline.challenges import (AUTO_HIGHLIGHT, CHALLENGE, DEFINITION, ENTERED, GROUP, KILLED_TIME, OBJECTIVES,
                                              OUT_OF_BOUNDS_TIME, OWNED_TIME, POINTS, RETURN_MESSAGE, chain,
                                              group_points, highlight_definition, objective_programs, parameters,
                                              teleport_locators)
@@ -85,8 +85,11 @@ class ChallengeData(unittest.TestCase):
         self.assertEqual(out, [{'key': 'obj_a_0', 'condition': {'locals': 0, 'body': [
             {'return': {'api': 'Lib.Done', 'args': []}}]}, 'title_id': None, 'title_arg': None, 'display_in_hud': True,
             'triggers': [False] * 14, 'activation': 0,
-            'failures': [], 'failures_inline': [], 'failure_first': False, 'hints': []}])
+            'failures': [], 'failures_inline': [], 'failure_first': False, 'hints': [], 'auto_highlight_timing': False}])
         self.assertEqual(objective_programs(rows, None, binary), [])
+        # AllowAutoHighlightTiming (objectivecomplete@240): a set bool byte exports as true.
+        objective['fields'][AUTO_HIGHLIGHT] = {'data': '01'}
+        self.assertTrue(objective_programs(rows, refspec(GROUP, hash64('obj_a')), binary)[0]['auto_highlight_timing'])
         # the HUD title: tObjectiveDefinition word 3 is the offset of its text id in the bank .bin (b947)
         titled = binary + b'ID_OBJ_A_0' + bytes(1)
         objective['fields'][DEFINITION]['data'] = struct.pack('>IIIII', 1, 0, 0, len(binary), 0).hex().upper()
