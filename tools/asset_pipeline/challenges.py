@@ -37,6 +37,7 @@ def _field(name):
 SKATER_COLLECTIONS = 'data/db/skatercollections'
 TRIGGER_BOUNDARY = _field('OTSTriggerBoundary')
 HIGHLIGHT = _field('HighlightDefinition')
+AUTO_HIGHLIGHT = _field('AllowAutoHighlightTiming')  # objectives_shared objectivecomplete@240 / 260 (useAutoTime)
 SCORING_BOUNDARY = _field('OTSScoringBoundary')
 START = _field('StartLocation')
 OWNED = _field('ObjectivesOwned')
@@ -328,6 +329,8 @@ def objective_rows(rows_by_hash, objectives, binary, binary_of=None):
         if highlight and highlight[0].get('data'):
             source = (binary_of or (lambda _row: None))(highlight[1]) or binary
             entry['highlight'] = highlight_definition(bytes.fromhex(highlight[0]['data']), source)
+        auto = inherited_field(rows_by_hash, objective, AUTO_HIGHLIGHT)
+        entry['auto_highlight_timing'] = bool(auto and auto[0].get('data', '00')[:2] == '01')
         out.append(entry)
     return out
 

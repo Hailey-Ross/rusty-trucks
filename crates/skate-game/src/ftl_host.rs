@@ -425,16 +425,16 @@ impl ReelState {
 
     /// AddHighlightUsingDefinition (82BCCEB0) with replay times in seconds: `second_half` picks the definition's
     /// +0x50 scene (Lua arg 3), the window runs from `begin` minus pre to `end` plus post (an override above 0
-    /// replaces the definition's). True when added.
+    /// replaces the definition's), kept in tier `killed`. True when added.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn add(&mut self, def: &skate_core::challenges::highlights::HighlightDefinition, second_half: bool, begin: f64, end: f64,
-        drop_oldest: bool, pre: f32, post: f32, tuning: Option<&ChallengeTuning>) -> bool {
+    pub(crate) fn add(&mut self, def: &skate_core::challenges::highlights::HighlightDefinition, killed: bool, second_half: bool,
+        begin: f64, end: f64, drop_oldest: bool, pre: f32, post: f32, tuning: Option<&ChallengeTuning>) -> bool {
         let fps = f64::from(self.highlights.rules.frames_per_second);
         let frames = |t: f64| (t * fps).max(0.0) as u32;
         if let Some(t) = tuning {
             self.highlights.rules.slots = t.reel_slots;
         }
-        self.highlights.add(def, second_half, frames(begin), frames(end), drop_oldest, pre, post)
+        self.highlights.add(def, killed, second_half, frames(begin), frames(end), drop_oldest, pre, post)
     }
 
     /// PlayHighlightReel (82BCDDE8) over every highlight in the group: false when there is none (the reel is
@@ -942,22 +942,21 @@ fn update(
                 Command::AddHighlight { killed } => {
                     let def = state.reel.completed.pop_front().filter(|(k, _)| *k == killed).and_then(|(k, i)| {
                         let rows = if k { &state.data.objectives.killed } else { &state.data.objectives.owned };
-                        rows.get(i).and_then(|o| o.highlight.as_ref()).map(|h| h.definition())
+                        rows.get(i).and_then(|o| Some((o.highlight.as_ref()?.definition(), o.auto_highlight_timing)))
                     });
-                    if let (Some(def), Some(r)) = (def, replay.as_deref()) {
+                    if let (Some((def, auto)), Some(r)) = (def, replay.as_deref()) {
                         let begin = if state.reel.in_sequence { state.reel.sequence_begin } else { r.last_time() };
-                        // objectives_shared objectivecomplete@515-521 (without AllowAutoHighlightTiming): arg 3 KilledIt,
-                        // no drop-oldest (arg 6 absent = false), no pre / post overrides.
-                        let added = state.reel.add(&def, killed, begin, r.last_time(), false, 0.0, 0.0, tuning.as_deref());
+                        // objectives_shared objectivecomplete@345-521: arg 3 is C.KilledIt, which the film graphs only
+                        // set false (setup@53), so the +0x10 half; no drop-oldest. AllowAutoHighlightTiming (not a
+                        // photo, no kill-it highlight as KilledIt stays false): pre / post 0.5 (@466-481).
+                        let (pre, post) = if auto { (0.5, 0.5) } else { (0.0, 0.0) };
+                        let added = state.reel.add(&def, killed, false, begin, r.last_time(), false, pre, post, tuning.as_deref());
                         info!("SKATE_FTL {id} highlight added={added} {:?}", state.reel.highlights.list().last());
                     }
                 }
                 Command::RemoveAllHighlights => state.reel.highlights.clear(),
                 Command::PrepareReel { killed } => {
-                    let fallback = state.data.objectives.owned.iter().find_map(|o| o.highlight.as_ref()).map(|h| h.definition());
-                    let fps = f64::from(state.reel.highlights.rules.frames_per_second);
-                    let last = replay.as_deref().map_or(0, |r| (r.last_time() * fps) as u32);
-                    state.reel.clips = state.reel.highlights.reel(killed, fallback.as_ref(), last).into();
+                    state.reel.clips = state.reel.highlights.reel(killed).into();
                     info!("SKATE_FTL {id} highlight reel: {} clips", state.reel.clips.len());
                 }
                 Command::PlayHighlightReel => {
@@ -1148,7 +1147,7 @@ mod tests {
         ObjectiveData { key: key.into(), activation: 0, triggers, points_valid: None,
             condition: serde_json::json!({"locals": 0, "body": [{"return": {"api": "ObjectiveTrigger.IsInVolume",
                 "args": [{"lit": "1"}, {"lit": format!("DIST_DownTown|{volume}")}]}}]}),
-            failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None }
+            failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None, auto_highlight_timing: false }
     }
 
     #[test]

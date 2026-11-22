@@ -44,6 +44,9 @@ pub(crate) struct ObjectiveData {
     /// an export from before it.
     #[serde(default)]
     pub highlight: Option<HighlightJson>,
+    /// AllowAutoHighlightTiming: the film adds this objective's highlight with its own pre / post (0.5 s each).
+    #[serde(default)]
+    pub auto_highlight_timing: bool,
 }
 
 fn shown() -> bool {
@@ -609,7 +612,7 @@ mod tests {
         triggers[12] = true;
         ObjectiveData { key: key.into(), activation, triggers, condition: serde_json::json!({"locals": 0, "body": body}),
             points_valid: None, failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(),
-            title_id: None, title_arg: None, display_in_hud: true, highlight: None }
+            title_id: None, title_arg: None, display_in_hud: true, highlight: None, auto_highlight_timing: false }
     }
 
     /// Hall of Meat rows with activation mode 4 (b967): the bail opening arms them, `Wipeout.IsWipeoutOver` reads the
@@ -697,11 +700,11 @@ mod tests {
                 condition: serde_json::json!({"locals": 0, "body": [{"return": {"api": "ObjectiveTrigger.EnteredVolume",
                     "args": [{"lit": "1"}, {"lit": "DIST_DownTown|ots_a_spotvolume_01"}]}}]}),
                 points_valid: Some(serde_json::json!({"locals": 0, "body": [{"return": {"api": "ObjectivePoints.IsSequenceNewlyCompletePoints", "args": []}}]})),
-                failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None },
+                failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None, auto_highlight_timing: false },
             ObjectiveData { key: "global_points_objective".into(), activation: 0, triggers: points_triggers,
                 condition: serde_json::json!({"locals": 0, "body": [{"return": {"cmp": "ge", "args": [
                     {"api": "GetGroupAccumulatedPoints", "args": []}, {"api": "GetGroupPointsRequirement", "args": []}]}}]}),
-                points_valid: None, failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None },
+                points_valid: None, failures: Vec::new(), failures_inline: Vec::new(), failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None, auto_highlight_timing: false },
         ]
     }
 
@@ -732,7 +735,7 @@ mod tests {
                 "args": [{"lit": "1"}, {"lit": "DIST_DownTown|ftl_end"}]}}]}),
             failures: vec![never], failures_inline: vec![InlineFailure { condition: Some(serde_json::json!({"locals": 0, "body": [{"return":
                 {"cmp": "ge", "args": [{"api": "Leader.GetDistanceToNearestAISkater", "args": []}, {"lit": 40.0}]}}]})), text: None }],
-            failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None };
+            failure_first: false, hints: Vec::new(), title_id: None, title_arg: None, display_in_hud: true, highlight: None, auto_highlight_timing: false };
         let mut d = DataObjectives::new("ftl", std::slice::from_ref(&row), vec![("ftl_end".into(), 7)], Default::default()).unwrap();
         d.activate_first();
         d.skater.competitor_distances = [Some(25.0), None, None, None];

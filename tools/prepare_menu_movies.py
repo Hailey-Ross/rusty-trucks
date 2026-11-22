@@ -86,6 +86,8 @@ MENU_ROOTS = (
     'source/screens/unlock/unlock_teammate',
     # The new career's FE 67 FirstTeamMember ("Start your team!", template 113; research b1004).
     'source/screens/TeamSkater_Selection/team_management_boot',
+    # FE 68 ImportSkater (template 114: the preset list FE 67's Presets row opens; research b986).
+    'source/screens/TeamSkater_Selection/import_skater',
     # FE 63 TeamManagement (template 108: team view, logo picker, the new career's forced logo pick; research b1011).
     'source/screens/TeamSkater_Selection/team_management',
     'source/screens/hudcomponents/endchallengeoptions',

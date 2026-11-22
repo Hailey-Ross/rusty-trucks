@@ -90,6 +90,8 @@ struct Hud {
     minimap: Option<MiniMap>,
     /// The challenge HUD components and banners that are installed (hud_challenge.rs).
     challenge: Vec<ChallengeMovie>,
+    /// The trick display parts the movie shows now (presentation_run::TrickDisplayParts).
+    trick_parts: [bool; 3],
 }
 /// One challenge HUD movie and its draw slots.
 struct ChallengeMovie {
@@ -409,6 +411,7 @@ fn setup(
             central,
             minimap,
             challenge,
+            trick_parts: [true; 3],
         })
     })();
     match result {
@@ -616,6 +619,7 @@ fn reset(
     match hud_runtime::Runtime::load(&hud.source, skater.scoring.hud_input()) {
         Ok(runtime) => {
             hud.runtime = runtime;
+            hud.trick_parts = [true; 3];
             hud.generation = map.generation;
             hud.failed = false;
         }
@@ -649,6 +653,7 @@ fn advance(
     mut sounds: MessageWriter<crate::ui_audio::FrontendSound>,
     time: Res<Time>,
     challenge: Res<hud_challenge::ChallengeHudState>,
+    presenter: Option<Res<crate::presentation_run::Presenter>>,
 ) {
     let Some(mut hud) = hud else {
         messages.clear();
@@ -672,6 +677,7 @@ fn advance(
                 continue;
             }
             let was = m.runtime.shown();
+            m.runtime.advance_clock(time.delta_secs(), hud_challenge::TIMER_REFRESH_SECONDS);
             let result = m.runtime.sync(&challenge).and_then(|_| m.runtime.update());
             let now = m.runtime.shown();
             if was != now {
@@ -730,6 +736,14 @@ fn advance(
         return;
     }
     let started = std::time::Instant::now();
+    if let Some(parts) = presenter.as_ref().and_then(|p| p.trick_display.lock().ok().map(|p| *p)) {
+        for state in parts.states(hud.trick_parts) {
+            if let Err(error) = hud.runtime.set_state(state) {
+                error!("Original scoring HUD SetState({state}): {error}");
+            }
+        }
+        hud.trick_parts = parts.shown;
+    }
     let updated = hud.runtime.update(
         skater.scoring.hud_input(),
         skater.scoring.new_trick,

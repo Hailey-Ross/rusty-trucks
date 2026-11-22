@@ -1040,7 +1040,7 @@ fn update(
                     (Some(def), Some(r)) => {
                         // V.SequenceBeginTime: kept from the line's sequencebegin (the line has banked by now).
                         let begin = run.reel.sequence_begin;
-                        let added = run.reel.add(&def, true, begin, r.last_time(), false, 2.0, 0.25, tuning.as_deref());
+                        let added = run.reel.add(&def, false, true, begin, r.last_time(), false, 2.0, 0.25, tuning.as_deref());
                         info!("SKATE_CHALLENGE {} highlight added={added} {:?}", run.challenge.id, run.reel.highlights.list().last());
                     }
                     _ => info!("SKATE_CHALLENGE {} no highlight definition (Refresh Game Files) or no replay", run.challenge.id),

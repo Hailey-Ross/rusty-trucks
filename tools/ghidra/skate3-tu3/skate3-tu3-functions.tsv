@@ -5854,14 +5854,14 @@
 82531E58	Vt822FE5F8_Ctor	Ctor of the actor class with vtable 822FE5F8: clears +4..+0xC and sets the vtable (base actor class 823004A8, dtor 82531FA0).
 82531FA0	Vt822FE5F8_DtorBody	Dtor body of the actor class with vtable 822FE5F8: clears the ref pointer at +0x2C (guess_RefPtr_Assign) and restores the actor base vtable.
 82532098	guess_CAS_SimStatusCopy	Guess: copies a record and checks marquee slots.
-82532408	guess_PresSlot_CreateCasAnimator	Guess: picks the anim pair at +0x24 or +0x54 by the first byte, creates the CAS character animator at +0x88, state 1
+82532408	PresCasSlot_CreateCasAnimator	Creates the CAS character animator at +0x88 from the record's gender bank (first byte 1 = the cac_edit_male entry +0x18, 0 = cac_edit_female +0x48; fields +0xC / +0x14 of the entry), state 1
 82532478	guess_PresSlot_StartCasAnimatorPose	Guess: when the animator record state is 3 copies the pose record +0x6C into the animator, starts it and sets state 2
 82532518	guess_PresSlot_SetCharacterAndOrbit	Guess: keeps a ref of the character at +0x2C and orbits the marquee camera to it
 825325D8	guess_MarqueeViewer_OrbitCamera	Guess: VMX orbit: angle +0x64 plus +0x40 through Vec4_SinCos rotates the offsets +0x30 / +0x50 into the camera matrix (+0xB0..+0xE0)
-82532800	guess_CASAnimationManager_CreateAnimator	Guess: reads attrib collection DE50DFA8, builds the character key and creates the CAS character animator (+0x30..+0xA0)
+82532800	PresCasSlot_ApplyBodyTarget	Applies a cac_body row (0x95E14228: +0x10 place, +0x20 clip, +0x24 blend, +0x28 yaw, +0x2C play-once bool) with the cac_posture row (0xDE50DFA8) keyed at +0x98: a row without the bool plays the posture's stand clip when it has one, else its own clip
 82532C58	guess_PresCACRecord_Init	Initialises a record: two 64 bit ids set to -1, flags and three empty string pointers (83084584 / 83084585)
 82532DE0	guess_PresSlot_FreeBuffers	Guess: frees five heap buffers from +0x14C and the two inline vectors +0x5C / +0x2C
-82532E58	guess_CAS_ResetSimStatusIds	Sets status bytes +0x10..+0x12 to -1
+82532E58	PresCACRecord_LoadGenderAnimBank	Resets the other gender's entry and loads cac_edit_female (first byte 0, entry +0x48) or cac_edit_male (entry +0x18)
 82532F60	guess_CAS_ReportStatusEntries	Guess: when the id +0x10 is set, walks the 64 bit entries at +0xA0.
 825330C8	guess_SceneAsset_PollLoadB	guess: second copy of guess_SceneAsset_PollLoad (state 1, load phase 2 completes the file request).
 82533178	guess_CAS_SetNameAndFormat	Guess: stores a name in the byte vector at +0x14 and formats a related string.
@@ -5946,6 +5946,7 @@
 8253B340	guess_CAS_CopyEntryState	Guess: copies the entry flags and fields from +0x820 / +0x824 into the screen at +0x9F1
 8253B3A8	guess_PresSlot_CreateCharacterEntity	Guess: Reads the Attrib collection 0x95E14228, finds the pres slot and creates its CASCharacterEntity and PresSkaterLook
 8253B668	guess_CAS_FeedCameraView	Guess: feeds the NIS camera track view and snaps the marquee camera (+0x198)
+8253B7B0	PresCACMan_OnBodyTarget	cMsgPresCASBodyTarget handler: stores the message's posture key (+0x18) at the slot +0x98 (flag +0xF8 when it changed), then PresCasSlot_ApplyBodyTarget with the body key (+0x10)
 8253B8B8	guess_CAS_SimStatusResetTracks	Guess: resets camera tracks for the status report.
 8253BB38	guess_PresSlot_CreateCharacterEntityB	Guess: Finds the pres slot by key and creates its CASCharacterEntity and PresSkaterLook (no Attrib read)
 8253BD58	guess_CAS_ClearPreviewRef	Guess: clears the preview ref at +0x1A0 +0x2C and branches on the flag +0x9F1
@@ -8102,10 +8103,10 @@
 825C3CB0	Unlock_GetTeammateToEdit	retail Lua binding Unlock_GetTeammateToEdit
 825C3D08	Unlock_GetNewTeamState	retail name GetNewTeamState per our notes
 825C3D28	TeamManagement_PushIsOnlineFlag	TeamManagement native: pushes true when FE object +0x108 bytes +0x8C or +0x8D are set.
-825C3D78	FeNatives_RegisterPhotoPreview	Registers the PhotoPreview group of front end script natives (82E62F00 then 82E62B40 per name; group label is ours, names in run-2/aptnat-map.txt).
-825C3E20	FeNative_PhotoPreview_GetSkaters	Front end script native 'GetSkaters' registered by 825C3D78 (group label PhotoPreview is ours).
-825C4258	FeNative_PhotoPreview_IsPreviewPhotoLoaded	Front end script native 'IsPreviewPhotoLoaded' registered by 825C3D78 (group label PhotoPreview is ours).
-825C42D0	FeNative_PhotoPreview_GetPreviewPhotoAssetId	Front end script native 'GetPreviewPhotoAssetId' registered by 825C3D78 (group label PhotoPreview is ours).
+825C3D78	FeNatives_RegisterImportSkaters	Registers the ImportSkaters natives FE 68 ImportSkater uses (GetSkaters, IsPreviewPhotoLoaded, GetPreviewPhotoAssetId).
+825C3E20	FeNative_ImportSkaters_GetSkaters	ImportSkaters.GetSkaters: [count, texts, header flags]; each non-empty skater list gives its title as a header then its rows ('#%s' when the name is not a text id); none at all gives '#NO SKATERS' / '#NOT A SKATER'.
+825C4258	FeNative_ImportSkaters_IsPreviewPhotoLoaded	ImportSkaters.IsPreviewPhotoLoaded(row): whether FE 68's preview photo map (+0x3C) has the row.
+825C42D0	FeNative_ImportSkaters_GetPreviewPhotoAssetId	ImportSkaters.GetPreviewPhotoAssetId(row): the row's preview photo asset id as text (the default id when none).
 825C4360	FeNatives_RegisterPhotoMemcard	Registers the PhotoMemcard group of front end script natives (82E62F00 then 82E62B40 per name; group label is ours, names in run-2/aptnat-map.txt).
 825C4408	FeNative_PhotoMemcard_GetPhotoMemcardImage	Front end script native 'GetPhotoMemcardImage' registered by 825C4360 (group label PhotoMemcard is ours).
 825C4460	FeNative_PhotoMemcard_GetPhotoMemcardAsset	Front end script native 'GetPhotoMemcardAsset' registered by 825C4360 (group label PhotoMemcard is ours).
@@ -9828,20 +9829,20 @@
 826531C0	guess_FE_ImportSkaterScreen_Ctor	Guess: research/fe-id-templates.md:92 (ctor of the screen with template ImportSkater, high)
 82653390	guess_SkaterPreviewManager_DeletingDtor	Guess: deleting destructor next to SkaterPreviewManager_Ctor
 826533F8	guess_SkaterPreviewManager_Unsubscribe	Guess: unsubscribes the handlers and frees the map tree
-82653460	CAS_ImportSkater	retail name ImportSkater per our notes
-82653540	guess_FE_SkaterPreviewScreen_OnExit	Guess: Slot 6 of 82305678: removes the child screen +0x328.
-82653648	guess_FE_SkaterPreviewScreen_RegisterButtons	Guess: Slot 27 of 82305678: registers buttons 10 and more with the owner.
-826536D0	guess_FE_SkaterPreviewScreen_OnListSelect	Guess: Slot 16 of 82305678: when idle, stores the pick +0x2EC.
-82653750	guess_FE_SkaterPreviewScreen_OnListHilight	Guess: Slot 17 of 82305678: collects the team assets for autosave for the hilighted item.
-82653960	guess_Autosave_Init	Name from the messages it posts (cMsgInitAutosave; 1 MsgBus_Post calls, 2228 bytes); the rest of the body not read.
-82654248	guess_FE_SkaterPreviewScreen_Slot31	Guess: Slot 31 of 82305678: when idle, pops the state and sets +0x300.
-82654270	guess_FE_SkaterPreviewScreen_HandleButton	Guess: Slot 10 of 82305678: button 3 pops when idle.
+82653460	ImportSkater_Open	FE 68 ImportSkater open: loads skater list group 5 (and group 2 online), mode 2 blurs behind, opens template 114.
+82653540	ImportSkater_OnExit	FE 68 exit: drops the confirm popup (+0x328), resets the slot / pick / state fields, frees the preview photos.
+82653648	ImportSkater_OnShowStates	FE 68 vt+0x6C: SetState 10 (rows) and 11 (preview photo), plus 20 (first teammate background) in mode 2.
+826536D0	ImportSkater_OnListSelect	FE 68 row pick: while idle keeps the row (+0x2EC) and opens popup 0x123 (mode 0) or 0x125 (modes 1, 2) with callback 82654EA8.
+82653750	ImportSkater_OnListHilight	FE 68 row highlight: SetState 30 / 31 (gamercard for community rows), requests the row preview photo, then SetState 11.
+82653960	ImportSkater_Update	FE 68 update (+0x2F0): preview photos; after Yes loads the preset, applies it to slot +0x2E8 (8257DC48), rebuilds the skater and photos, then pops the screen (mode 0 posts 0x478AA499).
+82654248	ImportSkater_RequestClose	FE 68: pops at once when idle, else marks the close (+0x300) for after the load.
+82654270	ImportSkater_HandleButton	FE 68 buttons: 3 (B) pops while idle with core_b_button; 4 shows a community row gamercard.
 82654360	MsgHandler_Msg85A20A79_826531C0	Bus handler for Msg85A20A79, subscribed by 826531C0 through MsgBus_Subscribe.
 82654AE0	guess_AssetRequest_SubmitAndFree	guess: finds the schema of the request key (+8), submits it to the asset manager, unregisters the request and frees it.
 82654BA8	guess_Autosave_SubmitPending	Finds the pending request of +0x1E0 in the map +0x3C, erases it and submits its asset request
-82654C60	guess_Autosave_QueueTeamAssets	Guess: collects team assets, sets the busy flags and queues two load commands.
-82654EA8	guess_FE_OnConfirmChoice110	Guess: on choice 1 sets +0x2F0 of the FE object +0x110, always resets +0x328 to -1
-82654F10	guess_Autosave_CollectTeamAssets	Walks the team map of 830CFD94 +0xDC +0x228 and collects entries
+82654C60	ImportSkater_QueuePresetLoad	FE 68 state 1: acquires the picked row's skater (list vt+0x2C(row, 9)) into +0x2F4 and sets the load busy flags.
+82654EA8	ImportSkater_OnConfirmPopup	FE 68 confirm popup callback: choice 1 (Yes) sets state 1 (load); clears the popup id either way.
+82654F10	SkaterLists_LocateRow	Flat list index to (skater list, row) over the six lists of 830CFD94+0xDC+0x228; each non-empty list counts a header (row -1).
 82654FE0	guess_FE_ExtrasScreen_Dtor	Guess: dtor body next to the Extras deleting dtor 82655108 (vtable 0x82305390, b320 line 12); the MiracleWhipPromo tag came from position
 82655108	FE_ExtrasScreen_DeletingDtor	research/b320-retail-extras.md:12 (Extras screen class vtable 0x82305390: +0 dtor 82655108); the MiracleWhipPromo tag came from position
 82655170	guess_FE_ExtrasScreen_GetDynamicCodeText	Guess: b304-retail-cheat-screen.md:36 (the Extras screen init 82655478 rewrites the title / desc of entries with id 9 from 82655170, a dynamic code text)
@@ -10090,7 +10091,7 @@
 82666A20	hud_component_Ctor_82666A20	Constructor of class 'hud_component': called on the new block right after guess_Mem_AllocNamed with that tag (in 82659A10).
 82666B20	guess_HudComp82666A20_SendShow	slot 13 of the hud_component built by 82666A20: sends code 0x12 for its element id +0x1C through slot 5 of the interface at +0x14 of 824AD2F0's object (show, by pairing with slot 14)
 82666B70	guess_HudComp82666A20_SendHide	slot 14: sends code 0x13 for element +0x1C through the same HUD interface
-82666BC0	guess_HudComp82666A20_Update	slot 4 (large): when active (+0x10) compares +0x34 with the float at 83067070 +0x8C and refreshes its element
+82666BC0	TrickDisplayHud_Update	Trick display HUD component update (slot 4): sends its screen events (scoring mode, stance, line timer); while the trickdisplay element is dirty (+0x90) sends 20 / 21, 22 / 23, 24 / 25 for the part bytes +0x8D..+0x8F (hidden / shown) and clears +0x90
 82666F08	guess_HudComp_SetState3	Guess: Sets HUD element +0x1C to state 3
 82666F90	guess_HudComp_SetState1Then3	Guess: Sets HUD element +0x1C to state 1 then 3
 82666FF0	guess_HudComp_SetState2	Guess: Sets HUD element +0x1C to state 2

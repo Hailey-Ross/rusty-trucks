@@ -197,8 +197,10 @@ SetState 1 when it shows and 2 when it hides (vtable +0x34 / +0x38), and its upd
   `mcModifiedMessage` clip places it (lower and smaller than the normal one, no sound, gone at once on hide) and, like
   every style 0 / 1 message, plays the green banner's outro. Own the spot never clears it early: returning to the
   area leaves it up its 6 s. Not ported: ClearModifiedCentralMessage (event 88; nothing in own the spot calls it).
-- NOT RETAIL YET: the refresh cadence (retail refreshes the timer every 5th element tick; ours refreshes
-  on any change of what the movie reads, which shows the same text).
+- The refresh cadence (2026-11-21) [code 82663B60, b845]: the element's tick counter (+0x34) runs the update every
+  5th tick, so the text, the flash and the `timer_end` sound move on that beat. Ours (`hud_challenge::TimerTicks`):
+  the shown timer keeps the text it read last and re-reads every 5/30 s of game time (the HUD tick at the
+  console's 30 Hz [inferred]); a show reads at once. Test `the_timer_rereads_every_fifth_tick_at_any_frame_rate`.
 
 ## Change: the records kept across sessions (`challenge_records.rs`)
 
@@ -338,7 +340,7 @@ and `SKATE_REPORT_CHILD=1`) so a test run never covers what the user has open. N
   current rail's [spline id, type signature], kept by the grind provider; the argument is a decimal id). The start
   activates the first objective [inferred]. The result goes to the career. The presentation (intro, restart,
   outro, failure and hint groups) runs on the presentation manager ("Tutorial presentation" and "The lessons' hold
-  on the player" below; ActivateMinimalScoringHUD is the one intro type still a stub), the end options on the
+  on the player" below), the end options on the
   retail end dialog. NOT RETAIL YET: the tutorial HUD counts as loaded at once. A tutorial whose rows call an API function that is not
   ported does not run (logged with the missing names): an unported call errors and an erroring completion
   condition counts as complete in retail, so it would finish at once.
@@ -695,10 +697,20 @@ course from the split centers).
   instant group finishes in the frame it starts. Completion and abandon remove the tutorial's groups (82DBA8F8): the
   running event stops, queued ones go unplayed.
 - NOT RETAIL YET: the types without a port are logged stubs done at once (left in the tutorial lists:
-  ActivateMinimalScoringHUD, its trick display bytes' reader not found; WorldScriptCommand in the Hall of Meat
-  intros); the manager runs only while a tutorial runs. Ported since: callouts, speech, NIS, sim rate, achievements,
+  WorldScriptCommand in the Hall of Meat intros); the manager runs only while a tutorial runs. Ported since: callouts, speech, NIS, sim rate, achievements,
   (2026-11-20) SFX and TeleportLocalPlayer, and (2026-11-21) the sim controller's other types, the pin, the session
-  marker blocks, CentralMessage and Replay (next section):
+  marker blocks, CentralMessage and Replay (next section), and (2026-11-22) the minimal scoring HUD:
+  - ActivateMinimalScoringHUD (49) / DeactivateMinimalScoringHUD (50) [code]: PresHudGroup_Start (82578A80) finds
+    the `trickdisplay` element of movie `main` and sets its part bytes +0x8D..+0x8F to 0 (Activate) or 1
+    (Deactivate), with +0x90 = 1 (dirty). Undo (82579478) does the opposite. Stop (825799F8) sets them to 1. The
+    trick display HUD's update (TrickDisplayHud_Update, 82666BC0) sends, while dirty, one screen event per part
+    (20 / 22 / 24 hidden, 21 / 23 / 25 shown) and clears +0x90. The trickdisplay movie's SetState [data]: 20 / 21
+    set `multiplier_mc._visible` false / true, 24 / 25 `mcScoreModes.mcScore._visible`; 22 / 23 have no case. So
+    the minimal HUD hides the multiplier and the score. Ours: `presentation_run::MinimalScoringHandler` keeps the
+    parts (`Presenter::trick_display`), and `scoring_hud` sends the changed parts' events through
+    `hud_runtime::Runtime::set_state` (a HUD reload resends them). Tests
+    `minimal_scoring_hides_the_trick_display_parts_and_undo_and_stop_show_them`,
+    `set_state_hides_and_shows_the_multiplier_and_the_score` (the installed movie). Not seen in a lesson yet.
   - SFX (65) [code b874]: hash64(arg1) to the audio object's vt+0x2C, the call Audio_PlayFeSound makes, so it plays
     the `fe` record named arg1 (the lessons use tutorial_off 35, tutorial_pause 15, tutorial_freeze 14,
     tutorial_slowmo 11, all in the install); done at once. `presentation_run::SfxHandler`, played by `play_sfx`.
@@ -1466,11 +1478,11 @@ Races and contests (demos too) join the same prompt. `challenges.py` exported th
 **Retail.**
 - No filmer camera [code b1050 §0]: the films' graph never switches the camera; the player keeps the follow camera. The only camera input a row has is eChallengeCameraOverride (field 4AF3B2B0313D4F2B, `default` 2, `races` 0), which 82530318 maps into the camera system (+0x3C4); what it changes is open.
 - Highlights [code]: an objective that completes with a `HighlightDefinition` adds one (AddHighlightUsingDefinition 82BCCEB0 -> 82BCDAA8): replay frames from the sequence's first frame minus `pre` seconds to the completion plus `post` seconds (x 60.0, 821FF080), on the tier's scene (the definition's halves +0x10 owned, +0x50 killed: scene name, located byte, world position, direction). The replay tracker protects 4 ranges; a full list drops the oldest when the call asks for it.
-- The reel [code, b933 for the graph side]: KilledIt's replay wait pauses the simulation and enters HighlightReel, which drops the other tier's highlights (none left: one from the first owned objective's definition), plays the "begin replay" speech and PlayHighlightReel (82BCDDE8): each highlight plays as an NIS replay scene over its frames (82BCE0D8, NIS manager vt+0x14), each cMsgNISComplete starts the next (82BCDFC0), after the last cMsgHighlightReelComplete; an empty list completes at once. Then EndOptions.
+- The reel [code, b933 for the graph side]: KilledIt's replay wait pauses the simulation and enters HighlightReel, which drops the other tier's highlights (single player; the dummy highlight from the first objective's definition when none is left is SimulPlay only, highlight_reel.stateenter@26-72 / @99-144, corrected 2026-11-21), plays the "begin replay" speech and PlayHighlightReel (82BCDDE8): each highlight plays as an NIS replay scene over its frames (82BCE0D8, NIS manager vt+0x14), each cMsgNISComplete starts the next (82BCDFC0), after the last cMsgHighlightReelComplete; an empty list completes at once. Then EndOptions.
 - Data [data]: films use `Replay_Film_Generic_Low|Med|High` (located), `highlight_film`, `highlight_film_killed`, `highlight_generic_front`; anywhere films `film_generic` / `highlight_generic`; pre 3.0 s on most rows. Every scene is in the exported scene table.
 
 **Change.**
-- `skate_core::challenges::highlights` (`Highlights`, `HighlightDefinition`, `Rules` with the retail 4 slots and 60 frames a second as mod-replaceable defaults): `add` (window math, overrides above 0, drop oldest), `clear`, `reel` (keep the tier, the fallback ending at the last recorded frame).
+- `skate_core::challenges::highlights` (`Highlights`, `HighlightDefinition`, `Rules` with the retail 4 slots and 60 frames a second as mod-replaceable defaults): `add` (window math, overrides above 0, drop oldest), `clear`, `reel` (keep the tier). The tier (OwnedHighlightIDs / KilledItHighlightIDs, by the completed objective's group) is kept apart from the scene half (Lua arg 3) since 2026-11-21.
 - `film_run.rs`: ObjectiveComplete emits `AddHighlight { killed }`, the HighlightReel enter `PrepareReel { killed }` before PlayHighlightReel.
 - `challenges.py` `highlight_definition`: each objective row exports `highlight` {pre, post, owned, killed: {scene, located, position, direction}} (needs Refresh Game Files).
 - `ftl_host.rs` (films and follow the leader): ObjectiveComplete now reaches the machine (before, the host only logged it, so the per-objective speech never played either); the replay time each sequence began; the highlights in replay frames; the reel plays each clip on the instant replay (`Replay::play_reel_clip`: the window's start to its end, no input, no replay screen), the next when one ends, then HighlightReelComplete.
@@ -1487,11 +1499,11 @@ What the world step covers (82859E70) [code]: game input, the physics world (isl
 
 **Own the spot and Hall of Meat (2026-11-21).** Retail [data: the state graphs `own_the_spot` (b838) and `hom_challenge` (disassembled this pass); code 82BCCEB0 for the arguments]: own the spot adds one highlight when the line completes, `AddHighlightUsingDefinition(group, the first owned objective's HighlightDefinition, true, last frame written, SequenceBeginTime, false, -1, 2.0, 0.25)`, and plays the group after the treatment wait; its restart removes them. Lua arg 3 true picks the definition's +0x50 scene half (82BCCEB0: `def + 0x50` when true, else `+0x10`), arg 4 is the end frame, arg 5 the start, args 8 / 9 override pre / post when above 0. Hall of Meat (single player): the wipeout keeps the bail's first frame (HighlightStart); a bail that beats the best score while the run is not complete replaces the highlight, and so does completing the objectives (C.HighlightDefinition, false, last frame written, HighlightStart); the highlight state adds one over the last 180 frames when none exists, then plays the group. Ours: `ftl_host::ReelState` is shared (`track_sequence`, `add` in replay seconds, `play`, `play_prepared` for the films' PrepareReel, `step`, `stop`); `ots.rs` emits `AddHighlight` (completion) and `RemoveAllHighlights` (restart); `challenges.rs` and `hom_host.rs` host the commands, step the reel each frame and stop it when the run ends; the export adds the challenge's `highlight` to Hall of Meat rows (`challenges.py` `follow`, own local row, else its framework parent, else the bank chain). Needs a Refresh Game Files (challenges) for the definitions; without them the reel completes at once with a log line. Test `owning_it_completes_as_owned_after_the_reel` (the AddHighlight).
 
-**The films' call (2026-11-21)** [data: objectives_shared `objectivecomplete`@345-551]: every AddHighlightUsingDefinition the graph makes passes drop-oldest false (arg 6 false, or absent), so a full group adds nothing; ours now does the same. Without the objective's AllowAutoHighlightTiming (`useAutoTime`) the call is (group, definition, KilledIt, completion frame, SequenceBeginTime), as ours.
+**The films' call (2026-11-21)** [data: objectives_shared `objectivecomplete`@345-551]: every AddHighlightUsingDefinition the graph makes passes drop-oldest false (arg 6 false, or absent), so a full group adds nothing; ours now does the same. Without the objective's AllowAutoHighlightTiming (`useAutoTime`) the call is (group, definition, KilledIt, completion frame, SequenceBeginTime). C.KilledIt is written only by setup (`KilledIt = false`@53) in objectives_shared and photo_skate2, and the exe has no other writer (its strings `KilledIt` are an enum entry of eDPOIcon 8284F5F8 and two HUD name tables) [data + code, inferred: no writer found], so arg 3 is false: every film highlight takes the +0x10 half (ours took the group's half before 2026-11-21).
 
-**NOT RETAIL YET.** The AllowAutoHighlightTiming branch: spot / anywhere photos add the +0x50 half with pre 2.0 / post 0.25 when KilledIt, else the +0x10 half with 0.25 / 0.25; other films pick a kill-it highlight by HighlightKillOnlyInMasterObjective / HighlightKillItObjectiveNum / the objectives added so far and use pre 2.5 / post 0.5 for it (@423-481). The field is not exported, so ours always takes the plain call.
+**AllowAutoHighlightTiming (2026-11-21)** [data @345-511]: photos add the +0x50 half with 2.0 / 0.25 when KilledIt, else the +0x10 half with 0.25 / 0.25; other films add a kill-it highlight (+0x50, 2.5 / 0.5) when KilledIt and HighlightKillOnlyInMasterObjective with the master objective, or HighlightKillItObjectiveNum equal to the highlights added so far, or the last objective that needs a highlight; else the normal one (+0x10, pre 0.5 / post 0.5). With KilledIt always false only the photo 0.25 / 0.25 and the film 0.5 / 0.5 calls are reached. Ours: the export writes each objective's `auto_highlight_timing` (`challenges.py`), and `ftl_host` adds such an objective's highlight with 0.5 / 0.5 (photos are not run as films: photo_skate2 is not ported). Needs a Refresh Game Files.
 
-**Verification.** Tests `highlights` (window math and overrides, 4 slots and drop-oldest, the tier and fallback), `a_completed_objective_adds_its_highlight_and_the_reel_keeps_the_results_tier` (film_run), `a_highlight_reel_clip_plays_its_window_without_the_replay_screen` (replay), `test_a_highlight_definition_reads_both_halves` (export). Not checked in game yet (needs a Refresh Game Files for the export field).
+**Verification.** Tests `highlights` (window math and overrides, 4 slots and drop-oldest, `the_reel_keeps_its_tier_and_adds_no_dummy_in_single_player`), `a_completed_objective_adds_its_highlight_and_the_reel_keeps_the_results_tier` (film_run), `a_highlight_reel_clip_plays_its_window_without_the_replay_screen` (replay), `test_a_highlight_definition_reads_both_halves` (export). Not checked in game yet (needs a Refresh Game Files for the export field).
 
 ## The distance meter
 

@@ -858,6 +858,8 @@ pub(crate) struct BootFlowRun {
     start_world: Option<String>,
     /// FE 67's Customize row opened the customizer; the flow goes on when it closes.
     waiting_customiser: bool,
+    /// FE 67's Presets row opened FE 68; the flow goes on when it closes.
+    waiting_presets: bool,
 }
 
 impl BootFlowRun {
@@ -917,14 +919,17 @@ fn run_boot_flow(
         Res<Time>,
         Res<crate::config::Config>,
     ),
-    // FE 67 FirstTeamMember and what its rows lead to (the customizer, the player's name); FE 63's forced logo pick.
-    (mut ftm, mut customiser, mut net, mut logo_pick, mut photo, mut cas): (
+    // FE 67 FirstTeamMember and what its rows lead to (the customizer, FE 68's presets, the player's name); FE 63's
+    // forced logo pick.
+    (mut ftm, mut customiser, mut net, mut logo_pick, mut photo, mut cas, mut import, parts): (
         Option<ResMut<crate::welcome_host::FirstTeamMemberScreen>>,
         Option<ResMut<crate::customiser::Customiser>>,
         Option<ResMut<crate::multiplayer::Multiplayer>>,
         Option<ResMut<crate::team_management_host::TeamLogoScreen>>,
         Option<ResMut<crate::skater_photo::SkaterPhoto>>,
         Option<ResMut<crate::cas_host::CasScreen>>,
+        Option<ResMut<crate::welcome_host::ImportSkaterScreen>>,
+        Option<Res<crate::customiser_parts::Parts>>,
     ),
 ) {
     use skate_core::career::boot_flow::{Step, COACH_FRANK, FIRST_TEAM_MEMBER, PROGRESS_FIRST_TEAM_MEMBER};
@@ -1003,7 +1008,7 @@ fn run_boot_flow(
                 state.save_in_background();
                 if let Some(f) = ftm.as_mut() {
                     if let Some(choice) = f.pending.take() {
-                        run_first_team_member(choice, f, customiser.as_deref_mut(), cas.as_deref_mut(), &mut run);
+                        run_first_team_member(choice, f, customiser.as_deref_mut(), cas.as_deref_mut(), import.as_deref_mut(), &state.presets, &mut run);
                     }
                 }
             }
@@ -1026,6 +1031,22 @@ fn run_boot_flow(
         info!("SKATE_CAREER boot flow customizer closed");
         run.waiting_customiser = false;
     }
+    // FE 68 from FE 67: Yes on a preset puts its look on the player (8257DC48 into slot 0, then the skater rebuilds);
+    // the step is done when the screen closes, as after the customizer.
+    if run.waiting_presets {
+        if let Some(s) = import.as_mut() {
+            if let Some(key) = s.apply.take() {
+                apply_player_preset(&state.presets, &key, customiser.as_deref_mut(), parts.as_deref());
+                s.logic.applied();
+                s.open = false;
+            }
+            if s.open {
+                return;
+            }
+        }
+        info!("SKATE_CAREER boot flow preset list closed");
+        run.waiting_presets = false;
+    }
     // FE 63's forced logo pick (826524B8 mode 2): the picked logo is written and saved, the screen closes, the step
     // is done.
     if let Some(l) = logo_pick.as_mut().filter(|l| l.open) {
@@ -1045,7 +1066,7 @@ fn run_boot_flow(
                         b.ask(skate_core::text_entry::TextEntryRequest::profile_name(ftm_rules::PROFILE_NAME_DEFAULT));
                     }
                 }
-                Some(Next::Run(choice)) => run_first_team_member(choice, f, customiser.as_deref_mut(), cas.as_deref_mut(), &mut run),
+                Some(Next::Run(choice)) => run_first_team_member(choice, f, customiser.as_deref_mut(), cas.as_deref_mut(), import.as_deref_mut(), &state.presets, &mut run),
                 None => {}
             }
         }
@@ -1132,13 +1153,16 @@ fn run_boot_flow(
     }
 }
 
-/// One FE 67 row (826513E8): Customize opens our customizer for the player (FE 15 slot 0); Presets has no preset
-/// list yet and continues like Play (NOT RETAIL YET: FE 68); Play keeps the skater. The screen closes either way.
+/// One FE 67 row (826513E8): Customize opens our customizer for the player (FE 15 slot 0); Presets opens FE 68 on
+/// slot 0, mode 2 (an install without its movie or the presets continues like Play); Play keeps the skater. The
+/// screen closes either way.
 fn run_first_team_member(
     choice: skate_core::career::first_team_member::Choice,
     screen: &mut crate::welcome_host::FirstTeamMemberScreen,
     customiser: Option<&mut crate::customiser::Customiser>,
     cas: Option<&mut crate::cas_host::CasScreen>,
+    import: Option<&mut crate::welcome_host::ImportSkaterScreen>,
+    presets: &[Preset],
     run: &mut BootFlowRun,
 ) {
     use skate_core::career::first_team_member::Choice;
@@ -1157,8 +1181,37 @@ fn run_first_team_member(
             c.begin();
             run.waiting_customiser = true;
         }
-        (Choice::Presets, _) => info!("SKATE_CAREER boot flow preset list NOT RETAIL YET (FE 68 not ported): continuing"),
+        (Choice::Presets, _) => match import {
+            Some(s) if !presets.is_empty() => {
+                s.start(0, skate_core::career::import_skater::MODE_FIRST_TEAM_MEMBER,
+                    presets.iter().map(|p| (p.row.key.clone(), p.row.name_text.clone())).collect());
+                run.waiting_presets = true;
+            }
+            _ => info!("SKATE_CAREER boot flow preset list: no presets in this install, continuing"),
+        },
         _ => {}
+    }
+}
+
+/// Preset `key`'s look on the player (slot 0): resolved like the customizer's own looks, worn and saved as the outfit.
+fn apply_player_preset(presets: &[Preset], key: &str, customiser: Option<&mut crate::customiser::Customiser>, parts: Option<&crate::customiser_parts::Parts>) {
+    let (Some(preset), Some(c)) = (presets.iter().find(|p| p.row.key == key), customiser) else {
+        warn!("SKATE_CAREER preset {key} not applied (no preset or customizer)");
+        return;
+    };
+    let look = serde_json::Value::Object(preset.profile.clone());
+    let look = match parts.map(|p| p.resolve(&look)) {
+        Some(Ok(resolved)) => resolved,
+        Some(Err(e)) => {
+            warn!("SKATE_CAREER preset {key} not applied: {e}");
+            return;
+        }
+        None => look,
+    };
+    c.draft = look;
+    match c.save_look() {
+        Ok(()) => info!("SKATE_CAREER preset {key} on the player"),
+        Err(e) => warn!("SKATE_CAREER preset {key} worn, not saved: {e}"),
     }
 }
 
@@ -1199,6 +1252,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<crate::welcome_host::BootTextEntry>()
         .init_resource::<crate::welcome_host::CoachFrankScreen>()
         .init_resource::<crate::welcome_host::FirstTeamMemberScreen>()
+        .init_resource::<crate::welcome_host::ImportSkaterScreen>()
         .init_resource::<crate::team_management_host::TeamLogoScreen>()
         .init_resource::<crate::cas_host::CasScreen>()
         .add_message::<ChallengeResult>()

@@ -667,18 +667,29 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   the stage origin (0x6D2BEA1EFEA33425, +0x10). The options we have post four rows [data]: whole body (hats, shirts,
   pants, shoes ...: CAS_Stand, 260 degrees), wheels 335.13, rings 189.09, wrist (`wrist`, key 0x91098B2B2461D2DC)
   149.25; all at (-1, 0, -7.05) = our FE 62 stage place (and 260 = its -100 degree heading), so only the yaw and the
-  clip change. Clips [data]: CAS_STAND is only in the per-gender `cac_viewer_<male|female>.abin`, CAS_SINGLE_POSE_1..8
-  only in `sk83_marquee_viewer.abin`. Playing cac_viewer's CAS_STAND (run casbody5) showed the skater with her arms
-  down and no board, while the PS3 recording (5:30, Body Modification) shows her holding the board, as our FE 62
-  MARQUEE_STAND does; so CAS_Stand keeps MARQUEE_STAND and which clip / bank retail's animator plays (or whether the
-  board is a separate hand prop there) is OPEN (CASCharacterAnimator_New's bank arguments, 82532800 pcVar2 +0x24 /
-  +0x54, not read).
+  clip change.
+  The bank (2026-11-22) [code]: the CAS animator (82532408) takes its bank from the CAS record's gender entry, and
+  PresCACRecord_LoadGenderAnimBank (82532E58) loads `cac_edit_male` or `cac_edit_female` into it. That bank holds
+  CAS_STAND, CAS_STAND_BUFF / SLOUCH / STIFF and CAS_SINGLE_POSE_1..8 [data; its CAS_STAND is a different, longer
+  clip than cac_viewer's]. The posture [code]: cMsgPresCASBodyTarget carries a `cac_posture` key (+0x18; 8253B7B0
+  keeps it at +0x98), and 82532800 reads that row (class 0xDE50DFA8296749A7). A body row whose play-once Bool
+  (0x9C04CB22EB98D1CC; record +0x2C [inferred: that branch queues the row the way a play-once gesture runs]) is clear plays the posture's stand clip (0xD32BD93ACFF3E542) when it has one, its
+  own clip otherwise. Posture rows [data]: index field 0xC356DF187557B552 -1 normal CAS_Stand, 0 stiff
+  CAS_Stand_Stiff, 1 slouch CAS_Stand_Slouch, 2 buff CAS_Stand_Buff. The index is the look's posture - 1 (Default,
+  Straight, Hunched, Macho) [inferred from the label order].
+  Change: `cas_host::load_vault` reads the posture rows (`CasHost::posture_stands`), `CasHost::pose` swaps in the
+  posture's stand for a row that does not play once, and `marquee_preview::body_bank` plays CAS_Stand* and
+  CAS_Single_Pose_* from `cac_edit_<gender>.abin`. Tests `a_stand_row_plays_the_postures_stand_and_a_gesture_row_its_own_clip`,
+  `body_rows_play_from_the_gender_s_cas_or_gesture_bank`, the vault test (posture rows) on the installed data. Seen in
+  game (desktop run casstand1, 2026-11-22, Merchandise): CAS_Stand from cac_edit_female (a 16.7 s cycle) stands
+  holding the board as in the PS3 recording (cac_viewer's CAS_STAND, run casbody5, stood without it).
   Change: `cas_host::load_vault` reads the 69 rows (inheritance resolved), `CasHost::body` is posted with the camera
   (option +0x28; whole body on the top / Merchandise menus), `MarqueeView::body` gives the stage the clip, yaw and
   place, `marquee_preview` reloads the clip when its bank / clip change. Tests
   `an_options_body_target_poses_the_skater_and_merchandise_puts_the_whole_body_back`, the vault test (69 rows).
-  NOT RETAIL YET: the rows' other fields (the second vector, the Bool 0x760AE32CF50D24CB). The Bool
-  0x9C04CB22EB98D1CC is set on the 46 gesture rows only and read as "play once" (see "Gesture preview").
+  NOT RETAIL YET: the rows' other fields (the vector at +0x00, the Float 0.1 (field 0x1653...) at +0x24, the Bool
+  0x760AE32CF50D24CB). The Bool 0x9C04CB22EB98D1CC is set on the 46 gesture rows only: play once, own clip (see
+  "Gesture preview").
 - **Locks** (2026-11-18; Ghidra `.local/research/ghidra/cas-lock*.txt`) [code, high]: 825FD9F0's lock test is the
   predicate object with vtable 823046E0, test 825F46C8: a part with an Unlock name (record +0xF0) or a SponsorUnlock
   name (+0xDC) is locked unless the unlock manager has the Unlock under kind 5 (clothing unlock) or the SponsorUnlock
@@ -988,7 +999,8 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   The Left / Right sounds are ported ("Sounds" below) and 0.7 is retail's slider default (0x3F333333 at
   82593988 / 94). Posture's re-post (2026-11-21, recomp asm of 825FC7E8 at 825FD190): after the store at look
   +0x2018 it calls 82539688 with no key, which posts the look's current body target again (+0x10), so the animator
-  rebuilds the same row. NOT RETAIL YET: ours keeps the stand playing (retail's rebuild restarts the clip).
+  rebuilds the same row and restarts its clip. Ours: Posture bumps the body post (`body_posts`), so the preview
+  restarts the stand (test `edit_style_rows_write_...`: Posture posts once, Style not).
 - **Gesture preview** (2026-11-19) [code 82604AD0 recomp asm + ctor 825F4B98 Ghidra, data]: after a gesture slot
   steps, 82604AD0 takes the slot's gesture index, reads the 64-bit key at S+0x1838 + 16 * index (the ctor's table:
   label at +0, key at +8, e.g. AIRGUITAR 0xBCACFFAA652FAC9B .. YARDSALE 0xBD81B91A70FB59B1), stores it in the look

@@ -553,15 +553,32 @@ const BODY_CLASS: &str = "Hash_95E142284549717F";
 const BODY_CLIP: &str = "Hash_249D0D4624998D68";
 const BODY_YAW: &str = "Hash_4591287983616615";
 const BODY_POSITION: &str = "Hash_6D2BEA1EFEA33425";
-/// Set on the 46 gesture rows only (the stand and pose rows have it clear): played once [inferred from that split].
+/// Set on the 46 gesture rows only: the row plays its own clip once; any other row plays the posture's stand
+/// (82532800, record +0x2C [inferred]).
 const BODY_ONCE: &str = "Hash_9C04CB22EB98D1CC";
+/// `cac_posture` (class 0xDE50DFA8296749A7): the index field (look posture - 1) and the stand clip.
+const POSTURE_CLASS: &str = "Hash_DE50DFA8296749A7";
+const POSTURE_INDEX: &str = "Hash_C356DF187557B552";
+const POSTURE_STAND: &str = "Hash_D32BD93ACFF3E542";
+
+/// The posture stand clips by index (`CasHost::posture_stands`).
+fn load_posture_stands(data: &skate_data::collections::Collections) -> std::collections::HashMap<i32, String> {
+    data.entries().iter()
+        .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == POSTURE_CLASS)
+        .filter_map(|c| {
+            let index = data.field(POSTURE_CLASS, &c.key, POSTURE_INDEX).ok()?.data.clone();
+            let index = i32::from_str_radix(&index, 16).ok().or_else(|| u32::from_str_radix(&index, 16).ok().map(|v| v as i32))?;
+            Some((index, data.field(POSTURE_CLASS, &c.key, POSTURE_STAND).ok()?.data.clone()))
+        })
+        .collect()
+}
 
 /// The vault data FE 15 reads: every CAS camera row by key (16 hex digits), the brand logo image by brand name and
 /// every body target row by key, inheritance resolved; empty without the vault export.
 pub(crate) fn load_vault(asset_root: &std::path::Path) -> (std::collections::HashMap<String, CasCamera>,
     std::collections::HashMap<String, String>, std::collections::HashMap<String, CasBody>,
     std::collections::HashMap<u32, CasColourZone>, (std::collections::HashMap<String, CasMorph>, Option<MorphSettings>),
-    Vec<String>, Vec<CasFacePreset>) {
+    Vec<String>, Vec<CasFacePreset>, std::collections::HashMap<i32, String>) {
     let Ok(data) = skate_data::collections::Collections::load(asset_root) else { return Default::default() };
     let bodies = data.entries().iter()
         .filter(|c| skate_data::attrib_hash::numeric_name(&c.class_name) == BODY_CLASS)
@@ -588,7 +605,7 @@ pub(crate) fn load_vault(asset_root: &std::path::Path) -> (std::collections::Has
         by_brand.entry(name).or_insert(image);
     }
     (load_cameras(&data), by_brand, bodies, load_colour_zones(&data), load_morphs(&data), load_tattoo_categories(&data),
-        load_face_presets(&data))
+        load_face_presets(&data), load_posture_stands(&data))
 }
 
 fn load_cameras(data: &skate_data::collections::Collections) -> std::collections::HashMap<String, CasCamera> {
@@ -986,6 +1003,8 @@ pub(crate) struct CasHost {
     pub camera: String,
     /// The body target rows by key and the target last posted (cMsgPresCASBodyTarget).
     pub bodies: std::collections::HashMap<String, CasBody>,
+    /// The `cac_posture` stand clips by the row's index field (look posture - 1).
+    pub posture_stands: std::collections::HashMap<i32, String>,
     pub body: String,
     /// Counts the posts, so posting the same gesture row again plays it again.
     pub body_posts: u32,
@@ -1146,8 +1165,8 @@ impl CasHost {
         self.look["stance"].as_f64().unwrap_or(1.0) < 0.5
     }
 
-    /// Left / Right on an Edit Style row: Posture / Style wrap over 0..3, Stance toggles. NOT RETAIL YET: Posture's
-    /// re-post of the same body target (82539688 without a key), which restarts retail's stand clip.
+    /// Left / Right on an Edit Style row: Posture / Style wrap over 0..3, Stance toggles. Posture then re-posts the
+    /// current body target (82539688 without a key), which restarts the clip.
     fn step_edit_style(&mut self, id: i32, right: bool) -> bool {
         let (key, next) = match id {
             POSTURE | SKATE_STYLE => {
@@ -1161,6 +1180,9 @@ impl CasHost {
         bevy::log::info!("RETAIL_MENUS CreateASkater {key} {next}");
         self.look[key] = next;
         self.look_changed = true;
+        if id == POSTURE {
+            self.body_posts = self.body_posts.wrapping_add(1);
+        }
         true
     }
 
@@ -1824,8 +1846,15 @@ impl CasHost {
     }
 
     /// The character's pose and place now: the posted body target's row (None: no rows exported).
+    /// The posted body row; a row that does not play once takes the posture's stand clip when it has one (82532800).
     pub(crate) fn pose(&self) -> Option<CasBody> {
-        self.bodies.get(&self.body).or_else(|| self.bodies.get(WHOLE_BODY)).cloned().map(|b| CasBody { post: self.body_posts, ..b })
+        let mut body = self.bodies.get(&self.body).or_else(|| self.bodies.get(WHOLE_BODY)).cloned()?;
+        if !body.once {
+            if let Some(stand) = self.posture_stands.get(&(self.style_value("posture") as i32 - 1)).filter(|s| !s.is_empty()) {
+                body.clip = stand.clone();
+            }
+        }
+        Some(CasBody { post: self.body_posts, ..body })
     }
 
     /// 82604AD0 on an Edit Style row (option id): a gesture slot posts its gesture's body row, any other row the stand
@@ -2814,11 +2843,15 @@ mod tests {
         // Unset: posture 1, style normal, stance regular (the profile's defaults 0, 0, 1).
         assert_eq!(text(&mut h, &mut vm, 0.0), Value::Text("ID_CAC_LABEL_POSTURE_1".into()));
         assert_eq!(text(&mut h, &mut vm, 2.0), Value::Text("ID_CAC_STANCE_REGULAR".into()));
+        let posts = h.body_posts;
         assert!(h.left_right(false), "posture wraps back from 0");
         assert_eq!(h.look["posture"], 3);
+        assert_eq!(h.body_posts, posts + 1, "posture re-posts the body target, restarting the clip");
         h.call(&mut vm, "Game", "CAC_UpdateMenuIndices", &[Value::Number(1.0), Value::Number(0.0)]).unwrap();
+        let posts = h.body_posts;
         assert!(h.left_right(true));
         assert_eq!(h.look["style"], 1);
+        assert_eq!(h.body_posts, posts, "style does not re-post");
         assert_eq!(text(&mut h, &mut vm, 1.0), Value::Text("ID_CAC_LABEL_STYLE_LOOSE".into()));
         h.call(&mut vm, "Game", "CAC_UpdateMenuIndices", &[Value::Number(2.0), Value::Number(0.0)]).unwrap();
         assert!(h.left_right(true));
@@ -3362,6 +3395,22 @@ mod tests {
     }
 
     #[test]
+    fn a_stand_row_plays_the_postures_stand_and_a_gesture_row_its_own_clip() {
+        let mut h = grid_host();
+        let body = |clip: &str, once: bool| CasBody { clip: clip.into(), yaw_degrees: 260.0, position: [0.0; 3], once, post: 0 };
+        h.bodies = [(WHOLE_BODY.to_string(), body("CAS_Stand", false)), ("A".to_string(), body("cac_male_spock", true))].into_iter().collect();
+        h.posture_stands = [(-1, "CAS_Stand".to_string()), (0, "CAS_Stand_Stiff".to_string()), (2, "CAS_Stand_Buff".to_string())].into_iter().collect();
+        h.body = WHOLE_BODY.into();
+        assert_eq!(h.pose().unwrap().clip, "CAS_Stand", "posture 0 (Default) = index -1");
+        h.look["posture"] = 3.into();
+        assert_eq!(h.pose().unwrap().clip, "CAS_Stand_Buff");
+        h.look["posture"] = 2.into();
+        assert_eq!(h.pose().unwrap().clip, "CAS_Stand", "no row for the index: the body row's own clip");
+        h.body = "A".into();
+        assert_eq!(h.pose().unwrap().clip, "cac_male_spock");
+    }
+
+    #[test]
     fn the_triggers_turn_the_skater_frame_rate_independent_and_a_new_camera_resets_it() {
         let mut h = grid_host();
         // A full trigger for one second: 0.1 rad per 30 Hz frame, the same at 30, 60 and 240 fps.
@@ -3466,7 +3515,7 @@ mod tests {
     #[ignore = "requires the converted vault (SKATE3_ASSET_ROOT with private/stock/skater-collections.json)"]
     fn the_vault_gives_the_camera_rows_and_logos() {
         let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT") else { return };
-        let (cameras, logos, bodies, zones, (morphs, morph_settings), tattoo_categories, presets) = load_vault(std::path::Path::new(&root));
+        let (cameras, logos, bodies, zones, (morphs, morph_settings), tattoo_categories, presets, stands) = load_vault(std::path::Path::new(&root));
         assert_eq!(tattoo_categories, ["1", "2", "3"], "the vault's category list, its records' text fields");
         // Face presets: Custom (0) and ten per gender, each with an eye and a skin color and the 19 morphs.
         assert_eq!(presets.len(), 21);
@@ -3489,6 +3538,8 @@ mod tests {
         assert_eq!(bodies.len(), 69);
         assert_eq!(bodies[WHOLE_BODY], CasBody { clip: "CAS_Stand".into(), yaw_degrees: 260.0, position: [-1.0, 0.0, -7.05], once: false, post: 0 });
         assert!((bodies["91098B2B2461D2DC"].yaw_degrees - 149.25).abs() < 0.01);
+        assert_eq!(stands.get(&-1).map(String::as_str), Some("CAS_Stand"));
+        assert_eq!(stands.get(&2).map(String::as_str), Some("CAS_Stand_Buff"));
         assert_eq!(cameras.len(), 47);
         let body = cameras[WHOLE_BODY];
         assert_eq!((body.fov_degrees, body.eye, body.target), (35.0, [-3.8, 0.88, -7.6], [49.0, 0.7, -9.0]));

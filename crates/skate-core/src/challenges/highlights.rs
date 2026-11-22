@@ -23,7 +23,8 @@ pub struct HighlightDefinition {
     pub killed: SceneDef,
 }
 
-/// One kept window: replay frames `start..=end` and the scene that shows them.
+/// One kept window: replay frames `start..=end` and the scene that shows them. `killed` is the tier (the graph's
+/// OwnedHighlightIDs / KilledItHighlightIDs, by the completed objective's group), apart from the scene half.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Highlight {
     pub killed: bool,
@@ -61,10 +62,11 @@ impl Highlights {
 
     /// AddHighlightUsingDefinition (82BCCEB0 -> 82BCDAA8): the window from the sequence's first frame minus `pre`
     /// seconds to the completion frame plus `post` seconds (an override above 0 replaces the definition's), on the
-    /// tier's scene. With every slot taken, `drop_oldest` makes room, else nothing is added. True when added.
+    /// definition's +0x50 half when `second_half` (Lua arg 3), else +0x10, kept in tier `killed`. With every slot
+    /// taken, `drop_oldest` makes room, else nothing is added. True when added.
     #[allow(clippy::too_many_arguments)]
-    pub fn add(&mut self, def: &HighlightDefinition, killed: bool, begin: u32, completed: u32, drop_oldest: bool,
-        pre_override: f32, post_override: f32) -> bool {
+    pub fn add(&mut self, def: &HighlightDefinition, killed: bool, second_half: bool, begin: u32, completed: u32,
+        drop_oldest: bool, pre_override: f32, post_override: f32) -> bool {
         if self.rules.slots == 0 {
             return false;
         }
@@ -79,7 +81,7 @@ impl Highlights {
         let frames = |s: f32| (s.max(0.0) * self.rules.frames_per_second) as u32;
         let start = begin.min(completed).saturating_sub(frames(pre));
         let end = completed.saturating_add(frames(post));
-        let scene = if killed { def.killed.clone() } else { def.owned.clone() };
+        let scene = if second_half { def.killed.clone() } else { def.owned.clone() };
         self.list.push(Highlight { killed, start, end, scene });
         true
     }
@@ -93,19 +95,11 @@ impl Highlights {
         &self.list
     }
 
-    /// The HighlightReel state's enter (b933): the other tier's highlights go; with none left, one from `fallback`
-    /// (the first owned objective's definition) ending at `last_frame`. Returns the reel's clips in order (empty:
-    /// the reel completes at once).
-    pub fn reel(&mut self, killed: bool, fallback: Option<&HighlightDefinition>, last_frame: u32) -> Vec<Highlight> {
+    /// The HighlightReel state's enter (objectives_shared highlight_reel.stateenter@0-168, single player): the other
+    /// tier's highlights go and the rest play in order (empty: the reel completes at once). The dummy highlight from
+    /// the first objective's definition is SimulPlay only (@26-72, @99-144; not ported).
+    pub fn reel(&mut self, killed: bool) -> Vec<Highlight> {
         self.list.retain(|h| h.killed == killed);
-        if self.list.is_empty() {
-            if let Some(def) = fallback {
-                self.add(def, killed, last_frame, last_frame, true, 0.0, 0.0);
-                if let Some(h) = self.list.last_mut() {
-                    h.end = h.end.min(last_frame);
-                }
-            }
-        }
         self.list.clone()
     }
 }
@@ -126,11 +120,11 @@ mod tests {
     #[test]
     fn a_window_runs_from_pre_before_the_sequence_to_post_after_the_completion() {
         let mut h = Highlights::default();
-        assert!(h.add(&def(3.0, 0.5), false, 1000, 1300, false, 0.0, 0.0));
+        assert!(h.add(&def(3.0, 0.5), false, false, 1000, 1300, false, 0.0, 0.0));
         assert_eq!((h.list()[0].start, h.list()[0].end, h.list()[0].scene.scene.as_str()), (820, 1330, "highlight_film"));
-        assert!(h.add(&def(3.0, 0.5), true, 100, 200, false, 1.0, 2.0), "overrides above 0 replace pre / post");
+        assert!(h.add(&def(3.0, 0.5), true, true, 100, 200, false, 1.0, 2.0), "overrides above 0 replace pre / post");
         assert_eq!((h.list()[1].start, h.list()[1].end, h.list()[1].scene.scene.as_str()), (40, 320, "highlight_film_killed"));
-        assert!(h.add(&def(10.0, 0.0), false, 60, 90, false, 0.0, 0.0));
+        assert!(h.add(&def(10.0, 0.0), false, false, 60, 90, false, 0.0, 0.0));
         assert_eq!(h.list()[2].start, 0, "never before frame 0");
     }
 
@@ -138,24 +132,22 @@ mod tests {
     fn four_slots_then_the_oldest_goes_only_when_asked() {
         let mut h = Highlights::default();
         for i in 0..4 {
-            assert!(h.add(&def(0.0, 0.0), false, i * 10, i * 10, false, 0.0, 0.0));
+            assert!(h.add(&def(0.0, 0.0), false, false, i * 10, i * 10, false, 0.0, 0.0));
         }
-        assert!(!h.add(&def(0.0, 0.0), false, 50, 50, false, 0.0, 0.0), "full, no drop");
-        assert!(h.add(&def(0.0, 0.0), false, 50, 50, true, 0.0, 0.0));
+        assert!(!h.add(&def(0.0, 0.0), false, false, 50, 50, false, 0.0, 0.0), "full, no drop");
+        assert!(h.add(&def(0.0, 0.0), false, false, 50, 50, true, 0.0, 0.0));
         assert_eq!(h.list().iter().map(|x| x.start).collect::<Vec<_>>(), [10, 20, 30, 50]);
     }
 
     #[test]
-    fn the_reel_keeps_its_tier_and_falls_back_to_the_first_owned_definition() {
+    fn the_reel_keeps_its_tier_and_adds_no_dummy_in_single_player() {
         let mut h = Highlights::default();
-        h.add(&def(1.0, 0.0), false, 600, 900, false, 0.0, 0.0);
-        h.add(&def(1.0, 0.0), true, 1200, 1500, false, 0.0, 0.0);
-        let reel = h.reel(true, None, 2000);
+        h.add(&def(1.0, 0.0), false, false, 600, 900, false, 0.0, 0.0);
+        h.add(&def(1.0, 0.0), true, false, 1200, 1500, false, 0.0, 0.0);
+        let reel = h.reel(true);
         assert_eq!(reel.len(), 1);
-        assert!(reel[0].killed);
-        let mut empty = Highlights::default();
-        let reel = empty.reel(false, Some(&def(2.0, 1.0)), 3000);
-        assert_eq!((reel[0].start, reel[0].end), (2880, 3000), "ends at the last written frame");
-        assert!(Highlights::default().reel(false, None, 10).is_empty(), "nothing to play: the reel completes at once");
+        assert!(reel[0].killed, "the tier is the objective's group");
+        assert_eq!(reel[0].scene.scene, "highlight_film", "the scene half is Lua arg 3, apart from the tier");
+        assert!(Highlights::default().reel(false).is_empty(), "nothing to play: the reel completes at once");
     }
 }

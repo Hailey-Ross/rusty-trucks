@@ -37,6 +37,8 @@ pub struct Presenter {
     pub player: Arc<Mutex<PlayerHost>>,
     /// The Replay request and its end report.
     pub replay: Arc<Mutex<ReplayHost>>,
+    /// The trick display parts the minimal scoring HUD hides (`scoring_hud`).
+    pub trick_display: Arc<Mutex<TrickDisplayParts>>,
     /// Groups that finished or were removed (`presentationeventgroupfinished`), for owners that wait on a group
     /// (the career's Execute); the newest 64 kept.
     finished: Vec<String>,
@@ -85,8 +87,12 @@ impl Default for Presenter {
         handlers.set_engine("SFX", Box::new(SfxHandler { out: sfx.clone() }));
         let teleport = Arc::new(Mutex::new(TeleportHost::default()));
         handlers.set_engine("TeleportLocalPlayer", Box::new(TeleportHandler { host: teleport.clone() }));
+        let trick_display = Arc::new(Mutex::new(TrickDisplayParts::default()));
+        for (kind, minimal) in [("ActivateMinimalScoringHUD", true), ("DeactivateMinimalScoringHUD", false)] {
+            handlers.set_engine(kind, Box::new(MinimalScoringHandler { host: trick_display.clone(), minimal }));
+        }
         Self { manager: Manager::default(), handlers, fade, callout, sim, grants, speech, speech_out, cast_out, nis, sfx, teleport,
-            player, replay, finished: Vec::new(), driven: false }
+            player, replay, trick_display, finished: Vec::new(), driven: false }
     }
 }
 
@@ -754,6 +760,54 @@ fn lenient_float(s: &str) -> f32 {
     (1..=rest.len()).rev().filter(|&i| rest.is_char_boundary(i)).find_map(|i| rest[..i].parse::<f32>().ok()).unwrap_or(0.0)
 }
 
+/// The trickdisplay HUD element's part flags (element +0x8D..+0x8F; all set by its constructor in 8265A7E8).
+/// The HUD's update (82666BC0) sends screen events 20 / 22 / 24 for a hidden part and 21 / 23 / 25 for a shown one.
+/// The movie's SetState: 20 / 21 = the multiplier, 24 / 25 = the score, and 22 / 23 have no handler.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrickDisplayParts {
+    pub shown: [bool; 3],
+}
+
+impl Default for TrickDisplayParts {
+    fn default() -> Self {
+        Self { shown: [true; 3] }
+    }
+}
+
+impl TrickDisplayParts {
+    /// The screen events for the parts that differ from `applied`.
+    pub fn states(&self, applied: [bool; 3]) -> Vec<u32> {
+        (0..3).filter(|&i| self.shown[i] != applied[i]).map(|i| 20 + 2 * i as u32 + self.shown[i] as u32).collect()
+    }
+}
+
+/// ActivateMinimalScoringHUD (49) hides the three parts and DeactivateMinimalScoringHUD (50) shows them (82578A80).
+/// Undo does the opposite (82579478). Stop shows them (825799F8). Both are done at once.
+pub struct MinimalScoringHandler {
+    host: Arc<Mutex<TrickDisplayParts>>,
+    minimal: bool,
+}
+
+impl MinimalScoringHandler {
+    fn set(&self, shown: bool) {
+        if let Ok(mut h) = self.host.lock() {
+            h.shown = [shown; 3];
+        }
+    }
+}
+
+impl Handler for MinimalScoringHandler {
+    fn start(&mut self, _event: &Event) {
+        self.set(!self.minimal);
+    }
+    fn undo(&mut self, _event: &Event) {
+        self.set(self.minimal);
+    }
+    fn stop(&mut self, _event: &Event) {
+        self.set(true);
+    }
+}
+
 /// One event type's behavior (retail start / update / done / undo / stop slots; b900).
 pub trait Handler: Send + Sync {
     fn start(&mut self, event: &Event);
@@ -1326,5 +1380,29 @@ mod tests {
         r.remove_mod("hold");
         assert_eq!(r.source("FadeIn"), Some(Source::Engine));
         assert_eq!(m.update(0.1, &mut r), [Out::GroupFinished("a".into())]);
+    }
+}
+
+#[cfg(test)]
+mod minimal_scoring_tests {
+    use super::*;
+
+    #[test]
+    fn minimal_scoring_hides_the_trick_display_parts_and_undo_and_stop_show_them() {
+        let host = Arc::new(Mutex::new(TrickDisplayParts::default()));
+        let event = Event { kind: "ActivateMinimalScoringHUD".into(), args: [None, None], mask: 0 };
+        let mut on = MinimalScoringHandler { host: host.clone(), minimal: true };
+        let mut off = MinimalScoringHandler { host: host.clone(), minimal: false };
+        let parts = |h: &Arc<Mutex<TrickDisplayParts>>| *h.lock().unwrap();
+        on.start(&event);
+        assert_eq!(parts(&host).shown, [false; 3]);
+        assert_eq!(parts(&host).states([true; 3]), vec![20, 22, 24], "the hide events per part (82666BC0)");
+        assert!(parts(&host).states([false; 3]).is_empty(), "nothing changed, nothing sent");
+        on.undo(&event);
+        assert_eq!(parts(&host).shown, [true; 3]);
+        off.undo(&event);
+        assert_eq!(parts(&host).states([true; 3]), vec![20, 22, 24]);
+        on.stop(&event);
+        assert_eq!(parts(&host).states([false; 3]), vec![21, 23, 25]);
     }
 }

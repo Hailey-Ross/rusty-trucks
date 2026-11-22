@@ -8,6 +8,7 @@ pub mod achievements;
 pub mod boot;
 pub mod boot_flow;
 pub mod first_team_member;
+pub mod import_skater;
 pub mod graph;
 pub mod milestones;
 pub mod presentation;

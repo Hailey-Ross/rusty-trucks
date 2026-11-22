@@ -61,6 +61,39 @@ impl Component {
 /// The front-end sound of each new second under 10 s on the challenge timer.
 pub(crate) const LOW_TIME_SOUND: &str = "timer_end";
 
+/// The timer element re-reads its timer on every 5th tick (82663B60, b845), the HUD's per-frame update at the
+/// console's 30 Hz [inferred], so every 5/30 s of game time.
+pub(crate) const TIMER_REFRESH_SECONDS: f32 = 5.0 / 30.0;
+
+/// The timer element's tick counter (+0x34, 82663B60) in game time: a refresh falls due every `refresh` seconds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TimerTicks {
+    clock: f32,
+    due: bool,
+}
+
+impl Default for TimerTicks {
+    fn default() -> Self {
+        Self { clock: 0.0, due: true }
+    }
+}
+
+impl TimerTicks {
+    pub(crate) fn advance(&mut self, seconds: f32, refresh: f32) {
+        self.clock += seconds;
+        // The epsilon keeps a 30 Hz frame on exactly every 5th tick despite float sums.
+        if self.clock + 1e-4 >= refresh {
+            self.clock = if refresh > 0.0 { (self.clock - refresh).max(0.0) % refresh } else { 0.0 };
+            self.due = true;
+        }
+    }
+
+    /// Whether this update re-reads the timer (and uses the refresh).
+    pub(crate) fn take(&mut self) -> bool {
+        std::mem::take(&mut self.due)
+    }
+}
+
 /// One DPO (the score / target box): the numbers as shown and the title text id (retail `DPOSetParams` /
 /// `DPOSetTitle`, `DPO_GetParams` items 0, 1, 2 and 4).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -475,6 +508,8 @@ pub struct Runtime {
     low: bool,
     /// The callout state count already sent to hudtutorial.
     callout_sent: u32,
+    /// The timer's refresh cadence.
+    timer_ticks: TimerTicks,
 }
 
 /// `_global` values one HUD movie writes and another reads. Retail runs every HUD movie on one `_global`; ours each run
@@ -563,7 +598,8 @@ impl Runtime {
         bindings.movie.classes.extend(classes);
         vm.begin_update();
         bindings.movie.initialize(&mut vm)?;
-        let mut runtime = Self { vm, bindings, component, controller: usize::MAX, shown: false, read: String::new(), low: false, callout_sent: 0 };
+        let mut runtime = Self { vm, bindings, component, controller: usize::MAX, shown: false, read: String::new(), low: false, callout_sent: 0,
+            timer_ticks: TimerTicks::default() };
         runtime.drain()?;
         runtime.controller = match (runtime.bindings.controller, runtime.vm.get(runtime.bindings.movie.root, "screen")) {
             (Some(c), _) | (None, Value::Object(c)) => c,
@@ -603,6 +639,14 @@ impl Runtime {
     /// shown sends its refresh state. b844 section 4: the C++ caller is not decoded, this order is the movies' own.
     pub fn sync(&mut self, state: &ChallengeHudState) -> Result<(), String> {
         let shown = state.is_shown(self.component);
+        // A shown timer keeps the text it read last until its next 5th tick.
+        if self.component == Component::Timer && shown && self.shown && !self.timer_ticks.take() {
+            let mut held = state.clone();
+            held.timer_text = std::mem::take(&mut self.bindings.state.timer_text);
+            held.timer_flag = self.bindings.state.timer_flag;
+            self.bindings.state = held;
+            return Ok(());
+        }
         let read = state.reads(self.component);
         let changed = read != self.read;
         self.bindings.state = state.clone();
@@ -687,6 +731,11 @@ impl Runtime {
         self.shown
     }
 
+    /// Game time for the timer's tick counter.
+    pub fn advance_clock(&mut self, seconds: f32, refresh: f32) {
+        self.timer_ticks.advance(seconds, refresh);
+    }
+
     /// One frame of the movie's timelines.
     pub fn update(&mut self) -> Result<(), String> {
         self.vm.begin_update();
@@ -700,6 +749,20 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_timer_rereads_every_fifth_tick_at_any_frame_rate() {
+        for fps in [30.0f32, 60.0, 144.0] {
+            let mut ticks = TimerTicks::default();
+            assert!(ticks.take(), "the first update reads");
+            let mut reads = 0;
+            for _ in 0..(fps as usize) {
+                ticks.advance(1.0 / fps, TIMER_REFRESH_SECONDS);
+                reads += ticks.take() as u32;
+            }
+            assert_eq!(reads, 6, "{fps} fps: 6 refreshes a second, as 30 Hz / 5");
+        }
+    }
 
     #[test]
     fn dpo_values_become_the_movie_texts_through_the_language() {
