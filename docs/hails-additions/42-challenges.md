@@ -1471,6 +1471,55 @@ Races and contests (demos too) join the same prompt. `challenges.py` exported th
 
 **Not yet (NOT RETAIL YET, logged).** The highlight reel's scene cameras (see "Highlight reel" below). Film objectives that call unported API (b961 §2: spin degrees, trick groups, unique tricks, ResetAllObjectives, manual distance and others) keep those rows from starting until the calls are ported.
 
+<a id="photos-in-play"></a>
+
+### Photos in play (2026-11-22; research b875 §1b, b857, b894)
+
+**Retail** [data: photo_skate2 diffed against objectives_shared, b875]. Spot photos (ChallengeType 0x26, 22 rows on the three maps) and anywhere photos (0x25, 10 rows) run `photo_skate2`: the objectives_shared graph with `challenge_cleanup` replaced and a `display_photo` state in place of killed_it / highlight_reel. Its rule flags differ from the films': a photo never fails on a wipeout, a failed objective or the boundary (the result selector repairs and resumes until every objective is done); a wipeout re-arms the objectives 1.5 s later without a reposition and without the film's wipeout line; a failed objective re-arms after 1.5 s (ObjectiveFailedTimerID); leaving the PhotoChallengeBoundary (`leftobjectivescoringboundary`) fails the objectives with the selector deciding; each completed objective clears the reel before it adds its highlight (one shot kept). `display_photo` holds the player, waits the owned it / killed it banner time (or the failed text's delay, then end options), hides the HUD, pauses the simulation and plays the photo NIS built from the objective's highlight (`photo_generic_mid` at the row's camera spot); the NIS's challenge notify opens the shot picker (FrontEnd.OpenPhotoSelection with the NIS's frame count), its end resumes the simulation and goes to the end options. The anywhere types start where the player stands (SetSessionMarker), a restart goes back there. Photo framing is not judged by the graph: completion comes from the objective rows (volumes, tricks, IsSequenceNewlyCompletePoints).
+
+**Change.**
+- `challenges.py`: `photos` and `anywhere_photos` rows go through the film row reader into a `photos` section (32 rows on the disc: 22 spot photos with start, boundary and objectives; 10 anywhere photos with no start). `photo_ind_01` is left out (no hull), as `film_ind_01`.
+- `film_run.rs`: `Kind::Photo` / `Kind::AnywherePhoto` with the rule flags and family defaults above, the replaced cleanup, `State::DisplayPhoto`, `Event::LeftScoringBoundary` / `NisChallengeNotify`, `Command::OpenPhotoSelection`.
+- `ftl_host.rs`: photo rows load next to the films and start the same ways (the sign-up prompt at the row's sphere, the career, `SKATE_FILM=<id>`); the reel's end reaches the photo's pick point; a mode 3 objective volume's exit (the scoring boundary) posts LeftScoringBoundary. Rows without a start (the anywhere films and photos) now load: the run starts where the player stands and a restart teleports back there.
+- NOT RETAIL YET: no shot picker (`challenge/photoselect`, `phototreatment` movies): the photo NIS's shot is taken as picked and the NIS ends at once. The anywhere types have no sign-up sphere; retail signs them up from the Challenge Map (b911), which does not list challenges yet (research b1054 has the folder rules), so today only `SKATE_FILM=<id>` or a mod starts them.
+
+**Fixed on the way (2026-11-22).** Every map change crashed with a main-thread stack overflow (`__chkstk` in the map transition's commit, both today's builds; map switches passed on 2026-11-16): the prepared world (115 KB) and the resources it carries were copied through a frame larger than the 1 MB main stack. The loader thread now returns it boxed (`map_transition.rs`). Desktop run DownTown -> University: committed, GAME_VERIFY_OK.
+
+**Challenge Map Sign Up in play (2026-11-22, run map8).** The user's career on DownTown: Challenge Map, Challenges tab (Getting Started, Training), Sign Up on `ftl_univ_02`: University loads, the player arrives at its sign-up spot, the follow the leader starts with its leader `reda_ftl`.
+
+**Verification.** Tests `a_photo_shows_its_shot_lets_the_player_pick_and_then_offers_continue`, `a_photo_rearms_after_a_bail_or_a_failed_objective_and_fails_outside_its_scoring_boundary` (machine), `a_photo_row_runs_on_the_film_host_and_ends_after_its_photo_nis`, `a_film_row_runs_on_the_same_host_without_a_leader_or_a_film_clock` (an anywhere row loads without a start). Not run in game yet.
+
+<a id="one-ups"></a>
+
+### 1-Ups (2026-11-22; research b1055, b877 B1, b879)
+
+**Retail** [data: the `1up` graph, 21 states / 47 handlers; rows from the challenge banks and the 1-Up / turn-based framework rows]. The player and a pro take turns; the pro goes first (ProGoesFirst on every row). A run lasts TimeLimit (20 s; 22 s on 1up_sksc_01) or ends 3 s after a bail; its score is the sum of the runner's clean landed lines (CumulativeScoring; the `1up_sequence_anywhere` objective, trigger byte 1, mode 5, re-armed after each line). The first run of a round that scores sets the round's best; a later run that ends strictly above it takes the lead ("1-upped" shows the moment the total crosses it); a run that does not beat the leader gets a letter and sits out the rest of the round; a zero run before anyone set a score gets no letter. The round ends with fewer than two runners left, and its leader starts the next one. Three letters eliminate a competitor; the standings are fewer letters, then the best single line. **Owned when the player is first; otherwise Abandoned: the graph never sets Killed.** The pro rides its challenge lines (`ch_<id>`); after every run (the pro's own too) and 5 s before the player's time runs out, its level follows the run's score through the row's thresholds (Easy / Hard / Extreme reachable; score multipliers 0.95 / 1.05 / 1.15), starting at Hard. The career needs 1up_sksc_01 (in `skate_school_all`), 1up_dwtn_01, 1up_dwtn_05 and 1up_univ_01 (`pros_all`).
+
+**Change.**
+- `challenges.py` `one_up()`: the `one_ups` section (14 rows on the disc, 4 with a pro): the local params over the framework rows, the per-round start and wait locators resolved in the row's hull (`_<id>`), the pro, TimeLimit, CumulativeScoring, ProGoesFirst, AllowPlayerBail, the four thresholds and five multipliers, the intro events and the central texts.
+- `one_up_run.rs` (skate-core): the graph as a state machine (turn order, letters, leader, round and challenge end, standings, RefreshAIDifficulty, the result) with the graph's timers as overridable defaults; the host answers the presentation with events. Speech cues are emitted with their event ids.
+- `one_up_host.rs`: the run's turns (the runner to the round's start spot, everyone else to the wait spot), the pro on the contest rider code, the player's and the pro's clean lines that began during the run, the player's bail, the HUD (timer, DPO, leaderboard), the banners with the row's text ids, the results and Continue / Retry in the end dialog, the career result. Starts from the sign-up sphere, the Challenge Map, the career, or `SKATE_ONEUP=<id>`.
+- Fixed on the way: a finished contest never reached the career (contest_host sent no ChallengeResult), so street and vert contests could not pay or progress it.
+- NOT RETAIL YET (logged): the intro NIS and the turn fades; the camera on the pro's run (Online.SwitchCamera); the ThrowDown letters HUD (letters show in the leaderboard's score column); the pro's speech lines; the highlight reel; the score bias multiplies the pro's lines [inferred: SetScoreBiasMultiplier's consumer is not read, b1055 §6]; the preferred line skill (only 1up_sksc_01 has lines of several skills).
+
+**Verification.** skate-core `one_up_run` tests (turn order and the first score, a 1-up and a letter, elimination and Owned, a loss with no reel and Abandoned, no letter before a score, the difficulty rule, the time limit and the bail); skate-game `a_row_becomes_its_params_and_rows_without_a_pro_are_not_run`, `the_career_one_ups_load_from_the_export` (data-gated). Desktop run `1up_dwtn_05` (oneup1, 2026-11-22): Chris Cole rides first from round 1's start (one line, 100 x 1.05, then a bail ends his run 3 s later), the score is set, his level drops to Easy, the player is placed at the start and he at the wait spot, the "is leading" banner, the player's turn with the 20 s timer. Full run (oneup3, no player input): three rounds, Chris Cole sets 76, 2,840 and 1,265; the player takes a letter each round and is eliminated; "wins", results [(pro, 1st, 0 letters), (player, 2nd, 3 letters)], the end dialog with won=false. A player line that began before the run is not counted (mode 5 arms at a sequence begin). Fixed on the way: `--verify` runs gave up at 45 s whatever SKATE_VERIFY_AT asked for; the limit now follows the capture time.
+
+<a id="objective-calls-2026-11-22"></a>
+
+### Objective calls for films, photos and lessons (2026-11-22; research b894, b840)
+
+**Problem.** A row whose objectives call an unported function does not start. On the disc export, 42 rows called 26 unported functions: 17 photos, 14 films, 9 Hall of Meat rows and the lessons `tut_sksc_02` (GetSpeed) and `tut_sksc_07` (GetRawRightStickXValue, print).
+
+**Change** (`api.rs`, `objectives.rs`, `challenge_objectives.rs`), each as b894 decodes it:
+- ObjectiveAir.GetCurrentDegreesOfSpin (82C662E0): the live half turns of this air x 180. GetDegreesOfSpin (82C66278): the last clean air's spin while the objective is active (obj+0x470, written at AirCompleted, 82C74738).
+- Stance.IsFakie (82C63CB0): riding fakie now. Input.IsLeft / RightBumperHeld (82C63550 / 82C63628), IsLeft / RightStickHeld (82C639E0 / 82C63B48: the stick's deflection against the argument), GetRawRightStickXValue (82C63700).
+- ObjectivePoints.GetSequencePoints (82C64FE0): the last clean line's score while active, 0 from the next line's begin. GetFinishedSequenceScore (82C65060): the line that ended clean this frame. AwardSequencePointsImmediately (82C653D0): after the evaluation the calling objective gains the running line's score once.
+- ObjectiveHOM.GetNumDMOsHit was answered already but missing from the ported list; Lua `print` is a no-op.
+- [inferred] ObjectiveLocomotion.GetSpeed: the center of mass speed (m/s); Manual.ManualDistance: ours integrates that speed while the manual is held (retail reads sk.P+0x3C, whose writer is not read, b894 open 1).
+- Still unported (rows stay unstartable): AnywherePhoto.HasUserPlacedPhotographer / GetDistanceToPhotographer (the player-placed photographer, all 10 anywhere photos), ObjectiveInfo.NumUniqueTrickDone (3 films), ObjectiveHOM.GetBoneState (enum arguments) / DidPushOffThisFrame / GetPushOffScore, Gesture.IsGesturing, Pedestrian.GetState with WorldScripting.CreateGuid / GetSharedVars (Hall of Meat rows).
+
+**Verification.** Test `the_spin_stance_input_and_line_score_calls_read_the_live_facts_and_records`; skate-core challenge tests 116 passed.
+
 <a id="highlight-reel"></a>
 
 ### Highlight reel (2026-11-20; research b1050, b933)

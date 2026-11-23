@@ -277,7 +277,23 @@ impl Career {
                 effects.extend(self.arm(id, data));
             }
         }
+        effects.extend(self.lost_start_graphs(data));
         self.drive(effects, data, graphs)
+    }
+
+    /// Ours, a save repair (not retail): a career saved by builds whose graph queue was not saved and was held by the
+    /// DLC graphs the export could not name (2026-11-22) has its auto-start actions fired while their graphs never
+    /// ran: nothing armed, nothing active, no graph running or queued. Their graphs start again; they only activate,
+    /// arm and set flags, so a second run changes nothing a first one did.
+    fn lost_start_graphs(&self, data: &Progression) -> Vec<Effect> {
+        if !self.tracker.armed.is_empty() || !self.active.is_empty() || self.runner.running.is_some() || !self.runner.queue.is_empty()
+            || !self.status.is_empty() {
+            return Vec::new();
+        }
+        data.actions.iter()
+            .filter(|(id, a)| a.record_fired && a.graph.is_some() && self.tracker.fired.contains(*id))
+            .map(|(id, a)| Effect::ActionFired { action: id.clone(), graph: a.graph.clone() })
+            .collect()
     }
 
     /// Fired actions start their graphs; a graph's ArmAction arms through the career (which can fire more actions,
@@ -574,6 +590,27 @@ mod tests {
         assert!(c.activate("new"));
         assert!(!c.activate("new"));
         assert_eq!(c.active.iter().map(String::as_str).collect::<Vec<_>>(), ["new", "quit"]);
+    }
+
+    #[test]
+    fn a_save_whose_start_graphs_never_ran_runs_them_again_and_a_working_one_does_not() {
+        use graph::{Graph, Op, State};
+        let mut d = data();
+        let (id, mut start) = action("starting_action", vec![]);
+        start.record_fired = true;
+        start.graph = Some("start".into());
+        d.actions.insert(id, start);
+        let graphs = BTreeMap::from([("start".to_owned(), Graph { states: BTreeMap::from([("initial".to_owned(),
+            State { on: BTreeMap::from([("stateenter".to_owned(), vec![Op::ActivateChallenge("tut_sksc_01".into())])]), ..Default::default() })]) })]);
+        let mut broken = Career::default();
+        broken.tracker.fired.push("starting_action".into());
+        broken.start(&d, &graphs);
+        assert!(broken.active.contains("tut_sksc_01"), "the lost starting graph ran again");
+        let mut working = Career::default();
+        working.tracker.fired.push("starting_action".into());
+        working.active.insert("ots_a".into());
+        working.start(&d, &graphs);
+        assert!(!working.active.contains("tut_sksc_01"), "a career whose graphs ran is left alone");
     }
 
     #[test]

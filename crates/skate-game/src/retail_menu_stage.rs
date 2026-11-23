@@ -306,6 +306,7 @@ pub(crate) struct MenuStage {
     ims_open: bool,
     ims_shown: bool,
     ims_frames: u32,
+    ims_photo_generation: u32,
     /// FE 63 TeamManagement's AS id, whether it is open / shown, updates since it opened, and its natives (with the
     /// logo rows, kept between updates).
     team_id: Option<i32>,
@@ -868,6 +869,7 @@ fn setup(
                 ims_open: false,
                 ims_shown: false,
                 ims_frames: 0,
+            ims_photo_generation: 0,
                 team_id: templates.iter().position(|n| n == TEAM_MANAGEMENT.2).filter(|_| movies.movies.contains_key(TEAM_MANAGEMENT.0)).map(|i| 600 + i as i32),
                 team_open: false,
                 team_shown: false,
@@ -1412,6 +1414,27 @@ fn update(
             rows: s.presets.iter().map(|(_, name)| (name.clone(), true)).collect(),
         }]);
         fe.welcome.import_rows = ims_groups.as_deref().map(skate_core::career::import_skater::rows);
+        // The preview photos by list row (a header row has none), resident under their asset names.
+        fe.welcome.import_photos.clear();
+        if let (Some(groups), Some(s), Some(p)) = (ims_groups.as_deref(), ims_screen.as_ref(), photo.as_ref()) {
+            let rows = fe.welcome.import_rows.as_ref().map_or(0, Vec::len);
+            for row in 0..rows {
+                let key = skate_core::career::import_skater::locate(groups, row).and_then(|(_, i)| s.presets.get(i)).map(|(k, _)| k);
+                fe.welcome.import_photos.push(match key {
+                    None => Some(String::new()),
+                    Some(k) => match p.previews.photos.get(k) {
+                        Some(handle) => {
+                            let asset = crate::skater_photo::preview_asset(k);
+                            for prefix in [crate::image_renderer_host::ASSET_TEXTURE_PREFIX, crate::retail_menu_movies::NAMED_IMAGE_PREFIX] {
+                                ms.textures.insert(format!("{prefix}{asset}"), handle.clone());
+                            }
+                            Some(asset)
+                        }
+                        None => p.previews.has(k).then(String::new),
+                    },
+                });
+            }
+        }
         // FE 63 TeamManagement, the new career's forced logo pick: opened by the boot flow, closed on the pick.
         let mut wanted_team = logo_screen.as_ref().is_some_and(|s| s.open);
         if wanted_team && (ms.team_id.is_none() || fe.team.logos.is_empty()) {
@@ -2488,7 +2511,6 @@ fn update(
         }
         // FE 68: on show 82653648 sets states 10 (the rows), 11 (the preview) and, in mode 2, 20; a pick asks to confirm
         // (826536D0); a highlight sets 31 on a row (no gamercard for presets) and 11 (82653750).
-        let hilights = std::mem::take(&mut fe.welcome.hilights);
         if let Some(id) = ms.ims_id.filter(|_| ms.ims_open) {
             use skate_core::career::import_skater as ims;
             ms.ims_frames += 1;
@@ -2505,12 +2527,25 @@ fn update(
                 }
             }
             let groups = ims_groups.as_deref().unwrap_or_default();
-            for row in hilights {
-                if usize::try_from(row).ok().and_then(|r| ims::locate(groups, r)).is_some() {
+            // After the show: the list highlights its first row while state 10 builds it.
+            for row in std::mem::take(&mut fe.welcome.hilights) {
+                let located = usize::try_from(row).ok().and_then(|r| ims::locate(groups, r));
+                info!("RETAIL_MENUS ImportSkater highlight row {row}");
+                if located.is_some() {
                     set_state(&mut ms.stage, id, ims::STATE_HIDE_GAMERCARD, &mut fe)?;
+                }
+                // The row's photo is taken next when it has none (82653750).
+                if let (Some((_, i)), Some(s)) = (located, ims_screen.as_mut()) {
+                    s.highlight = s.presets.get(i).map(|(k, _)| k.clone());
                 }
                 set_state(&mut ms.stage, id, ims::STATE_UPDATE_PREVIEW_PHOTO, &mut fe)?;
             }
+            // A finished photo refreshes the preview (the movie asks IsPreviewPhotoLoaded again).
+            let generation = photo.as_ref().map_or(0, |p| p.previews.generation);
+            if ms.ims_shown && ms.ims_photo_generation != generation {
+                set_state(&mut ms.stage, id, ims::STATE_UPDATE_PREVIEW_PHOTO, &mut fe)?;
+            }
+            ms.ims_photo_generation = generation;
             for row in std::mem::take(&mut fe.welcome.picks) {
                 let Some(s) = ims_screen.as_mut() else { continue };
                 if let Some(text) = usize::try_from(row).ok().and_then(|r| s.logic.select(r)) {
@@ -3095,6 +3130,14 @@ fn update(
         if let Outcome::Forward(Owner::Engine(name), _) = &outcome {
             if let Some(key) = name.strip_prefix(crate::retail_menus::TELEPORT) {
                 travel.requested.push(key.to_owned());
+                for screen in [map, pause].into_iter().flatten() {
+                    ms.stack.request(Layer::Main, Request::Close { screen });
+                }
+            }
+            // Sign Up on a challenge (b911 kind 0): the menu closes, the challenge starts in place (anywhere types)
+            // or after a teleport to its sign-up spot.
+            if let Some(id) = name.strip_prefix(crate::retail_menus::SIGN_UP) {
+                travel.sign_ups.push(id.to_owned());
                 for screen in [map, pause].into_iter().flatten() {
                     ms.stack.request(Layer::Main, Request::Close { screen });
                 }

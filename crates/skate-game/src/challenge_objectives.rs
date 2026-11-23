@@ -217,6 +217,8 @@ struct Eval<'a> {
     inside: &'a [u64],
     statuses: Vec<State>,
     flow: Vec<FlowCommand>,
+    /// AwardSequencePointsImmediately calls as (objective index, the line's score).
+    awards: Vec<(usize, i32)>,
     skater: SkaterFacts,
     tricks_this_frame: &'a [u64],
     tricks_began: &'a [u64],
@@ -230,10 +232,21 @@ impl Eval<'_> {
             let name = arg.rsplit('|').next().unwrap_or(arg);
             volumes.iter().find(|(n, _)| n == name).map(|(_, id)| *id)
         };
+        let before = self.flow.len();
         let mut api = ObjectiveApi { names: &self.names.api, objective: o, ctx, volume: &lookup, inside: self.inside,
             statuses: &self.statuses, flow: &mut self.flow, skater: self.skater, tricks_this_frame: self.tricks_this_frame,
             tricks_began: self.tricks_began, trick_groups: self.trick_groups, key: &trick_key };
-        condition(p, &mut api, &mut self.vars[i], self.globals, default)
+        let result = condition(p, &mut api, &mut self.vars[i], self.globals, default);
+        // AwardSequencePointsImmediately belongs to the objective whose program called it.
+        let mut kept = Vec::new();
+        for c in self.flow.drain(before..) {
+            match c {
+                FlowCommand::AwardImmediately { score } => self.awards.push((i, score)),
+                other => kept.push(other),
+            }
+        }
+        self.flow.extend(kept);
+        result
     }
 }
 
@@ -359,9 +372,14 @@ impl DataObjectives {
         }
         let statuses = self.group.objectives.iter().map(|o| o.state).collect();
         let mut eval = Eval { programs: &self.programs, failures: &self.failures, hints: &self.hints, names: &self.names, vars: &mut self.vars, globals: &mut self.globals,
-            volumes: &self.volumes, inside: &self.inside, statuses, flow: Vec::new(), skater: self.skater,
+            volumes: &self.volumes, inside: &self.inside, statuses, flow: Vec::new(), awards: Vec::new(), skater: self.skater,
             tricks_this_frame: &self.tricks_this_frame, tricks_began: &self.tricks_began, trick_groups: &self.trick_groups };
         let mut events = self.group.handle_with(message, &mut eval);
+        for (i, score) in std::mem::take(&mut eval.awards) {
+            if let Some(o) = self.group.objectives.get_mut(i) {
+                o.points += score;
+            }
+        }
         for command in std::mem::take(&mut eval.flow) {
             match command {
                 FlowCommand::Activate(i) => self.group.activate(i, &mut events),
@@ -370,6 +388,7 @@ impl DataObjectives {
                 FlowCommand::ResetAll => self.group.reset_all(),
                 FlowCommand::Fraction(n, d) => self.fraction = Some((n, d)),
                 FlowCommand::FollowIndicator { competitor, on } => self.follow_indicator.push((competitor, on)),
+                FlowCommand::AwardImmediately { .. } => {}
             }
         }
         events
@@ -382,6 +401,13 @@ impl DataObjectives {
         self.vars.iter_mut().for_each(|v| v.fill(Value::Nil));
         self.group.activate_all(&mut Vec::new());
         self.handle(Message::SequenceBegin);
+    }
+
+    /// A clean air's spin into every active objective (82C74738: obj+0x470, GetDegreesOfSpin).
+    pub(crate) fn record_air(&mut self, spin_degrees: u32) {
+        for o in self.group.objectives.iter_mut().filter(|o| o.state == State::Active) {
+            o.records.air_spin_degrees = spin_degrees;
+        }
     }
 
     /// Reset.ResetAllObjectives without re-activation (a tutorial's restart; ActivateStartObjectives follows).
@@ -474,6 +500,37 @@ pub(crate) struct FeedInput<'a> {
     pub bail: skate_core::hall_of_meat::BailSummary,
     /// Leader.* distances to competitors 1..4 (follow the leader).
     pub competitor_distances: [Option<f32>; 4],
+    pub live: LiveFacts,
+}
+
+/// The live skater and pad values the objective API reads besides the edges (b894 §3 / §4 / §6).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LiveFacts {
+    pub spin_half_turns: u32,
+    pub fakie: bool,
+    pub bumpers: [bool; 2],
+    pub sticks: [f32; 2],
+    pub right_stick_x: f32,
+    pub speed: f32,
+    pub sequence_score: i32,
+}
+
+/// XInput bumper bits in `RawInput::buttons` (input/platform.rs left_shoulder / right_shoulder).
+const LEFT_BUMPER: u16 = 0x0100;
+const RIGHT_BUMPER: u16 = 0x0200;
+
+pub(crate) fn live_facts(skater: &crate::physics::SkaterRuntime, raw: &crate::input::RawInput) -> LiveFacts {
+    let v = skater.centre_of_mass_output.velocity;
+    let length = |a: [f32; 2]| (a[0] * a[0] + a[1] * a[1]).sqrt().min(1.0);
+    LiveFacts {
+        spin_half_turns: skater.scoring.half_turns(),
+        fakie: skater.animation.packet.riding_fakie,
+        bumpers: [raw.buttons & LEFT_BUMPER != 0, raw.buttons & RIGHT_BUMPER != 0],
+        sticks: [length(raw.left), length(raw.right)],
+        right_stick_x: raw.right[0],
+        speed: (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(),
+        sequence_score: skater.scoring.sequence_score() as i32,
+    }
 }
 
 /// The skater's edge facts and trick lists waiting for the next objective evaluation.
@@ -498,6 +555,10 @@ pub(crate) struct ObjectiveFeed {
     was_off_board: bool,
     last_state: u32,
     pending: Pending,
+    /// The spin of the air in progress (half turns), kept for its landing (GetDegreesOfSpin).
+    air_half_turns: u32,
+    /// The current manual's distance, m (speed integrated while it is held).
+    manual_distance: f32,
 }
 
 impl ObjectiveFeed {
@@ -512,6 +573,10 @@ impl ObjectiveFeed {
         let bail_opened = input.state_id == 300 && self.last_state != 300;
         let bail_closed = input.state_id != 300 && self.last_state == 300;
         self.last_state = input.state_id;
+        if in_air(input.state_id) {
+            self.air_half_turns = input.live.spin_half_turns;
+        }
+        self.manual_distance = if input.manual.is_some() { self.manual_distance + input.live.speed * input.ticks as f32 / 60.0 } else { 0.0 };
         let facts = SkaterFacts {
             in_sequence: input.in_sequence,
             sequence_completed: input.banked.iter().any(|(_, dirty)| !dirty),
@@ -537,6 +602,15 @@ impl ObjectiveFeed {
             time_to_grind: input.time_to_grind,
             board_adjust: input.board_adjust,
             competitor_distances: input.competitor_distances,
+            spin_half_turns: input.live.spin_half_turns,
+            fakie: input.live.fakie,
+            bumpers: input.live.bumpers,
+            sticks: input.live.sticks,
+            right_stick_x: input.live.right_stick_x,
+            speed: input.live.speed,
+            manual_distance: self.manual_distance,
+            sequence_score: input.live.sequence_score,
+            finished_sequence_score: input.banked.iter().find(|(_, dirty)| !dirty).map_or(0, |(s, _)| *s),
         };
         for g in groups.iter_mut() {
             g.skater = facts;
@@ -548,6 +622,11 @@ impl ObjectiveFeed {
         messages.extend(input.exited.iter().map(|&volume| Message::TriggerExit { volume }));
         messages.extend(input.entered.iter().map(|&volume| Message::TriggerEnter { volume }));
         if air_completed {
+            // 82C74738: a clean air's spin into every active objective (obj+0x470) before the message's evaluation.
+            for g in groups.iter_mut() {
+                g.record_air(self.air_half_turns * 180);
+            }
+            self.air_half_turns = 0;
             messages.push(Message::AirCompleted);
         }
         if bail_opened {

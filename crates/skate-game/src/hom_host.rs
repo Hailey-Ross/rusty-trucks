@@ -140,7 +140,7 @@ fn update(
     mut end_dialog: Option<ResMut<crate::end_dialog_host::EndDialogScreen>>,
     time: Res<Time>,
     challenges: Option<Res<crate::challenges::Challenges>>,
-    mut autopilot: Option<ResMut<crate::autopilot::Autopilot>>,
+    (mut autopilot, pad): (Option<ResMut<crate::autopilot::Autopilot>>, Option<Res<crate::input::ControllerInput>>),
     (mut replay, mut pause, tuning, config): (Option<ResMut<crate::replay::Replay>>, Option<ResMut<crate::pause_man::ThePauseMan>>,
         Option<Res<crate::ftl_host::ChallengeTuning>>, Res<crate::config::Config>),
 ) {
@@ -215,6 +215,7 @@ fn update(
         wipeout_over: skater.player_input.physical.skeleton.over_599 != 0,
         bail_pose: shared.and_then(|c| c.last_bail_pose), bail_score: shared.and_then(|c| c.last_bail_score).map_or(0, |s| s.total),
         bail: shared.map(|c| c.last_bail).unwrap_or_default(),
+        live: crate::challenge_objectives::live_facts(&skater, &pad.as_ref().map(|p| p.raw_input()).unwrap_or_default()),
         ..Default::default()
     };
     let killed_of: Vec<bool> = state.groups.iter().map(|g| g.killed).collect();

@@ -59,11 +59,15 @@ pub(crate) struct ImportSkaterScreen {
     pub logic: skate_core::career::import_skater::ImportSkater,
     pub presets: Vec<(String, String)>,
     pub apply: Option<String>,
+    /// The highlighted preset's key (its preview photo is taken next, skater_photo::Previews).
+    pub highlight: Option<String>,
+    /// A preset was applied: the screen pops once the player's photo is taken again.
+    pub retaking: bool,
 }
 
 impl ImportSkaterScreen {
     pub(crate) fn start(&mut self, slot: usize, mode: u32, presets: Vec<(String, String)>) {
-        *self = Self { open: true, logic: skate_core::career::import_skater::ImportSkater::new(slot, mode), presets, apply: None };
+        *self = Self { open: true, logic: skate_core::career::import_skater::ImportSkater::new(slot, mode), presets, ..default() };
     }
 }
 
@@ -106,6 +110,8 @@ pub(crate) struct WelcomeHost {
     pub hilights: Vec<i64>,
     /// FE 68 is open: the list `ImportSkaters.GetSkaters` gives (text, header).
     pub import_rows: Option<Vec<(String, bool)>>,
+    /// FE 68's preview photos by list row: None = not taken yet, Some("") = loaded with no picture, else the asset.
+    pub import_photos: Vec<Option<String>>,
 }
 
 impl WelcomeHost {
@@ -133,10 +139,17 @@ impl WelcomeHost {
                     let items = vec![Value::Number(rows.len() as f64), Value::Object(vm.array(texts)?), Value::Object(vm.array(headers)?)];
                     return Ok(Some(Value::Object(vm.array(items)?)));
                 }
-                // 825C4258 / 825C42D0: the row's preview photo. NOT RETAIL YET: no preview photos are built (states
-                // 0 / 1 of 82653960), so every row reads as loaded with no picture (no endless load wheel).
-                ("ImportSkaters", "IsPreviewPhotoLoaded") => return Ok(Some(Value::Bool(true))),
-                ("ImportSkaters", "GetPreviewPhotoAssetId") => return Ok(Some(Value::Text("0".into()))),
+                // 825C4258 / 825C42D0: the row is in the photo map, and its asset ("0" when there is none). Header
+                // rows have no photo and read as loaded.
+                ("ImportSkaters", "IsPreviewPhotoLoaded") | ("ImportSkaters", "GetPreviewPhotoAssetId") => {
+                    let row = args.first().and_then(|v| usize::try_from(i64::from(crate::apt_vm::to_integer(v))).ok());
+                    let photo = row.and_then(|r| self.import_photos.get(r)).map_or(Some(""), |p| p.as_deref());
+                    return Ok(Some(if method == "IsPreviewPhotoLoaded" {
+                        Value::Bool(photo.is_some())
+                    } else {
+                        Value::Text(photo.filter(|p| !p.is_empty()).unwrap_or("0").into())
+                    }));
+                }
                 _ => {}
             }
         }
@@ -198,5 +211,23 @@ mod tests {
         assert_eq!((vm.get(texts, "1"), vm.get(headers, "0"), vm.get(headers, "1")),
             (Value::Text("ID_TEAMMATE_PRESET_01".into()), Value::Bool(true), Value::Bool(false)));
         assert_eq!(h.call(&mut vm, "ImportSkaters", "IsPreviewPhotoLoaded", &[Value::Number(1.0)]).unwrap(), Some(Value::Bool(true)));
+    }
+
+    /// 825C4258 / 825C42D0: a row is loaded once its photo is in the map; the asset is "0" until then and for a header.
+    #[test]
+    fn preview_photos_answer_by_row() {
+        let mut vm = Vm::new();
+        let mut h = WelcomeHost {
+            import_rows: Some(vec![("ID_PRESET_LISTING_TITLE".into(), true), ("A".into(), false), ("B".into(), false)]),
+            import_photos: vec![Some(String::new()), None, Some("skater_preview_b".into())],
+            ..Default::default()
+        };
+        let mut ask = |method: &str, row: f64| h.call(&mut vm, "ImportSkaters", method, &[Value::Number(row)]).unwrap();
+        assert_eq!(ask("IsPreviewPhotoLoaded", 0.0), Some(Value::Bool(true)));
+        assert_eq!(ask("IsPreviewPhotoLoaded", 1.0), Some(Value::Bool(false)));
+        assert_eq!(ask("GetPreviewPhotoAssetId", 1.0), Some(Value::Text("0".into())));
+        assert_eq!(ask("IsPreviewPhotoLoaded", 2.0), Some(Value::Bool(true)));
+        assert_eq!(ask("GetPreviewPhotoAssetId", 2.0), Some(Value::Text("skater_preview_b".into())));
+        assert_eq!(ask("GetPreviewPhotoAssetId", 0.0), Some(Value::Text("0".into())));
     }
 }

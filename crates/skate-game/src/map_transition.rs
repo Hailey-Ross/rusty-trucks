@@ -61,7 +61,7 @@ enum Phase {
     Idle,
     Requested(Entry),
     /// `spawn`: the new map's spawn point, set once the loader has read the map (the audio reads its banks ahead).
-    Loading { entry: Entry, progress: Arc<AtomicU8>, spawn: Arc<OnceLock<[f32; 3]>>, job: JoinHandle<Result<PreparedWorld, String>> },
+    Loading { entry: Entry, progress: Arc<AtomicU8>, spawn: Arc<OnceLock<[f32; 3]>>, job: JoinHandle<Result<Box<PreparedWorld>, String>> },
     // Let extraction see the committed scene before releasing the pause menu.
     Publishing { frames: u8, notice: String },
 }
@@ -238,7 +238,9 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
             simulation_time.as_millis(), render_time.as_millis(), started.elapsed().as_millis());
         // Drop the decoded package on this worker. Physics and rendering now
         // own their data; retaining it would double large-city CPU memory.
-        Ok(PreparedWorld { map_fingerprint, scene, physics, skater, controls, camera, metadata, retail, triggers, difficulty, mod_ground, game_data })
+        // Boxed: the prepared world is over 100 KB and the main thread's commit would otherwise copy it through a
+        // frame larger than the 1 MB main stack (a stack overflow on every map change, 2026-11-22).
+        Ok(Box::new(PreparedWorld { map_fingerprint, scene, physics, skater, controls, camera, metadata, retail, triggers, difficulty, mod_ground, game_data }))
     }).map_err(|e| format!("Could not start map loader: {e}"))?;
     Ok(Phase::Loading { entry, progress, spawn, job })
 }
@@ -312,7 +314,7 @@ fn failed(world: &mut World, error: String) {
         .transition_finished(format!("Could not load map: {error}\nPrevious world retained. Choose another map or Resume."), false);
 }
 
-fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
+fn commit(world: &mut World, mut prepared: Box<PreparedWorld>) -> String {
     let publication_started = Instant::now();
     prepared.metadata.generation = world.resource::<CurrentMap>().generation + 1;
     // All fallible decoding/validation/construction finished before this point.

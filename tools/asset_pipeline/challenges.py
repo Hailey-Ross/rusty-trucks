@@ -152,6 +152,11 @@ FOLLOW = 'follow_the_leaders'
 # Films (b999) and anywhere films (b1003) run the same objectives_shared graph as follow the leader.
 FILMS = 'films'
 ANYWHERE_FILMS = 'anywhere_films'
+# Photos (0x26) and anywhere photos (0x25) run photo_skate2: objectives_shared plus display_photo (b857).
+PHOTOS = 'photos'
+# 1-Ups (b1055): family 1ups (ChallengeType 0x20), run by the 1up graph.
+ONE_UPS = '1ups'
+ANYWHERE_PHOTOS = 'anywhere_photos'
 # Hall of Meat (b876 B3, b1005): family hall_of_meats (ChallengeType 0x1F), run by hom_challenge; its online
 # battles (hall_of_meats_battles) are not exported.
 HALL_OF_MEAT = 'hall_of_meats'
@@ -475,6 +480,57 @@ def own_the_lots(rows, rows_by_hash, origin, global_locators, text, skipped):
                            title_id=(chain(rows, cls, child)[0].get(TITLE) or {}).get('data') or None)
                       for child in children]))
     return lots
+
+
+MAP_CATEGORY_TAGS = _field('MapCategoryTags')
+TEAMS = _field('Teams')
+GLOBAL_TYPE = _field('Global')
+
+
+def _strings(field, binary):
+    """A string array field: each item's first word is the text's offset in the vault's .bin."""
+    out = []
+    for item in ((field or {}).get('array') or {}).get('items') or []:
+        raw = bytes.fromhex(item)
+        if len(raw) >= 4 and binary is not None:
+            offset = struct.unpack_from('>I', raw, 0)[0]
+            if offset:
+                out.append(cstring(binary, offset).decode('utf-8'))
+    return out
+
+
+def map_items(rows, origin, global_locators, text):
+    """What the Challenge Map's challenge folders test per challenge (research b1054 §3, §5): the GlobalData row's
+    ChallengeType, MapCategoryTags, Teams, Global and DebugOnly, its title, and the sign-up spot its Sign Up teleports
+    to (the Location locator, b911 §2). Every challenge bank row is listed; the game keeps the ones in the map's pool
+    (the skatercollections `challenges` rows)."""
+    # The map's item pool: the skatercollections `challenges` rows (class 0x8876E0B556740E36, b1054 §3); the family
+    # rows of the bank (own_the_spots ...) are not in it.
+    pool = {key for (cls, key) in rows if cls in ('challenges', 'Hash_8876E0B556740E36')}
+    items = []
+    for (cls, key) in sorted(rows):
+        if cls != CHALLENGE or key.endswith('_ol'):
+            continue
+        fields, _ = chain(rows, cls, key)
+        kind = _u32(fields.get(CHALLENGE_TYPE))
+        if kind is None:
+            continue
+        _, binary = origin[cls, key]
+        world = int((fields.get(WORLD) or {}).get('data', '0' * 16)[:16], 16)
+        district = next((d for d, _ in global_locators() if hash64(d) == world), None)
+        location = None
+        if location_field(fields) and district and binary is not None:
+            name = cstring(binary, int(location_field(fields)['data'], 16)).decode('utf-8')
+            found = global_locators().get((district.casefold(), name), [])
+            if len({json.dumps(m) for m in found}) == 1:
+                location = dict(locator=name, matrix=found[0])
+        title_id = (fields.get(TITLE) or {}).get('data') or None
+        flag = lambda f: ((fields.get(f) or {}).get('data') or '00')[:2] == '01'
+        items.append(dict(id=key, challenge_type=kind, title_id=title_id, title=text.get(title_id) if title_id else None,
+                          tags=_strings(fields.get(MAP_CATEGORY_TAGS), binary), teams=flag(TEAMS),
+                          global_type=_u32(fields.get(GLOBAL_TYPE)), debug_only=flag(DEBUG_ONLY),
+                          map=label_of(district) if district else None, location=location, pool=key in pool))
+    return items
 
 
 def lua_text(binary, field):
@@ -889,7 +945,7 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
         and the leader 1, the end volume the leader and the player race to), films (b999) and anywhere films (b1003: no
         start, the run begins where the player is, no hull needed) and the Hall of Meat (b1005: the same row shape plus
         its time limit). The local params over their framework parents and the objective groups."""
-        anywhere = family == ANYWHERE_FILMS
+        anywhere = family in (ANYWHERE_FILMS, ANYWHERE_PHOTOS)
         if key not in local:
             raise ValueError('no local data vault')
         # Single player Hall of Meat rows (hom_*_sp) use the hull of their row without the suffix.
@@ -1029,11 +1085,101 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
             central_messages={k: v for k, v in ((k, ((p.get(f) or fields.get(f)) or {}).get('data')) for k, f in CENTRAL_MESSAGES.items()) if v},
             objectives=objectives)
 
+    def one_up(key, fields, bank_binary):
+        """A 1-Up row (b1055 §3): the local params over the 1-Up and turn-based framework rows, the per-round start and
+        wait locators (StartLocationRotation / WaitLocationRotation, resolved in the row's hull `_<key>`), the pro
+        (Competitors), the thresholds and score multipliers, the intro events and the central texts."""
+        if key not in local:
+            raise ValueError('no local data vault')
+        _, archive, vlt_entry, bin_entry = local[key]
+        data, binary = read_vault(archive, vlt_entry, bin_entry, 'local')
+        own_row = next((r for r in data['collections'] if r['class'] == PARAMS and key_hash(r['key']) == hash64(key)), None)
+        if own_row is None:
+            raise ValueError('no params row')
+        p, seen, parent = dict(own_row['fields']), set(), own_row['parent']
+        while parent and key_hash(parent) not in seen and key_hash(parent) in framework:
+            seen.add(key_hash(parent))
+            parent, more = framework[key_hash(parent)]
+            for name, value in more.items():
+                p.setdefault(name, value)
+
+        def raw(name):
+            return bytes.fromhex(((p.get(_field(name)) or fields.get(_field(name))) or {}).get('data') or '')
+
+        def number(name, default=None):
+            b = raw(name)
+            if len(b) < 4:
+                return default
+            value = struct.unpack('>f', b[:4])[0]
+            return struct.unpack('>i', b[:4])[0] if 0 < abs(value) < 1e-30 else round(value, 6)
+
+        def flag(name, default):
+            b = raw(name)
+            return b[0] != 0 if b else default
+
+        def rotation(name):
+            items = ((p.get(_field(name)) or {}).get('array') or {}).get('items') or []
+            out = []
+            for item in items:
+                offset = struct.unpack_from('>I', bytes.fromhex(item), 0)[0]
+                if offset:
+                    out.append(cstring(binary, offset).decode('utf-8'))
+            return out
+
+        hull = '_' + key if '_' + key in hulls else key
+        if hull not in hulls:
+            raise ValueError('no hull')
+        folder = work / 'hulls' / MISSIONS / hull
+        if not folder.is_dir():
+            hulls[hull][0].extract_entries(hulls[hull][1], work / 'hulls')
+        world = int((fields.get(WORLD) or {}).get('data', '0' * 16)[:16], 16)
+        district = next((d for d, _ in global_locators() if hash64(d) == world), None)
+        records = {}
+        for _, _, arena in stream_arenas(folder):
+            for r in location_records(arena):
+                records.setdefault(r['locator'], r['matrix'])
+
+        def place(name):
+            if name in records:
+                return dict(locator=name, matrix=records[name])
+            found = global_locators().get((district.casefold(), name), []) if district else []
+            if len({json.dumps(m) for m in found}) != 1:
+                raise ValueError(f'locator {name}: {len(found)} records')
+            return dict(locator=name, matrix=found[0])
+
+        starts = [place(n) for n in rotation('StartLocationRotation')]
+        waits = [place(n) for n in rotation('WaitLocationRotation')]
+        if not starts or not waits:
+            raise ValueError('no start / wait rotation')
+        competitors = []
+        for item in ((fields.get(COMPETITORS) or {}).get('array') or {}).get('items') or []:
+            offset, kind = struct.unpack_from('>II', bytes.fromhex(item), 0)
+            competitors.append(dict(character=cstring(bank_binary, offset).decode('utf-8'), kind=kind))
+        title_id = (fields.get(TITLE) or {}).get('data') or None
+        levels = ('Easy', 'Medium', 'Hard', 'VeryHard', 'Extreme')
+        texts = {name: ((p.get(_field(name)) or fields.get(_field(name))) or {}).get('data') for name in (
+            'CentralMessageHALIDDidNotBeatHighScore', 'CentralMessageHALIDNameBailed', 'CentralMessageHALIDRoundOver',
+            'CentralMessageHALIDSetScore', 'CentralMessageHALIDYourTurn', 'ModifiedCentralMessageHALIDBailed',
+            'ModifiedCentralMessageHALIDOneUpped')}
+        return dict(
+            id=key, family='1ups', map=label_of(district) if district else None, district=district,
+            title_id=title_id, title=text.get(title_id) if title_id else None,
+            description_id=(fields.get(DESCRIPTION) or {}).get('data') or None,
+            challenge_type=_u32(fields.get(CHALLENGE_TYPE)), location=sign_up_location(fields, bank_binary, district, folder),
+            sign_up_radius=radius(fields, SIGN_UP_RADIUS), discovery_radius=radius(fields, DISCOVERY_RADIUS),
+            starts=starts, waits=waits, competitors=competitors,
+            time_limit=number('TimeLimit', 20.0), cumulative=flag('CumulativeScoring', True),
+            pro_goes_first=flag('ProGoesFirst', True), allow_player_bail=flag('AllowPlayerBail', False),
+            thresholds=[number('AIPathScoreThreshold' + level, 0) for level in levels[1:]],
+            multipliers=[number('AIScoreMultiplier' + level, d) for level, d in zip(levels, (0.95, 1.0, 1.05, 1.1, 1.15))],
+            intro=decoded_events(p.get(PRESENTATION['intro']), binary, bank_binary),
+            central_messages={k: v for k, v in texts.items() if v})
+
     class_of = lambda name: 'Hash_%016X' % hash64(name)
     ribbon_names = {hash64(k): k for (c, k) in rows if c in (class_of('ribbon_indicator'), class_of('ribbon_spline_colour'))}
     icon_names = {hash64(k): k for (c, k) in rows if c == class_of('fe_map_icons')}
     result, tutorials, races, contests, follows, films, skipped = [], [], [], [], [], [], []
-    homs = []
+    homs, photos, one_ups = [], [], []
     for (cls, key), (parent, _) in sorted(rows.items()):
         if cls != CHALLENGE or key.endswith('_ol'):
             continue
@@ -1067,6 +1213,19 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
         if film_family and key not in (FILMS, ANYWHERE_FILMS):
             try:
                 films.append(follow(key, fields, origin[cls, key][1], film_family))
+            except (KeyError, ValueError, StopIteration, struct.error) as error:
+                skipped.append(f'{key} ({error})')
+            continue
+        if ONE_UPS in walked[1:] and key != ONE_UPS:
+            try:
+                one_ups.append(one_up(key, fields, origin[cls, key][1]))
+            except (KeyError, ValueError, StopIteration, struct.error) as error:
+                skipped.append(f'{key} ({error})')
+            continue
+        photo_family = next((f for f in (ANYWHERE_PHOTOS, PHOTOS) if f in walked[1:]), None)
+        if photo_family and key not in (PHOTOS, ANYWHERE_PHOTOS):
+            try:
+                photos.append(follow(key, fields, origin[cls, key][1], photo_family))
             except (KeyError, ValueError, StopIteration, struct.error) as error:
                 skipped.append(f'{key} ({error})')
             continue
@@ -1153,14 +1312,15 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
                             killed=objective_programs(rows_by_hash, fields.get(KILLED), bank_binary, binary_of)),
             challenge_type=int(fields[CHALLENGE_TYPE]['data'], 16) if CHALLENGE_TYPE in fields else None, **params))
     lots = own_the_lots(rows, rows_by_hash, origin, global_locators, text, skipped)
+    items = map_items(rows, origin, global_locators, text)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps({'format': FORMAT, 'version': VERSION, 'challenges': result, 'tutorials': tutorials,
                                   'own_the_lots': lots, 'races': races, 'contests': contests, 'follow_the_leaders': follows,
-                                  'films': films, 'hall_of_meats': homs},
+                                  'films': films, 'hall_of_meats': homs, 'photos': photos, 'one_ups': one_ups, 'map_items': items},
                                  indent=1), encoding='utf-8')
     report(f'Challenges: {len(result)} ({", ".join(FAMILIES)}) on {len({c["map"] for c in result})} maps, '
            f'{len(tutorials)} tutorials, {len(lots)} own the lots, {len(races)} races, {len(follows)} follow the leader, '
-           f'{len(films)} films, {len(homs)} Hall of Meat'
+           f'{len(films)} films, {len(photos)} photos, {len(one_ups)} 1-Ups, {len(homs)} Hall of Meat'
            + (f'; left out: {", ".join(skipped)}' if skipped else ''))
     return result

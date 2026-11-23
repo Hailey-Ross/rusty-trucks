@@ -57,6 +57,64 @@ pub(crate) fn plan(
 pub(crate) struct ChallengeMapTravel {
     pub requested: Vec<String>,
     pub pending: Option<(TeleportRequest, Option<PathBuf>)>,
+    /// Challenges signed up from the map (`signup:<id>`), and the one that starts when its teleport lands.
+    pub sign_ups: Vec<String>,
+    pub sign_up_after: Option<String>,
+}
+
+/// AnywherePhoto 37 and AnywhereFilm 39 sign up in place, without a teleport (82649710, b911 §2).
+const IN_PLACE_TYPES: [u32; 2] = [37, 39];
+
+/// What a Sign Up does for `item`: start in place, or teleport to its sign-up spot first.
+pub(crate) fn plan_sign_up(item: &skate_data::challenge_map::ChallengeItem) -> Option<TeleportRequest> {
+    if IN_PLACE_TYPES.contains(&item.challenge_type) {
+        return None;
+    }
+    let location = item.location.as_ref()?;
+    Some(TeleportRequest { destination: item.id.clone(), map: item.map.clone().unwrap_or_default(), transform: location.matrix,
+        on_board: false, session_marker: false })
+}
+
+/// Start the challenges signed up from the map: in place, or after the teleport to their sign-up spot (another map
+/// loads first). A challenge without a sign-up spot starts in place.
+pub(crate) fn start_sign_ups(
+    mut travel: ResMut<ChallengeMapTravel>,
+    leaves: Option<Res<crate::retail_menus::ChallengeLeaves>>,
+    config: Res<crate::config::Config>,
+    current: Res<crate::map_transition::CurrentMap>,
+    net: Res<crate::multiplayer::Multiplayer>,
+    mut transition: ResMut<crate::map_transition::MapTransition>,
+    mut signed: MessageWriter<crate::challenges::ChallengeSignUp>,
+) {
+    let Some(id) = travel.sign_ups.pop() else { return };
+    travel.sign_ups.clear();
+    let Some(item) = leaves.as_deref().and_then(|l| l.items.iter().find(|i| i.id == id)) else {
+        warn!("CHALLENGE_MAP_SIGNUP {id}: not a known challenge");
+        return;
+    };
+    let Some(request) = plan_sign_up(item) else {
+        info!("CHALLENGE_MAP_SIGNUP {id} in place");
+        signed.write(crate::challenges::ChallengeSignUp { body: crate::trigger_volumes::PLAYER.into(), challenge: id });
+        return;
+    };
+    let here = current.path.as_deref().is_some_and(|p| crate::teleport_menu::same_map(p, &request.map));
+    let map = if here { None } else {
+        let maps = crate::map_library::discover(&config.asset_root);
+        match maps.iter().find(|m| m.path.as_deref().is_some_and(|p| crate::teleport_menu::same_map(p, &request.map))) {
+            Some(_) if net.active() => {
+                warn!("CHALLENGE_MAP_SIGNUP {id} refused: {:?}", Refused::MultiplayerMapSwitch);
+                return;
+            }
+            Some(m) => Some(m.clone()),
+            None => {
+                warn!("CHALLENGE_MAP_SIGNUP {id} refused: {:?} ({})", Refused::MapNotInstalled, request.map);
+                return;
+            }
+        }
+    };
+    info!("CHALLENGE_MAP_SIGNUP {id} teleport to its sign-up spot on {}", request.map);
+    travel.sign_up_after = Some(id);
+    travel.start((request, map), current.path.clone(), &mut transition);
 }
 
 /// Plan and start the requested teleports (the destinations and installed maps read when one comes).
@@ -97,11 +155,13 @@ pub(crate) fn finish_travel(
     transition: Res<crate::map_transition::MapTransition>,
     current: Res<crate::map_transition::CurrentMap>,
     mut skater: ResMut<crate::physics::SkaterRuntime>,
+    mut signed: MessageWriter<crate::challenges::ChallengeSignUp>,
 ) {
     if transition.busy() {
         return;
     }
     let Some((request, path)) = travel.pending.take() else { return };
+    let sign_up = travel.sign_up_after.take();
     // A failed map transaction keeps the previous world: never apply another map's coordinates there.
     if current.path != path {
         warn!("CHALLENGE_MAP_TELEPORT {} dropped: the map did not load", request.destination);
@@ -109,6 +169,12 @@ pub(crate) fn finish_travel(
     }
     if let Err(e) = skater.travel_ex(request.transform, None, request.on_board) {
         warn!("CHALLENGE_MAP_TELEPORT {} failed: {e}", request.destination);
+        return;
+    }
+    // The global sign-up flag (830B7C29) the arrival reads: the challenge starts where the teleport landed.
+    if let Some(id) = sign_up.filter(|id| *id == request.destination) {
+        info!("CHALLENGE_MAP_SIGNUP {id} arrived: sign-up");
+        signed.write(crate::challenges::ChallengeSignUp { body: crate::trigger_volumes::PLAYER.into(), challenge: id });
     }
 }
 
@@ -122,6 +188,19 @@ mod tests {
         let mut m = [[0.0; 4]; 4];
         m[3] = [1.0, 2.0, 3.0, 1.0];
         Destination { id: id.into(), name: id.into(), map: map.into(), world: None, label_key: None, matrix: Some(m), source: None }
+    }
+
+    #[test]
+    fn a_sign_up_starts_anywhere_types_in_place_and_teleports_the_others_to_their_spot() {
+        use skate_data::challenge_map::{ChallengeItem, ItemLocation};
+        let mut m = [[0.0; 4]; 4];
+        m[3] = [5.0, 6.0, 7.0, 1.0];
+        let anywhere = ChallengeItem { id: "film_anyw_01".into(), challenge_type: 39, ..Default::default() };
+        assert!(plan_sign_up(&anywhere).is_none(), "an anywhere film starts where the player is");
+        let photo = ChallengeItem { id: "photo_univ_05".into(), challenge_type: 38, map: Some("university".into()),
+            location: Some(ItemLocation { matrix: m }), ..Default::default() };
+        let request = plan_sign_up(&photo).unwrap();
+        assert_eq!((request.destination.as_str(), request.map.as_str(), request.transform[3]), ("photo_univ_05", "university", [5.0, 6.0, 7.0, 1.0]));
     }
 
     #[test]

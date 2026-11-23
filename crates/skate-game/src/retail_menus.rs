@@ -176,6 +176,8 @@ pub(crate) fn read(root: &Path) -> (MenuData, bool) {
 
 /// Owner prefix of the engine handlers that teleport to a Challenge Map location (`teleport:<fe_locations key>`).
 pub(crate) const TELEPORT: &str = "teleport:";
+/// Owner prefix of the Challenge Map's Sign Up on a challenge leaf (`signup:<challenge id>`, b911).
+pub(crate) const SIGN_UP: &str = "signup:";
 
 /// The Challenge Map data: tree (b244d), pictures, markers (b265) and the teleport keys.
 pub(crate) struct ChallengeMapData {
@@ -186,6 +188,109 @@ pub(crate) struct ChallengeMapData {
     pub teleports: Vec<(EntryKind, String, String)>,
     /// Listings flagged IsDebug (shown only with Debug Menus).
     pub debug: std::collections::BTreeSet<String>,
+    /// The challenge folders (b1054) and the map's challenge pool (the skatercollections `challenges` rows in order).
+    pub folders: Vec<skate_data::challenge_map::ChallengeFolder>,
+    pub pool: Vec<String>,
+}
+
+/// The Challenge Map's challenge folders, rebuilt when the player's active or passed challenges change (retail
+/// rebuilds a tab when it is shown, 82D0C1C0; b1054).
+#[derive(Resource, Default)]
+pub(crate) struct ChallengeLeaves {
+    /// The tree without challenge leaves.
+    base: Vec<skate_core::menus::MapNode>,
+    folders: Vec<skate_data::challenge_map::ChallengeFolder>,
+    pub rules: std::collections::BTreeMap<String, skate_data::challenge_map::FolderRule>,
+    pub items: Vec<skate_data::challenge_map::ChallengeItem>,
+    pool: Vec<String>,
+    last: Option<u64>,
+}
+
+/// The challenges' map items from setup (`challenges.json` `map_items`); an older export has none.
+pub(crate) fn map_items(asset_root: &Path) -> Vec<skate_data::challenge_map::ChallengeItem> {
+    #[derive(serde::Deserialize)]
+    struct File {
+        #[serde(default)]
+        map_items: Vec<skate_data::challenge_map::ChallengeItem>,
+    }
+    std::fs::read(asset_root.join("private/challenges.json")).ok()
+        .and_then(|b| serde_json::from_slice::<File>(&b).ok()).map_or_else(Vec::new, |f| f.map_items)
+}
+
+impl ChallengeLeaves {
+    /// The tree for this status: the leaves in their folders, empty challenge folders dropped (b1054 §2), a tab's team
+    /// spacer only after a non-empty team folder.
+    pub(crate) fn nodes(&self, active: &dyn Fn(&str) -> bool, passed: &dyn Fn(&str) -> bool) -> Vec<skate_core::menus::MapNode> {
+        let items: std::collections::BTreeMap<&str, &skate_data::challenge_map::ChallengeItem> = self.items.iter().map(|i| (i.id.as_str(), i)).collect();
+        // The items setup marked as in the pool (the full vault list); an export without the marks falls back to the
+        // collections' rows (setup keeps only a few of them there).
+        let pool: Vec<&skate_data::challenge_map::ChallengeItem> = if self.items.iter().any(|i| i.pool) {
+            self.items.iter().filter(|i| i.pool && !i.debug_only).collect()
+        } else {
+            self.pool.iter().filter_map(|id| items.get(id.as_str()).copied()).filter(|i| !i.debug_only).collect()
+        };
+        let (leaves, empty) = skate_data::challenge_map::challenge_leaves(&self.folders, &self.rules, &pool, active, passed, &|_| None);
+        let empty_teams: Vec<&EntryRef> = self.folders.iter().filter(|f| f.filter == "sp_team" && empty.contains(&f.folder)).map(|f| &f.tab).collect();
+        let folders: Vec<&EntryRef> = self.folders.iter().map(|f| &f.folder).collect();
+        let tabs: Vec<&EntryRef> = self.folders.iter().map(|f| &f.tab).collect();
+        let spacer = |n: &skate_core::menus::MapNode| n.label.trim().is_empty();
+        // A challenge tab's pool holds challenge rows only (the tab filter, 82D0C1C0), so its other folders (the DLC
+        // packs' location folders) end up empty and are dropped like any empty folder. NOT RETAIL YET: the DLC
+        // challenge folders' own rules are not read (b1054 open 3).
+        let dropped: Vec<&EntryRef> = self.base.iter()
+            .filter(|n| n.parent.as_ref().is_some_and(|p| tabs.contains(&p)) && !folders.contains(&&n.entry) && !spacer(n))
+            .map(|n| &n.entry).collect();
+        let mut nodes: Vec<skate_core::menus::MapNode> = self.base.iter()
+            .filter(|n| !empty.contains(&n.entry) && !dropped.contains(&&n.entry) && !n.parent.as_ref().is_some_and(|p| dropped.contains(&p)))
+            .filter(|n| !(spacer(n) && !folders.contains(&&n.entry) && n.parent.as_ref().is_some_and(|p| empty_teams.contains(&p))))
+            .cloned().collect();
+        nodes.extend(leaves);
+        nodes
+    }
+}
+
+/// Rebuild the challenge folders when the career's active or passed challenges change, with a Sign Up handler on
+/// each leaf.
+fn sync_challenge_leaves(menus: Option<ResMut<RetailMenus>>, leaves: Option<ResMut<ChallengeLeaves>>,
+    career: Option<Res<crate::career::CareerState>>, challenges: Option<Res<crate::challenges::Challenges>>) {
+    let (Some(mut menus), Some(mut leaves)) = (menus, leaves) else { return };
+    if leaves.folders.is_empty() || leaves.items.is_empty() {
+        return;
+    }
+    // Retail's GameMode (1 = single player, the career; the free skate modes 0 / 3 / 4 hide the Active and Completed
+    // tabs) and GetNumCompletedChallenges (Owned + Killed, 827D0F28), which the Completed tab's Lua reads (b1054 §1).
+    let loaded = career.as_deref().is_some_and(|c| c.data.is_some());
+    let completed = career.as_deref().map_or(0, |c| c.career.status.values().filter(|s| **s != skate_core::challenges::Completion::Abandoned).count());
+    for (fact, value) in [(skate_core::menus::facts::GAME_MODE, if loaded { 1.0 } else { 0.0 }),
+        (skate_core::menus::facts::COMPLETED_CHALLENGES, completed as f64)] {
+        if menus.context.facts.get(fact).copied() != Some(value) {
+            menus.context.facts.insert(fact.into(), value);
+        }
+    }
+    let career = career.as_deref().map(|c| &c.career);
+    let passed = |id: &str| career.and_then(|c| c.status.get(id)).is_some_and(|s| *s != skate_core::challenges::Completion::Abandoned)
+        || challenges.as_deref().is_some_and(|c| c.records.get(id).completion.is_some());
+    let active = |id: &str| career.is_some_and(|c| c.active.contains(id)) && !passed(id);
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for i in &leaves.items {
+        (active(&i.id), passed(&i.id)).hash(&mut h);
+    }
+    let key = h.finish();
+    if leaves.last == Some(key) {
+        return;
+    }
+    leaves.last = Some(key);
+    let nodes = leaves.nodes(&active, &passed);
+    for n in nodes.iter().filter(|n| n.entry.kind == EntryKind::Challenge) {
+        let owner = Owner::Engine(format!("{SIGN_UP}{}", n.entry.id));
+        menus.registry.register_handler(n.entry.clone(), Handler { owner, select: true, highlight: false, callback: None });
+    }
+    info!("RETAIL_MENUS challenge map: {} challenge leaves ({} folders, pool {} / {} items, {} active, {} passed)",
+        nodes.iter().filter(|n| n.entry.kind == EntryKind::Challenge).count(), leaves.folders.len(),
+        if leaves.items.iter().any(|i| i.pool) { leaves.items.iter().filter(|i| i.pool).count() } else { leaves.pool.len() }, leaves.items.len(),
+        leaves.items.iter().filter(|i| active(&i.id)).count(), leaves.items.iter().filter(|i| passed(&i.id)).count());
+    menus.registry.set_map_nodes(nodes);
 }
 
 fn challenge_map(asset_root: &std::path::Path, world_maps: &std::collections::BTreeMap<String, String>) -> ChallengeMapData {
@@ -197,9 +302,13 @@ fn challenge_map(asset_root: &std::path::Path, world_maps: &std::collections::BT
         rows.iter().filter_map(|d| Some((d.label_key.as_deref()?, d.name.as_str()))).collect();
     let label_text = |label: &str| texts.get(label).map(|t| (*t).to_owned());
     let mut debug = std::collections::BTreeSet::new();
+    let (mut folders, mut pool) = (Vec::new(), Vec::new());
     let (nodes, pictures, markers) = match skate_data::collections::Collections::load(asset_root) {
         Ok(c) => {
             debug = skate_data::challenge_map::debug_listings(c.entries());
+            folders = skate_data::challenge_map::challenge_folders(c.entries(), "progression",
+                &skate_data::challenge_map::retail_folder_rules(), &skate_data::challenge_map::retail_tab_rules());
+            pool = skate_data::challenge_map::pool(c.entries());
             (
             skate_data::challenge_map::load(c.entries(), "progression", &skate_data::challenge_map::LocationRules::default(),
                 &skate_data::challenge_map::LocationUnlocks::load(asset_root), &label_text),
@@ -230,7 +339,7 @@ fn challenge_map(asset_root: &std::path::Path, world_maps: &std::collections::BT
             }
         }
     }
-    ChallengeMapData { nodes, pictures, markers, teleports, debug }
+    ChallengeMapData { nodes, pictures, markers, teleports, debug, folders, pool }
 }
 
 impl RetailMenus {
@@ -261,6 +370,8 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>) {
     let world_maps = crate::retail_menu_movies::world_maps(&crate::retail_menu_movies::set_root(&config));
     let map = challenge_map(&config.asset_root, &world_maps);
     let teleports = map.teleports;
+    commands.insert_resource(ChallengeLeaves { base: map.nodes.clone(), folders: map.folders, rules: skate_data::challenge_map::retail_folder_rules(),
+        items: map_items(&config.asset_root), pool: map.pool, last: None });
     data.map_nodes = map.nodes;
     data.map_debug = map.debug;
     data.map_pictures = map.pictures;
@@ -285,7 +396,7 @@ pub(crate) struct RetailMenusPlugin;
 impl Plugin for RetailMenusPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (load, crate::retail_menu_movies::load, load_stored))
-            .add_systems(Update, (sync_engine_values, sync_stored_values, sync_debug_menus));
+            .add_systems(Update, (sync_engine_values, sync_stored_values, sync_debug_menus, sync_challenge_leaves));
     }
 }
 

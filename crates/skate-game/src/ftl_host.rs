@@ -18,7 +18,7 @@ use skate_core::challenges::{Completion, Flow};
 const FAILURE_TEXT: &str = "ID_CHALLENGE_FTL_FAILURE";
 const AUTOPILOT_DIALOG_SECONDS: f32 = 3.0;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct FtlStart {
     pub locator: String,
     pub matrix: [[f32; 4]; 4],
@@ -37,6 +37,10 @@ pub(crate) struct FtlObjectives {
 
 fn yes() -> bool {
     true
+}
+
+fn start_or_here<'de, D: serde::Deserializer<'de>>(d: D) -> Result<FtlStart, D::Error> {
+    Ok(Option::<FtlStart>::deserialize(d)?.unwrap_or_default())
 }
 
 
@@ -84,6 +88,8 @@ pub(crate) struct FtlData {
     pub title: Option<String>,
     #[serde(flatten)]
     pub sign_up: crate::challenges::SignUpFields,
+    /// The anywhere types have none (null): the run starts where the player stands (b1003 §2).
+    #[serde(default, deserialize_with = "start_or_here")]
     pub start: FtlStart,
     #[serde(default)]
     pub end_volume: Option<crate::challenges::Volume>,
@@ -147,6 +153,8 @@ struct File {
     films: Vec<serde_json::Value>,
     #[serde(default)]
     hall_of_meats: Vec<serde_json::Value>,
+    #[serde(default)]
+    photos: Vec<serde_json::Value>,
 }
 
 /// Every Hall of Meat row (`hall_of_meats`, b1005), read like the films'; a row that does not parse is logged.
@@ -160,19 +168,19 @@ pub(crate) fn load_hall_of_meat(assets: &std::path::Path) -> Vec<FtlData> {
     }).collect()
 }
 
-/// Every follow the leader and film row. Rows are read one by one, so a row this host cannot run yet (an anywhere
-/// film: no start, its objectives not exported, b961 §1) is left out with a log line instead of hiding the others.
+/// Every follow the leader, film and photo row. Rows are read one by one, so a row that does not parse is left out
+/// with a log line instead of hiding the others.
 pub(crate) fn load(assets: &std::path::Path) -> Vec<FtlData> {
     let Some(file) = std::fs::read(assets.join("private/challenges.json")).ok().and_then(|b| serde_json::from_slice::<File>(&b).ok()) else {
         return Vec::new();
     };
     let mut skipped = Vec::new();
-    let rows: Vec<FtlData> = file.follow_the_leaders.into_iter().chain(file.films).filter_map(|v| {
+    let rows: Vec<FtlData> = file.follow_the_leaders.into_iter().chain(file.films).chain(file.photos).filter_map(|v| {
         let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("?").to_owned();
         serde_json::from_value(v).map_err(|_| skipped.push(id)).ok()
     }).collect();
     if !skipped.is_empty() {
-        info!("SKATE_FTL rows not runnable here yet (no start; anywhere films NOT RETAIL YET): {skipped:?}");
+        info!("SKATE_FTL rows not readable: {skipped:?}");
     }
     rows
 }
@@ -186,6 +194,8 @@ pub(crate) fn kind(d: &FtlData) -> Kind {
     match d.family.as_deref() {
         Some("films") => Kind::Film,
         Some("anywhere_films") => Kind::AnywhereFilm,
+        Some("photos") => Kind::Photo,
+        Some("anywhere_photos") => Kind::AnywherePhoto,
         _ => Kind::Follow,
     }
 }
@@ -276,6 +286,9 @@ pub(crate) struct FollowTheLeader {
     /// Hall of Meat rows and the run (hom_host.rs).
     pub hom_rows: Vec<FtlData>,
     pub hom: Option<crate::hom_host::HomState>,
+    /// 1-Up rows and the run (one_up_host.rs).
+    pub one_up_rows: Vec<crate::one_up_host::OneUpData>,
+    pub one_up: Option<crate::one_up_host::OneUpState>,
 }
 
 impl FollowTheLeader {
@@ -283,11 +296,12 @@ impl FollowTheLeader {
     pub(crate) fn offers<'a>(&'a self, map: Option<&'a std::path::Path>) -> impl Iterator<Item = crate::challenges::Offer> + 'a {
         self.rows.iter().chain(&self.hom_rows).filter_map(move |r| r.sign_up.offer(&r.id, r.family.as_deref().unwrap_or("follow_the_leaders"), r.map.as_deref(),
             r.title_id.as_ref(), r.title.as_ref(), map))
+            .chain(self.one_up_rows.iter().filter_map(move |r| r.sign_up.offer(&r.id, "1ups", r.map.as_deref(), r.title_id.as_ref(), r.title.as_ref(), map)))
     }
 
     /// The player is held from the start until the countdown releases it (PinPlayer / UnpinAI(player)).
     pub(crate) fn player_pinned(&self) -> bool {
-        self.hom.as_ref().is_some_and(|h| h.pinned) || self.run.as_ref().is_some_and(|r| matches!(r.run.state(), State::PinPlayer | State::MakeObjectives | State::PrefilmDisplay
+        self.hom.as_ref().is_some_and(|h| h.pinned) || self.one_up.as_ref().is_some_and(|o| o.player_pinned()) || self.run.as_ref().is_some_and(|r| matches!(r.run.state(), State::PinPlayer | State::MakeObjectives | State::PrefilmDisplay
             | State::NisOverview | State::Setup | State::WaitForAssetLoad | State::SpawnPlayer | State::CheckAi | State::Wait | State::Countdown))
     }
 }
@@ -325,7 +339,7 @@ fn arm(mut ftl: ResMut<FollowTheLeader>, config: Res<crate::config::Config>, map
             }
         }
     }
-    let busy = challenges.as_deref().is_some_and(|c| c.run.is_some() || c.tutorial.is_some());
+    let busy = challenges.as_deref().is_some_and(|c| c.run.is_some() || c.tutorial.is_some()) || ftl.one_up.is_some();
     for s in signed.read().filter(|s| s.body == crate::trigger_volumes::PLAYER) {
         if !ftl.rows.iter().any(|r| r.id == s.challenge) {
             continue;
@@ -338,16 +352,21 @@ fn arm(mut ftl: ResMut<FollowTheLeader>, config: Res<crate::config::Config>, map
         wanted.push(s.challenge.clone());
     }
     if let Some(id) = wanted.first() {
-        start(&mut ftl, id, &config, &map, &mut volumes);
+        let here = skater.animated_skeleton.roots.animation_to_world;
+        start(&mut ftl, id, &config, &map, &mut volumes, here);
     }
 }
 
 fn start(ftl: &mut FollowTheLeader, wanted: &str, config: &crate::config::Config, map: &crate::map_transition::CurrentMap,
-    volumes: &mut crate::trigger_volumes::TriggerVolumes) {
-    let Some(data) = ftl.rows.iter().find(|r| r.id == wanted).cloned() else {
+    volumes: &mut crate::trigger_volumes::TriggerVolumes, here: [[f32; 4]; 4]) {
+    let Some(mut data) = ftl.rows.iter().find(|r| r.id == wanted).cloned() else {
         info!("SKATE_FTL {wanted} not found");
         return;
     };
+    // The anywhere types start in place: SetSessionMarker() at the spot; a restart teleports back to it (b1003 §2).
+    if matches!(kind(&data), Kind::AnywhereFilm | Kind::AnywherePhoto) {
+        data.start = FtlStart { locator: "session_marker".into(), matrix: here, slots: Vec::new() };
+    }
     if data.map.as_deref().is_some_and(|m| map.path.as_deref().is_some_and(|p| !crate::teleport_menu::same_map(p, m))) {
         info!("SKATE_FTL {wanted} is not on {}", map.name);
         return;
@@ -383,6 +402,16 @@ fn start(ftl: &mut FollowTheLeader, wanted: &str, config: &crate::config::Config
 impl FtlState {
     fn pending(&mut self, commands: Vec<Command>) {
         self.queued.extend(commands);
+    }
+}
+
+/// The highlight reel played out: a film goes on to its end options; a photo's NIS (the objective's highlight)
+/// reaches its pick point (nischallengenotify).
+fn reel_done(run: &mut FilmRun) -> Vec<Command> {
+    if run.state() == State::DisplayPhoto {
+        run.handle(Event::NisChallengeNotify)
+    } else {
+        run.handle(Event::HighlightReelComplete)
     }
 }
 
@@ -770,6 +799,7 @@ fn update(
         bail_score: shared.and_then(|c| c.last_bail_score).map_or(0, |s| s.total),
         bail: shared.map(|c| c.last_bail).unwrap_or_default(),
         competitor_distances: distances,
+        live: crate::challenge_objectives::live_facts(&skater, &raw),
     };
     let killed_of: Vec<bool> = state.groups.iter().map(|g| g.killed).collect();
     let mut groups: Vec<&mut DataObjectives> = state.groups.iter_mut().map(|g| &mut g.objectives).collect();
@@ -779,7 +809,7 @@ fn update(
     // A reel clip played out: the next one, after the last the reel is complete.
     if state.reel.step(replay.as_deref_mut(), pause.as_deref_mut(), &asset_root) {
         info!("SKATE_FTL {id} highlight reel complete");
-        commands.extend(state.run.handle(Event::HighlightReelComplete));
+        commands.extend(reel_done(&mut state.run));
     }
     if state.evaluating {
         let events: Vec<(bool, GroupEvent)> = fed.into_iter().map(|(i, e)| (killed_of[i], e)).collect();
@@ -819,6 +849,11 @@ fn update(
                     info!("SKATE_FTL {id} objective {objective} (killed it group: {killed}) failure row {row} ({text:?}) distances {distances:?}");
                     state.failure_text = Some(text.unwrap_or_else(|| FAILURE_TEXT.into()));
                     commands.extend(state.run.handle(Event::ObjectiveFailed));
+                }
+                // Photos: leaving the PhotoChallengeBoundary (a mode 3 objective volume) fails the shot (b875 §1).
+                GroupEvent::LeftScoringBoundary(i) => {
+                    info!("SKATE_FTL {id} left the scoring boundary of objective {i}");
+                    commands.extend(state.run.handle(Event::LeftScoringBoundary));
                 }
                 // A hint row plays its presentation only (82C755B8, b942): the leader's speech lines and the start tip.
                 GroupEvent::Hint { objective, row } => {
@@ -949,7 +984,7 @@ fn update(
                         // objectives_shared objectivecomplete@345-521: arg 3 is C.KilledIt, which the film graphs only
                         // set false (setup@53), so the +0x10 half; no drop-oldest. AllowAutoHighlightTiming (not a
                         // photo, no kill-it highlight as KilledIt stays false): pre / post 0.5 (@466-481).
-                        let (pre, post) = if auto { (0.5, 0.5) } else { (0.0, 0.0) };
+                        let (pre, post) = if auto && !kind(&state.data).photo() { (0.5, 0.5) } else { (0.0, 0.0) };
                         let added = state.reel.add(&def, killed, false, begin, r.last_time(), false, pre, post, tuning.as_deref());
                         info!("SKATE_FTL {id} highlight added={added} {:?}", state.reel.highlights.list().last());
                     }
@@ -961,7 +996,20 @@ fn update(
                 }
                 Command::PlayHighlightReel => {
                     if !state.reel.play_prepared(replay.as_deref_mut(), pause.as_deref_mut(), &asset_root, tuning.as_deref()) {
-                        queue.extend(state.run.handle(Event::HighlightReelComplete));
+                        queue.extend(reel_done(&mut state.run));
+                    }
+                }
+                // FrontEnd.OpenPhotoSelection (photo_skate2 display_photo): NOT RETAIL YET, no shot picker
+                // (challenge/photoselect); the photo NIS's shot is taken as picked and the NIS ends.
+                Command::OpenPhotoSelection => {
+                    info!("SKATE_FTL {id} photo selection NOT RETAIL YET: the shot is taken as picked");
+                    queue.extend(state.run.handle(Event::NisComplete));
+                }
+                Command::SetSessionMarkerHere => info!("SKATE_FTL {id} session marker at the start spot {:?}", &state.data.start.matrix[3][..3]),
+                Command::TeleportToSessionMarker => {
+                    info!("SKATE_FTL {id} back to the start spot {:?}", &state.data.start.matrix[3][..3]);
+                    if let Err(e) = skater.travel_ex(state.data.start.matrix, None, !state.data.spawn_offboard) {
+                        warn!("SKATE_FTL teleport {e}");
                     }
                 }
                 Command::OpenContinueRetry => {
@@ -1286,8 +1334,39 @@ mod tests {
         let old: FtlData = serde_json::from_value(serde_json::json!({
             "id": "ftl_test", "start": {"locator": "s", "matrix": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}})).unwrap();
         assert_eq!(kind(&old), Kind::Follow, "an export from before films is follow the leader");
-        let anywhere = serde_json::json!({"id": "film_anyw_01", "family": "anywhere_films", "start": null});
-        assert!(serde_json::from_value::<FtlData>(anywhere).is_err(), "anywhere films are left out until they are hosted");
+        let anywhere: FtlData = serde_json::from_value(serde_json::json!({"id": "film_anyw_01", "family": "anywhere_films", "start": null})).unwrap();
+        assert_eq!(kind(&anywhere), Kind::AnywhereFilm, "an anywhere film loads without a start (it starts in place)");
+    }
+
+    #[test]
+    fn a_photo_row_runs_on_the_film_host_and_ends_after_its_photo_nis() {
+        let row: FtlData = serde_json::from_value(serde_json::json!({
+            "id": "photo_univ_05", "family": "photos", "map": "university",
+            "start": {"locator": "s", "matrix": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]},
+            "allow_player_bail": false, "boundary": null
+        })).unwrap();
+        let p = params(&row);
+        assert_eq!((p.kind, p.competitors, p.allow_player_bail), (Kind::Photo, 0, false));
+        let mut run = FilmRun::new(p);
+        run.start();
+        for e in [Event::HudLoaded, Event::AssetsLoaded, Event::TeleportFinished] {
+            run.handle(e);
+        }
+        while run.state() != State::ChallengeRunning {
+            run.tick();
+        }
+        run.handle(Event::AllObjectivesComplete { killed: false });
+        while run.state() != State::DisplayPhoto {
+            run.tick();
+        }
+        let mut played = false;
+        for _ in 0..400 {
+            played |= run.tick().contains(&Command::PlayHighlightReel);
+        }
+        assert!(played, "the photo NIS plays after the banner");
+        assert_eq!(reel_done(&mut run), vec![Command::OpenPhotoSelection], "the NIS's end reaches the shot pick");
+        run.handle(Event::NisComplete);
+        assert_eq!(run.state(), State::EndOptions);
     }
 
     #[test]
