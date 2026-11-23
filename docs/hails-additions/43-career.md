@@ -376,8 +376,13 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   backdrop quad into a 128 x 256 target, after the start's loading (before, the pipelines were still compiling and the
   picture stayed empty); FE 67 waits for it; `GetTeamData()[3]` = `skater_photo_0`, which the stage maps to the picture.
   The backdrops export with the menus (`prepare_menu_movies.py`).
-- NOT RETAIL YET: the pose clip is not loaded (the skater stands as in the world) and the setup's camera vectors are not
-  decoded (b1013 open 1): a fixed full-body framing. Teammate slots 1..4 and the re-render on a logo change come with
+- 2026-11-22: a preset picked on FE 68 keeps its look and the photo is taken again once the rebuilt outfit is on
+  (82653960 states 3..8); every photo waits for the worn outfit first. FE 68's preview photos use the same setup (doc 47
+  [Preset skaters](47-movie-player.md#preset-skaters)). The slot's pose clip is on the skater while the photo renders
+  (`CAS_Single_Pose_5` from `cac_edit_<gender>`, held at 0.1 s [inferred], turned to the camera): the board is in hand,
+  and the photo no longer depends on the world animating (it is held under the boot flow).
+- NOT RETAIL YET: the setup's camera vectors are not decoded (b1013 open 1): a fixed full-body framing, and the pose
+  row's yaw (260) and placement are not used. Teammate slots 1..4 and the re-render on a logo change come with
   the team view.
 - Checked: career-boot-run -From 5, the skater on the teal backdrop in the first card.
 

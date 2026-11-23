@@ -292,7 +292,7 @@ impl<'a> FrontEnd<'a> {
 
 impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     fn objects(&self) -> Vec<String> {
-        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos", "FECredits", "SkaterSpawner", "FreeSkateOption", "TipsLoader", "FERewardSummary", "Mission", "MusicPlayer", "TeamManagement"]
+        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "FEChallengeMap", "FEReplayMenu", "HUDComponents", "Popup", "Progression", "Stats", "SignUpPoster", "tos", "FECredits", "SkaterSpawner", "FreeSkateOption", "TipsLoader", "FERewardSummary", "Mission", "MusicPlayer", "TeamManagement", "ImportSkaters"]
             .map(String::from)
             .to_vec()
     }

@@ -1037,7 +1037,18 @@ fn run_boot_flow(
         if let Some(s) = import.as_mut() {
             if let Some(key) = s.apply.take() {
                 apply_player_preset(&state.presets, &key, customiser.as_deref_mut(), parts.as_deref());
+                // 82653960 states 3..8: the rebuilt skater's photos are taken again before the screen pops.
+                match photo.as_mut() {
+                    Some(p) => {
+                        p.retake_after_pick();
+                        s.retaking = true;
+                    }
+                    None => s.open = false,
+                }
                 s.logic.applied();
+            }
+            if s.retaking && photo.as_ref().is_none_or(|p| !p.request && p.ready) {
+                s.retaking = false;
                 s.open = false;
             }
             if s.open {
@@ -1194,19 +1205,25 @@ fn run_first_team_member(
 }
 
 /// Preset `key`'s look on the player (slot 0): resolved like the customizer's own looks, worn and saved as the outfit.
+/// A preset's look resolved for the customizer (None: no such preset, or its parts do not resolve).
+pub(crate) fn preset_look(presets: &[Preset], key: &str, parts: &crate::customiser_parts::Parts) -> Option<serde_json::Value> {
+    let preset = presets.iter().find(|p| p.row.key == key)?;
+    parts.resolve(&serde_json::Value::Object(preset.profile.clone()))
+        .inspect_err(|e| warn!("SKATE_CAREER preset {key} does not resolve: {e}"))
+        .ok()
+}
+
 fn apply_player_preset(presets: &[Preset], key: &str, customiser: Option<&mut crate::customiser::Customiser>, parts: Option<&crate::customiser_parts::Parts>) {
     let (Some(preset), Some(c)) = (presets.iter().find(|p| p.row.key == key), customiser) else {
         warn!("SKATE_CAREER preset {key} not applied (no preset or customizer)");
         return;
     };
-    let look = serde_json::Value::Object(preset.profile.clone());
-    let look = match parts.map(|p| p.resolve(&look)) {
-        Some(Ok(resolved)) => resolved,
-        Some(Err(e)) => {
-            warn!("SKATE_CAREER preset {key} not applied: {e}");
-            return;
-        }
-        None => look,
+    let look = match parts {
+        Some(p) => match preset_look(presets, key, p) {
+            Some(look) => look,
+            None => return,
+        },
+        None => serde_json::Value::Object(preset.profile.clone()),
     };
     c.draft = look;
     match c.save_look() {

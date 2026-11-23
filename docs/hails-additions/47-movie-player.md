@@ -212,14 +212,41 @@ Ours (`skate_core::career::import_skater`; `ImportSkaterScreen` and the natives 
 `retail_menu_stage.rs`): the same rows, order, popup, B and states. Yes puts the preset's profile on the player through
 the customizer (`apply_player_preset` in `career.rs`: resolved, worn and saved as the outfit, like a Create-a-Skater
 save). Mods reach the rows through the teammate preset data (the vault rows and recipe files; `sdk.career` lists
-them). NOT RETAIL YET:
-- No preview photos are built (the slot photo states of 82653960). `IsPreviewPhotoLoaded` answers true with no
-  picture, so no load wheel spins.
+them).
+
+**Preview photos and the retake** [code]: a highlight (82653750) looks the row up in the screen's photo map (+0x3C).
+A row with no photo is photographed when the skater builder is idle; while it is busy, the latest highlight waits
+(+0x324) and 82653960 state 0 takes it later. The photo uses the slot's card setup (collection FEFE76B65E8F6197, the
+same `team_profile_0N` row as the player's card photo). `IsPreviewPhotoLoaded` (825C4258) is "the row is in the map",
+and `GetPreviewPhotoAssetId` (825C42D0) is the row's asset id. The highlight then sends state 11 again. On Yes, states
+2..8 apply the preset to the slot, wait for the skater rebuild and request the slot's photos again (5C628A8FA0C3FAEE,
+AB0A7B6A454D6B99 mode 1, FEFE76B65E8F6197 mode 2). Ours (`skater_photo.rs` `Previews`): the highlighted preset is
+worn on the player for its photo (FE 68 covers the world) once the outfit is on, in the card photo's setup; the
+finished photo is resident as `skater_preview_<key>`, state 11 is sent again, and B puts the player's own look back.
+Yes keeps the picked look, takes the player's card photo again after the outfit rebuild
+(`SkaterPhoto::retake_after_pick`) and pops the screen once that photo is ready. With a custom model (no outfit to
+swap) rows read as loaded with no picture. The movie highlights its first row while state 10 builds the list, so the
+first preset is photographed when the screen opens.
+
+Fixed on the way (2026-11-22): `ImportSkaters` was not registered as a native object on the menu stage, so the movie
+got no rows and the preview wheel spun forever. A photo waits until the worn outfit has matched the look for two
+frames: the swap lands after the frame's visibility pass, and a photo one frame earlier showed the previous look.
+
+NOT RETAIL YET:
+- The photos have the card photo's own gaps (camera vectors and pose clip, see doc 43 "The skater photo").
+- Retail's photo map drops its oldest photos (the +0x1E0 list ordered by +0x308); ours keeps every photo until the
+  screen closes. The limit is not decoded.
+- The banner photo (AB0A7B6A454D6B99) and the packed skater blob are not taken again after a pick (no banner yet).
 - Community skaters (group 2, online) are not listed.
-- The slot's team photos are not rebuilt after the pick.
 
 **Verification.** `import_skater` tests (rows and headers, index to row, the confirm and B rules);
-`welcome_host::the_preset_list_answers_its_rows_while_open`. Needs a Refresh Game Files for the movie. Not run in game
+`welcome_host::the_preset_list_answers_its_rows_while_open`, `welcome_host::preview_photos_answer_by_row`;
+`skater_photo` tests (a pick keeps its look and retakes the photo; loaded when taken, missing or unavailable). Needs a
+Refresh Game Files for the movie. Release runs (`career-boot-run.ps1 -From 5`, FE 67 Presets): the list shows Skater
+01..08 under Preset Skaters; Skater 01's photo shows on open, Skater 02's after Down, each posed with the board in
+hand on the teal backdrop; every photo's drawn parts match the look (`SKATER_PHOTO start ... parts`, `look`); Yes
+(Up, A on the popup) applies `preset01`, retakes the player's photo, then closes the list and the flow goes on to
+Coach Frank. Not run in game
 yet.
 
 FE 11 Coach Frank (after coach_frank_intro; b1010): `bootflow/coachfrank` (template 10) asks "Would you like to stay
