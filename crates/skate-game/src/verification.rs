@@ -174,7 +174,8 @@ fn verify(
         }
         info!("GAME_VERIFY_OK");
         exit.write(AppExit::Success);
-    } else if state.elapsed > 45. {
+    } else if state.elapsed > 45f32.max(capture_at + 10.) {
+        // a later SKATE_VERIFY_AT waits for its capture (a 45 s cap ended long runs before their capture)
         error!("Game startup/capture timed out");
         exit.write(AppExit::error());
     }

@@ -171,3 +171,59 @@ fn a_completed_objective_adds_its_highlight_and_the_reel_keeps_the_results_tier(
     let play = out.iter().position(|c| *c == Command::PlayHighlightReel);
     assert!(prepare.is_some() && prepare < play, "the reel keeps the killed tier before it plays: {out:?}");
 }
+fn photo() -> FilmRun {
+    FilmRun::new(Params { boundary: Some(BOUNDARY), ..Params::retail(Kind::Photo) })
+}
+
+#[test]
+fn a_photo_shows_its_shot_lets_the_player_pick_and_then_offers_continue() {
+    let mut run = photo();
+    to_running(&mut run);
+    let out = run.handle(Event::ObjectiveComplete { killed: false, last: true });
+    let clear = out.iter().position(|c| *c == Command::RemoveAllHighlights);
+    let add = out.iter().position(|c| *c == Command::AddHighlight { killed: false });
+    assert!(clear.is_some() && clear < add, "a photo keeps only the newest shot: {out:?}");
+    run.handle(Event::AllObjectivesComplete { killed: false });
+    tick_until(&mut run, State::DisplayPhoto, 60);
+    assert!(!matches!(run.state(), State::KilledIt | State::HighlightReel));
+    let mut out = Vec::new();
+    for _ in 0..400 {
+        out.extend(run.tick());
+        if out.contains(&Command::PlayHighlightReel) {
+            break;
+        }
+    }
+    assert!(out.contains(&Command::PauseSimulation(true)) && out.contains(&Command::PlayHighlightReel), "the photo NIS after the banner: {out:?}");
+    assert_eq!(run.state(), State::DisplayPhoto);
+    assert_eq!(run.handle(Event::NisChallengeNotify), vec![Command::OpenPhotoSelection]);
+    run.handle(Event::NisComplete);
+    assert_eq!(run.state(), State::EndOptions);
+    run.handle(Event::Continue);
+    assert!(run.finished());
+}
+
+#[test]
+fn a_photo_rearms_after_a_bail_or_a_failed_objective_and_fails_outside_its_scoring_boundary() {
+    let mut run = photo();
+    to_running(&mut run);
+    let out = run.handle(Event::Wipeout);
+    assert!(!out.contains(&Command::Speech(Speech::Wipeout)), "no film wipeout line for a photo");
+    let mut out = Vec::new();
+    for _ in 0..100 {
+        out.extend(run.tick());
+    }
+    assert!(out.contains(&Command::ResetObjectives) && !out.contains(&Command::RepositionPlayer), "re-armed in place: {out:?}");
+    assert_eq!(run.state(), State::ChallengeRunning);
+    run.handle(Event::ObjectiveFailed);
+    assert_eq!(run.state(), State::ChallengeRunning, "a failed photo objective re-arms");
+    let mut out = Vec::new();
+    for _ in 0..100 {
+        out.extend(run.tick());
+    }
+    assert!(out.contains(&Command::ResetObjectives));
+    run.handle(Event::LeftScoringBoundary);
+    assert_eq!(run.result(), Flow::Lose);
+    assert_eq!(run.state(), State::ChallengeRunning, "the selector resumes until every objective is done");
+    let p = Params::retail(Kind::AnywherePhoto);
+    assert!(p.allow_player_bail && p.allow_objective_failure && p.rules.no_boundary && !p.reset_objectives_on_marker);
+}

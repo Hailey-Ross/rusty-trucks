@@ -78,6 +78,25 @@ pub struct SkaterFacts {
     pub board_adjust: u32,
     /// Follow the leader (b1006): the player's distance to each AI competitor (competitor 1 first), m; None = not there.
     pub competitor_distances: [Option<f32>; 4],
+    /// Half turns of spin so far in this air (score state +0x3018; GetCurrentDegreesOfSpin 82C662E0, b894 §3).
+    pub spin_half_turns: u32,
+    /// Riding fakie now (Stance.IsFakie 82C63CB0 reads sk.T+0x9B, b894 §6).
+    pub fakie: bool,
+    /// Left, right bumper held (Input.IsLeft / RightBumperHeld 82C63550 / 82C63628).
+    pub bumpers: [bool; 2],
+    /// Left, right stick deflection 0..1 (Input.IsLeft / RightStickHeld 82C639E0 / 82C63B48 compare it with the
+    /// argument) and the raw right stick X (GetRawRightStickXValue 82C63700).
+    pub sticks: [f32; 2],
+    pub right_stick_x: f32,
+    /// The skater's speed, m/s (ObjectiveLocomotion.GetSpeed) [inferred: the center of mass speed].
+    pub speed: f32,
+    /// The current manual's distance, m (Manual.ManualDistance 82C64368 reads sk.P+0x3C) [inferred: ours integrates
+    /// the speed while the manual is held].
+    pub manual_distance: f32,
+    /// The running line's score (sk.P+0x6C) and the line that ended clean this frame, 0 otherwise
+    /// (GetFinishedSequenceScore 82C65060 reads +0x6C while the SequenceCompleted flag is set).
+    pub sequence_score: i32,
+    pub finished_sequence_score: i32,
 }
 
 impl Default for SkaterFacts {
@@ -87,6 +106,8 @@ impl Default for SkaterFacts {
             grind_rail: None, in_sequence: false, sequence_completed: false, wiping_out: false, wipeout_over: false, bail_pose: None, bail_score: 0, bail: crate::hall_of_meat::BailSummary::default(), off_board: false,
             went_off_board: false, went_on_board: false, grinding: false, on_board: false, on_ground: false,
             air_completed: false, time_to_grind: NO_GRIND_TIME, board_adjust: 0, competitor_distances: [None; 4],
+            spin_half_turns: 0, fakie: false, bumpers: [false; 2], sticks: [0.0; 2], right_stick_x: 0.0, speed: 0.0,
+            manual_distance: 0.0, sequence_score: 0, finished_sequence_score: 0,
         }
     }
 }
@@ -106,6 +127,9 @@ pub enum FlowCommand {
     Reset(usize),
     /// Reset.ResetAllObjectives (82C63FC0 -> 82C6F430): every objective fully reset and inactive.
     ResetAll,
+    /// ObjectivePoints.AwardSequencePointsImmediately (82C653D0 sets obj+0xF88): after the evaluation the objective
+    /// gains the running line's score once (82C752A8, b894 §4).
+    AwardImmediately { score: i32 },
     /// ObjectiveGameInfo.SetFractionValue: the "n of m" HUD counter of this objective (numerator, denominator).
     Fraction(f32, f32),
     /// Leader.AddFollowIndicator / RemoveFollowIndicator: the trail over the leader (b1006 / b566 style trail_follow).
@@ -117,7 +141,7 @@ pub enum FlowCommand {
 /// The functions this API answers (last name segment). A group whose programs call anything else does not run:
 /// an unported call errors, and an erroring completion condition defaults to true (retail), so it would complete
 /// at once.
-pub const PORTED: [&str; 60] = ["IsWipeoutOver", "ResetAllObjectives", "DidSpecificBodyTweakThisFrame", "GetScore", "GetWipeoutDuration", "GetNumVehiclesHit", "GetNumPedestriansHit", "GetNumBonesAtDamageLevel", "GetNumBonesGTOEDamageLevel", "GetDistanceToNearestAISkater", "GetDistanceToSkater", "AddFollowIndicator", "RemoveFollowIndicator","BeganTrick", "BeganTrickGroup", "GetTimeToGrind", "IsDoingSpecificBoardAdjust", "EnteredVolume", "IsInVolume", "IsSequenceNewlyCompletePoints", "GetGroupAccumulatedPoints",
+pub const PORTED: &[&str] = &["GetCurrentDegreesOfSpin", "GetDegreesOfSpin", "IsFakie", "IsLeftBumperHeld", "IsRightBumperHeld", "IsLeftStickHeld", "IsRightStickHeld", "GetRawRightStickXValue", "GetSpeed", "ManualDistance", "GetSequencePoints", "GetFinishedSequenceScore", "AwardSequencePointsImmediately", "print", "GetNumDMOsHit", "IsWipeoutOver", "ResetAllObjectives", "DidSpecificBodyTweakThisFrame", "GetScore", "GetWipeoutDuration", "GetNumVehiclesHit", "GetNumPedestriansHit", "GetNumBonesAtDamageLevel", "GetNumBonesGTOEDamageLevel", "GetDistanceToNearestAISkater", "GetDistanceToSkater", "AddFollowIndicator", "RemoveFollowIndicator","BeganTrick", "BeganTrickGroup", "GetTimeToGrind", "IsDoingSpecificBoardAdjust", "EnteredVolume", "IsInVolume", "IsSequenceNewlyCompletePoints", "GetGroupAccumulatedPoints",
     "GetGroupPointsRequirement", "GetAccumulatedPoints", "ActivateObjective", "DeactivateObjective", "ResetObjective",
     "GetObjectiveStatus", "GetTotalNumCompletedObjectives", "IsInSequence", "SequenceCompleted", "IsWipingOut",
     "IsOffBoard", "WentOffBoard", "WentOnBoard", "JustUsedSessionMarker", "JustSetSessionMarker", "SetFractionValue",
@@ -296,6 +320,29 @@ impl Api for ObjectiveApi<'_> {
                 self.flow.push(FlowCommand::Fraction(n(0), n(1)));
                 Value::Nil
             }
+            // b894 §3: the live half turns as degrees; the last clean air's spin while active (obj+0x470).
+            "GetCurrentDegreesOfSpin" => num((self.skater.spin_half_turns * 180) as i32),
+            "GetDegreesOfSpin" => num(self.objective.records.air_spin_degrees as i32),
+            "IsFakie" => Value::Bool(self.skater.fakie),
+            "IsLeftBumperHeld" | "IsRightBumperHeld" => Value::Bool(self.skater.bumpers[usize::from(short == "IsRightBumperHeld")]),
+            "IsLeftStickHeld" | "IsRightStickHeld" => {
+                let threshold = match args.first() { Some(Value::Num(t)) => *t, _ => 0.0 };
+                Value::Bool(self.skater.sticks[usize::from(short == "IsRightStickHeld")] >= threshold)
+            }
+            "GetRawRightStickXValue" => num_f(self.skater.right_stick_x),
+            "GetSpeed" => num_f(self.skater.speed),
+            "ManualDistance" => num_f(self.skater.manual.map_or(0.0, |_| self.skater.manual_distance)),
+            // obj+0x2B8: the last clean line's score while active, 0 from the next line's begin (82C64FE0).
+            "GetSequencePoints" => num(self.objective.records.sequence_points),
+            "GetFinishedSequenceScore" => num(self.skater.finished_sequence_score),
+            "AwardSequencePointsImmediately" => {
+                if !matches!(args.first(), Some(Value::Bool(false))) {
+                    self.flow.push(FlowCommand::AwardImmediately { score: self.skater.sequence_score });
+                }
+                Value::Nil
+            }
+            // Lua print: a debug line in the data, no effect.
+            "print" => Value::Nil,
             _ => return Err(Error::Api(format!("{name} is not ported"))),
         })
     }
@@ -383,5 +430,34 @@ mod tests {
         call(2, &mut flow);
         call(3, &mut flow);
         assert_eq!(flow, vec![FlowCommand::FollowIndicator { competitor: 1, on: true }, FlowCommand::FollowIndicator { competitor: 1, on: false }]);
+    }
+
+    #[test]
+    fn the_spin_stance_input_and_line_score_calls_read_the_live_facts_and_records() {
+        let names: Vec<String> = ["ObjectiveAir.GetCurrentDegreesOfSpin", "ObjectiveAir.GetDegreesOfSpin", "Stance.IsFakie",
+            "Input.IsRightBumperHeld", "Input.IsLeftStickHeld", "ObjectivePoints.GetSequencePoints",
+            "ObjectivePoints.GetFinishedSequenceScore", "ObjectivePoints.AwardSequencePointsImmediately", "print"]
+            .iter().map(|n| n.to_string()).collect();
+        let mut o = spot(&[]);
+        o.records.air_spin_degrees = 540;
+        o.records.sequence_points = 2500;
+        let skater = SkaterFacts { spin_half_turns: 2, fakie: true, bumpers: [false, true], sticks: [0.5, 0.0],
+            sequence_score: 700, finished_sequence_score: 1800, ..Default::default() };
+        let mut flow = Vec::new();
+        let mut api = ObjectiveApi { names: &names, objective: &o, ctx: Context::default(), volume: &|_: &str| None, inside: &[],
+            statuses: &[], flow: &mut flow, skater, tricks_this_frame: &[], tricks_began: &[], trick_groups: &Default::default(),
+            key: &|_: &str| 0u64 };
+        assert_eq!(api.call(0, &[]).unwrap(), Value::Num(360.0));
+        assert_eq!(api.call(1, &[]).unwrap(), Value::Num(540.0));
+        assert_eq!(api.call(2, &[]).unwrap(), Value::Bool(true));
+        assert_eq!(api.call(3, &[]).unwrap(), Value::Bool(true));
+        assert_eq!(api.call(4, &[Value::Num(0.2)]).unwrap(), Value::Bool(true));
+        assert_eq!(api.call(4, &[Value::Num(0.9)]).unwrap(), Value::Bool(false));
+        assert_eq!(api.call(5, &[]).unwrap(), Value::Num(2500.0));
+        assert_eq!(api.call(6, &[]).unwrap(), Value::Num(1800.0));
+        assert_eq!(api.call(7, &[Value::Bool(true)]).unwrap(), Value::Nil);
+        assert_eq!(api.call(8, &[Value::Str("debug".into())]).unwrap(), Value::Nil);
+        assert_eq!(flow, vec![FlowCommand::AwardImmediately { score: 700 }]);
+        assert!(names.iter().all(|n| ported(n)));
     }
 }

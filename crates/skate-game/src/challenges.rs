@@ -686,7 +686,7 @@ fn sign_up(
     if !popups.stage_ready {
         challenges.picking = None;
     }
-    let idle = challenges.run.is_none() && challenges.tutorial.is_none() && ftl.as_ref().is_none_or(|f| f.run.is_none() && f.hom.is_none())
+    let idle = challenges.run.is_none() && challenges.tutorial.is_none() && ftl.as_ref().is_none_or(|f| f.run.is_none() && f.hom.is_none() && f.one_up.is_none())
         && races.as_ref().is_none_or(|r| r.run.is_none()) && contests.as_ref().is_none_or(|c| c.run.is_none());
     let near: Vec<Offer> = if gameplay && idle && popups.signup_title.is_none() && challenges.picking.is_none() {
         let path = map.path.as_deref();
@@ -875,6 +875,7 @@ fn update(
             bail_pose: challenges.last_bail_pose,
             bail_score: challenges.last_bail_score.map_or(0, |s| s.total),
             bail: challenges.last_bail,
+            live: crate::challenge_objectives::live_facts(&skater, &raw),
             end_choice: end_dialog.choice.take() };
         let actions = if std::mem::take(&mut challenges.mods.abort) { tutorial.abandon(&mut presenter) } else { tutorial.step(&input, &mut presenter) };
         crate::hud_challenge::take_callout(&mut hud, &presenter, guide.as_deref());

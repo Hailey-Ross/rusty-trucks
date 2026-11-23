@@ -3134,6 +3134,14 @@ fn update(
                     ms.stack.request(Layer::Main, Request::Close { screen });
                 }
             }
+            // Sign Up on a challenge (b911 kind 0): the menu closes, the challenge starts in place (anywhere types)
+            // or after a teleport to its sign-up spot.
+            if let Some(id) = name.strip_prefix(crate::retail_menus::SIGN_UP) {
+                travel.sign_ups.push(id.to_owned());
+                for screen in [map, pause].into_iter().flatten() {
+                    ms.stack.request(Layer::Main, Request::Close { screen });
+                }
+            }
         }
     }
     // The 3D demo behind FE 14 (trick_guide_scene.rs): the screen on top, its highlighted clip and camera track

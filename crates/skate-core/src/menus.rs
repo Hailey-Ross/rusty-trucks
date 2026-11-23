@@ -878,6 +878,15 @@ impl MenuRegistry {
         }
     }
 
+    /// Replace the Challenge Map tree (the challenge folders rebuilt for the player's status); mod edits replay on it.
+    pub fn set_map_nodes(&mut self, nodes: Vec<MapNode>) {
+        self.base.map_nodes = nodes;
+        self.data = self.base.clone();
+        for (_, edit) in &self.edits {
+            let _ = self.data.apply(edit);
+        }
+    }
+
     /// Drop everything `owner` registered or edited (mod disabled / feature off).
     pub fn remove_owner(&mut self, owner: &Owner) {
         for hooks in self.hooks.values_mut() {

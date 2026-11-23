@@ -57,6 +57,14 @@ def _names(rows):
     return out
 
 
+# The Name field as a DLC vault's rows carry it: keyed by its hash, not its name (dlc_* progression banks, 2026-11-22).
+NAME_HASHED = 'Hash_942AB8AEE4B414ED'
+
+
+def _name(fields):
+    return fields.get('Name') or fields.get(NAME_HASHED)
+
+
 def _text(field, names):
     """A text field, or a hashed name field resolved through the known names."""
     if not field:
@@ -189,7 +197,7 @@ def graphs(rows, binary):
             state = by_key.get((STATE_CLASS, state_key))
             if state is None:
                 continue
-            name = _text(state['fields'].get('Name'), names) or state_key
+            name = _text(_name(state['fields']), names) or state_key
             on = {}
             for handler_key in _typed_keys(state['fields'].get(STATE_HANDLERS), names):
                 handler = by_key.get((HANDLER_CLASS, handler_key))
@@ -197,7 +205,7 @@ def graphs(rows, binary):
                 if not blob or not blob.get('data'):
                     continue
                 size, offset = struct.unpack_from('>II', bytes.fromhex(blob['data']), 0)
-                message = _text(handler['fields'].get('Name'), names) or handler_key
+                message = _text(_name(handler['fields']), names) or handler_key
                 on[message] = translate_chunk(binary[offset:offset + size])
             events = presentation_events(state['fields'].get('Events'), binary)
             states[name] = {'events': events, 'on': on}
@@ -334,6 +342,10 @@ def export(game_root, dlc_bigs, work, output, report=print):
                     if name != 'main':
                         from_bank[key] = name
         report(f"Progression bank {name} ({source}): {len(part['actions'])} actions, {len(part['graphs'])} graphs")
+        # A graph without its initial state never starts and holds the career's graph queue for good.
+        stuck = sorted(k for k, g in part['graphs'].items() if g['initial'] not in g['states'])
+        if stuck:
+            report(f"Progression bank {name}: {len(stuck)} graphs without an initial state: {', '.join(stuck[:8])}")
     rewards, kills = {}, []
     for (cls, key) in bank_rows:
         if cls != CHALLENGE_CLASS:

@@ -181,6 +181,20 @@ the export (so a new bank or DLC never gives a silently wrong graph). The export
 message. Tests on hand-built bytecode
 (`test_progression_lua.py`, no retail bytes).
 
+<a id="dlc-graph-names"></a>
+
+## Fix: the DLC packs' graphs held every new career (2026-11-22)
+
+**Problem.** With the DLC packs installed, a new career never activated skate.School: the save kept the five starting actions as fired, with nothing armed and nothing active, so no challenge could ever progress. The career runs one graph at a time (b888); the DLC starting actions (`dlc_sanitariumdlc_starting_action`, `dwmc_`, `mmcn_`, `play_`) sort before `starting_action`, and their graph never started, so it held the queue for good and `starting_stategraph` (tut_sksc_01, the school teleports, ftl_univ_02, the achievement arms) never ran.
+
+**Root cause** [data]. The DLC progression vaults carry the state and handler `Name` field keyed by its hash (`Hash_942AB8AEE4B414ED` = hash64("Name")) instead of `Name`, so `progression.py` fell back to the rows' keys: all 66 DLC graphs had hashed state names, none had `initial`, and their handlers' message names were hashes too (no `stateenter`).
+
+**Change.**
+- `progression.py`: the state and handler names are read under either key; the export reports any graph without an `initial` state (none now: 247 graphs on the disc plus the four packs). Re-export check: only the 66 DLC graphs change in progression.json.
+- `career/mod.rs` `Career::start`: ours, a save repair, not retail. A career saved in that state (auto-start actions fired, nothing armed, nothing active, no completion, no graph running or queued) runs its fired auto-start actions' graphs again; they only activate, arm and set flags. The queue itself is saved since 2026-11-14, so this only meets older saves.
+
+**Verification.** Test `a_save_whose_start_graphs_never_ran_runs_them_again_and_a_working_one_does_not`; career tests 52 passed. Desktop run with the user's career (map2, 2026-11-22): the five starting graphs ran on load, the saved career then held 17 active challenges (tut_sksc_01, ftl_univ_02, the school teleports and the DLC packs' firsts) and 61 armed actions.
+
 ## Change: milestones, crossbar facts and the Skate Profile page (step 10; design `.local/research/b895-career-steps-10-12-design.md`)
 
 - Export: each action's `parent`, `killable` (challenges with a non-empty killed it list or race type 0x13) and a

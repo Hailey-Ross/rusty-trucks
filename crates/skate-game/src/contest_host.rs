@@ -311,6 +311,7 @@ fn update(
         Query<&mut crate::living_world::npc_skaters::NpcRaceClock>,
         Commands,
     ),
+    mut career: MessageWriter<crate::career::ChallengeResult>,
 ) {
     let mut commands = contests.take_pending();
     let Some(state) = contests.run.as_mut() else { return };
@@ -554,6 +555,9 @@ fn update(
     if let Some(c) = finished {
         info!("SKATE_CONTEST end {id} completion={c:?} totals={totals:?}");
         contests.result = Some(format!("contest={id} completion={c:?} totals={totals:?}"));
+        // complete.stateenter: Challenge.CompleteChallenge(C, result) reaches the career like every family's (it was
+        // never sent, so contests could not pay or advance the career).
+        career.write(crate::career::ChallengeResult { challenge: id.clone(), completion: c, reactivate: false });
         contests.music.push((12, playlist));
         contests.run = None;
         for c in [Component::Countdown, Component::Timer, Component::Leaderboard] {

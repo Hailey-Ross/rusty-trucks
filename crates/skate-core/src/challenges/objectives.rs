@@ -105,6 +105,10 @@ pub struct Records {
     pub set_marker: bool,
     /// Pushes while active (objective +0x4C0, GetNumPushes 82C69508).
     pub pushes: u32,
+    /// The last clean air's spin while active, degrees (obj+0x470, GetDegreesOfSpin; b894 §3).
+    pub air_spin_degrees: u32,
+    /// The last clean line's score while active, 0 from the next line's begin (obj+0x2B8, GetSequencePoints).
+    pub sequence_points: i32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -342,10 +346,17 @@ impl Group {
             Message::SequenceBegin => {
                 for o in &mut self.objectives {
                     o.records.entered_in_sequence.clear();
+                    o.records.sequence_points = 0;
                 }
                 self.activate_mode(Activation::Sequence, &mut out);
             }
             Message::Wipeout => self.activate_mode(Activation::Wipeout, &mut out),
+            // 82C6DB50: a clean line's score is copied to every active objective before its evaluation.
+            Message::SequenceComplete { score, clean: true } => {
+                for o in self.objectives.iter_mut().filter(|o| o.state == State::Active) {
+                    o.records.sequence_points = score;
+                }
+            }
             _ => {}
         }
         if let Some(byte) = message.mask_byte() {

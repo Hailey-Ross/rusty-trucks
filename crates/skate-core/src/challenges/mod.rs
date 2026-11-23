@@ -13,6 +13,7 @@ pub mod hom_run;
 pub mod lots;
 pub mod path_filter;
 pub mod objectives;
+pub mod one_up_run;
 pub mod poster;
 pub mod predicate;
 pub mod race;

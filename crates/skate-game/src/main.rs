@@ -132,6 +132,7 @@ mod race_host;
 mod contest_ai_host;
 mod contest_host;
 mod ftl_host;
+mod one_up_host;
 mod hom_host;
 mod visual_indicators;
 mod challenge_map;

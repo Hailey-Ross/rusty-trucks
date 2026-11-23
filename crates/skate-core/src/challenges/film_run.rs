@@ -1,8 +1,9 @@
 //! Films, anywhere films and follow the leader, re-implemented from the retail state graph `objectives_shared`
 //! (research b875, follow the leader b1006; doc 42 "Films and follow the leader: the shared machine"). Same runner rules
 //! as own the spot (`ots.rs`, b832): deferred state changes, enter on flush, state handlers before global ones.
-//! Not ported here: SimulPlay (online), the photo graph's display_photo / shot picker (photo_skate2), presentation
-//! content (the host plays it and answers with events).
+//! Photos run `photo_skate2` (b875 §1b): this graph with its challenge_cleanup replaced and display_photo in place of
+//! killed_it / highlight_reel. Not ported here: SimulPlay (online), presentation content (the host plays it and
+//! answers with events).
 
 use super::timers::{TimerId, Timers};
 use super::{Completion, Flow};
@@ -17,14 +18,25 @@ pub enum Kind {
     AnywhereFilm,
     /// 0x17: follow the leader.
     Follow,
+    /// 0x26: spot photos (photo_skate2).
+    Photo,
+    /// 0x25: anywhere photos: no boundary, start where the player is.
+    AnywherePhoto,
 }
 
 impl Kind {
     fn film(self) -> bool {
         matches!(self, Kind::Film | Kind::SpotFilm | Kind::AnywhereFilm)
     }
+    pub fn photo(self) -> bool {
+        matches!(self, Kind::Photo | Kind::AnywherePhoto)
+    }
+    /// The types the result selector repairs and resumes (the two photo and the two film types, b875 §1).
+    fn resumes(self) -> bool {
+        self.film() || self.photo()
+    }
     fn anywhere(self) -> bool {
-        self == Kind::AnywhereFilm
+        matches!(self, Kind::AnywhereFilm | Kind::AnywherePhoto)
     }
 }
 
@@ -41,6 +53,8 @@ impl Rules {
     pub fn retail(kind: Kind) -> Self {
         match kind {
             Kind::AnywhereFilm => Self { fail_on_wipeout: true, fail_on_objective_fail: true, fail_outside_boundary: false, no_boundary: true },
+            Kind::Photo => Self { fail_on_wipeout: false, fail_on_objective_fail: false, fail_outside_boundary: false, no_boundary: false },
+            Kind::AnywherePhoto => Self { fail_on_wipeout: false, fail_on_objective_fail: false, fail_outside_boundary: false, no_boundary: true },
             _ => Self { fail_on_wipeout: true, fail_on_objective_fail: true, fail_outside_boundary: true, no_boundary: false },
         }
     }
@@ -92,8 +106,8 @@ impl Params {
     /// A row's family defaults (b875 section 2); the row then overrides what it sets.
     pub fn retail(kind: Kind) -> Self {
         let (film, prefilm) = match kind {
-            Kind::Film | Kind::SpotFilm => (180.0, 0.0),
-            Kind::AnywhereFilm => (30.0, 1.0),
+            Kind::Film | Kind::SpotFilm | Kind::Photo => (180.0, 0.0),
+            Kind::AnywhereFilm | Kind::AnywherePhoto => (30.0, 1.0),
             Kind::Follow => (0.0, 0.0),
         };
         Self {
@@ -111,10 +125,10 @@ impl Params {
             out_of_bounds_time: 5.0,
             owned_display_time: 3.1,
             killed_display_time: 3.3,
-            allow_player_bail: kind == Kind::Follow,
-            allow_objective_failure: kind == Kind::AnywhereFilm,
-            allow_session_markers: kind.film(),
-            reset_objectives_on_marker: kind.film(),
+            allow_player_bail: matches!(kind, Kind::Follow | Kind::AnywherePhoto),
+            allow_objective_failure: matches!(kind, Kind::AnywhereFilm | Kind::AnywherePhoto),
+            allow_session_markers: kind.resumes(),
+            reset_objectives_on_marker: kind.film() || kind == Kind::Photo,
             reset_ai_on_bail: true,
             reset_ai_on_marker: true,
             use_line_timer: false,
@@ -148,6 +162,8 @@ pub enum State {
     ChallengeCleanup,
     KilledIt,
     HighlightReel,
+    /// photo_skate2: the photo NIS (the objective's highlight) and the shot picker.
+    DisplayPhoto,
     EndOptions,
     Restarted,
     Complete,
@@ -217,6 +233,10 @@ pub enum Event {
     LineTimerStarted,
     LineTimerExpired,
     UseMarker,
+    /// Photos: the player left the PhotoChallengeBoundary (leftobjectivescoringboundary).
+    LeftScoringBoundary,
+    /// The photo NIS reached its pick point (cMsgNISChallengeNotify 0x95C091D3).
+    NisChallengeNotify,
     NisComplete,
     HighlightReelComplete,
     Retry,
@@ -265,6 +285,9 @@ pub enum Command {
     KilledItEffect(bool),
     PauseSimulation(bool),
     PlayHighlightReel,
+    /// FrontEnd.OpenPhotoSelection over the photo NIS's frames (NIS.GetPhotoNISCount of the first owned objective's
+    /// playback definition); the host answers NisComplete when the pick is done.
+    OpenPhotoSelection,
     OpenContinueRetry,
     NotifyRunning,
     Complete(Completion),
@@ -413,7 +436,7 @@ impl FilmRun {
     /// `ChallengeResultSelector` (b875): the film types end only with every objective complete or the film timer out,
     /// and otherwise repair and go on; follow the leader ends unless it has a boundary the player left [inferred].
     fn selector(&mut self, out: &mut Vec<Command>) -> bool {
-        if self.params.kind.film() {
+        if self.params.kind.resumes() {
             if self.all_complete || self.film_timer_expired {
                 return true;
             }
@@ -522,7 +545,18 @@ impl FilmRun {
                     out.push(Command::CentralMessage(Message::ChallengeFailed));
                 }
                 out.push(Command::SessionMarkerSet(false));
-                self.change(State::KilledIt);
+                self.change(if p.kind.photo() { State::DisplayPhoto } else { State::KilledIt });
+            }
+            // photo_skate2 display_photo.stateenter: the player held, the banner time (or the failed text's delay)
+            // before the photo NIS.
+            State::DisplayPhoto => {
+                out.push(Command::PauseMenu(false));
+                out.push(Command::PinPlayer(true));
+                match self.result {
+                    Flow::Lose => self.ids.central_message_delay = self.add(p.central_message_delay),
+                    Flow::Kill => self.ids.replay_wait = self.add(p.killed_display_time),
+                    _ => self.ids.replay_wait = self.add(p.owned_display_time),
+                }
             }
             State::KilledIt => {
                 out.push(Command::PauseMenu(false));
@@ -608,11 +642,13 @@ impl FilmRun {
                     out.push(Command::FailAllObjectives);
                     self.wipe_out = true;
                     self.result = Flow::Lose;
-                    if p.kind.film() {
+                    if p.kind.resumes() {
                         out.push(Command::PauseMenu(false));
                         out.push(Command::RemoveAllHighlights);
                         self.ids.wipeout = self.add(p.wipeout_delay);
-                        out.push(Command::Speech(Speech::Wipeout));
+                        if p.kind.film() {
+                            out.push(Command::Speech(Speech::Wipeout));
+                        }
                     } else {
                         self.change(State::ChallengeCleanup);
                     }
@@ -656,6 +692,10 @@ impl FilmRun {
                 if !last {
                     out.push(Command::Speech(Speech::CompleteAnObjective));
                 }
+                // a photo keeps one shot: the newest objective's highlight replaces the reel
+                if p.kind.photo() {
+                    out.push(Command::RemoveAllHighlights);
+                }
                 out.push(Command::AddHighlight { killed });
                 self.completed_one = true;
             }
@@ -692,10 +732,26 @@ impl FilmRun {
                 self.result = Flow::Lose;
                 out.push(Command::Speech(Speech::ReinforceOnFail));
                 self.objective_fail = true;
-                // b1006 §0.3: with AllowObjectiveFailure false the selector decides; FTL's ends the run.
+                if p.kind.photo() {
+                    // photos re-arm 1.5 s later (ObjectiveFailedTimerID)
+                    self.ids.objective_failed = self.add(p.objective_failed_delay);
+                } else if self.selector(out) {
+                    // b1006 §0.3: with AllowObjectiveFailure false the selector decides; FTL's ends the run.
+                    self.change(State::ChallengeCleanup);
+                }
+            }
+            (State::ChallengeRunning, Event::LeftScoringBoundary) if p.kind.photo() => {
+                out.push(Command::FailAllObjectives);
+                self.result = Flow::Lose;
                 if self.selector(out) {
                     self.change(State::ChallengeCleanup);
                 }
+            }
+            (State::DisplayPhoto, Event::NisChallengeNotify) => out.push(Command::OpenPhotoSelection),
+            (State::DisplayPhoto, Event::NisComplete) => {
+                out.push(Command::PauseSimulation(false));
+                out.push(Command::PauseMenu(true));
+                self.change(State::EndOptions);
             }
             (State::ChallengeRunning, Event::UseMarker) if !self.locked_out => {
                 if p.reset_ai_on_marker && p.competitors > 0 {
@@ -790,6 +846,19 @@ impl FilmRun {
                 out.push(Command::PauseSimulation(true));
                 self.change(State::HighlightReel);
             }
+            State::DisplayPhoto if is(self.ids.central_message_delay) => {
+                self.hide_banners(out);
+                self.change(State::EndOptions);
+            }
+            // display_photo ReplayWait: the HUD off, the world paused, the photo NIS from the objective's highlight.
+            State::DisplayPhoto if is(self.ids.replay_wait) => {
+                self.hide_banners(out);
+                out.push(Command::ShowHud(HudComponent::Objective, false));
+                out.push(Command::ShowHud(HudComponent::Timer, false));
+                out.push(Command::PauseSimulation(true));
+                out.push(Command::PrepareReel { killed: self.result == Flow::Kill });
+                out.push(Command::PlayHighlightReel);
+            }
             _ => {}
         }
     }
@@ -823,7 +892,9 @@ impl FilmRun {
             self.ids.not_enough_points = None;
             out.push(Command::FailAllObjectives);
             out.push(Command::CentralMessage(Message::ScoredLow));
-            out.push(Command::Speech(Speech::NotEnoughPoints));
+            if !p.kind.photo() {
+                out.push(Command::Speech(Speech::NotEnoughPoints));
+            }
             self.result = Flow::Lose;
             out.push(Command::ResetObjectives);
             out.push(Command::Evaluation(true));

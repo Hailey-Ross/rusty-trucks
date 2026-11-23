@@ -373,6 +373,165 @@ pub fn load(entries: &[Collection], root: &str, rules: &LocationRules, unlocks: 
     nodes
 }
 
+/// What the challenge folders test per challenge (research b1054 §3: the GlobalData row's fields), from setup's
+/// `challenges.json` `map_items`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct ChallengeItem {
+    pub id: String,
+    pub challenge_type: u32,
+    #[serde(default)]
+    pub title_id: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub teams: bool,
+    #[serde(default)]
+    pub debug_only: bool,
+    /// The map name and the sign-up spot a Sign Up teleports to (Location, b911 §2).
+    #[serde(default)]
+    pub map: Option<String>,
+    #[serde(default)]
+    pub location: Option<ItemLocation>,
+    /// In the map's item pool (a skatercollections `challenges` row; the bank's family rows are not).
+    #[serde(default)]
+    pub pool: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct ItemLocation {
+    pub matrix: [[f32; 4]; 4],
+}
+
+/// The tab filters (b1054 §1): `active` (activated, not passed), `completed` (Owned or Killed), `all`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabRule {
+    Active,
+    Passed,
+    All,
+}
+
+/// One challenge folder filter as data (b1054 §1 / §5): the types it takes, a tag it needs, tags it refuses, whether
+/// a team challenge also passes, whether DebugOnly rows are refused. Mods can add or retarget a rule by filter key.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FolderRule {
+    pub types: Vec<u32>,
+    pub require_tag: Option<String>,
+    pub exclude_tags: Vec<String>,
+    pub teams: bool,
+    pub exclude_debug: bool,
+}
+
+impl FolderRule {
+    pub fn accepts(&self, item: &ChallengeItem) -> bool {
+        let typed = self.types.contains(&item.challenge_type) || (self.teams && item.teams);
+        let typed = typed || (self.types.is_empty() && self.require_tag.is_some());
+        typed
+            && self.require_tag.as_ref().is_none_or(|t| item.tags.contains(t))
+            && !self.exclude_tags.iter().any(|t| item.tags.contains(t))
+            && !(self.exclude_debug && item.debug_only)
+    }
+}
+
+/// The retail rules (b1054 §1; types: Tutorial 0, Film 7, Street 8, OwnTheSpot 9, Vert 15, DeathRace 19, Follow 23,
+/// HallOfMeat 31, OneUp 32, AnywherePhoto 37, SpotPhoto 38, AnywhereFilm 39, OwnTheLot 52). `skateschool`'s body is
+/// commented out in retail: it never accepts, so its folder is always dropped.
+pub fn retail_folder_rules() -> BTreeMap<String, FolderRule> {
+    let pro = || vec!["Pro".to_owned()];
+    let pro_gs = || vec!["Pro".to_owned(), "GettingStarted".to_owned()];
+    let rule = |types: &[u32], exclude: Vec<String>| FolderRule { types: types.to_vec(), exclude_tags: exclude, ..Default::default() };
+    let mut rules = BTreeMap::new();
+    rules.insert("sp_team".into(), FolderRule { types: vec![37, 39], teams: true, ..Default::default() });
+    rules.insert("1up".into(), rule(&[32], pro()));
+    rules.insert("deathrace".into(), rule(&[19], pro()));
+    rules.insert("film".into(), rule(&[7], pro_gs()));
+    rules.insert("followtheleader".into(), rule(&[23], pro_gs()));
+    rules.insert("gettingstarted".into(), FolderRule { require_tag: Some("GettingStarted".into()), ..Default::default() });
+    rules.insert("hallofmeat".into(), rule(&[31], pro()));
+    rules.insert("otl".into(), FolderRule { types: vec![52], exclude_debug: true, ..Default::default() });
+    rules.insert("ots".into(), rule(&[9], Vec::new()));
+    rules.insert("photo".into(), rule(&[38], pro_gs()));
+    rules.insert("pro".into(), FolderRule { require_tag: Some("Pro".into()), ..Default::default() });
+    rules.insert("promotional".into(), rule(&[37, 39], Vec::new()));
+    rules.insert("skateschool".into(), FolderRule::default());
+    rules.insert("street".into(), rule(&[8], pro()));
+    rules.insert("training".into(), rule(&[0], pro()));
+    rules.insert("vert".into(), rule(&[15], pro()));
+    rules
+}
+
+pub fn retail_tab_rules() -> BTreeMap<String, TabRule> {
+    [("active", TabRule::Active), ("completed", TabRule::Passed), ("all", TabRule::All)].into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
+}
+
+/// The Challenge Map's challenge pool: the `challenges` rows (class 0x8876E0B556740E36) in vault order (b1054 §3).
+pub fn pool(entries: &[Collection]) -> Vec<String> {
+    entries.iter().filter(|e| class_is(e, "challenges")).map(|e| e.key.clone()).collect()
+}
+
+/// A challenge folder of the tree: its node, its tab's rule and its own filter key.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChallengeFolder {
+    pub folder: EntryRef,
+    pub tab: EntryRef,
+    pub tab_rule: TabRule,
+    pub filter: String,
+}
+
+/// The listing rows under `root` whose filter is a challenge folder rule, under a tab whose filter is a tab rule.
+pub fn challenge_folders(entries: &[Collection], root: &str, folders: &BTreeMap<String, FolderRule>,
+    tabs: &BTreeMap<String, TabRule>) -> Vec<ChallengeFolder> {
+    let names: BTreeMap<u64, &str> = KNOWN_LISTINGS.iter().map(|n| (hash(n), *n)).collect();
+    let id_of = |key: &str| names.get(&key_hash(key)).map_or_else(|| key.to_owned(), |n| (*n).to_owned());
+    let filters: BTreeMap<u64, &Collection> = entries.iter().filter(|e| class_is(e, "map_filter")).map(|e| (key_hash(&e.key), e)).collect();
+    let listings: Vec<&Collection> = entries.iter().filter(|e| class_is(e, "map_listing")).collect();
+    let filter_of = |row: &Collection| ref_spec(row, LISTING_FILTER).filter(|(c, _)| *c == hash("map_filter"))
+        .and_then(|(_, k)| filters.get(&k)).map(|f| f.key.clone());
+    let mut out = Vec::new();
+    for tab in listings.iter().filter(|r| key_hash(&r.parent) == key_hash(root)) {
+        let Some(rule) = filter_of(tab).and_then(|f| tabs.get(&f).copied()) else { continue };
+        let tab_entry = EntryRef::map(EntryKind::MapListing, &id_of(&tab.key));
+        for folder in listings.iter().filter(|r| key_hash(&r.parent) == key_hash(&tab.key)) {
+            if let Some(filter) = filter_of(folder).filter(|f| folders.contains_key(f)) {
+                out.push(ChallengeFolder { folder: EntryRef::map(EntryKind::MapListing, &id_of(&folder.key)), tab: tab_entry.clone(),
+                    tab_rule: rule, filter });
+            }
+        }
+    }
+    out
+}
+
+/// The challenge leaves of every folder for the player's status (82D0C1C0 tab pool, then 82D0C890 the folder rule,
+/// b1054 §2): an item passes its tab's rule and the folder's. `pool` keeps the map's item pool order (the
+/// skatercollections `challenges` rows, DebugOnly ones left out); leaves sort by their label's text like the other
+/// folders (82647EA0). Returns the leaves and the folders left empty (retail drops those, b1054 §2).
+pub fn challenge_leaves(folders: &[ChallengeFolder], rules: &BTreeMap<String, FolderRule>, pool: &[&ChallengeItem],
+    active: &dyn Fn(&str) -> bool, passed: &dyn Fn(&str) -> bool, label_text: &dyn Fn(&str) -> Option<String>)
+    -> (Vec<MapNode>, Vec<EntryRef>) {
+    let mut nodes = Vec::new();
+    let mut empty = Vec::new();
+    for f in folders {
+        let Some(rule) = rules.get(&f.filter) else { continue };
+        let mut leaves: Vec<(String, &ChallengeItem)> = pool.iter().copied()
+            .filter(|i| match f.tab_rule { TabRule::Active => active(&i.id), TabRule::Passed => passed(&i.id), TabRule::All => true })
+            .filter(|i| rule.accepts(i))
+            .map(|i| {
+                let label = i.title_id.clone().unwrap_or_else(|| i.id.clone());
+                (label_text(&label).unwrap_or_else(|| label.clone()), i)
+            })
+            .collect();
+        if leaves.is_empty() {
+            empty.push(f.folder.clone());
+            continue;
+        }
+        leaves.sort_by(|a, b| collate(&a.0, &b.0, COLLATION));
+        for (order, (_, i)) in leaves.into_iter().enumerate() {
+            nodes.push(MapNode { entry: EntryRef::map(EntryKind::Challenge, &i.id), parent: Some(f.folder.clone()),
+                label: i.title_id.clone().unwrap_or_else(|| i.id.clone()), order: order as i32 });
+        }
+    }
+    (nodes, empty)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,6 +717,32 @@ mod tests {
     }
     /// The real tree: four tabs, the seven location folders in retail order, Downtown's 14 locations.
     #[test]
+    #[ignore = "requires the converted vault and challenges.json (SKATE3_ASSET_ROOT)"]
+    fn the_retail_challenge_folders_fill_from_the_installed_items() {
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("SKATE3_ASSET_ROOT"));
+        let collections = crate::collections::Collections::load(&root).unwrap();
+        let folders = challenge_folders(collections.entries(), "progression", &retail_folder_rules(), &retail_tab_rules());
+        #[derive(serde::Deserialize)]
+        struct File { map_items: Vec<ChallengeItem> }
+        let file: File = serde_json::from_slice(&std::fs::read(root.join("private/challenges.json")).unwrap()).unwrap();
+        let pool: Vec<&ChallengeItem> = file.map_items.iter().filter(|i| i.pool && !i.debug_only).collect();
+        eprintln!("folders {} pool {} items {}", folders.len(), pool.len(), file.map_items.len());
+        assert!(folders.len() >= 30, "the challenge folders of the Active, Completed and All tabs");
+        let (leaves, _) = challenge_leaves(&folders, &retail_folder_rules(), &pool, &|id| id == "tut_sksc_01" || id == "ftl_univ_02", &|_| false, &|_| None);
+        let active: Vec<(&str, &str)> = leaves.iter().filter(|n| folders.iter().any(|f| Some(&f.folder) == n.parent.as_ref() && f.tab_rule == TabRule::Active))
+            .map(|n| (n.parent.as_ref().unwrap().id.as_str(), n.entry.id.as_str())).collect();
+        eprintln!("active leaves {active:?}");
+        let base = load(collections.entries(), "progression", &LocationRules::default(), &LocationUnlocks::default(), &|_| None);
+        let tab = EntryRef::map(EntryKind::MapListing, "progression_active");
+        for n in base.iter().filter(|n| n.parent.as_ref() == Some(&tab)) {
+            let kids = base.iter().filter(|k| k.parent.as_ref() == Some(&n.entry)).count();
+            let rule = folders.iter().find(|f| f.folder == n.entry).map(|f| f.filter.as_str());
+            eprintln!("tab child {:?} {:?} label {:?} order {} base kids {kids} rule {rule:?}", n.entry.kind, n.entry.id, n.label, n.order);
+        }
+        assert!(active.iter().any(|(_, id)| *id == "tut_sksc_01") && active.iter().any(|(_, id)| *id == "ftl_univ_02"));
+    }
+
+    #[test]
     #[ignore = "requires the converted vault (SKATE3_ASSET_ROOT with private/stock/skater-collections.json)"]
     fn the_retail_progression_tree() {
         let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("SKATE3_ASSET_ROOT"));
@@ -611,5 +796,29 @@ mod tests {
         assert_eq!(icons["teleport"].max_distance, 500.0);
         // The friend-film key script 82849DE8 uses, by name.
         assert_eq!(map_icon(&icons, "challenge_friendfilm_visualindicator").map(|i| i.texture.as_str()), Some("mini_teleport"));
+    }
+
+    #[test]
+    fn challenge_folders_keep_what_passes_the_tab_and_the_folder_rule_and_drop_empty_ones() {
+        let item = |id: &str, t: u32, tags: &[&str]| ChallengeItem { id: id.into(), challenge_type: t, title_id: Some(id.into()),
+            tags: tags.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+        let items = [item("photo_a", 38, &[]), item("1up_a", 32, &["Pro"]), item("film_anyw_a", 39, &[]), item("film_gs", 7, &["GettingStarted"]),
+            item("photo_done", 38, &[])];
+        let pool: Vec<&ChallengeItem> = items.iter().collect();
+        let tab = EntryRef::map(EntryKind::MapListing, "progression_active");
+        let folder = |f: &str| ChallengeFolder { folder: EntryRef::map(EntryKind::MapListing, f), tab: tab.clone(), tab_rule: TabRule::Active, filter: f.into() };
+        let folders: Vec<ChallengeFolder> = ["photo", "1up", "pro", "promotional", "sp_team", "gettingstarted", "film"].iter().map(|f| folder(f)).collect();
+        let rules = retail_folder_rules();
+        let (leaves, empty) = challenge_leaves(&folders, &rules, &pool, &|id| id != "photo_done", &|id| id == "photo_done", &|_| None);
+        let at = |f: &str| -> Vec<&str> { leaves.iter().filter(|n| n.parent.as_ref().is_some_and(|p| p.id == f)).map(|n| n.entry.id.as_str()).collect() };
+        assert_eq!(at("photo"), ["photo_a"], "a passed challenge is not active");
+        assert_eq!(at("pro"), ["1up_a"], "the 1-Ups are Pro challenges");
+        assert_eq!(at("promotional"), ["film_anyw_a"]);
+        assert_eq!(at("sp_team"), ["film_anyw_a"], "anywhere types also sit in the team folder");
+        assert_eq!(at("gettingstarted"), ["film_gs"]);
+        assert!(at("film").is_empty(), "a GettingStarted film stays out of the film folder");
+        let empty: Vec<&str> = empty.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(empty, ["1up", "film"], "empty folders are dropped (b1054 §2)");
+        assert!(leaves.iter().all(|n| n.entry.kind == EntryKind::Challenge));
     }
 }

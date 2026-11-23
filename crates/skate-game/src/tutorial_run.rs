@@ -107,6 +107,7 @@ pub(crate) struct Inputs<'a> {
     pub bail_pose: Option<usize>,
     pub bail_score: u32,
     pub bail: skate_core::hall_of_meat::BailSummary,
+    pub live: crate::challenge_objectives::LiveFacts,
     /// The end dialog's pick (end_dialog_host.rs), taken while the run waits in its end options.
     pub end_choice: Option<skate_core::challenges::end_dialog::Action>,
 }
@@ -226,6 +227,7 @@ impl TutorialRun {
             grind_rail: input.grind_rail, time_to_grind: input.time_to_grind, board_adjust: input.board_adjust,
             wipeout_over: input.wipeout_over, bail_pose: input.bail_pose, bail_score: input.bail_score, bail: input.bail,
             competitor_distances: [None; 4],
+            live: input.live,
         };
         let mut groups: Vec<&mut DataObjectives> = self.objectives.as_mut().into_iter().collect();
         let raw: Vec<GroupEvent> = self.feed.step(&mut groups, &feed_input, self.evaluating && presenter.objectives_evaluate()).into_iter().map(|(_, e)| e).collect();
@@ -391,7 +393,7 @@ mod tests {
     }
 
     fn input<'a>(volumes: &'a [(String, u64)], entered: &'a [u64], pending: bool, ticks: u32, distance: f32) -> Inputs<'a> {
-        Inputs { volumes, entered, exited: &[], banked: &[], ticks, teleport_pending: pending, distance, state_id: 100, in_sequence: false, markers: &[], tricks: &[], began: &[], right_stick_y: 0.0, triggers: [0.0; 2], manual: None, pushes: 0, pump_acceleration: 0.0, pump_user: false, grind_rail: None, time_to_grind: skate_core::challenges::api::NO_GRIND_TIME, board_adjust: 0, wipeout_over: false, bail_pose: None, bail_score: 0, bail: Default::default(), end_choice: None }
+        Inputs { volumes, entered, exited: &[], banked: &[], ticks, teleport_pending: pending, distance, state_id: 100, in_sequence: false, markers: &[], tricks: &[], began: &[], right_stick_y: 0.0, triggers: [0.0; 2], manual: None, pushes: 0, pump_acceleration: 0.0, pump_user: false, grind_rail: None, time_to_grind: skate_core::challenges::api::NO_GRIND_TIME, board_adjust: 0, wipeout_over: false, bail_pose: None, bail_score: 0, bail: Default::default(), live: Default::default(), end_choice: None }
     }
 
     /// One step without the HUD actions (checked on their own below).
