@@ -1660,6 +1660,7 @@ fn apply_one(
         Command::TriggerConfigure { options } => triggers::configure(world, id, options)?,
         Command::ChallengeStart { id: challenge } => challenges::start(world, &challenge)?,
         Command::ChallengeAbort {} => challenges::abort(world)?,
+        Command::ChallengePlacePhotographer {} => challenges::place_photographer(world)?,
         Command::ChallengeEnable { id: challenge, enabled } => challenges::enable(world, id, &challenge, enabled)?,
         Command::ChallengeConfigure { id: challenge, options } => challenges::configure(world, id, challenge, options)?,
         Command::ChallengeAdd { id: challenge, definition } => challenges::add(world, id, &challenge, definition)?,

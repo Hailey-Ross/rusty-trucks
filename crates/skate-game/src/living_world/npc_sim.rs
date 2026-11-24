@@ -9,7 +9,7 @@ use skate_core::living_world::{ai_record, autopilot_brain};
 use skate_core::living_world::replay::node_flags;
 use skate_core::player::state::PhysicalStateId;
 
-/// The simulated tier's rules (a mod may change them; `Default` = off, no distance limit, 3 skaters).
+/// The simulated tier's rules (a mod may change them; `Default` = on, no distance limit, 3 skaters).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SimulatedTierSettings {
     pub enabled: bool,
@@ -69,7 +69,7 @@ impl Default for SimulatedTierSettings {
     fn default() -> Self {
         // `SKATE_NPC_SIM_RADIUS` (m): a test knob so an unattended run sees many switches to physics.
         let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(f32::MAX);
-        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() != Some("0"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), powerslide: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, respawn_hold_seconds: 8.0 / 60.0, reactions: Default::default(), push: Default::default(), brake: Default::default() }
+        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() != Some("0"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() != Some("0"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), powerslide: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, respawn_hold_seconds: 8.0 / 60.0, reactions: Default::default(), push: Default::default(), brake: Default::default() }
     }
 }
 
@@ -230,6 +230,8 @@ pub(crate) struct NpcSim {
     pub(crate) previous_pose: Vec<skate_core::animation::output::NativeMatrix>,
     pub(crate) previous_root: skate_core::animation::output::NativeMatrix,
     pub(crate) previous_placements: u32,
+    /// Its camera before the last step: the watched view (`camera::CameraWatch`) blends to the current one by the overstep.
+    pub(crate) previous_camera: Option<skate_core::camera::CameraFrame>,
     /// Ticks left of the hold after a placement (counted once the placement landed; the spawn push on the last one).
     hold_ticks: u32,
     /// Where the placed skater was when its hold started counting (the spawn push needs it still there).
@@ -475,6 +477,17 @@ pub(crate) fn swap_player(sim: &mut NpcSim, physics: &mut GamePhysics, runtime: 
 }
 
 impl NpcSim {
+    /// This skater's own camera after its last step (Online.SwitchCamera shows it, `camera::CameraWatch`).
+    pub(crate) fn camera_frame(&self) -> Option<skate_core::camera::CameraFrame> {
+        self.body.camera.presentation_frame()
+    }
+
+    /// The camera before and after its last step, for the watched view's overstep blend.
+    pub(crate) fn camera_frames(&self) -> Option<(skate_core::camera::CameraFrame, skate_core::camera::CameraFrame)> {
+        let current = self.camera_frame()?;
+        Some((self.previous_camera.unwrap_or(current), current))
+    }
+
     /// The body after the last step (`None` before the first one).
     pub(crate) fn last_body(&self) -> Option<&skate_net::packed::BodyState> {
         self.last_body.as_ref()
@@ -577,7 +590,7 @@ fn spawn_sim(
     // Logs must diagnose: where a promotion's game-thread time goes (a hitch report).
     info!("NPC_SIM_SPAWN_COST pooled={pooled} left={} wait_load_ms={:.1} body_ms={:.1}", pool.bodies.len(), waited.as_secs_f64() * 1000.0,
         (started.elapsed() - waited).as_secs_f64() * 1000.0);
-    let mut sim = NpcSim { context, body, respawn_in: None, bail_ticks: 0, bail_alpha: 1.0, last_node: None, pushing: false, own_speed: false, speed_cap: None, was_pinned: false, start_ticks: 0, braking: false, pump_cycle: 0, pump_ticks: 0, approach: Default::default(), push_ticks: 0, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, chain_trace: 0, takeoff_trace: 0, takeoff_logged: false, takeoff_launch: f32::NAN, lane_flags: (false, false), handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), air_half_turns: 0, sequence_active: false, board_yaw: Default::default(), ground_error: None, since_landing: 7200, last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
+    let mut sim = NpcSim { context, body, respawn_in: None, bail_ticks: 0, bail_alpha: 1.0, last_node: None, pushing: false, own_speed: false, speed_cap: None, was_pinned: false, start_ticks: 0, braking: false, pump_cycle: 0, pump_ticks: 0, approach: Default::default(), push_ticks: 0, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, chain_trace: 0, takeoff_trace: 0, takeoff_logged: false, takeoff_launch: f32::NAN, lane_flags: (false, false), handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, previous_camera: None, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), air_half_turns: 0, sequence_active: false, board_yaw: Default::default(), ground_error: None, since_landing: 7200, last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
     let v = place(&mut sim, target, true, hold_ticks)?;
     if fit_to_ground {
         sim.body.runtime.fit_next_arrival();
@@ -738,6 +751,8 @@ struct Job {
     serial: u32,
     character: String,
     intents: Vec<(String, f32)>,
+    /// PinAI (actor +0x770 bit 26): no controller input this tick, and the force-brake byte (+0x2A2C) on its step.
+    pinned: bool,
 }
 
 /// The simulated NPCs' physics steps, one worker each, synced after the player's step; results in id order.
@@ -775,6 +790,7 @@ fn run_steps(
     jobs: Vec<Job>,
     commands: &mut Commands,
     count: &mut usize,
+    (angle, viewer): (Option<&crate::camera::CameraAngleSettings>, Option<&crate::camera::CameraRuntime>),
 ) {
     if jobs.is_empty() {
         return;
@@ -810,7 +826,16 @@ fn run_steps(
                 sim_ref.previous_pose.clone_from(&sim_ref.body.runtime.render_pose);
                 sim_ref.previous_root = sim_ref.body.runtime.animated_skeleton.roots.animation_to_world;
                 sim_ref.previous_placements = sim_ref.body.runtime.placements();
+                sim_ref.previous_camera = sim_ref.body.camera.presentation_frame();
+                // Its camera frames the viewer's way when watched (1-Up pro turn): the viewer's angle, tunings, aspect.
+                if let Some(angle) = angle {
+                    crate::camera::angle::apply(angle, &mut sim_ref.body.camera);
+                }
+                if let Some(viewer) = viewer {
+                    sim_ref.body.camera.set_aspect_ratio(viewer.aspect_ratio());
+                }
                 physics.sync_npc_worker(worker);
+                worker.set_pinned(job.pinned);
                 // Its solve: no copy of itself; the player and the other simulated NPCs instead (each as a peer body).
                 if let (Some(mark), Some((player, schema)), Some(at)) = (physics.npc_sim_proxy_mark, bump, skate_net::prediction::CollisionPrediction::at(0.0)) {
                     let mut proxies = std::mem::take(&mut worker.network_proxies);
@@ -915,6 +940,7 @@ pub(crate) fn simulate(
     mut calls: Local<u64>,
     mut pool: ResMut<NpcSimPool>,
     (mut workers, valid, mut chain_scratch): (Local<Vec<Box<GamePhysics>>>, Option<Res<super::npc_skaters::NpcValidLines>>, Local<ChainScratch>),
+    (angle, viewer): (Option<Res<crate::camera::CameraAngleSettings>>, Option<Res<crate::camera::CameraRuntime>>),
 ) {
     let _span = super::timing::span(super::timing::NPC_SIM);
     let (Some(config), Some(graphs), Some(mut physics)) = (config, graphs, physics) else { return };
@@ -1286,7 +1312,7 @@ pub(crate) fn simulate(
                     sim.last_deck = Some(projected_point(sim, state_now).0);
                     lift_pending(sim, npc);
                     // The step itself runs after the loop, with the other NPCs' steps (in parallel).
-                    jobs.push(Job { entity: e, serial: npc.id.serial, character: npc.character.clone(), intents: walk_intents });
+                    jobs.push(Job { entity: e, serial: npc.id.serial, character: npc.character.clone(), intents: walk_intents, pinned: false });
                     continue;
                 }
                 // Avoider answer (82470830, 82464E30) and retail projection 8246D560 (b110): docs/hails-additions/26e-living-world-skater-ai.md#projection-and-avoider
@@ -2127,8 +2153,14 @@ pub(crate) fn simulate(
                 sim.last_state = Some(state);
                 sim.last_deck = Some(projected_point(sim, state).0);
                 lift_pending(sim, npc);
+                // PinAI (8284ADC8 sets actor +0x770 bit 26): the controller skips its tick input (b121) and 82593640 copies
+                // the bit into the force-brake byte, so a pinned rider coasts to a stop instead of riding on.
+                let pinned = race.is_some_and(|c| !c.moving);
+                if pinned {
+                    intents.clear();
+                }
                 // The step itself runs after the loop, with the other NPCs' steps (in parallel).
-                jobs.push(Job { entity: e, serial: npc.id.serial, character: npc.character.clone(), intents });
+                jobs.push(Job { entity: e, serial: npc.id.serial, character: npc.character.clone(), intents, pinned });
             }
             None => {
                 // Clients draw what the host sends; only the authority simulates.
@@ -2144,6 +2176,10 @@ pub(crate) fn simulate(
                     // A challenge racer is a full skater at any distance and over the ambient cap (race_ai_host; ambient
                     // skaters stop while racers ride); a pinned one is placed at its start slot below.
                     Some("race rider pinned")
+                } else if race.is_none() && state.contest_riders.contains(&npc.id) {
+                    // A contest rider spawned this frame gets its NpcRaceClock (pinned) on the host's next step; taken over
+                    // before that it got the ambient spawn push and rode off from its wait spot (1-Up, 2026-11-23).
+                    Some("contest rider waiting for its clock")
                 } else if count >= rules.max && race.is_none() {
                     Some("at max")
                 } else if race.is_none() && distance > rules.radius &&!(rules.walk_back && replay.avoid.last.mode == skate_core::living_world::avoid::AvoidMode::StepOff) {
@@ -2201,7 +2237,7 @@ pub(crate) fn simulate(
     }
     let player_body = (rules.bump && net.is_some()).then(|| crate::physics::network::capture_body(&physics, &player));
     let bump = player_body.as_ref().zip(net.as_ref().map(|n| &n.schema));
-    run_steps(&mut physics, &mut npcs, bump, &graphs, &mut workers, jobs, &mut commands, &mut count);
+    run_steps(&mut physics, &mut npcs, bump, &graphs, &mut workers, jobs, &mut commands, &mut count, (angle.as_deref(), viewer.as_deref()));
 
 }
 

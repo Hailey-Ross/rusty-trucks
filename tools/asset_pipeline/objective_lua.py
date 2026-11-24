@@ -16,6 +16,16 @@ ENUMS = {
     'Flow.eObjectiveStatus.Disabled': 1, 'Flow.eObjectiveStatus.Enabled': 2, 'Flow.eObjectiveStatus.Active': 4,
     'Flow.eObjectiveStatus.Complete': 8, 'Flow.eObjectiveStatus.Failed': 16,
 }
+# ObjectiveHOM's enum tables (research b869, b1059: EBoneIndex builder 82C67300, EDamageLevel 82C67C90) and
+# Pedestrian.ePedestrianState (828A9B18 returns Idle 0 / KnockDown 1).
+ENUMS.update({f'ObjectiveHOM.EBoneIndex.{n}': i for i, n in enumerate((
+    'NECK1', 'NECK', 'LEFTHAND', 'LEFTFOREARM', 'LEFTARM', 'LEFTSHOULDER', 'RIGHTHAND', 'RIGHTFOREARM', 'RIGHTARM',
+    'RIGHTSHOULDER', 'SPINE3', 'SPINE2', 'SPINE1', 'SPINE', 'LEFTTOEBASE', 'LEFTFOOT', 'LEFTLEG', 'LEFTUPLEG',
+    'RIGHTTOEBASE', 'RIGHTFOOT', 'RIGHTLEG', 'RIGHTUPLEG', 'HIPS', 'FACE', 'GROIN'))})
+ENUMS.update({f'ObjectiveHOM.EDamageLevel.{n}': i for i, n in enumerate(
+    ('Scrape', 'Bruise', 'Sprain', 'Dislocate', 'BreakPart', 'BreakAll'))})
+ENUMS.update({f'ObjectiveHOM.EWipeoutBodyTweakIndex.{n}': i for i, n in enumerate(('Cannonball', 'SwanDive', 'Judokick', 'Tweak4'))})
+ENUMS.update({'Pedestrian.ePedestrianState.Idle': 0, 'Pedestrian.ePedestrianState.KnockDown': 1})
 
 TOKEN = re.compile(r'''
     (?P<space>\s+)

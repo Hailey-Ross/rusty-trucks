@@ -29,10 +29,15 @@ use crate::{app::FrameSet, config::Config};
 #[derive(Component)]
 pub(crate) struct GameplayCamera;
 
+/// Online.SwitchCamera (1-Up turns, research b1055): the gameplay view shows this simulated NPC skater's own camera
+/// while it is set and the skater simulates; None = the player's camera.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CameraWatch(pub Option<skate_core::living_world::LivingWorldId>);
+
 pub(crate) struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn)
+        app.init_resource::<CameraWatch>().add_systems(Startup, spawn)
             // After the pause menu, before the fixed simulation steps that advance the camera.
             .add_systems(PreUpdate, (angle::sync_runtime, angle::sync_look_invert).after(crate::graphics_menu::MenuInput))
             .add_systems(Update, present.after(FrameSet::Animation).before(FrameSet::Verification));
@@ -67,7 +72,10 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
     customiser: Option<Res<crate::customiser::Customiser>>,
     mut guard: Local<crate::replay::CameraGuard>,
     physics: Option<Res<crate::physics::GamePhysics>>,
+    (watch, npcs): (Option<Res<CameraWatch>>, Query<(&crate::living_world::npc_skaters::NpcSkater, &crate::living_world::npc_sim::NpcSim)>),
     mut cameras: Query<(&mut Camera, &mut Transform, &mut Projection), With<GameplayCamera>>) {
+    let watched = watch.and_then(|w| w.0).filter(|_| !replay.active)
+        .and_then(|id| npcs.iter().find(|(n, _)| n.id == id)).and_then(|(_, s)| s.camera_frames());
     if let Ok(window) = windows.single() {
         // A minimized window reports 0x0, and 0/0 is NaN. That poisons the
         // projection's field of view and trips the non-finite frame check, so
@@ -119,6 +127,13 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
         }
         if let Projection::Perspective(p) = &mut *projection {
             p.fov = previous.fov + (current.fov - previous.fov) * alpha;
+        }
+        // The watched skater's camera, blended by the overstep like the player's (it stepped at 60 Hz).
+        if let Some((before, after)) = watched {
+            *transform = crate::presentation::blend(crate::presentation::camera_transform(before), crate::presentation::camera_transform(after), alpha);
+            if let Projection::Perspective(p) = &mut *projection {
+                p.fov = (before.field_of_view_degrees + (after.field_of_view_degrees - before.field_of_view_degrees) * alpha).to_radians();
+            }
         }
         if let Some(customiser) = customiser.as_ref().filter(|c| c.open) {
             let (height,distance,yaw)=customiser.preview_camera();

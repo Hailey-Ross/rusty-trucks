@@ -18,15 +18,28 @@ pub(crate) struct CentralMessage {
     /// Retail's second, "modified" slot (ShowModifiedCentralMessage 82850770, research b852): its own clip
     /// (`mcModifiedMessage`: lower, smaller, no sound, gone at once on hide), shown beside a normal message.
     pub modified: bool,
+    /// ShowCustomCentralMessage's argument list (one comma-separated string, as the challenge graphs pass it),
+    /// filled into the id's `{n:type}` placeholders.
+    pub args: Option<String>,
 }
 
 impl CentralMessage {
     pub(crate) fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), style: 0, audio_hook: 0, seconds: None, modified: false }
+        Self { text: text.into(), style: 0, audio_hook: 0, seconds: None, modified: false, args: None }
     }
     pub(crate) fn modified(text: impl Into<String>) -> Self {
         Self { modified: true, ..Self::new(text) }
     }
+}
+
+/// The id's text with its arguments: `{n:s}` the text as is, `{n:points}` the grouped integer (the typed formats of
+/// 824FE848, research b1020). NOT RETAIL YET [inferred]: ShowCustomCentralMessage's own formatter is not read; the
+/// challenge text path (`fe_language::format_typed`) stands in.
+pub(crate) fn format_message(template: &str, args: Option<&str>) -> String {
+    let Some(list) = args else { return template.to_owned() };
+    let format = crate::fe_language::NumberFormat::default();
+    let args: Vec<String> = list.split(',').map(str::to_owned).collect();
+    crate::fe_language::format_typed(&format, template, &args, |kind, a| crate::fe_language::retail_typed(&format, kind, a))
 }
 
 /// How long a message stays before the movie's outro: retail's central HUD update (`82664550`) counts the shown
@@ -198,7 +211,7 @@ impl Runtime {
     /// The modified slot: retail 826640F0 then the screen event 10 (its own timer; 11 hides it).
     pub fn show(&mut self, message: &CentralMessage) -> Result<(), String> {
         let known = self.bindings.movie.text_assets.language.contains_key(&message.text);
-        let text = if known { self.bindings.movie.text_assets.localize(&message.text) } else { format!("#{}", message.text) };
+        let text = if known { format_message(&self.bindings.movie.text_assets.localize(&message.text), message.args.as_deref()) } else { format!("#{}", message.text) };
         let timer = Some((0.0, message.seconds.unwrap_or(DISPLAY_SECONDS)));
         let state = if message.modified {
             self.bindings.modified_text = text;

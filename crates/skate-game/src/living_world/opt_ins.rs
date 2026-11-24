@@ -1,4 +1,5 @@
-//! Living world features still in test, off by default: zombie mode, NPC skater physics, grab visualizer.
+//! Living world features still in test, off by default: zombie mode, grab visualizer, ped vehicle flee. NPC skater
+//! physics is part of the living world, not an opt-in (`npc_sim`, USER-ASKS 720).
 //! Switches and mod reach: docs/hails-additions/26a-living-world-overview.md#living-world-opt-ins
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OptIn {
     Zombie,
-    NpcPhysics,
     /// Grab cues in the world and grab availability log lines (`grab_view`); a viewer aid, nothing changes in play.
     VisualizeGrabs,
     /// Peds flee a car moving along the line to them, either way (retail's `82E2C0C8` test, W8; still in test).
@@ -20,13 +20,12 @@ pub(crate) enum OptIn {
 }
 
 impl OptIn {
-    pub(crate) const ALL: [OptIn; 6] = [OptIn::Zombie, OptIn::NpcPhysics, OptIn::VisualizeGrabs, OptIn::VehicleFlee, OptIn::Challenges, OptIn::BaseOutfit];
+    pub(crate) const ALL: [OptIn; 5] = [OptIn::Zombie, OptIn::VisualizeGrabs, OptIn::VehicleFlee, OptIn::Challenges, OptIn::BaseOutfit];
 
     /// The variable that turns it on for a run.
     pub(crate) fn env(self) -> &'static str {
         match self {
             OptIn::Zombie => "SKATE_ZOMBIE",
-            OptIn::NpcPhysics => "SKATE_NPC_SIM",
             OptIn::VisualizeGrabs => "SKATE_VISUALIZE_GRABS",
             OptIn::VehicleFlee => "SKATE_PED_VEHICLE_FLEE",
             OptIn::Challenges => "SKATE_CHALLENGES",
@@ -36,7 +35,6 @@ impl OptIn {
     pub(crate) fn label(self) -> &'static str {
         match self {
             OptIn::Zombie => "Zombie Mode",
-            OptIn::NpcPhysics => "NPC Skater Physics",
             OptIn::VisualizeGrabs => "Visualize Grabs",
             OptIn::VehicleFlee => "Ped Vehicle Flee",
             OptIn::Challenges => "Career and Challenges",
@@ -47,7 +45,6 @@ impl OptIn {
     pub(crate) fn hint(self) -> &'static str {
         match self {
             OptIn::Zombie => "Zombie mode (the retail cheat, until the cheat screen exists): yellow screen, no traffic, every ped comes after you.",
-            OptIn::NpcPhysics => "NPC skaters near you run full skater physics and bail (still being tested).",
             OptIn::VisualizeGrabs => "Shows the props and car spots in grab range (green = grab now) and logs grab availability.",
             OptIn::VehicleFlee => "Peds run from a car within 10 m that drives toward or away from them (still being tested).",
             OptIn::Challenges => "Career mode, the Skate 101 tutorials and own the spot challenges: discovery, the D-pad Up sign-up, runs, their HUD and saved records (still being built).",
@@ -64,7 +61,6 @@ impl OptIn {
     fn log_key(self) -> &'static str {
         match self {
             OptIn::Zombie => "zombie",
-            OptIn::NpcPhysics => "npc_physics",
             OptIn::VisualizeGrabs => "visualize_grabs",
             OptIn::VehicleFlee => "ped_vehicle_flee",
             OptIn::Challenges => "challenges",
@@ -73,13 +69,12 @@ impl OptIn {
     }
 }
 
-/// The player's choices. NPC Skater Physics is on by default (user 2026-10-25, USER-ASKS 338: "Lets turn on by default
-/// with the ability to toggle it off"), and so are Career and Challenges (2026-11-20); the others are off.
+/// The player's choices. Career and Challenges is on by default (2026-11-20); the others are off. Files from before
+/// USER-ASKS 720 may hold `npc_physics`; unknown keys are ignored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct OptIns {
     pub zombie: bool,
-    pub npc_physics: bool,
     pub visualize_grabs: bool,
     pub vehicle_flee: bool,
     pub challenges: bool,
@@ -88,14 +83,14 @@ pub(crate) struct OptIns {
 
 impl Default for OptIns {
     fn default() -> Self {
-        Self { zombie: false, npc_physics: true, visualize_grabs: false, vehicle_flee: false, challenges: true, base_outfit: false }
+        Self { zombie: false, visualize_grabs: false, vehicle_flee: false, challenges: true, base_outfit: false }
     }
 }
 
 impl OptIns {
     /// The `SKATE_*=1` variables of this run.
     pub(crate) fn from_env() -> Self {
-        let mut s = Self { zombie: false, npc_physics: false, visualize_grabs: false, vehicle_flee: false, challenges: false, base_outfit: false };
+        let mut s = Self { zombie: false, visualize_grabs: false, vehicle_flee: false, challenges: false, base_outfit: false };
         for o in OptIn::ALL {
             s.set(o, o.env_on());
         }
@@ -104,7 +99,6 @@ impl OptIns {
     pub(crate) fn get(&self, o: OptIn) -> bool {
         match o {
             OptIn::Zombie => self.zombie,
-            OptIn::NpcPhysics => self.npc_physics,
             OptIn::VisualizeGrabs => self.visualize_grabs,
             OptIn::VehicleFlee => self.vehicle_flee,
             OptIn::Challenges => self.challenges,
@@ -114,7 +108,6 @@ impl OptIns {
     pub(crate) fn set(&mut self, o: OptIn, on: bool) {
         match o {
             OptIn::Zombie => self.zombie = on,
-            OptIn::NpcPhysics => self.npc_physics = on,
             OptIn::VisualizeGrabs => self.visualize_grabs = on,
             OptIn::VehicleFlee => self.vehicle_flee = on,
             OptIn::Challenges => self.challenges = on,
@@ -146,7 +139,6 @@ impl OptIns {
 pub(crate) fn in_effect(settings: &super::LivingWorldSettings) -> OptIns {
     OptIns {
         zombie: settings.zombie,
-        npc_physics: settings.npc_simulated.enabled,
         // The player's own choice only: a viewer aid, not a mod tuning.
         visualize_grabs: settings.user_opt_ins.visualize_grabs,
         vehicle_flee: settings.ped_brain.vehicle_flee.enabled,
@@ -198,10 +190,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn choices_round_trip_and_default_npc_physics_on() {
+    fn choices_round_trip_and_default_challenges_on() {
         assert_eq!(serde_json::from_str::<OptIns>("{}").unwrap(), OptIns::default());
-        assert_eq!(OptIns::default(), OptIns { zombie: false, npc_physics: true, visualize_grabs: false, vehicle_flee: false, challenges: true, base_outfit: false }, "USER-ASKS 338; challenges on by default (2026-11-20)");
-        let mut s = OptIns { npc_physics: false, challenges: false, ..OptIns::default() };
+        assert_eq!(OptIns::default(), OptIns { zombie: false, visualize_grabs: false, vehicle_flee: false, challenges: true, base_outfit: false }, "challenges on by default (2026-11-20)");
+        assert_eq!(serde_json::from_str::<OptIns>(r#"{"npc_physics":false}"#).unwrap(), OptIns::default(), "a file from before USER-ASKS 720 still loads");
+        let mut s = OptIns { challenges: false, ..OptIns::default() };
         for o in OptIn::ALL {
             assert!(!s.get(o));
             s.set(o, true);
@@ -217,26 +210,26 @@ mod tests {
     #[test]
     fn mod_reset_restores_the_players_choice() {
         let mut s = super::super::LivingWorldSettings::default();
-        s.set_user_opt_ins(OptIns { zombie: true, npc_physics: true, ..Default::default() });
+        s.set_user_opt_ins(OptIns { zombie: true, ..Default::default() });
         assert!(s.zombie && s.npc_simulated.enabled);
         s.zombie = false;
         s.npc_simulated.enabled = false;
         s.reset_mod_overrides();
-        assert!(s.zombie && s.npc_simulated.enabled);
+        assert!(s.zombie && s.npc_simulated.enabled, "NPC skater physics is always on again once the mod stops");
         assert_eq!(in_effect(&s).zombie, true);
     }
 
     /// One OPT_IN_CHANGED line per opt-in that switched, naming who switched it.
     #[test]
     fn changes_name_each_toggle_and_its_source() {
-        let off = OptIns { npc_physics: false, ..OptIns::default() };
+        let off = OptIns { challenges: false, ..OptIns::default() };
         let zombie = OptIns { zombie: true, ..off };
         assert_eq!(changes(off, zombie, zombie), vec!["OPT_IN_CHANGED zombie off -> on by player"]);
         assert_eq!(changes(zombie, off, zombie), vec!["OPT_IN_CHANGED zombie on -> off by mod"]);
         assert!(changes(zombie, zombie, off).is_empty());
-        let both = OptIns { npc_physics: true, visualize_grabs: true, ..off };
+        let both = OptIns { zombie: true, visualize_grabs: true, ..off };
         assert_eq!(changes(off, both, both), vec![
-            "OPT_IN_CHANGED npc_physics off -> on by player",
+            "OPT_IN_CHANGED zombie off -> on by player",
             "OPT_IN_CHANGED visualize_grabs off -> on by player",
         ]);
     }

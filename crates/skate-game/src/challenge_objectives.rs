@@ -133,6 +133,17 @@ impl Default for EventList {
     }
 }
 
+/// Starts a challenge's presentation group (owner = the row id); the group id to wait for with `Presenter::take_finished`,
+/// None when there is nothing to play (no events, an export with counts only) or the queue dropped it.
+pub(crate) fn start_presentation(presenter: Option<&mut crate::presentation_run::Presenter>, owner: &str, slot: &str, events: &EventList) -> Option<String> {
+    let events = events.events();
+    let p = presenter.filter(|_| !events.is_empty())?;
+    let id = format!("{owner}/{slot}");
+    let started = p.manager.start(skate_core::presentation::Group { id: id.clone(), owner: owner.to_owned(), events });
+    info!("CHALLENGE_PRESENTATION {id} {started:?}");
+    (started != skate_core::presentation::Started::Dropped).then_some(id)
+}
+
 impl EventList {
     pub fn len(&self) -> usize {
         match self {
@@ -201,6 +212,21 @@ pub(crate) struct DataObjectives {
 }
 
 pub(crate) type TrickGroups = std::sync::Arc<std::collections::BTreeMap<u64, std::collections::BTreeSet<u64>>>;
+
+/// The install's challenge trick groups (`skate_data::objective_program::trick_groups`), read once per asset root and
+/// shared by every challenge host.
+pub(crate) fn trick_groups(asset_root: &std::path::Path) -> TrickGroups {
+    static CACHE: std::sync::Mutex<Option<(std::path::PathBuf, TrickGroups)>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, groups)) = cache.as_ref().filter(|(root, _)| root == asset_root) {
+        return groups.clone();
+    }
+    let groups = std::sync::Arc::new(skate_data::collections::Collections::load(asset_root)
+        .map(|c| skate_data::objective_program::trick_groups(&c)).unwrap_or_default());
+    info!("CHALLENGE_TRICK_GROUPS {}", groups.len());
+    *cache = Some((asset_root.to_path_buf(), groups.clone()));
+    groups
+}
 
 fn trick_key(name: &str) -> u64 {
     skate_data::attrib_hash::hash(name)
@@ -313,6 +339,21 @@ pub(crate) struct Banked {
 }
 
 impl DataObjectives {
+    /// MakeObjectivesFromGroup's +0x78 (b1056): the row's TrackUniqueTrickGroup key; tracked only when it names a
+    /// loaded trick group (retail: the reference resolves to a collection).
+    pub(crate) fn track_unique(&mut self, key: Option<u64>) {
+        self.group.unique.members = key.and_then(|k| self.trick_groups.get(&k).cloned());
+    }
+
+    pub(crate) fn tracks_unique(&self) -> bool {
+        self.group.unique.members.is_some()
+    }
+
+    /// Objectives.AddLastUniqueTrickToList (82C61900); the committed count.
+    pub(crate) fn add_last_unique_trick(&mut self) -> usize {
+        self.group.unique.add_last()
+    }
+
     /// The group for one objective set (own the spot: the owned set); None when the export has none or a program
     /// does not load (logged; the native check runs instead).
     pub(crate) fn new(id: &str, rows: &[ObjectiveData], volumes: Vec<(String, u64)>, trick_groups: TrickGroups) -> Option<Self> {
@@ -500,7 +541,16 @@ pub(crate) struct FeedInput<'a> {
     pub bail: skate_core::hall_of_meat::BailSummary,
     /// Leader.* distances to competitors 1..4 (follow the leader).
     pub competitor_distances: [Option<f32>; 4],
+    /// The anywhere photographer's distance from the player's root while placed (AnywherePhoto.*, b1057).
+    pub photographer: Option<f32>,
     pub live: LiveFacts,
+}
+
+/// The pose output's push-off fields (+605 flag, +588 score; b1059), read live.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PushOff {
+    pub flag: bool,
+    pub score: f32,
 }
 
 /// The live skater and pad values the objective API reads besides the edges (b894 §3 / §4 / §6).
@@ -513,6 +563,7 @@ pub(crate) struct LiveFacts {
     pub right_stick_x: f32,
     pub speed: f32,
     pub sequence_score: i32,
+    pub push_off: PushOff,
 }
 
 /// XInput bumper bits in `RawInput::buttons` (input/platform.rs left_shoulder / right_shoulder).
@@ -530,6 +581,8 @@ pub(crate) fn live_facts(skater: &crate::physics::SkaterRuntime, raw: &crate::in
         right_stick_x: raw.right[0],
         speed: (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(),
         sequence_score: skater.scoring.sequence_score() as i32,
+        push_off: PushOff { flag: skater.player_input.physical.skeleton.response_changed_605 != 0,
+            score: skater.player_input.physical.skeleton.response_change_588 },
     }
 }
 
@@ -559,6 +612,9 @@ pub(crate) struct ObjectiveFeed {
     air_half_turns: u32,
     /// The current manual's distance, m (speed integrated while it is held).
     manual_distance: f32,
+    /// The push-off score last reported: our pose output keeps +605 set once written, so a push-off is reported when
+    /// the flag is set and the score changed since the last evaluation [inferred: retail's clear of +605 is not read].
+    last_push_off: Option<f32>,
 }
 
 impl ObjectiveFeed {
@@ -611,7 +667,14 @@ impl ObjectiveFeed {
             manual_distance: self.manual_distance,
             sequence_score: input.live.sequence_score,
             finished_sequence_score: input.banked.iter().find(|(_, dirty)| !dirty).map_or(0, |(s, _)| *s),
+            photographer_placed: input.photographer.is_some(),
+            photographer_distance: input.photographer.unwrap_or(skate_core::challenges::photographer::NOT_PLACED),
+            push_off: input.live.push_off.flag && self.last_push_off != Some(input.live.push_off.score),
+            push_off_score: input.live.push_off.score,
         };
+        if input.live.push_off.flag && input.ticks > 0 {
+            self.last_push_off = Some(input.live.push_off.score);
+        }
         for g in groups.iter_mut() {
             g.skater = facts;
             g.tricks_this_frame = input.tricks.to_vec();

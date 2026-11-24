@@ -131,6 +131,8 @@ pub struct Context {
     pub group_points: i32,
     /// GetGroupPointsRequirement (group `+0x4C`).
     pub requirement: i32,
+    /// ObjectiveInfo.NumUniqueTrickDone (82C69DE8): the group's committed unique tricks plus its candidate.
+    pub unique_tricks: i32,
 }
 
 /// The objective's two predicates: completion (tObjectiveDefinition) and PointsValid (default false).
@@ -188,15 +190,57 @@ pub struct Group {
     pub requirement: i32,
     /// Hint rows run (group `+0x219`; MakeObjectives and CreateObjectiveGroup set it, research b942).
     pub hints: bool,
+    /// The tracked unique trick group (group `+0x78`, research b953 / b1056).
+    pub unique: UniqueTricks,
     inside: Vec<u64>,
     all_reported: bool,
+}
+
+/// A group's unique trick tracking (research b953, b1056): the challenge's TrackUniqueTrickGroup members (`+0x78`),
+/// the committed tricks (`+0x80`, at most [`UNIQUE_MAX`]), the candidate of the last clean line (`+0x210`) and this
+/// line's tricks (`+0x198`). Plain trick keys, so it serializes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UniqueTricks {
+    /// None = the challenge tracks no trick group.
+    pub members: Option<std::collections::BTreeSet<u64>>,
+    pub committed: Vec<u64>,
+    pub candidate: Option<u64>,
+    line: Vec<u64>,
+}
+
+/// The committed list's cap at the candidate pick (82C6DB50: fewer than 32).
+pub const UNIQUE_MAX: usize = 32;
+
+impl UniqueTricks {
+    /// NumUniqueTrickDone (82C69DE8).
+    pub fn count(&self) -> usize {
+        self.committed.len() + self.candidate.is_some() as usize
+    }
+
+    /// A clean line (82C6DB50): the candidate becomes the line's first member trick not committed yet.
+    fn pick(&mut self) {
+        let Some(members) = &self.members else { return };
+        self.candidate = None;
+        if self.committed.len() < UNIQUE_MAX {
+            self.candidate = self.line.iter().copied().find(|t| members.contains(t) && !self.committed.contains(t));
+        }
+    }
+
+    /// Objectives.AddLastUniqueTrickToList (82C61900; the challenge graph's objectivecomplete): the candidate is
+    /// committed and cleared; returns the committed count.
+    pub fn add_last(&mut self) -> usize {
+        if let Some(t) = self.candidate.take() {
+            self.committed.push(t);
+        }
+        self.committed.len()
+    }
 }
 
 impl Group {
     pub fn new(definitions: impl IntoIterator<Item = Definition>) -> Self {
         let objectives = definitions.into_iter()
             .map(|definition| Objective { definition, state: State::Inactive, records: Records::default(), points: 0 }).collect();
-        Self { objectives, requirement: 0, hints: true, inside: Vec::new(), all_reported: false }
+        Self { objectives, requirement: 0, hints: true, unique: UniqueTricks::default(), inside: Vec::new(), all_reported: false }
     }
 
     /// GetGroupAccumulatedPoints (82C65188).
@@ -205,7 +249,7 @@ impl Group {
     }
 
     fn context(&self, sequence: bool, newly_complete: bool) -> Context {
-        Context { sequence, newly_complete, group_points: self.accumulated(), requirement: self.requirement }
+        Context { sequence, newly_complete, group_points: self.accumulated(), requirement: self.requirement, unique_tricks: self.unique.count() as i32 }
     }
 
     /// Flow.ActivateObjective: inactive -> active, or armed when the row waits for something to activate it.
@@ -259,8 +303,12 @@ impl Group {
         self.all_reported = false;
     }
 
-    /// Reset.ResetAllObjectives: full reset of every objective, then all inactive.
+    /// Reset.ResetAllObjectives: full reset of every objective, then all inactive. A tracking group's committed unique
+    /// tricks are emptied; the candidate stays (82C6F430, b953).
     pub fn reset_all(&mut self) {
+        if self.unique.members.is_some() {
+            self.unique.committed.clear();
+        }
         for o in &mut self.objectives {
             o.records = Records::default();
             o.state = State::Inactive;
@@ -339,6 +387,7 @@ impl Group {
                 }
             }
             Message::TrickDone { key } => {
+                self.unique.line.push(key);
                 for o in self.objectives.iter_mut().filter(|o| o.state == State::Active) {
                     push(&mut o.records.tricks, key);
                 }
@@ -356,6 +405,7 @@ impl Group {
                 for o in self.objectives.iter_mut().filter(|o| o.state == State::Active) {
                     o.records.sequence_points = score;
                 }
+                self.unique.pick();
             }
             _ => {}
         }
@@ -369,7 +419,10 @@ impl Group {
             }
         }
         match message {
-            Message::SequenceComplete { .. } => self.mode_reset(Activation::Sequence),
+            Message::SequenceComplete { .. } => {
+                self.mode_reset(Activation::Sequence);
+                self.unique.line.clear();
+            }
             Message::WipeoutOver => self.mode_reset(Activation::Wipeout),
             // The group tick clears the session marker flags after its evaluation pass (82C73FB8, research b894):
             // "just used / set the marker" holds until the end of the next tick.
@@ -640,5 +693,47 @@ mod tests {
         let mut cond = |_: usize, _: &Objective| true;
         assert!(g.handle(Message::GrindCompleted, &mut cond).is_empty(), "byte 10 is not in either mask");
         assert_eq!(g.handle(Message::AirCompleted, &mut cond), [Event::Completed(0), Event::Completed(1), Event::AllComplete]);
+    }
+
+    /// b953 / b1056: a clean line picks its first tracked trick not committed yet, the count already includes it in
+    /// that line's evaluation, an objective completion commits it, an unclean line keeps it, ResetAll empties the
+    /// committed list only.
+    #[test]
+    fn unique_tricks_pick_count_commit_and_reset() {
+        let mut g = Group::new([def(Activation::Immediate, &[1])]);
+        g.unique.members = Some([2, 3].into());
+        let mut out = Vec::new();
+        g.activate_all(&mut out);
+        let seen = std::cell::Cell::new(0);
+        let line = |g: &mut Group, tricks: &[u64], clean: bool| {
+            g.handle(Message::SequenceBegin, &mut |_: usize, _: &Objective| false);
+            for &key in tricks {
+                g.handle(Message::TrickDone { key }, &mut |_: usize, _: &Objective| false);
+            }
+            let mut c = Completion2(&seen);
+            g.handle_with(Message::SequenceComplete { score: 100, clean }, &mut c);
+        };
+        line(&mut g, &[1, 2, 3], true);
+        assert_eq!((g.unique.candidate, seen.get()), (Some(2), 1), "first member, counted in this line's pass");
+        assert_eq!(g.unique.add_last(), 1);
+        line(&mut g, &[2], true);
+        assert_eq!((g.unique.candidate, g.unique.count()), (None, 1), "already committed");
+        line(&mut g, &[3], true);
+        line(&mut g, &[1], false);
+        assert_eq!((g.unique.candidate, g.unique.count()), (Some(3), 2), "an unclean line keeps the candidate");
+        g.reset_all();
+        assert_eq!((g.unique.committed.len(), g.unique.count()), (0, 1));
+        let mut plain = Group::new([def(Activation::Immediate, &[1])]);
+        plain.handle(Message::TrickDone { key: 2 }, &mut |_: usize, _: &Objective| false);
+        plain.handle(Message::SequenceComplete { score: 0, clean: true }, &mut |_: usize, _: &Objective| false);
+        assert_eq!(plain.unique.count(), 0, "no tracked group");
+    }
+
+    struct Completion2<'a>(&'a std::cell::Cell<i32>);
+    impl Conditions for Completion2<'_> {
+        fn completion(&mut self, _i: usize, _o: &Objective, ctx: Context) -> bool {
+            self.0.set(ctx.unique_tricks);
+            false
+        }
     }
 }

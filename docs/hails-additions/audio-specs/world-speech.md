@@ -9,7 +9,7 @@ Port:
 Setup: `tools/asset_pipeline/world_audio.py`:
 - `speech_index`, with `rules` and each clip's `id` / `history`;
 - `world_tuning` → `speech_tuning`;
-- opt-in `decode_speech`.
+- always decoded by setup (USER-ASKS 720; the `decode_speech` opt-in is removed).
 
 Tests: the skate-audio `world::speech_*` unit tests, and `tests/world_speech.rs` on the dev install export.
 

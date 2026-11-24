@@ -75,13 +75,8 @@ struct GraphicsSettings {
     /// true = Bevy's multi-threaded scheduler. Read at start-up (`physics_threads_multi`); the launcher's Tools page
     /// writes the same field.
     physics_threads_multi: bool,
-    /// Which default changes this file has been through (`DEFAULTS_VERSION`; 0 in files from before the field); files
-    /// from before 1 get NPC Skater Physics switched on once, so a later "off" sticks.
-    #[serde(default)]
-    defaults_version: u32,
+    // Files from before USER-ASKS 720 may hold `defaults_version` and `opt_ins.npc_physics`; unknown keys are ignored.
 }
-/// 1 (2026-10-25, USER-ASKS 338): NPC Skater Physics on by default.
-const DEFAULTS_VERSION: u32 = 1;
 impl Default for GraphicsSettings {
     fn default() -> Self {
         Self {
@@ -104,7 +99,6 @@ impl Default for GraphicsSettings {
             debug_menus: false,
             fly_cam: false,
             physics_threads_multi: false,
-            defaults_version: DEFAULTS_VERSION,
         }
     }
 }
@@ -121,17 +115,6 @@ pub(crate) fn physics_threads_multi(asset_root: &std::path::Path) -> bool {
     std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<GraphicsSettings>(&b).ok()).is_some_and(|s| s.physics_threads_multi)
 }
 impl GraphicsSettings {
-    /// A file saved before a default changed takes the new default once; true when it changed (to be saved).
-    fn migrated(&mut self) -> bool {
-        if self.defaults_version >= DEFAULTS_VERSION {
-            return false;
-        }
-        if self.defaults_version < 1 {
-            self.opt_ins.npc_physics = true;
-        }
-        self.defaults_version = DEFAULTS_VERSION;
-        true
-    }
     fn validated(mut self) -> Self {
         if !skate_core::living_world::DrawDistance::MENU_STEPS.contains(&self.npc_draw_distance) {
             self.npc_draw_distance = skate_core::living_world::DrawDistance::RETAIL;
@@ -381,7 +364,7 @@ impl Menu {
             // Quitting is the rail's Close Game; Refresh Game Files only while the game files are out of date.
             4 => [14, 19].into_iter().chain((!crate::setup::stale_groups().is_empty()).then_some(REFRESH_ROW)).collect(),
             // Every opt-in (off by default or not retail) in one place, in row order (user 2026-10-25, USER-ASKS 336).
-            5 => [NPC_DRAW_DISTANCE_ROW, BETTER_WATER_ROW, MORE_AUDIBLE_ROW, SPEECH_ROW, EXTENDED_REPLAYS_ROW, REPLAY_LENGTH_ROW,
+            5 => [NPC_DRAW_DISTANCE_ROW, BETTER_WATER_ROW, MORE_AUDIBLE_ROW, EXTENDED_REPLAYS_ROW, REPLAY_LENGTH_ROW,
                 BETTER_MOVER_ROW, DEBUG_MENUS_ROW, FLY_CAM_ROW, PHYSICS_THREADS_ROW].into_iter().chain(OPT_IN_ROWS).collect(),
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
@@ -635,12 +618,6 @@ impl Menu {
                 let on = cx.opt_ins.get(o);
                 RowView::new(Kind::Enum { index: on as usize, count: 2, wrap: false }, o.label(), if on { "On  (testing)" } else { "Off" }, o.hint())
             }
-            SPEECH_ROW => {
-                let (on, decoded) = cx.audio.map_or((false, false), |a| (a.decode_speech(), a.speech_decoded()));
-                RowView::new(Kind::Enum { index: on as usize, count: 2, wrap: false }, "Ped Speech",
-                    match (on, decoded) { (true, true) => "On", (true, false) => "On  (refresh to decode)", (false, _) => "Off" },
-                    "Peds, pros and the announcer talk. Needs their speech decoded from your disc: about 3.4 GB more in the data folder and a few more minutes of setup. Switching it on offers Extras > Refresh Game Files, which decodes it.")
-            }
             19 => {
                 let slots = cx.controllers.map(controller_slots).unwrap_or_default();
                 RowView::new(Kind::Info, "Controllers", if slots.is_empty() { "None connected".into() } else { format!("{} connected", slots.len()) },
@@ -724,7 +701,7 @@ fn setup(
         .parent()
         .unwrap_or(&config.asset_root)
         .join("settings/graphics.json");
-    let mut settings = match std::fs::read(&path) {
+    let settings = match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice::<GraphicsSettings>(&bytes).unwrap_or_else(|e| {
             warn!("Graphics settings: {e}");
             GraphicsSettings::default()
@@ -732,14 +709,6 @@ fn setup(
         Err(_) => GraphicsSettings::default(),
     }
     .validated();
-    if path.is_file() && settings.migrated() {
-        info!("GRAPHICS_SETTINGS defaults updated to version {DEFAULTS_VERSION} (NPC Skater Physics on)");
-        if let Ok(bytes) = serde_json::to_vec_pretty(&settings) {
-            if let Err(e) = std::fs::write(&path, bytes) {
-                warn!("Graphics settings: {e}");
-            }
-        }
-    }
     // The session log shows what a run started with (later changes log as PC_OVERLAY).
     info!(
         "GRAPHICS_SETTINGS {}x{} scale {}% framerate cap {} npc draw distance {:.2} frame stats {}",
@@ -841,14 +810,12 @@ fn group_name(group: &str) -> &str {
 /// EXTRAS row: restart into setup's refresh (shown only while `setup::stale_groups` is not empty).
 const REFRESH_ROW: usize = 31;
 const AUDIO_ROWS: std::ops::RangeInclusive<usize> = 16..=18;
-/// OPT_INS-section rows (every opt-in, doc 26b "Opt-in switches in the PC overlay"): the non-retail "more audible"
-/// world layout and setup's speech decode (header "Audio").
+/// OPT_INS-section row (every opt-in, doc 26b "Opt-in switches in the PC overlay"): the non-retail "more audible"
+/// world layout (header "Audio"). Row 33 was Ped Speech (always on since USER-ASKS 720).
 const MORE_AUDIBLE_ROW: usize = 32;
-const SPEECH_ROW: usize = 33;
 /// Physics Step Threads (header "Performance"; `physics_threads_multi`).
 const PHYSICS_THREADS_ROW: usize = 39;
-/// The living world opt-ins (header "Opt-In Features"), in `OptIn::ALL` order (zombie mode, NPC skater physics,
-/// visualize grabs). One row per opt-in: the range follows the list.
+/// The living world opt-ins (header "Opt-In Features"), in `OptIn::ALL` order (zombie mode, visualize grabs, ...). One row per opt-in: the range follows the list.
 const OPT_IN_ROWS: std::ops::Range<usize> = 40..40 + crate::living_world::opt_ins::OptIn::ALL.len();
 fn opt_in(row: usize) -> crate::living_world::opt_ins::OptIn {
     crate::living_world::opt_ins::OptIn::ALL[row - OPT_IN_ROWS.start]
@@ -1425,16 +1392,6 @@ fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
                 crate::living_world::opt_ins::log_opt_in_changed("more_audible_world", !on, on, "player");
                 menu.status = format!("{}. Takes effect at the next start.", audio.set_more_audible_world(on));
             }
-            SPEECH_ROW => {
-                let on = !audio.decode_speech();
-                crate::living_world::opt_ins::log_opt_in_changed("decode_speech", !on, on, "player");
-                let saved = audio.set_decode_speech(on);
-                menu.status = match (on, audio.speech_decoded()) {
-                    (true, false) => format!("{saved}. Extras > Refresh Game Files decodes the speech (about 3.4 GB, a few minutes)."),
-                    (false, true) => format!("{saved}. The decoded speech stays; setup skips it from the next refresh."),
-                    _ => saved,
-                };
-            }
             EXTENDED_REPLAYS_ROW => menu.settings.extended_replays = !menu.settings.extended_replays,
             BETTER_MOVER_ROW => menu.settings.better_object_mover = !menu.settings.better_object_mover,
             PHYSICS_THREADS_ROW => {
@@ -1604,7 +1561,7 @@ fn preview_menu(config: Res<crate::config::Config>, mut menu: ResMut<Menu>, mut 
         Ok("custom") => { menu.open = true; menu.select_section(1); menu.selected=300; menu.view.content = true; menu.view.shown = true; },
         Ok("graphics") => { menu.open = true; menu.select_section(2); menu.view.content = true; menu.view.shown = true; },
         Ok("npc") => { menu.open = true; menu.select_section(5); menu.selected = NPC_DRAW_DISTANCE_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
-        Ok("optin") => { menu.open = true; menu.select_section(5); menu.selected = menu.rows().last().copied().unwrap_or(SPEECH_ROW); menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
+        Ok("optin") => { menu.open = true; menu.select_section(5); menu.selected = menu.rows().last().copied().unwrap_or(MORE_AUDIBLE_ROW); menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("stale") => { crate::setup::preview_stale(); menu.open = true; menu.select_section(4); menu.selected = REFRESH_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("maps") => { menu.open = true; menu.select_section(0); menu.view.content = true; menu.view.shown = true; },
         Ok("rail") => { menu.open = true; menu.select_section(2); },
@@ -1783,8 +1740,8 @@ mod tests {
         m.select_section(2);
         assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW, FRAME_STATS_CORNER_ROW, SESSION_TIMER_ROW]);
         m.select_section(5);
-        assert_eq!(m.page(), vec![911, NPC_DRAW_DISTANCE_ROW, 914, BETTER_WATER_ROW, 902, MORE_AUDIBLE_ROW, SPEECH_ROW, 915, EXTENDED_REPLAYS_ROW,
-            REPLAY_LENGTH_ROW, 916, BETTER_MOVER_ROW, 917, DEBUG_MENUS_ROW, FLY_CAM_ROW, 918, PHYSICS_THREADS_ROW, 913, 40, 41, 42, 43, 44, 45]);
+        assert_eq!(m.page(), vec![911, NPC_DRAW_DISTANCE_ROW, 914, BETTER_WATER_ROW, 902, MORE_AUDIBLE_ROW, 915, EXTENDED_REPLAYS_ROW,
+            REPLAY_LENGTH_ROW, 916, BETTER_MOVER_ROW, 917, DEBUG_MENUS_ROW, FLY_CAM_ROW, 918, PHYSICS_THREADS_ROW, 913, 40, 41, 42, 43, 44]);
         m.select_section(1);
         assert_eq!(m.page(), vec![904, 3, 906, CAMERA_ANGLE_ROW, 907, 8, 10]);
         m.select_section(4);
@@ -1855,16 +1812,16 @@ mod tests {
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
             // Audio, controller identity, and frame-time rows are spawned.
-            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == FRAME_STATS_CORNER_ROW || *id == SESSION_TIMER_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || *id == BETTER_WATER_ROW || *id == EXTENDED_REPLAYS_ROW || *id == REPLAY_LENGTH_ROW || *id == BETTER_MOVER_ROW || *id == DEBUG_MENUS_ROW || *id == FLY_CAM_ROW || *id == PHYSICS_THREADS_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
+            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == FRAME_STATS_CORNER_ROW || *id == SESSION_TIMER_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == MORE_AUDIBLE_ROW || *id == BETTER_WATER_ROW || *id == EXTENDED_REPLAYS_ROW || *id == REPLAY_LENGTH_ROW || *id == BETTER_MOVER_ROW || *id == DEBUG_MENUS_ROW || *id == FLY_CAM_ROW || *id == PHYSICS_THREADS_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
         // The opt-ins have their own section, not Graphics.
         menu.select_section(2);
-        assert!(!menu.rows().iter().any(|id| *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || OPT_IN_ROWS.contains(id)));
+        assert!(!menu.rows().iter().any(|id| *id == MORE_AUDIBLE_ROW || OPT_IN_ROWS.contains(id)));
         menu.select_section(5);
         assert_eq!(menu.category_name(5), "Opt-Ins");
-        assert_eq!(menu.rows(), [NPC_DRAW_DISTANCE_ROW, BETTER_WATER_ROW, MORE_AUDIBLE_ROW, SPEECH_ROW, EXTENDED_REPLAYS_ROW, REPLAY_LENGTH_ROW,
+        assert_eq!(menu.rows(), [NPC_DRAW_DISTANCE_ROW, BETTER_WATER_ROW, MORE_AUDIBLE_ROW, EXTENDED_REPLAYS_ROW, REPLAY_LENGTH_ROW,
             BETTER_MOVER_ROW, DEBUG_MENUS_ROW, FLY_CAM_ROW, PHYSICS_THREADS_ROW].into_iter().chain(OPT_IN_ROWS).collect::<Vec<_>>());
         assert_eq!(menu.page()[0], 911);
         // Every opt-in is in the Opt-Ins section and nowhere else.
@@ -1907,20 +1864,15 @@ mod tests {
         menu.daylight = true;
         assert_eq!(menu.rows(), vec![0,1,2,3]);
     }
+    /// USER-ASKS 720: a file from before NPC Skater Physics left the opt-ins (its `npc_physics`, `defaults_version`) still
+    /// loads with its other choices.
+    #[test]
+    fn old_npc_physics_choice_still_loads() {
+        let old: GraphicsSettings = serde_json::from_str(r#"{"opt_ins":{"zombie":true,"npc_physics":false,"visualize_grabs":false},"defaults_version":1}"#).unwrap();
+        assert!(old.opt_ins.zombie && !old.opt_ins.visualize_grabs);
+    }
     /// Physics Step Threads: single by default and for settings files written before the row; the saved choice is read
     /// back at start-up.
-    /// USER-ASKS 338: NPC Skater Physics is on by default; a file from before the change gets it once, a later "off"
-    /// stays off.
-    #[test]
-    fn npc_physics_defaults_on_once_and_off_sticks() {
-        assert!(GraphicsSettings::default().opt_ins.npc_physics);
-        let mut old: GraphicsSettings = serde_json::from_str(r#"{"opt_ins":{"zombie":false,"npc_physics":false,"visualize_grabs":false}}"#).unwrap();
-        assert!(old.migrated() && old.opt_ins.npc_physics && old.defaults_version == DEFAULTS_VERSION);
-        old.opt_ins.npc_physics = false;
-        let again: GraphicsSettings = serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
-        let mut again = again;
-        assert!(!again.migrated() && !again.opt_ins.npc_physics);
-    }
     #[test]
     fn physics_threads_default_single_and_load_saved() {
         let old: GraphicsSettings = serde_json::from_str(r#"{"width":1920,"height":1080}"#).unwrap();
@@ -1967,7 +1919,7 @@ mod tests {
         let settings: GraphicsSettings =
             serde_json::from_str(r#"{"width":0,"height":999999,"scale":0,"fps":1}"#)
                 .unwrap();
-        assert_eq!(settings.validated(), GraphicsSettings { defaults_version: 0, ..GraphicsSettings::default() });
+        assert_eq!(settings.validated(), GraphicsSettings::default());
     }
     #[test]
     fn scaled_target_and_cycle_boundaries() {

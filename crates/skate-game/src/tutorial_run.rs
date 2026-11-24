@@ -226,7 +226,7 @@ impl TutorialRun {
             pushes: input.pushes, pump_acceleration: input.pump_acceleration, pump_user: input.pump_user,
             grind_rail: input.grind_rail, time_to_grind: input.time_to_grind, board_adjust: input.board_adjust,
             wipeout_over: input.wipeout_over, bail_pose: input.bail_pose, bail_score: input.bail_score, bail: input.bail,
-            competitor_distances: [None; 4],
+            competitor_distances: [None; 4], photographer: None,
             live: input.live,
         };
         let mut groups: Vec<&mut DataObjectives> = self.objectives.as_mut().into_iter().collect();

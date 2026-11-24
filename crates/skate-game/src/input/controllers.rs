@@ -77,6 +77,14 @@ impl ControllerInput {
         let pad = &self.pads[device];
         pad.count() != 0 && pad.records().first().is_some_and(|r| r[1] & 0xff00_0000 != 0)
     }
+    /// The phone list's third row (hudphonelist mButton2 = B_hud: Place Photographer / Edit Park / Object Dropper,
+    /// 826682B0 option 0x40): B pressed this batch while LB holds the phone open.
+    pub(crate) fn phone_b_pressed(&self) -> bool {
+        let Some(device) = self.active_slot() else { return false };
+        let pad = &self.pads[device];
+        let flags = |i: usize| pad.records().get(i).map_or(0, |r| r[1]);
+        pad.count() != 0 && flags(8) & 0xff00 != 0 && flags(13) & 0xff00_0000 != 0
+    }
     /// The slot gameplay reads: the first ready one.
     pub(crate) fn active_slot(&self) -> Option<usize> {
         self.status.iter().position(|s| *s == ControllerStatus::Ready)

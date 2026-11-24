@@ -5810,7 +5810,7 @@
 82530208	guess_SkaterMgr_ClearCameraTargetIf	Guess: When the camera rig (+0x110) targets param_2, resets it (FUN_82DF6790) and clears the shot target
 82530250	guess_SkaterMgr_SetCameraTarget	Guess: Creates the camera objects for the skater and sets it as the shot target of the rig +0x110
 825302D8	guess_SkaterMgr_FlagActiveCamera	Guess: Sets byte +4 of the object returned by slot 0x20 of the +0x10C list head
-82530318	guess_SkaterMgr_IsField4AF3Zero	Guess: Returns 1 when field 4AF3B2B0313D4F2B of the skater collection is 0
+82530318	guess_CameraSystem_ApplyChallengeCameraOverride	Guess: camera system vtable 822FE490 slot: reads eChallengeCameraOverride (field 4AF3B2B0313D4F2B) of the challenge row and stores 0->1, 1->0, else 2 at +0x3C4 (a count the follow camera decrements while +0x3C8 is set) (was guess_SkaterMgr_IsField4AF3Zero)
 825303B8	guess_FollowCam_SolveAngles	Guess: vector Sin / ACos math for the follow camera angles
 82530790	guess_FollowCam_BlendTowardTarget	Guess: builds a weighted direction from the rows +0x120 / +0x140 and blends the camera vectors
 82530810	guess_FollowCam_BlendVectors	Guess: blends vectors at +0x10 / +0x20 / +0x30
@@ -10091,7 +10091,7 @@
 82666A20	hud_component_Ctor_82666A20	Constructor of class 'hud_component': called on the new block right after guess_Mem_AllocNamed with that tag (in 82659A10).
 82666B20	guess_HudComp82666A20_SendShow	slot 13 of the hud_component built by 82666A20: sends code 0x12 for its element id +0x1C through slot 5 of the interface at +0x14 of 824AD2F0's object (show, by pairing with slot 14)
 82666B70	guess_HudComp82666A20_SendHide	slot 14: sends code 0x13 for element +0x1C through the same HUD interface
-82666BC0	TrickDisplayHud_Update	Trick display HUD component update (slot 4): sends its screen events (scoring mode, stance, line timer); while the trickdisplay element is dirty (+0x90) sends 20 / 21, 22 / 23, 24 / 25 for the part bytes +0x8D..+0x8F (hidden / shown) and clears +0x90
+82666BC0	TrickDisplayHud_Update	Trick display HUD update; part bytes +0x8D..+0x8F -> screen events 20..25 while +0x90
 82666F08	guess_HudComp_SetState3	Guess: Sets HUD element +0x1C to state 3
 82666F90	guess_HudComp_SetState1Then3	Guess: Sets HUD element +0x1C to state 1 then 3
 82666FF0	guess_HudComp_SetState2	Guess: Sets HUD element +0x1C to state 2
@@ -10115,18 +10115,20 @@
 82667C90	guess_HudPin_DeletingDtorB	Guess: slot 40 of the HudPin vtable 82305D28: clears +0x34, restores base vtable 82306130, frees when bit 0 is set
 82667CF8	guess_Player_IsPinTargetActive	Guess: when challenge flag 0C54 and byte +0xC01 are set, asks the world for the pin target.
 82667DD0	guess_HudPin_ClearWhenIdle	Guess: clears the pin target when the FMV is idle and the session check passes
-82667EB8	guess_HudLayout_FindCentral	Guess: uses the string central
+82667EB8	guess_CellphoneUI_Hide	Guess: movie state 2, phone state +0x34 = 1, stops the central effect when shown
 82667F90	guess_HudPin_UpdatePinPrompt	Guess: pins the player when the FMV is idle and updates the pin prompt flags (+0x34..+0x3B)
+826681A0	CellphoneUI_GetHandledOptions	Phone list slot +0x10: returns the handled option mask 0xC57C
 826681B0	guess_FE_OnChoicePushScreen19	Guess: pushes FE screen 0x13 on choice 0
 826681E0	guess_FlowMsg_PostPhPrg	Guess: Posts a FlowMessage with code ph_prg when the argument is 0
-826682B0	guess_CellphoneUI_Update	Guess: rusty-trucks/crates/skate-game/src/session_marker/mod.rs:133 (the cellphone UI sub_826682B0: LB opens the menu with its sound)
-82668998	guess_Player_PinClearTarget	In state 3 clears the target +0x31C and checks the chase feature gate
+826682B0	CellphoneUI_HandleOption	Phone list option handler (vtable 82305DD0 slot +0x14): in state 3 option 0x40 = the B row (anywhere photographer place, online photographer, park edit popups 0xBC..0xBF, object dropper), 0x4000 / 0x8000 the track rows, 0x8 closes; state 2 option 0x4 reopens
+82668998	CellphoneUI_Close	Closes the phone list after an option: movie state 0, phone state +0x34 = 2 (minimized; reopens on the next LB press)
 82668A40	guess_Player_PinSessionCheck	When the session object is in state 6 reads its player and pins it
 82668B68	guess_Player_NotifyPin	Guess: notifies the singleton with code 5 or another by the flag.
 82668BD8	guess_Player_PinWhenFMVIdle	Guess: checks the FMV is idle and reads a record name.
 82668EB8	guess_World_CanUseFeatureWhenNotChased	Guess: true only when not chased and game mode 830B7AE8 allows it (modes 1 / 4 / 5 checked).
 82669090	guess_HudPhoneList_CanShowPhotographer	Counts players (83067068 +0x500, stride 0xA8) in state 1 without the flag at +0x69; needs more than one.
 826691D0	guess_Challenge_IsFlagActiveInState	guess: true when guess_Challenge_GetFlag0C54 is set, 830B7C2B is clear and the challenge state 830B7AE8 is neither 4 nor 5.
+82669250	CellphoneUI_IsOpen	Phone list open: state +0x34 == 3
 82669268	guess_FE_Screen82669268_SignalA	Guess: calls the session singleton +0x14 slot 5 with the screen id +0x1C and -1
 826692B0	guess_FE_Screen82669268_SignalB	Guess: calls the session singleton +0x14 slot 5 with the screen id +0x1C and -2
 826692F8	guess_FE_Screen82669268_HandleButton	Guess: button handler with FE sounds by 32 bit keys
@@ -10762,7 +10764,7 @@
 826972B8	guess_Input_PatternThreshold	Guess: compares pattern values with the threshold 821E63E8.
 826974A8	guess_Input_PatternMatchBody	Guess: walks the pattern entries from +0x20 to +0x24.
 826976D8	guess_Vt822FF030_DeletingDtor	Guess: resets vtable 822FF030 and frees self when flag bit 0
-82697740	guess_Input_RegisterGameplayActions	Guess: rusty-trucks/crates/skate-core/src/input/gameplay_map.rs:33 (the eighteen actions TU3 82697740 registers at 64..81)
+82697740	Input_RegisterActions	Registers the input.cfg actions by id and name (42 SessionMarkerSet 821E6728, 43 SessionMarkerUse 821E673C)
 826986A8	InputHistory_Init	crates/skate-core/src/input/history.rs:49 (matches 826986A8: zeroed storage, read index 0, write index 1)
 82698D18	guess_MemSys_InitThreadContext	Guess: reads the global memory status and sets up TLS and the thread context
 82698FA8	guess_Input_PostControllerChange	Name from the messages it posts (cMsgControllerInserted, cMsgControllerRemoved; 1 MsgBus_Post calls, 524 bytes); the rest of the body not read.
@@ -11867,7 +11869,7 @@
 826D7708	guess_GameSession_SetPaused	Guess: slot 6: stores the flag at +0x1A; with state 0x12 at +0x44 and flag 0 it asks the world (+4, +0xC slot 6, +0x132C) whether it can resume.
 826D77E8	guess_GameSession_UpdateTimers	Stores the elapsed seconds at +0x78 and trims the history (+0xAC above 9)
 826D78B0	GameSession_Update	research/b958-timer-order.md:99 (game-state update 826D78B0) and b346-retail-replay-providers.md:92; decompile: run-57/b4.txt calls GameSession_StepSimulation 8285C928 and the session timers
-826D7A88	guess_GameSession_UpdateFlowRef	Guess: adds a reference and reads the flow singleton.
+826D7A88	GameSession_UpdateInputProxy	Calls the SimController input proxy (+0x10, PlayerUI) slot +0xC with (not paused by 830CFE24 flag 1 and +0x1B, UI free: FE stack empty, game state 830670CC == 5, no fade, party: no player in state 1)
 826D7D30	guess_GameSession_CheckEndTask	When the session child reports done and the mission timer 3 is not running, queues task 0xB / 0x102
 826D7E20	guess_GameSession_Tick	Guess: slot 8: returns 1 (after 8280FB98) when the quit flag +0x1D is set, else runs the world tick (830CEB84 slot +0x2C) and the presentation (83083BCC +0x80, +0x94).
 826D81A8	guess_Streamer_ReportStall	Name from the messages it posts (cMsgStreamerStalledPresToFE, cMsgStreamerStalledPresToPres; 4 MsgBus_Post calls, 944 bytes); the rest of the body not read.
@@ -12893,14 +12895,14 @@
 82727E00	MsgHandler_cMsgCheatState_82726D88	Bus handler for cMsgCheatState, subscribed by 82726D88 through MsgBus_Subscribe.
 82727E18	MsgHandler_cMsgBrightnessValue_82726D88	Bus handler for cMsgBrightnessValue, subscribed by 82726D88 through MsgBus_Subscribe.
 82727E38	MsgHandler_cMsgFunMeterToggle_82726D88	Bus handler for cMsgFunMeterToggle, subscribed by 82726D88 through MsgBus_Subscribe.
-82727E50	MsgHandler_cMsgKilledItEffect_82726D88	Bus handler for cMsgKilledItEffect (fields ActivateEffect +0x10, Saturation +0x14, Brightness +0x18, Contrast +0x1C, Duration +0x20): stores them at R (83083C5C) +0xE46 / +0xE48..+0xE54 and resets the timer +0xE58 to 0.0
+82727E50	MsgHandler_cMsgKilledItEffect_82726D88	Bus handler for cMsgKilledItEffect, subscribed by 82726D88 through MsgBus_Subscribe.
 82727E90	SimThreadMsgMan_Ctor	Constructor of class 'SimThreadMsgMan': called on the new block right after guess_Mem_AllocNamed with that tag (in 826D35F8).
 82728238	guess_FlowState_UnsubscribeAll	Guess: Unsubscribes its message bus handlers.
 82728358	MsgHandler_Msg401FB250_82727E90	Bus handler for Msg401FB250, subscribed by 82727E90 through MsgBus_Subscribe.
 827283D8	MsgHandler_MsgC2E8C04E_82727E90	Bus handler for MsgC2E8C04E, subscribed by 82727E90 through MsgBus_Subscribe.
 82728458	MsgHandler_MsgF8E29B80_82727E90	Bus handler for MsgF8E29B80, subscribed by 82727E90 through MsgBus_Subscribe.
 82728538	MsgHandler_Msg84403B90_82727E90	Bus handler for Msg84403B90, subscribed by 82727E90 through MsgBus_Subscribe.
-82728608	MsgHandler_cMsgPauseSim_82727E90	Bus handler for cMsgPauseSim: field +0x10 set pushes the pause mode +0x14 on ThePauseMan (830CFE24), else pops it
+82728608	MsgHandler_cMsgPauseSim_82727E90	Bus handler for cMsgPauseSim, subscribed by 82727E90 through MsgBus_Subscribe.
 82728628	guess_ManualTime_Init	Guess: binds the D394 default record, posts the start / end frames message and subscribes.
 82728770	guess_ManualTime_UpdateFromSticks	Guess: run-47 b5.txt: reads two input axes (query slots 0x378 / 0x374) against the dead zone 82165A00; when both are idle in states 5..8 it resets the state +0x40 and posts cMsgManualTimeControllerState (hash 03FCFF70, lua-m...
 82728A38	guess_ManualTime_EvalInputs	Guess: evaluates input query slots 0x374, 0x378 and 0x380.
@@ -15168,7 +15170,7 @@
 827E0CF8	PostFxRecord_GetNearMultiply	post_fx record field getter near_multiply (Attrib_GetField, default 830D0850).
 827E0D50	PostFxRecord_GetNearSaturation	post_fx record field getter near_saturation.
 827E0DA8	guess_PostFx_FindCollection716E	Guess: finds the attrib collection of class 0x716E979EFF5B29C8 and inits the ref
-827E0E10	ScreenFade_GetActiveBlock	Returns the active screen fade sub-block: env+0x300 (E+0x7D90, override) when the ICE override gate env+0x370 (E+0x7E00) is set and greenscreen is off, else env+0x320 (E+0x7DB0, base). Field +0x18 = the BloomToWhite transition progress (82795A70 writes both blocks)
+827E0E10	ScreenFade_GetActiveBlock	Returns the settings block +0x300 or the alternate block +0x320 when byte +0x370 is set (greenscreen).
 827E0E68	ScreenFade_IsActive	Active flag of the same fade object; selects the NIS branch of the post FX update.
 827E0EF0	guess_FontPrinter_DrawWrapA	Guess: calls the printer begin slot +0x10, draw +0x60 and end +0x14
 827E0F88	guess_FontPrinter_DrawOp80Style	Guess: Sets style (slot +0x10), draws with slot +0x80, restores (slot +0x14).
@@ -15295,7 +15297,7 @@
 827F2A50	PostFx_DrawFastOrStereoUberPass	Selects fast_uber (E7AD7E62) or stereo_uber (C3F71558) and draws the post pass.
 827F2DC8	PostFx_DrawUberPass	Selects the uber technique (hash 49D79E31) and draws the post pass.
 827F3418	guess_PostFx_DrawPass400	Guess: Post pass drawn for mask bit 0x400 (cameraman notes), uses the NIS camera transform.
-827F3D20	PostFx_Update	Per-frame post FX update (PostFx_Update): environment block, color matrices (827F13D8) and bloom constants (827EF1F0); the screen fade block +0x18 (BloomToWhite) lowers the bloom input by 2.0 x it (82060C50)
+827F3D20	PostFx_Update	research/b380-replay-look-path.md:53 (827F3D20 post FX update calls 827F5450 first then picks the 0x7A90 / 0x7C00 block; code high)
 827F4C10	guess_PostFx_ReadBandField	Guess: reads attrib field 0xE385D93A8C0C3BB5 of the post FX record into +0xB60 (next to guess_PostFx_BuildBands)
 827F4D28	PostFx_SelectZombieMatrixA	crates/skate-game/src/colour_matrix.rs:2 (//! colour_matrix (identity) and colour_matrix_zombiemode (the zombie cheats tint, selected by 827F4D28)
 827F50B0	PostFx_DrawPassesByMask	Draws the post passes picked by mask bits: 0x4 default, 0x100 visualFX, 0x8, 0x200, 0x1 / 0x2 uber variants.
@@ -15645,7 +15647,7 @@
 82822CE0	MsgHandler_cMsgNISReleaseCameraHold_82821810	Bus handler for cMsgNISReleaseCameraHold, subscribed by 82821810 through MsgBus_Subscribe.
 82822D60	MsgHandler_cMsgNISFEPreloaded_82821810	Bus handler for cMsgNISFEPreloaded, subscribed by 82821810 through MsgBus_Subscribe.
 82822D78	MsgHandler_cMsgNISFEGo_82821810	Bus handler for cMsgNISFEGo, subscribed by 82821810 through MsgBus_Subscribe.
-82822D88	MsgHandler_cMsgNISSkip_82821810	Bus handler for cMsgNISSkip: unless already skipped (+0xCE) and when 82820068 allows, stops the player (vt+0x98 when 830CFD78), sets +0xD0 = 3 and +0xCE = 1 (skipped)
+82822D88	MsgHandler_cMsgNISSkip_82821810	Bus handler for cMsgNISSkip, subscribed by 82821810 through MsgBus_Subscribe.
 82822E58	MsgHandler_cMsgNISKill_82821810	Bus handler for cMsgNISKill, subscribed by 82821810 through MsgBus_Subscribe.
 82822E78	MsgHandler_cMsgNISOnlineContinue_82821810	Bus handler for cMsgNISOnlineContinue, subscribed by 82821810 through MsgBus_Subscribe.
 82822E88	MsgHandler_cMsgNISPhotoSelect_82821810	Bus handler for cMsgNISPhotoSelect, subscribed by 82821810 through MsgBus_Subscribe.
@@ -16116,8 +16118,8 @@
 82840600	LuaBind_NotifyChallengeRunning	retail Lua C binding NotifyChallengeRunning
 82840698	LuaBind_IsInChallenge	Lua binding IsInChallenge
 82840740	LuaBind_Ports	Lua binding Ports: builds a table of name and value pairs (enum)
-828409C8	LuaBind_PauseSimulation	retail Lua C binding PauseSimulation: pushes pause mode 5 on ThePauseMan 830CFE24 (mask 0xFFFFFFE1: bit 0 set, so GameSession_StepSimulation stops stepping the worlds; bits 1..4 clear)
-828409F8	LuaBind_UnpauseSimulation	retail Lua C binding UnpauseSimulation: pops pause mode 5 (ThePauseMan 830CFE24)
+828409C8	LuaBind_PauseSimulation	retail Lua C binding PauseSimulation
+828409F8	LuaBind_UnpauseSimulation	retail Lua C binding UnpauseSimulation
 82840A28	LuaBind_DisablePauseMenuAndBackpack	retail Lua C binding DisablePauseMenuAndBackpack
 82840A58	LuaBind_EnablePauseMenuAndBackpack	Lua binding EnablePauseMenuAndBackpack; calls Singleton830CFE1C_Get
 82840AB0	LuaBind_eSk8Characters	Lua binding eSk8Characters: builds a table of name and value pairs (enum)
@@ -16505,7 +16507,7 @@
 8285C670	SimController_Ctor	Constructor of class 'SimController': called on the new block right after guess_Mem_AllocNamed with that tag (in 826D7070).
 8285C7C8	guess_SimController_DeletingDtor	Guess: slot 0 of the SimController vtable 82315270 (stored last by SimController_Ctor 8285C670); slot 0 is usually the deleting destructor here (slot0(obj, 1)); body not read.
 8285C8C0	guess_GameSession_IsScoreReleased	Guess: True when the online score is released and the timer +0x1330 passed 1 second.
-8285C928	GameSession_StepSimulation	Sim tick of the game state update (826D78B0 calls it once per call): steps the worlds (guess_Simulation_StepWorldsByMask) only while ThePauseMan bit 1 is not paused (82562148); paused, it restarts its timer and steps nothing
+8285C928	GameSession_StepSimulation	research/b958-timer-order.md:99 (game-state update 826D78B0 calls the sim tick 8285C928 once per call); decompile: run-57/b4.txt calls guess_Simulation_StepWorldsByMask
 8285CC28	guess_GameSession_ApplyPendingFlags	Guess: applies the pending flags at +0x1360, sets 8308417F, restarts the timer on bit 0.
 8285CCD8	guess_SimController_PushRecord	appends a 0x10C-byte record to the vector at +0x18 (grows via 8266FF60)
 8285CD18	guess_GameSession_UpdateScoreSubmit	Guess: Score submit step while +0x132C is clear.
@@ -16546,7 +16548,7 @@
 8285F720	guess_NISMan_Complete	Name from the messages it posts (cMsgNISChallengeNotify, cMsgNISComplete; 1 MsgBus_Post calls, 652 bytes); the rest of the body not read; pops pause mode 8 when +0x134 and mode 12 on ThePauseMan (b1053)
 8285F9B0	MsgHandler_cMsgNISMgrPlayback_8285DCA8	Handler subscribed for cMsgNISMgrPlayback (0xB0F2D44F) by 8285DCA8.
 8285FA20	MsgHandler_cMsgNISMgrComplete_8285DCA8	Handler subscribed for cMsgNISMgrComplete (0x62F1478B) by 8285DCA8.
-8285FAD8	MsgHandler_cMsgNISMgrICEMode_8285DCA8	Handler for cMsgNISMgrICEMode (0xA3088244): on (+0x10) sets +0x45, pushes pause mode 12, sends the online round sync, pushes 8; off pops 8 and 12, unpauses (online) and clears +0x45. No sender in the shipped game (b1053)
+8285FAD8	MsgHandler_cMsgNISMgrICEMode_8285DCA8	Handler subscribed for cMsgNISMgrICEMode (0xA3088244) by 8285DCA8.
 8285FB80	PostMsg_NISStartReload	Small function (244 bytes) that builds and posts cMsgNISStartReload (0xD0D31C09) through MsgBus_Post.
 8285FC88	MsgHandler_cMsgNISTransitionOutComplete_8285DCA8	Handler subscribed for cMsgNISTransitionOutComplete (0x539A09BB) by 8285DCA8.
 8285FCD0	MsgHandler_cMsgNISTransitionInBegin_8285DCA8	Handler subscribed for cMsgNISTransitionInBegin (0xF640BBEE) by 8285DCA8.
@@ -23873,7 +23875,7 @@
 82BCD1F0	LuaBind_GetNumberOfHighlights	Lua binding GetNumberOfHighlights
 82BCD268	LuaBind_PlayHighlightReel	Lua binding PlayHighlightReel
 82BCD2C0	LuaBind_PlayHighlightReelWithSpecifiedOrder	Lua binding PlayHighlightReelWithSpecifiedOrder; calls Mem_GetDefaultAllocator, PtrVector_InsertShiftC
-82BCD438	guess_NIS_SubscribeComplete	Subscribes 1 handlers through MsgBus_Subscribe (cMsgNISComplete); owner class guessed from the messages; 420 bytes.
+82BCD438	guess_HighlightReelManager_Ctor	Guess: constructor of Sk8ChallengeSystem::HighlightReelManager (tag 82237B54, vtable 82321758, 0x1E8 bytes, built by PresMgr_BuildHandlers): stores replay data, message queue, NIS manager ((830CFD94)+200) and a presentation object at +0x1D4..+0x1E0 and subscribes cMsgNISComplete (was guess_NIS_SubscribeComplete)
 82BCD648	guess_Vt82321758_DtorBody	Guess: Destructor body (vtable 82321758): deletes every object held in its tree map, frees the map nodes to the fixed pool and unsubscribes its message
 82BCD758	HighlightMgr_CreateGroup	b9 + gs1: finds the id in map +8 or allocates 0x170 bytes tagged Challenge::cHighlightGroup (820D4644, vtable 82321750) and inserts it; only caller LuaBind_CreateHighlightGroup
 82BCD8D8	guess_Vt82321758_RemoveById	Guess: Finds an id in the tree map at +8, deletes its object, erases the node and returns it to the fixed pool (+0x20)
@@ -23883,8 +23885,8 @@
 82BCDAA8	guess_HighlightMgr_AddFromDefinition	Guess: Called by LuaBind_AddHighlightUsingDefinition: finds frames in the replay data between two times and adds highlights, dropping the oldest when full
 82BCDD80	guess_HighlightMgr_RemoveAll	Guess: Clears all highlights; only caller LuaBind_RemoveAllHighlights
 82BCDDE8	guess_HighlightMgr_PlayReel	Guess: Builds the highlight list and posts the play message on the bus; only caller LuaBind_PlayHighlightReel
-82BCDFC0	guess_NISComplete_PostFollowup	Guess: in state 2 posts a follow up message on the bus.
-82BCE0D8	guess_NISComplete_FollowupBody	Guess: followup body (no named callees).
+82BCDFC0	guess_HighlightGroup_OnNISComplete	Guess: on cMsgNISComplete in reel state 2 plays the next highlight, after the last posts cMsgHighlightReelComplete (62730BA6) and cMsgNISOnlineReady and resets the group (was guess_NISComplete_PostFollowup)
+82BCE0D8	guess_HighlightGroup_PlayClip	Guess: starts highlight N of the reel: finds its replay tracker range (start / end frames), reads the scene definition (name word, located byte +6, vector +0x20) and calls the NIS manager vt+0x14 (enter replay NIS) with name, start, end, more-clips flag (was guess_NISComplete_FollowupBody)
 82BCE3C8	guess_HighlightMgr_PlayReelInOrder	Guess: Same as the reel player but keeps the given order; only caller LuaBind_PlayHighlightReelWithSpecifiedOrder
 82BCE588	guess_ActivityManager_AllocDefinitions	Guess: Allocates with guess_Mem_AllocTagged9B48 and the default allocator.
 82BCE798	guess_Vector4_InsertB	Guess: inserts one 4 byte element into an inline vector, growing on the heap.

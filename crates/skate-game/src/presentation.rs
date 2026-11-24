@@ -79,7 +79,7 @@ pub(crate) fn capture(skater: Res<SkaterRuntime>, camera: Res<CameraRuntime>,
     history.period = time.timestep();
 }
 
-fn camera_transform(frame: CameraFrame) -> Transform {
+pub(crate) fn camera_transform(frame: CameraFrame) -> Transform {
     let [right, up, at] = frame.basis.columns.map(Vec3::from_array);
     Transform {
         translation: Vec3::new(frame.position[0], frame.position[1], frame.position[2]),

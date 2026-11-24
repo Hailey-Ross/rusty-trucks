@@ -159,7 +159,7 @@ pub(crate) struct LivingWorldSettings {
     /// Cleared by [`Self::reset_mod_overrides`].
     pub skater_trick_profiles: std::collections::BTreeMap<String, npc_skaters::NpcTrickTables>,
     /// Simulated NPC skaters near the player (full physics driven by their AI record; doc 26 M7).
-    /// Off by default until play-tested (`SKATE_NPC_SIM=1`); a mod may switch it and change the
+    /// Always on (USER-ASKS 720; `SKATE_NPC_SIM=0` turns it off for one run); a mod may switch it and change the
     /// radius and count. `LivingWorldSettings::default()` restores the default.
     pub npc_simulated: npc_sim::SimulatedTierSettings,
     /// The NPC skaters' retail obstacle avoider (`skate_core::living_world::avoid`, doc 26 "NPC
@@ -230,8 +230,7 @@ impl Default for LivingWorldSettings {
             // The zombie cheat: the Extras cheat code (`apply_cheats`), `SKATE_ZOMBIE=1` or the mod value `zombie`.
             zombie: std::env::var("SKATE_ZOMBIE").ok().as_deref() == Some("1"),
             dmo_stream: Default::default(),
-            // The engine default before the player's saved choice arrives (graphics_menu): the run's variables, as
-            // `npc_simulated` (the saved default, NPC Skater Physics on, is `OptIns::default`).
+            // The engine default before the player's saved choice arrives (graphics_menu): the run's variables.
             user_opt_ins: opt_ins::OptIns::from_env(),
             net_role: NetRole::Standalone,
             seed: 0,
@@ -256,7 +255,6 @@ impl LivingWorldSettings {
     pub(crate) fn set_user_opt_ins(&mut self, choices: opt_ins::OptIns) {
         self.user_opt_ins = choices;
         self.zombie = choices.zombie;
-        self.npc_simulated.enabled = choices.npc_physics;
         self.ped_brain.vehicle_flee.enabled = choices.vehicle_flee;
     }
 

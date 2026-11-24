@@ -42,6 +42,7 @@ SCORING_BOUNDARY = _field('OTSScoringBoundary')
 START = _field('StartLocation')
 OWNED = _field('ObjectivesOwned')
 KILLED = _field('ObjectivesKilledIt')
+TRACK_UNIQUE_TRICK_GROUP = _field('TrackUniqueTrickGroup')
 POINTS = _field('PointRequirement')
 OBJECTIVES = _field('Objectives')
 # Failure conditions (research b938 / b940): FailureObjectivesWithEvents rows (each a Lua predicate plus its own
@@ -1057,8 +1058,14 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
                 for v in node:
                     walk(v)
         walk(objectives)
+        # TrackUniqueTrickGroup (b1056: MakeObjectivesFromGroup 82C60CC0 stores the referenced challenge_trick_group
+        # key in each group's +0x78), from the challenge's local data: the RefSpec's key, None when absent or zero.
+        tracked = p.get(TRACK_UNIQUE_TRICK_GROUP) or fields.get(TRACK_UNIQUE_TRICK_GROUP) or {}
+        tracked_raw = bytes.fromhex(tracked.get('data') or '') or next((bytes.fromhex(i) for i in ((tracked.get('array') or {}).get('items') or [])), b'')
+        tracked_key = struct.unpack_from('>Q', tracked_raw, 8)[0] if len(tracked_raw) >= 16 else 0
         return dict(
             id=key, family=family, map=label_of(district) if district else None, district=district,
+            track_unique_trick_group=('%016x' % tracked_key) if tracked_key else None,
             title_id=title_id, title=text.get(title_id) if title_id else None,
             description_id=(fields.get(DESCRIPTION) or {}).get('data') or None,
             challenge_type=_u32(fields.get(CHALLENGE_TYPE)), location=sign_up,

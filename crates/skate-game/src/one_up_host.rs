@@ -2,11 +2,11 @@
 //! `skate_core::challenges::one_up_run`. The pro rides its challenge lines (`ch_<id>`, the contest rider code) on its
 //! turns; between turns everyone stands at the round's wait spot and the runner at its start spot. Start: the sign-up
 //! prompt at the row's sphere, the Challenge Map's Sign Up, the career, or `SKATE_ONEUP=<id>` on its map.
-//! NOT RETAIL YET (logged): the intro NIS, the turn fades, the camera on the pro's run (Online.SwitchCamera), the
-//! ThrowDown letters HUD (the letters show in the leaderboard's score column), the pro's speech lines and the
-//! highlight reel; the score bias multiplies the pro's landed lines [inferred: its retail consumer is not read].
+//! NOT RETAIL YET (logged): the turn fades, the camera on the pro's run (Online.SwitchCamera), the ThrowDown
+//! leaderboard menu type's mapping to the 1up layout [inferred], the pro's speech lines and the highlight reel; the score bias multiplies
+//! the pro's landed lines [inferred: its retail consumer is not read].
 use crate::hud_challenge::{ChallengeHudState, Component, DpoSlot, LeaderboardHud, LeaderboardRow, LEADERBOARD_NO_VARIANT,
-    LEADERBOARD_RANK_NAME_SCORE};
+    LEADERBOARD_ONE_UP};
 use bevy::prelude::*;
 use serde::Deserialize;
 use skate_core::challenges::one_up_run::{Banner, Command, Event, OneUpRun, Params, State};
@@ -43,6 +43,9 @@ pub(crate) struct OneUpData {
     pub multipliers: [f32; 5],
     #[serde(default)]
     pub central_messages: std::collections::BTreeMap<String, String>,
+    /// C.IntroPresentationEvents: the pro's intro NIS (nis_overview, b1055 §3).
+    #[serde(default)]
+    pub intro: crate::challenge_objectives::EventList,
 }
 
 #[derive(Deserialize)]
@@ -84,6 +87,11 @@ pub(crate) struct OneUpState {
     player_active: bool,
     /// The competitors each turn holds (pinned) or lets ride.
     pinned: Vec<bool>,
+    /// The intro presentation group nis_overview waits for.
+    intro_group: Option<String>,
+    /// Online.SwitchCamera's competitor (0 = the player), resolved to its living world id every frame (a pro placed in
+    /// the same handler gets its id once spawned).
+    watching: usize,
 }
 
 impl OneUpState {
@@ -93,25 +101,29 @@ impl OneUpState {
 }
 
 /// The row's text for a banner (b1055 §3: the row fields, else the graph's constant ids).
-fn banner_text(d: &OneUpData, b: &Banner, names: &[String]) -> (String, bool) {
+/// The banner's language id, its ShowCustomCentralMessage argument list (comma-separated, as the 1up graph builds
+/// it: `"<name>,<score>"`) and whether it goes to the modified slot.
+fn banner_text(d: &OneUpData, b: &Banner, names: &[String]) -> (String, Option<String>, bool) {
     let row = |k: &str, default: &str| d.central_messages.get(k).cloned().unwrap_or_else(|| default.to_owned());
-    let name = |c: usize| names.get(c).cloned().unwrap_or_default();
+    // The names are `#` literals for the HUD; as an argument the name itself goes in.
+    let name = |c: usize| names.get(c).map(|n| n.strip_prefix('#').unwrap_or(n).to_owned()).unwrap_or_default();
+    let id = |s: &str| s.to_owned();
     match b {
-        Banner::IsLeading { leader, score } => (format!("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_ISLEADING {} {score}", name(*leader)), false),
-        Banner::Turn { runner: 0, setting: true } => ("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SETYOURSCORE".into(), true),
-        Banner::Turn { runner: 0, setting: false } => (row("CentralMessageHALIDYourTurn", "ID_CHALLENGE_CENTRAL_MESSAGE_YOURTURN"), true),
-        Banner::Turn { runner, .. } => (format!("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_OTHERSTURN {}", name(*runner)), true),
-        Banner::OneUpped { .. } => (row("ModifiedCentralMessageHALIDOneUpped", "ID_CHALLENGE_CENTRAL_MESSAGE_MODIFIED_1UP_ONEUPPED"), true),
-        Banner::Bailed { runner: 0 } => (row("ModifiedCentralMessageHALIDBailed", "ID_CHALLENGE_CENTRAL_MESSAGE_1UP_BAILED"), true),
-        Banner::Bailed { runner } => (format!("{} {}", row("CentralMessageHALIDNameBailed", "ID_CHALLENGE_CENTRALMESSAGE_FREESKATEACTIVITY_BAIL"), name(*runner)), false),
-        Banner::ScoreSet { score, first: true, .. } => (format!("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SCORESET {score}"), false),
-        Banner::ScoreSet { score, .. } => (format!("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_NEWSCORESET {score}"), false),
-        Banner::ScoreNotSet => ("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SCORENOTSET".into(), false),
-        Banner::Eliminated { runner } => (format!("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_ELIMINATED {}", name(*runner)), false),
-        Banner::OutForRound { runner: 0 } => (row("CentralMessageHALIDDidNotBeatHighScore", "ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SCOREDLOW"), false),
-        Banner::OutForRound { runner } => (format!("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_OTHER_OUTFORROUND {}", name(*runner)), false),
-        Banner::RoundOver { leader } => (format!("{} {}", row("CentralMessageHALIDRoundOver", "ID_CHALLENGE_CENTRAL_MESSAGE_1UP_ROUNDOVER"), name(*leader)), false),
-        Banner::Wins { winner } => (format!("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_WINS {}", name(*winner)), false),
+        Banner::IsLeading { leader, score } => (id("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_ISLEADING"), Some(format!("{},{score}", name(*leader))), false),
+        Banner::Turn { runner: 0, setting: true } => (id("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SETYOURSCORE"), None, true),
+        Banner::Turn { runner: 0, setting: false } => (row("CentralMessageHALIDYourTurn", "ID_CHALLENGE_CENTRAL_MESSAGE_YOURTURN"), None, true),
+        Banner::Turn { runner, .. } => (id("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_OTHERSTURN"), Some(name(*runner)), true),
+        Banner::OneUpped { .. } => (row("ModifiedCentralMessageHALIDOneUpped", "ID_CHALLENGE_CENTRAL_MESSAGE_MODIFIED_1UP_ONEUPPED"), None, true),
+        Banner::Bailed { runner: 0 } => (row("ModifiedCentralMessageHALIDBailed", "ID_CHALLENGE_CENTRAL_MESSAGE_1UP_BAILED"), None, true),
+        Banner::Bailed { runner } => (row("CentralMessageHALIDNameBailed", "ID_CHALLENGE_CENTRALMESSAGE_FREESKATEACTIVITY_BAIL"), Some(name(*runner)), false),
+        Banner::ScoreSet { score, first: true, .. } => (id("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SCORESET"), Some(score.to_string()), false),
+        Banner::ScoreSet { score, .. } => (id("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_NEWSCORESET"), Some(score.to_string()), false),
+        Banner::ScoreNotSet => (id("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SCORENOTSET"), None, false),
+        Banner::Eliminated { runner } => (id("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_ELIMINATED"), Some(name(*runner)), false),
+        Banner::OutForRound { runner: 0 } => (row("CentralMessageHALIDDidNotBeatHighScore", "ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SCOREDLOW"), None, false),
+        Banner::OutForRound { runner } => (id("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_OTHER_OUTFORROUND"), Some(name(*runner)), false),
+        Banner::RoundOver { leader } => (row("CentralMessageHALIDRoundOver", "ID_CHALLENGE_CENTRAL_MESSAGE_1UP_ROUNDOVER"), Some(name(*leader)), false),
+        Banner::Wins { winner } => (id("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_WINS"), Some(name(*winner)), false),
     }
 }
 
@@ -166,7 +178,7 @@ fn arm(mut ftl: ResMut<crate::ftl_host::FollowTheLeader>, config: Res<crate::con
     let queued = run.start();
     let n = rows.len() + 1;
     ftl.one_up = Some(OneUpState { data, run, ai, carry: 0.0, names, queued, dialog_open: false, was_bailing: false, began: vec![false; n],
-        player_active: false, pinned: vec![true; n] });
+        player_active: false, pinned: vec![true; n], intro_group: None, watching: 0 });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -188,11 +200,32 @@ fn update(
         Query<&mut crate::living_world::npc_skaters::NpcRaceClock>,
         Commands,
     ),
+    mut presenter: Option<ResMut<crate::presentation_run::Presenter>>,
+    mut watch: ResMut<crate::camera::CameraWatch>,
 ) {
     let npc_list: Vec<crate::living_world::npc_skaters::NpcSkaterEvent> = npc_events.read().cloned().collect();
-    let Some(state) = ftl.one_up.as_mut() else { return };
+    let Some(state) = ftl.one_up.as_mut() else {
+        // cleanup_challenge: SwitchCamera back to the local player.
+        if watch.0.is_some() {
+            watch.0 = None;
+        }
+        return;
+    };
     let id = state.data.id.clone();
+    let watched = (state.watching != 0).then(|| state.ai.as_ref()
+        .and_then(|ai| ai.riders.iter().find(|r| r.id as usize == state.watching)).and_then(|r| r.npc)).flatten();
+    if watch.0 != watched {
+        info!("SKATE_ONEUP {id} camera follows {watched:?}");
+        watch.0 = watched;
+    }
     let mut commands = std::mem::take(&mut state.queued);
+    // nis_overview: presentationeventgroupfinished for the intro group -> setup_challenge.
+    if let (Some(group), Some(p)) = (state.intro_group.as_deref(), presenter.as_deref_mut()) {
+        if p.take_finished(group) {
+            state.intro_group = None;
+            commands.extend(state.run.handle(Event::IntroFinished));
+        }
+    }
     if state.dialog_open {
         use skate_core::challenges::end_dialog::Action;
         if let Some(d) = end_dialog.as_deref_mut() {
@@ -269,8 +302,13 @@ fn update(
             break;
         }
         match c {
-            // NOT RETAIL YET: the intro NIS (the row's IntroPresentationEvents) and the fades are not played.
-            Command::Intro => queue.extend(state.run.handle(Event::IntroFinished)),
+            // NOT RETAIL YET: the turn fades are not played.
+            Command::Intro => {
+                state.intro_group = crate::challenge_objectives::start_presentation(presenter.as_deref_mut(), &id, "intro", &state.data.intro);
+                if state.intro_group.is_none() {
+                    queue.extend(state.run.handle(Event::IntroFinished));
+                }
+            }
             Command::FadeOut(_) => queue.extend(state.run.handle(Event::FadeOutDone)),
             Command::FadeIn(_) => queue.extend(state.run.handle(Event::FadeInDone)),
             Command::Pin { competitor, on } => {
@@ -285,6 +323,10 @@ fn update(
             }
             // setup_run FadeOutDelay: the runner to the round's start spot, everyone else to its wait spot.
             Command::Place { runner, rotation } => {
+                // Online.SwitchCamera(runner) in the same handler (b1055 setup_run FadeOutDelay): the view follows the
+                // runner, the pro's own camera on its turn.
+                state.watching = runner;
+                info!("SKATE_ONEUP {id} camera on competitor {runner}");
                 let pick = |spots: &[Spot]| spots.get((rotation.max(1) - 1) % spots.len().max(1)).map(|s| (s.locator.clone(), s.matrix));
                 let (start, wait) = (pick(&state.data.starts), pick(&state.data.waits));
                 info!("SKATE_ONEUP {id} turn: runner {runner} to {:?}, the others to {:?}", start.as_ref().map(|s| &s.0), wait.as_ref().map(|s| &s.0));
@@ -302,9 +344,11 @@ fn update(
                 queue.extend(state.run.handle(Event::Placed));
             }
             Command::Banner(b) => {
-                let (text, modified) = banner_text(&state.data, &b, &state.names);
+                let (text, args, modified) = banner_text(&state.data, &b, &state.names);
                 info!("SKATE_ONEUP {id} banner {b:?}");
-                central.write(if modified { crate::hud_central::CentralMessage::modified(text) } else { crate::hud_central::CentralMessage::new(text) });
+                let mut message = if modified { crate::hud_central::CentralMessage::modified(text) } else { crate::hud_central::CentralMessage::new(text) };
+                message.args = args;
+                central.write(message);
             }
             Command::ShowLeaderboard | Command::Letters(_) => {
                 let letters = state.run.letters();
@@ -312,8 +356,8 @@ fn update(
                     let l = letters.get(i).copied().unwrap_or(0);
                     LeaderboardRow { id: i as u32, rank: i as i32 + 1, score: l as f32, score_text: l.to_string(), name: n.clone(), highlight: i == 0 }
                 }).collect();
-                // NOT RETAIL YET: the ThrowDown layout (LeaderboardHUDInit menu type ThrowDown) is not in our list.
-                hud.leaderboard = LeaderboardHud { layout: LEADERBOARD_RANK_NAME_SCORE, title: String::new(), variant: LEADERBOARD_NO_VARIANT.into(), rows };
+                // LeaderboardHUDInit(Name, ThrowDown, ...): the 1up layout, each competitor's letters as its int.
+                hud.leaderboard = LeaderboardHud { layout: LEADERBOARD_ONE_UP, title: String::new(), variant: LEADERBOARD_NO_VARIANT.into(), rows };
                 hud.show(Component::Leaderboard, true);
             }
             Command::Dpo { score, target, title } => {
@@ -333,7 +377,11 @@ fn update(
                 info!("SKATE_ONEUP {id} run over: competitor {runner} scored {}", state.run.run_score());
                 hud.show(Component::Timer, false);
             }
-            Command::ShowLetters { runner, letters } => info!("SKATE_ONEUP {id} competitor {runner} letters {letters} (ShowSkateMessage NOT RETAIL YET)"),
+            // HUD2.ShowSkateMessage(Name, letters, false, local): the letter on hudthrowmes with its sound (b1058).
+            Command::ShowLetters { runner, letters } => {
+                info!("SKATE_ONEUP {id} competitor {runner} letters {letters}");
+                hud.throwdown.one_up(letters as u32, runner == 0);
+            }
             Command::PlayHighlightReel => {
                 info!("SKATE_ONEUP {id} highlight reel NOT RETAIL YET");
                 queue.extend(state.run.handle(Event::ReelComplete));
@@ -418,8 +466,16 @@ mod tests {
         let d: OneUpData = serde_json::from_value(row).unwrap();
         let p = params(&d);
         assert_eq!((p.competitors, p.time_limit, p.thresholds, p.max_letters), (2, 22.0, [350.0, 350.0, 800.0, 800.0], 3));
-        let (text, modified) = banner_text(&d, &Banner::Turn { runner: 0, setting: true }, &["#me".into(), "#Chris".into()]);
-        assert_eq!((text.as_str(), modified), ("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SETYOURSCORE", true));
+        let names = ["#me".to_owned(), "#Chris Cole".to_owned()];
+        let (text, args, modified) = banner_text(&d, &Banner::Turn { runner: 0, setting: true }, &names);
+        assert_eq!((text.as_str(), args, modified), ("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SETYOURSCORE", None, true));
+        // The id and its arguments stay apart, so the id is looked up and the arguments fill its placeholders.
+        let (text, args, _) = banner_text(&d, &Banner::Eliminated { runner: 1 }, &names);
+        assert_eq!((text.as_str(), args.as_deref()), ("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_ELIMINATED", Some("Chris Cole")));
+        assert_eq!(crate::hud_central::format_message("{0:s} is eliminated", args.as_deref()), "Chris Cole is eliminated");
+        let (_, args, _) = banner_text(&d, &Banner::IsLeading { leader: 1, score: 2839.55 }, &names);
+        assert_eq!(crate::hud_central::format_message("{0:s} is Leading the Round: {1:points} pts", args.as_deref()),
+            "Chris Cole is Leading the Round: 2,839 pts");
     }
 
     /// The installed export (SKATE_TEST_ASSETS): the four career 1-Ups load with their pro.

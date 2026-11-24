@@ -458,11 +458,8 @@ fn run_release_setup(setup: &Path, base: &Path, exe: &Path, existing: Option<&Pa
     let mut command = Command::new(setup);
     command.arg("--base").arg(base).arg("--game-exe").arg(exe);
     if existing.is_some() { command.arg("--refresh"); }
-    // The PC overlay's Ped Speech row (saved in the install's audio settings; on by default): setup decodes the speech
-    // unless the player switched it off.
-    let speech = existing.is_none_or(crate::game_audio::decode_speech_saved);
-    eprintln!("SETUP: speech decode {}", if speech { "on (Ped Speech is on)" } else { "off (Ped Speech is off)" });
-    command.env("SKATE_SETUP_SPEECH", if speech { "1" } else { "0" });
+    // Ped Speech is part of the game (USER-ASKS 720): setup always decodes the speech.
+    command.env("SKATE_SETUP_SPEECH", "1");
     #[cfg(windows)] {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
@@ -552,9 +549,7 @@ fn refresh_dev_copy(link: &Path) -> Result<(), String> {
     let base = dev_base(link)?;
     let mut command = dev_setup(exe_dir).ok_or("No setup found for this development copy")?;
     command.arg("--base").arg(&base).arg("--game-exe").arg(&exe).arg("--refresh");
-    if installed(&base)?.is_some_and(|(assets, _)| crate::game_audio::decode_speech_saved(&assets)) {
-        command.env("SKATE_SETUP_SPEECH", "1");
-    }
+    command.env("SKATE_SETUP_SPEECH", "1");
     eprintln!("SETUP: refreshing the development installation in {}", base.display());
     if run_setup(command, &base, true)? == SetupEnd::Cancelled {
         return Ok(());

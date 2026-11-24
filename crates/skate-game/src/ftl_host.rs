@@ -125,6 +125,13 @@ pub(crate) struct FtlData {
     pub competitors: Vec<crate::race_host::CompetitorRow>,
     #[serde(default)]
     pub objectives: FtlObjectives,
+    /// TrackUniqueTrickGroup (b1056): the challenge_trick_group whose unique tricks the objectives count (16 hex digits;
+    /// three films on the disc). Exports before 2026-11-23 lack it.
+    #[serde(default)]
+    pub track_unique_trick_group: Option<String>,
+    /// C.IntroPresentationEvents (nis_overview, b875): the film's or pro's intro NIS.
+    #[serde(default)]
+    pub intro: crate::challenge_objectives::EventList,
     /// The volumes the objectives test (IsInVolume / EnteredVolume), from the challenge's hull: a film's spot volumes
     /// are not among the map's trigger volumes, so the run arms them.
     #[serde(default)]
@@ -190,6 +197,17 @@ fn volume_id(v: &Option<crate::challenges::Volume>) -> Option<u64> {
 }
 
 /// The graph's challenge type for a row's family.
+/// The anywhere photos' photographer (b1057): armed while an anywhere photo runs; `place_requested` is the phone's
+/// B row (`session_marker`) or a mod's `sdk.challenges.place_photographer()`, served at the player's root on the next update.
+#[derive(Resource, Default)]
+pub(crate) struct AnywherePhotographer {
+    pub state: skate_core::challenges::photographer::Photographer,
+    pub place_requested: bool,
+}
+
+/// The `ribbon_indicator` row the phone adds at the placed spot (826682B0, string 82235268).
+const PHOTOGRAPHER_INDICATOR: &str = "anywhere_photo";
+
 pub(crate) fn kind(d: &FtlData) -> Kind {
     match d.family.as_deref() {
         Some("films") => Kind::Film,
@@ -230,11 +248,16 @@ pub(crate) struct FtlGroup {
 
 /// The run's groups from the row: the owned list (required), then the killed list when the row has one. None when
 /// the owned list does not load; a killed list that does not load is left out (logged by DataObjectives).
-pub(crate) fn load_groups(data: &FtlData, volumes: Vec<(String, u64)>) -> Option<Vec<FtlGroup>> {
-    let owned = DataObjectives::new(&data.id, &data.objectives.owned, volumes.clone(), Default::default())?;
+pub(crate) fn load_groups(data: &FtlData, volumes: Vec<(String, u64)>, trick_groups: crate::challenge_objectives::TrickGroups) -> Option<Vec<FtlGroup>> {
+    let owned = DataObjectives::new(&data.id, &data.objectives.owned, volumes.clone(), trick_groups.clone())?;
     let mut groups = vec![FtlGroup { killed: false, objectives: owned }];
-    if let Some(killed) = DataObjectives::new(&data.id, &data.objectives.killed, volumes, Default::default()) {
+    if let Some(killed) = DataObjectives::new(&data.id, &data.objectives.killed, volumes, trick_groups) {
         groups.push(FtlGroup { killed: true, objectives: killed });
+    }
+    // MakeObjectivesFromGroup gives every group of the run the row's tracked trick group (+0x78, b1056).
+    let tracked = data.track_unique_trick_group.as_deref().and_then(|k| u64::from_str_radix(k, 16).ok());
+    for g in &mut groups {
+        g.objectives.track_unique(tracked);
     }
     Some(groups)
 }
@@ -243,6 +266,8 @@ pub(crate) struct FtlState {
     pub data: FtlData,
     run: FilmRun,
     groups: Vec<FtlGroup>,
+    /// The intro presentation group nis_overview waits for.
+    intro_group: Option<String>,
     evaluating: bool,
     leader: Option<crate::contest_ai_host::ContestAi>,
     awaiting_teleport: bool,
@@ -379,7 +404,7 @@ fn start(ftl: &mut FollowTheLeader, wanted: &str, config: &crate::config::Config
     info!("SKATE_FTL {wanted}: {} objective volumes armed", data.objective_volumes.len());
     let map_volumes: Vec<(String, u64)> =
         volumes.map.iter().filter_map(|v| Some((v.name.clone(), u64::from_str_radix(&v.id, 16).ok()?))).collect();
-    let Some(groups) = load_groups(&data, map_volumes) else {
+    let Some(groups) = load_groups(&data, map_volumes, crate::challenge_objectives::trick_groups(&config.asset_root)) else {
         warn!("SKATE_FTL {wanted}: its owned objectives do not load; not started");
         return;
     };
@@ -388,12 +413,13 @@ fn start(ftl: &mut FollowTheLeader, wanted: &str, config: &crate::config::Config
     let leader = if rows.is_empty() { None } else {
         crate::contest_ai_host::ContestAi::load(&config.asset_root, &data.id, &rows, crate::race_ai_host::start_seed(map.generation))
     };
-    let mut run = FilmRun::new(params(&data));
+    let tracking = groups.iter().any(|g| g.objectives.tracks_unique());
+    let mut run = FilmRun::new(Params { track_unique: tracking, ..params(&data) });
     info!("SKATE_FTL start {} at {} end={:?} max={:?} leaders={rows:?}", data.id, data.start.locator, data.end_volume.as_ref().map(|v| &v.name), data.max_follow_distance);
     let commands = run.start();
     info!("SKATE_FTL {wanted}: {} objective groups (killed it: {})", groups.len(), groups.iter().any(|g| g.killed));
     let mut state = FtlState { data, run, groups, evaluating: false, leader, awaiting_teleport: false, band: Some(FollowerBand::default()),
-        carry: 0.0, eval_carry: 0.0, leader_last: None, leader_speed: 0.0, leader_path: Vec::new(), last_state: 0, failure_text: None, dialog_open: false, dialog_seconds: 0.0, leaders_in_end: Vec::new(), follow_indicators: Vec::new(), meter: None, queued: Vec::new(), feed: Default::default(), area_checked: false, reel: Default::default() };
+        carry: 0.0, eval_carry: 0.0, leader_last: None, leader_speed: 0.0, leader_path: Vec::new(), last_state: 0, failure_text: None, dialog_open: false, dialog_seconds: 0.0, leaders_in_end: Vec::new(), follow_indicators: Vec::new(), meter: None, queued: Vec::new(), feed: Default::default(), area_checked: false, reel: Default::default(), intro_group: None };
     // The first commands run on the next update with the frame's resources.
     state.pending(commands);
     ftl.run = Some(state);
@@ -600,6 +626,7 @@ fn update(
     mut end_dialog: Option<ResMut<crate::end_dialog_host::EndDialogScreen>>,
     mut autopilot: Option<ResMut<crate::autopilot::Autopilot>>,
     (time, menus, mut follow, mut presenter, mut replay): (Res<Time>, Option<Res<crate::retail_menus::RetailMenus>>, ResMut<crate::visual_indicators::FollowIndicators>, Option<ResMut<crate::presentation_run::Presenter>>, Option<ResMut<crate::replay::Replay>>),
+    (mut photographer, mut challenge_indicators): (ResMut<AnywherePhotographer>, ResMut<crate::visual_indicators::ChallengeIndicators>),
     (challenges, pad, physics, config, mut pause, tuning): (Option<Res<crate::challenges::Challenges>>, Option<Res<crate::input::ControllerInput>>, Option<Res<crate::physics::GamePhysics>>, Option<Res<crate::config::Config>>, Option<ResMut<crate::pause_man::ThePauseMan>>, Option<Res<ChallengeTuning>>),
     (mut population, index, npc_transforms, mut clocks, mut commands_ecs, replays, mut brains): (
         Option<ResMut<crate::living_world::PopulationState>>,
@@ -616,6 +643,13 @@ fn update(
     let exited: Vec<u64> = exited.read().filter(|e| e.body == crate::trigger_volumes::PLAYER)
         .filter_map(|e| u64::from_str_radix(&e.volume, 16).ok()).collect();
     let Some(state) = ftl.run.as_mut() else {
+        // 825681F8: the challenge ended, the photographer and its indicator go.
+        if photographer.state.active {
+            info!("SKATE_FTL photographer cleared");
+            photographer.state.end();
+            photographer.place_requested = false;
+            challenge_indicators.0.clear();
+        }
         if !follow.0.is_empty() {
             follow.0.clear();
         }
@@ -631,6 +665,26 @@ fn update(
     let id = state.data.id.clone();
     let asset_root = config.as_ref().map(|c| c.asset_root.clone()).unwrap_or_default();
     let mut commands = std::mem::take(&mut state.queued);
+    // 825680D8: an anywhere photo arms the photographer (unplaced); the phone or a mod places it at the player's root.
+    if kind(&state.data) == Kind::AnywherePhoto && photographer.state.start(skate_core::challenges::photographer::ANYWHERE_PHOTO_TYPE) {
+        info!("SKATE_FTL {id} photographer armed");
+        photographer.place_requested = std::env::var("SKATE_PHOTOGRAPHER").is_ok_and(|v| v == "place");
+    }
+    if std::mem::take(&mut photographer.place_requested) {
+        let at = skater.animated_skeleton.roots.animation_to_world;
+        if photographer.state.place(&at) {
+            info!("SKATE_FTL {id} photographer placed at {:?}", photographer.state.position);
+            challenge_indicators.0 = vec![crate::visual_indicators::Placement { key: PHOTOGRAPHER_INDICATOR.into(), locator: String::new(),
+                matrix: at, style: None, colour: None, always: false, fit: None }];
+        }
+    }
+    // nis_overview: presentationeventgroupfinished for the intro group -> setup.
+    if let (Some(group), Some(p)) = (state.intro_group.as_deref(), presenter.as_deref_mut()) {
+        if p.take_finished(group) {
+            state.intro_group = None;
+            commands.extend(state.run.handle(Event::PresentationFinished));
+        }
+    }
     // The end options dialog: its pick feeds Continue / Retry; the autopilot continues after a short look.
     if state.dialog_open {
         use skate_core::challenges::end_dialog::Action;
@@ -799,6 +853,10 @@ fn update(
         bail_score: shared.and_then(|c| c.last_bail_score).map_or(0, |s| s.total),
         bail: shared.map(|c| c.last_bail).unwrap_or_default(),
         competitor_distances: distances,
+        photographer: photographer.state.placed.then(|| photographer.state.distance(Some({
+            let t = skater.animated_skeleton.roots.animation_to_world;
+            [t[3][0], t[3][1], t[3][2]]
+        }))),
         live: crate::challenge_objectives::live_facts(&skater, &raw),
     };
     let killed_of: Vec<bool> = state.groups.iter().map(|g| g.killed).collect();
@@ -885,7 +943,12 @@ fn update(
             guard += 1;
             match c {
                 Command::CreateHud { .. } => queue.extend(state.run.handle(Event::HudLoaded)),
-                Command::StartPresentation => queue.extend(state.run.handle(Event::PresentationFinished)),
+                Command::StartPresentation => {
+                    state.intro_group = crate::challenge_objectives::start_presentation(presenter.as_deref_mut(), &id, "intro", &state.data.intro);
+                    if state.intro_group.is_none() {
+                        queue.extend(state.run.handle(Event::PresentationFinished));
+                    }
+                }
                 Command::SpawnAi | Command::RespawnAiAtStart => {
                     if let (Some(ai), Some(pop)) = (state.leader.as_mut(), population.as_deref_mut()) {
                         ai.place(&state.data.start.matrix, &state.data.start.slots, &state.data.ai_paths.paths(), pop);
@@ -987,6 +1050,12 @@ fn update(
                         let (pre, post) = if auto && !kind(&state.data).photo() { (0.5, 0.5) } else { (0.0, 0.0) };
                         let added = state.reel.add(&def, killed, false, begin, r.last_time(), false, pre, post, tuning.as_deref());
                         info!("SKATE_FTL {id} highlight added={added} {:?}", state.reel.highlights.list().last());
+                    }
+                }
+                Command::AddLastUniqueTrick { killed } => {
+                    if let Some(g) = state.groups.iter_mut().find(|g| g.killed == killed) {
+                        let n = g.objectives.add_last_unique_trick();
+                        info!("SKATE_FTL {id} unique tricks {n} (killed it group: {killed})");
                     }
                 }
                 Command::RemoveAllHighlights => state.reel.highlights.clear(),
@@ -1158,6 +1227,7 @@ fn enter_replay_nis(pause: Option<&mut crate::pause_man::ThePauseMan>) {
 
 pub(crate) fn register(app: &mut App) {
     app.init_resource::<FollowTheLeader>()
+        .init_resource::<AnywherePhotographer>()
         .init_resource::<ChallengeTuning>()
         .add_systems(PreUpdate, arm.after(crate::map_transition::MapTransitionSet).run_if(crate::challenges::opted_in))
         .add_systems(Update, update.after(crate::challenges::CareerResultSet).run_if(crate::challenges::opted_in));
@@ -1205,9 +1275,9 @@ mod tests {
         })).unwrap();
         let volumes = vec![("ftl_end".to_string(), 7), ("ftl_kill".to_string(), 9)];
         row.objectives.owned = vec![volume_row("owned_0", "ftl_end")];
-        assert_eq!(load_groups(&row, volumes.clone()).map(|g| g.len()), Some(1), "retail rows: the owned list only");
+        assert_eq!(load_groups(&row, volumes.clone(), Default::default()).map(|g| g.len()), Some(1), "retail rows: the owned list only");
         row.objectives.killed = vec![volume_row("killed_0", "ftl_kill")];
-        let mut groups = load_groups(&row, volumes).unwrap();
+        let mut groups = load_groups(&row, volumes, Default::default()).unwrap();
         assert_eq!(groups.iter().map(|g| g.killed).collect::<Vec<_>>(), [false, true]);
         let mut done = Vec::new();
         for g in &mut groups {
@@ -1220,7 +1290,24 @@ mod tests {
         }
         assert_eq!(done, [true], "inside the killed volume only the killed it group completes");
         row.objectives.owned.clear();
-        assert!(load_groups(&row, vec![]).is_none(), "no owned list: not started");
+        assert!(load_groups(&row, vec![], Default::default()).is_none(), "no owned list: not started");
+    }
+
+    /// b1056: the row's TrackUniqueTrickGroup reaches every group of the run when it names a loaded trick group; an
+    /// unknown key or a row without one tracks nothing.
+    #[test]
+    fn the_tracked_unique_trick_group_reaches_every_group() {
+        let mut row: FtlData = serde_json::from_value(serde_json::json!({
+            "id": "film_test", "start": {"locator": "s", "matrix": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]},
+            "track_unique_trick_group": "0ae5c05d32117e6c"
+        })).unwrap();
+        row.objectives.owned = vec![volume_row("owned_0", "a")];
+        row.objectives.killed = vec![volume_row("killed_0", "a")];
+        let groups: crate::challenge_objectives::TrickGroups = std::sync::Arc::new([(0x0ae5c05d32117e6c, [5, 6].into())].into());
+        let loaded = load_groups(&row, vec![("a".into(), 1)], groups.clone()).unwrap();
+        assert!(loaded.len() == 2 && loaded.iter().all(|g| g.objectives.tracks_unique()));
+        row.track_unique_trick_group = Some("0000000000000001".into());
+        assert!(!load_groups(&row, vec![("a".into(), 1)], groups).unwrap().iter().any(|g| g.objectives.tracks_unique()));
     }
 
     #[test]
@@ -1286,7 +1373,7 @@ mod tests {
         let cases = [("film_univ_02_grind_volume_2", Some(2)), ("film_univ_02_gap_01_grd_volume_3", Some(0)), ("film_univ_02_gap_02_volume_1", None)];
         for (volume, expected) in cases {
             for bail in [false, true] {
-                let mut groups = load_groups(&data, volumes.clone()).expect("the rows load");
+                let mut groups = load_groups(&data, volumes.clone(), Default::default()).expect("the rows load");
                 for g in &mut groups {
                     g.objectives.activate_flow();
                 }

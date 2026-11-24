@@ -183,14 +183,23 @@ impl CameraAngleSettings {
 /// Copies the active angle and shot tunings into the camera runtime before simulation.
 pub(crate) fn sync_runtime(settings: Option<Res<CameraAngleSettings>>, runtime: Option<ResMut<super::CameraRuntime>>) {
     let (Some(settings), Some(mut runtime)) = (settings, runtime) else { return };
-    let camera_type = settings.active().graph_type();
-    if runtime.camera_type() != camera_type {
+    if apply(&settings, &mut runtime) {
         info!("Camera angle: {}", settings.active().label());
+    }
+}
+
+/// The viewer's angle and shot tunings on a camera runtime (the player's, or a simulated skater's the viewer can
+/// watch through `CameraWatch`); true when the angle changed.
+pub(crate) fn apply(settings: &CameraAngleSettings, runtime: &mut super::CameraRuntime) -> bool {
+    let camera_type = settings.active().graph_type();
+    let changed = runtime.camera_type() != camera_type;
+    if changed {
         runtime.set_camera_type(camera_type);
     }
     if runtime.tuning_generation() != settings.generation() {
         runtime.set_shot_tunings(settings.generation(), settings.tunings());
     }
+    changed
 }
 
 /// Game Settings > Control > offboard X / Y axis (settings +193 / +192, `retail_menus::setting`: the stored value,

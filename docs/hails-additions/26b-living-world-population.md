@@ -431,6 +431,19 @@ The user's decision: every opt-in gets a setting in the guide overlay that toggl
   it, and a later "off" is kept. The audio group's fingerprint changes (`world_audio.py`), so the next Refresh Game
   Files redoes the audio step and decodes the speech (about 3.4 GB). Tests: `npc_physics_defaults_on_once_and_off_sticks`,
   `speech_decode_choice_reaches_setup`, `choices_round_trip_and_default_npc_physics_on`.
+- **Always on, no longer opt-ins (2026-11-23, USER-ASKS 720):** NPC Skater Physics and Ped Speech are part of the game
+  now. Both rows are gone from the overlay's Opt-Ins section and from both launchers' Opt-ins pages.
+  - NPC skater physics: `OptIn::NpcPhysics` and `OptIns::npc_physics` are removed; `SimulatedTierSettings::default`
+    has `enabled` on (`SKATE_NPC_SIM=0` turns it off for one run, for benches). A mod may still switch it and tune it
+    through `world.set_tuning("living_world", {npc_simulated = {...}})`; `reset_mod_overrides` brings it back on.
+  - Ped speech: `SavedSettings::decode_speech`, `decode_speech_saved` and the row are removed; the game always passes
+    `SKATE_SETUP_SPEECH=1` to setup (release and dev refresh). An install without decoded takes (Ped Speech was off
+    before) still marks the `audio` group stale at start, so Extras offers Refresh Game Files, which decodes them.
+  - Old settings files keep loading: their `npc_physics`, `decode_speech` and `defaults_version` keys are ignored (the
+    `defaults_version` migration of 2026-10-25 is removed with them).
+  - Tests: `old_npc_physics_choice_still_loads`, `speech_is_always_decoded`, `choices_round_trip_and_default_challenges_on`
+    (reads an old `npc_physics` key), `mod_reset_restores_the_players_choice` (physics on again after a mod),
+    `pages_put_headers_in_front_of_their_groups` (the rows are gone).
 
 ## Map change: fresh NPC bodies, ids that never repeat, ped state cleared, 2026-10-18
 

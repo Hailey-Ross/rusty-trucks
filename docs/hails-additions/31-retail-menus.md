@@ -1382,6 +1382,8 @@ announcer speech). Without the decode, ped speech is chosen and logged but silen
   `SKATE_SETUP_SPEECH=1` to the setup helper when the install's saved choice is on (logged
   `SETUP: speech decode asked for`). Off keeps the decoded takes; setup skips the decode from the next refresh.
 - `SKATE_VERIFY_MENU=optin` opens the overlay on the group for screenshots.
+- 2026-11-23 (USER-ASKS 720): the Ped Speech row is removed; setup always decodes the speech (doc 26b "Opt-in
+  switches in the PC overlay", "Always on").
 - 2026-10-17, user: opt-ins move out of Graphics into their own section of the guide overlay. The
   group is now its own rail section, **Opt-Ins** (key `OPT_INS`, after Extras, section 5), with the same rows and
   header 913; Graphics ends at Living World. Appended rather than placed next to Graphics because Multiplayer (3)

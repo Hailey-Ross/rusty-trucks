@@ -70,7 +70,9 @@ MOVIES = (("data/fe/source/screens/hud2/trickdisplay2", "trickdisplay.json"),
           # The tutorials' TutorialInstructionHUD (HUD component 17, research b866).
           ("data/fe/source/screens/hud2/hudtutorial", "hudtutorial.json"),
           # Follow the leader's DistanceMeter (template 45, research b1006 item 8).
-          ("data/fe/source/screens/hud2/huddistance", "huddistance.json"))
+          ("data/fe/source/screens/hud2/huddistance", "huddistance.json"),
+          # 1-Ups' ThrowDownMessageHUD (letters; ShowSkateMessage, central data "throwdownmessage", research b1058).
+          ("data/fe/source/screens/hud2/hudthrowmes", "hudthrowmes.json"))
 
 
 def prepare(game: Path, output: Path, collections: Path):

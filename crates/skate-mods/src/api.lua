@@ -663,6 +663,7 @@ function sdk.presentation.play(key, events) submit{kind="presentation_play",key=
 function sdk.presentation.stop(key) submit{kind="presentation_stop",key=key} end
 function sdk.presentation.state(key) sdk.engine.inspect(key, "presentation") end
 function sdk.challenges.abort() submit{kind="challenge_abort"} end
+function sdk.challenges.place_photographer() submit{kind="challenge_place_photographer"} end
 function sdk.challenges.set_enabled(id, enabled) submit{kind="challenge_enable",id=id,enabled=enabled ~= false} end
 function sdk.challenges.configure(id, options) submit{kind="challenge_configure",id=id,options=non_empty(options)} end
 -- A whole new own the spot challenge (sdk.capabilities.challenge_add >= 1; ours): definition = {title, map? (the

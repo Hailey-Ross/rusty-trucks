@@ -184,12 +184,18 @@ pub(crate) fn fit_scale(size: Vec3, half: [f32; 3]) -> Vec3 {
 #[derive(Resource, Default)]
 pub(crate) struct RaceIndicators(pub Vec<Placement>);
 
+/// The running challenge's own indicators (the anywhere photographer's `anywhere_photo`, b1057); empty otherwise.
+#[derive(Resource, Default)]
+pub(crate) struct ChallengeIndicators(pub Vec<Placement>);
+
 /// A row name as given, or a `Hash_<16 hex>` name matched to its readable key by the attrib hash.
 fn resolve<'a, V>(rows: &'a HashMap<String, V>, name: &str) -> Option<(&'a String, &'a V)> {
     rows.get_key_value(name).or_else(|| {
         let h = u64::from_str_radix(name.strip_prefix("Hash_")?, 16).ok()?;
         rows.iter().find(|(k, _)| skate_data::attrib_hash::hash(k) == h)
     })
+    // a readable name whose row the export keeps under its hash (`anywhere_photo`)
+    .or_else(|| rows.get_key_value(&format!("Hash_{:016X}", skate_data::attrib_hash::hash(name))))
 }
 
 #[derive(Resource, Default)]
@@ -218,7 +224,7 @@ pub(crate) struct IndicatorMarker {
 pub(crate) struct IndicatorPass;
 
 pub(crate) fn install(app: &mut App) {
-    app.init_resource::<VisualIndicators>().init_resource::<RaceIndicators>().init_resource::<FollowIndicators>().add_systems(Update, (sync, face_camera, companion_trails).chain());
+    app.init_resource::<VisualIndicators>().init_resource::<RaceIndicators>().init_resource::<ChallengeIndicators>().init_resource::<FollowIndicators>().add_systems(Update, (sync, face_camera, companion_trails).chain());
 }
 
 fn load(assets: &Path) -> Result<File, String> {
@@ -325,6 +331,7 @@ fn sync(
     mut materials: ResMut<Assets<StandardMaterial>>,
     markers: Query<Entity, With<IndicatorMarker>>,
     race: Option<Res<RaceIndicators>>,
+    challenge: Option<Res<ChallengeIndicators>>,
 ) {
     if !state.loaded {
         state.loaded = true;
@@ -344,6 +351,7 @@ fn sync(
     let armed = teleporters.armed(map.path.as_deref());
     let mut wanted = wanted(&armed.iter().filter_map(|t| t.indicator.as_ref()).collect::<Vec<_>>());
     wanted.extend(race.iter().flat_map(|r| r.0.iter().cloned()));
+    wanted.extend(challenge.iter().flat_map(|c| c.0.iter().cloned()));
     if wanted == state.shown {
         return;
     }
@@ -612,6 +620,18 @@ mod tests {
         let wanted = wanted(&[&a, &b, &c]);
         assert_eq!(wanted.len(), 2);
         assert_eq!(wanted[0].matrix[3][0], 1.0);
+    }
+
+    /// Rows the export keeps under their hash (`anywhere_photo`) answer their readable name; a readable row answers
+    /// its hash name.
+    #[test]
+    fn rows_resolve_by_name_or_hash_either_way() {
+        let hashed = format!("Hash_{:016X}", skate_data::attrib_hash::hash("anywhere_photo"));
+        let rows: HashMap<String, u8> = [(hashed.clone(), 1), ("default".to_owned(), 2)].into();
+        assert_eq!(resolve(&rows, "anywhere_photo").map(|(k, _)| k.as_str()), Some(hashed.as_str()));
+        let default_hash = format!("Hash_{:016X}", skate_data::attrib_hash::hash("default"));
+        assert_eq!(resolve(&rows, &default_hash).map(|(_, v)| *v), Some(2));
+        assert!(resolve(&rows, "missing").is_none());
     }
 
     /// b536 pixel shaders with smallarrow's intensity (1.0, 0.7): the front glows by the fade, the background keeps
