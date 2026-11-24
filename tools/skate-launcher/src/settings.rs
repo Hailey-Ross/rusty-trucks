@@ -31,14 +31,12 @@ fn rows() -> Vec<Row> {
             "How far out peds, NPC skaters and cars appear; farther costs frame time."),
         row("better_water", "Opt-ins", "Better Water", "water-look.json", "enabled", flag(false), Some(vec!["Retail", "On (not retail)"]), "A brighter, calmer water look on the canals, fountains and the sea."),
         row("more_audible", "Opt-ins", "More Audible World", "audio.json", "more_audible_world", flag(false), Some(vec!["Retail", "On (not retail)"]), "More cars, peds and NPC skaters heard at once. Applies at the next start."),
-        row("ped_speech", "Opt-ins", "Ped Speech", "audio.json", "decode_speech", flag(true), Some(vec!["On (default)", "Off"]), "Peds, the main cast and the announcer talk; setup decodes the speech (about 3.4 GB) at the next Refresh Game Files."),
         row("extended_replays", "Opt-ins", "Extended Replays", "graphics.json", "extended_replays", flag(false), Some(vec!["Retail (1:30)", "On (not retail)"]), "The instant replay keeps more than retail's 90 seconds (about 85 MB a minute)."),
         row("replay_seconds", "Opt-ins", "Replay Length", "graphics.json", "replay_seconds", [120, 150, 180, 210, 240].map(Value::from).to_vec(), Some(vec!["2:00", "2:30", "3:00", "3:30", "4:00"]), "How much the replay keeps with Extended Replays on."),
         row("better_object_mover", "Opt-ins", "Better Object Mover", "graphics.json", "better_object_mover", flag(false), Some(vec!["Retail", "On (not retail)"]), "Every prop can be picked up and moved, not only those with grab handles."),
         row("debug_menus", "Opt-ins", "Debug Menus", "graphics.json", "debug_menus", flag(false), Some(vec!["Retail", "On (not retail)"]), "Shows the debug menus Skate 3 ships hidden; developer leftovers that may not all work."),
         row("physics_threads", "Opt-ins", "Physics Step Threads", "graphics.json", "physics_threads_multi", flag(false), Some(vec!["Single (default)", "Multi"]), "The physics step on one thread (faster on the test PCs) or on Bevy's multi-threaded scheduler."),
         row("zombie", "Opt-ins", "Zombie Mode", "graphics.json", "opt_ins.zombie", flag(false), Some(vec!["Off", "On"]), "The retail cheat: yellow screen, no traffic, every ped comes after you."),
-        row("npc_physics", "Opt-ins", "NPC Skater Physics", "graphics.json", "opt_ins.npc_physics", flag(true), Some(vec!["On (default)", "Off"]), "NPC skaters near you run full skater physics and bail (still being tested)."),
         row("visualize_grabs", "Opt-ins", "Visualize Grabs", "graphics.json", "opt_ins.visualize_grabs", flag(false), Some(vec!["Off", "On"]), "Shows the props and car spots in grab range and logs grab availability."),
         row("vehicle_flee", "Opt-ins", "Ped Vehicle Flee", "graphics.json", "opt_ins.vehicle_flee", flag(false), Some(vec!["Off", "On"]), "Peds run from a car within 10 m that drives toward or away from them (still being tested)."),
         row("resolution", "Settings", "Resolution", "graphics.json", "resolution",
@@ -79,18 +77,12 @@ fn set(o: &mut Value, path: &str, value: Value) {
     cur.as_object_mut().expect("object").insert(parts[parts.len() - 1].to_owned(), value);
 }
 
-/// `Read-GameJson`: the file, with the defaults a file from before `defaults_version` 1 takes once (as the game).
+/// `Read-GameJson`: the file.
 fn read(l: &Launcher, file: &str) -> Value {
     let path = settings_dir(l).join(file);
-    let mut o = std::fs::read_to_string(&path).ok()
+    std::fs::read_to_string(&path).ok()
         .and_then(|t| serde_json::from_str::<Value>(t.trim_start_matches('\u{feff}')).ok())
-        .filter(Value::is_object).unwrap_or_else(|| Value::Object(Map::new()));
-    let version = get(&o, "defaults_version").and_then(Value::as_i64).unwrap_or(0);
-    if path.exists() && (file == "graphics.json" || file == "audio.json") && version < 1 {
-        if file == "graphics.json" { set(&mut o, "opt_ins.npc_physics", json!(true)) } else { set(&mut o, "decode_speech", json!(true)) }
-        set(&mut o, "defaults_version", json!(1));
-    }
-    o
+        .filter(Value::is_object).unwrap_or_else(|| Value::Object(Map::new()))
 }
 
 /// `Game-Value`.
