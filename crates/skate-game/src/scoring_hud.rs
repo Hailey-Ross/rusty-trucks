@@ -107,6 +107,8 @@ struct ChallengeMovie {
     /// A map change asked for a fresh runtime that is not loaded yet (`reset` loads one per frame; `advance` loads them
     /// all at once when a challenge wants its HUD first).
     stale: bool,
+    /// Draws last frame (logged when it turns zero or non-zero).
+    drew: usize,
 }
 
 impl ChallengeMovie {
@@ -332,7 +334,7 @@ fn setup(
                 let runtime = hud_challenge::Runtime::load_linked(component, &source, &sounds, &libraries)?;
                 let mut shapes: apt_scene::Shapes = serde_json::from_value(source["shapes"].clone()).map_err(|e| e.to_string())?;
                 shapes.extend(libraries.imported_shapes(&runtime.bindings.movie));
-                Ok(ChallengeMovie { runtime, libraries: libraries.clone(), source, shapes, sounds: sounds.clone(), slots: Vec::new(), failed: false, hidden_for: None, stale: false })
+                Ok(ChallengeMovie { runtime, libraries: libraries.clone(), source, shapes, sounds: sounds.clone(), slots: Vec::new(), failed: false, hidden_for: None, stale: false, drew: 0 })
             })() {
                 Ok(m) => {
                     for texture in m.shapes.values().flatten().filter_map(|s| s.texture.as_ref()) {
@@ -952,6 +954,11 @@ fn render_hud(
         render_draws(&mut commands, &mut meshes, &mut materials, &mut m.slots, &minimap_draws, |t| textures.get(t).cloned(), MINIMAP_Z, true);
     }
     for (i, (m, draws)) in hud.challenge.iter_mut().zip(&challenge_draws).enumerate() {
+        if (m.drew == 0) != draws.is_empty() {
+            let missing = draws.iter().filter(|d| !hud.textures.contains_key(&d.texture)).count();
+            info!("HUD_CHALLENGE {:?} draws {} -> {} (textures missing {missing})", m.runtime.component, m.drew, draws.len());
+        }
+        m.drew = draws.len();
         let textures = &hud.textures;
         render_draws(&mut commands, &mut meshes, &mut materials, &mut m.slots, draws, |t| textures.get(t).cloned(), CHALLENGE_Z + i as f32 * 0.05, true);
     }

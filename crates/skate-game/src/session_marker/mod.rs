@@ -36,6 +36,10 @@ pub(crate) struct SessionMarker {
     /// The modifier (LB) as last seen: its press opens the marker menu (retail's cellphone
     /// activate sound, `ui_audio::SessionMarkerAction::Opened`).
     modifier: bool,
+    /// The phone closed itself (82668998 after a row action) while LB is still held; it reopens on the next press.
+    phone_closed: bool,
+    /// Row 2 (B) offers Place Photographer: an anywhere photo armed the photographer (82661128).
+    pub photographer_row: bool,
 }
 
 pub(crate) struct SessionMarkerPlugin;
@@ -117,14 +121,22 @@ fn update(
     replay: Res<crate::replay::Replay>,
     mut events: MessageWriter<crate::ui_audio::SessionMarkerEvent>,
     presenter: Option<Res<crate::presentation_run::Presenter>>,
+    mut photographer: Option<ResMut<crate::ftl_host::AnywherePhotographer>>,
 ) {
     use crate::ui_audio::{SessionMarkerAction, SessionMarkerEvent};
     if replay.active {
         return;
     }
-    let (modifier, set, held) = input.session_marker_actions();
+    let (mut modifier, set, held) = input.session_marker_actions();
+    // Test knob for screenshot runs: SKATE_PHONE_TEST=open holds the phone open as if LB were held.
+    static HOLD_OPEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    modifier |= *HOLD_OPEN.get_or_init(|| std::env::var("SKATE_PHONE_TEST").is_ok_and(|v| v == "open"));
     let pressed = modifier && !session.modifier;
     session.modifier = modifier;
+    if !modifier {
+        session.phone_closed = false;
+    }
+    session.photographer_row = photographer.as_ref().is_some_and(|p| p.state.active);
     if session.blocked_until_release {
         if !modifier {
             session.blocked_until_release = false;
@@ -175,7 +187,16 @@ fn update(
         .is_some_and(|m| m.generation == map.generation)
         && !use_blocked
         && !matches!(state, 104 | 502);
-    session.visible = modifier;
+    // 826682B0 option 0x40 (hudphonelist mButton2 = B): with the photographer armed it is placed at the player's
+    // root (ftl_host serves the request) and the phone closes. Re-placing is allowed on every reopen.
+    if session.last_batch != input.consumed_batches && !session.phone_closed && input.phone_b_pressed() {
+        if let Some(p) = photographer.as_mut().filter(|p| p.state.active) {
+            p.place_requested = true;
+            session.phone_closed = true;
+            info!("SESSION_MARKER phone: place photographer");
+        }
+    }
+    session.visible = modifier && !session.phone_closed;
     // A retained Pad publication must not turn one .pressed into repeated sets.
     if set && session.last_batch != input.consumed_batches {
         // sub_82898FC8: every Place Marker press sounds, the place sound when the marker went

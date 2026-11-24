@@ -35,9 +35,20 @@ struct Running {
     cuts: Vec<(f32, usize)>,
     /// The gameplay camera's field of view before the scene.
     fov: Option<f32>,
+    /// The scene's other marquee actors, each on its own rig (despawned at the end).
+    extras: Vec<Extra>,
     /// The start allowed skipping (retail +0x4D, arg5 of the basic NIS start 8285E968: 1 from the presentation
     /// event and Lua EnterBasicNIS, research b1028).
     skippable: bool,
+}
+
+/// A further actor: its look under `root` (at the map origin), posed with its own clip in the scene frame.
+struct Extra {
+    character: String,
+    clip: Arc<SceneClip>,
+    root: Entity,
+    scene: Entity,
+    bindings: Option<AnimationStatus>,
 }
 
 /// Record kinds whose skip also waits for a minimum clip time (82820068: 0x0C, 0x0F, 0x12; research b1028).
@@ -52,6 +63,14 @@ fn may_skip(skippable: bool, kind: u32, time: f32) -> bool {
 }
 
 const PAD_A: u16 = 0x1000;
+
+/// The scene frame in the map (scene record floats 0..6): the clip and the camera keys are authored in it.
+fn scene_frame(scene: &Scene) -> Mat4 {
+    let (at, facing) = scene.origin();
+    let facing = Vec3::from_array(facing);
+    let turn = if facing.length_squared() > 1e-6 { Quat::from_rotation_arc(Vec3::NEG_Z, facing.normalize()) } else { Quat::IDENTITY };
+    Mat4::from_rotation_translation(turn, Vec3::from_array(at))
+}
 
 /// The scene's camera takes and cuts from `ice_000.bin` (none: the gameplay camera stays).
 fn cameras(root: &std::path::Path, scene: &Scene) -> (Vec<skate_core::camera_track::CameraTrack>, Vec<(f32, usize)>) {
@@ -145,9 +164,12 @@ fn drive(world: &mut World, mut player: Local<Player>) {
                     scene.length(), scene.actors[actor].kind, clip.frames.len(), clip.fps,
                     world.get::<GlobalTransform>(rig).map(|t| t.translation()));
                 let (tracks, cuts) = cameras(&root, scene);
-                info!("NIS {name} camera: {} takes, cuts {cuts:?}", tracks.len());
+                let first = tracks.first().and_then(|t| t.sample(0.0)).map(|s| ([s.eye[1], s.eye[2], s.eye[0]], [s.look[1], s.look[2], s.look[0]]));
+                info!("NIS {name} camera: {} takes, cuts {cuts:?}, first eye / look {first:?}, actor hips in the map {:?}",
+                    tracks.len(), at.map(|p| scene_frame(scene).transform_point3(p)));
                 let mut running = Running { scene: scene.clone(), clip, time: 0.0, saved: None, swapped: false, bindings: None,
-                    skins: 0, tracks, cuts, fov: None, skippable: true };
+                    skins: 0, tracks, cuts, fov: None, skippable: true, extras: Vec::new() };
+                running.extras = spawn_extras(world, &root, scene, actor);
                 // `current_player` keeps the player's own character.
                 if character != "current_player" {
                     if let Some(mut models) = world.get_resource_mut::<crate::custom_models::CustomModels>() {
@@ -200,11 +222,17 @@ fn drive(world: &mut World, mut player: Local<Player>) {
         return;
     }
     camera(world, player.running.as_mut().unwrap());
+    pose_extras(world, player.running.as_mut().unwrap());
     let Some(running) = player.running.as_ref() else { return };
     let Some(globals) = crate::trick_guide_scene::pose(&running.clip, running.time.min(running.clip.duration())) else { return };
-    // NOT RETAIL YET (research b1027 open): the clip is taken as world space, drawn through the player rig.
+    // The clip is in the scene frame (record floats 0..6), drawn through the player rig.
     let root = world.get::<GlobalTransform>(rig).copied().unwrap_or_default().to_matrix();
-    let place = root.inverse();
+    let place = root.inverse() * scene_frame(&running.scene);
+    if trace_tick(running.time, world.resource::<Time>().delta_secs()) {
+        let hips = running.clip.bone_names.iter().position(|n| n == "HIPS").unwrap_or(0);
+        let at = globals.get(hips).map(|g| scene_frame(&running.scene).transform_point3(crate::animation::native_matrix(*g).w_axis.truncate()));
+        info!("NIS_TRACE t {:.1} actor {} hips {at:?} rig at {:?}", running.time, running.scene.actors.first().map_or("", |a| a.character.as_str()), root.w_axis.truncate());
+    }
     if let Some(bindings) = &running.bindings {
         let matrices: Vec<Mat4> = globals.iter().map(|g| place * crate::animation::native_matrix(*g)).collect();
         for (entity, transform) in bindings.pose_transforms(&matrices) {
@@ -213,6 +241,91 @@ fn drive(world: &mut World, mut player: Local<Player>) {
             }
         }
     }
+}
+
+/// The scene's other marquee actors (82824610 queues a load of each marquee character): their look as the living
+/// world's NPC skaters wear it (`npc_skaters::look_path`). NOT RETAIL YET: `livingworld` actors (peds, another rig).
+fn spawn_extras(world: &mut World, root: &std::path::Path, scene: &Scene, first: usize) -> Vec<Extra> {
+    let mut extras = Vec::new();
+    for (i, a) in scene.actors.iter().enumerate() {
+        if i == first || a.character == "current_player" || a.kind != "marquee" {
+            if i != first && a.kind != "marquee" {
+                info!("NIS {} actor {} ({}): NOT RETAIL YET, not drawn", scene.name, a.character, a.kind);
+            }
+            continue;
+        }
+        let Some(file) = a.clip.rsplit('/').next() else { continue };
+        let clip = match std::fs::read(root.join("anim").join(file)).map_err(|e| e.to_string()).and_then(SceneClip::parse) {
+            Ok(c) => Arc::new(c),
+            Err(e) => {
+                warn!("NIS {} actor {}: clip {file}: {e}", scene.name, a.character);
+                continue;
+            }
+        };
+        let path = match (world.get_resource::<crate::living_world::npc_skaters::NpcSkaterLooks>(), world.get_resource::<crate::custom_models::CustomModels>()) {
+            (Some(looks), Some(models)) => crate::living_world::npc_skaters::look_path(looks, models, &a.character),
+            _ => "private/skater.glb".to_owned(),
+        };
+        let handle = world.resource::<AssetServer>().load(bevy::gltf::GltfAssetLabel::Scene(0).from_asset(path.clone()));
+        let actor_root = world.spawn((Transform::default(), Visibility::Visible, Name::new(format!("NIS actor {}", a.character)))).id();
+        let look = world.spawn((SceneRoot(handle), Transform::default(), Visibility::Hidden, ChildOf(actor_root))).id();
+        info!("NIS {} actor {} ({}): look {path}", scene.name, a.character, a.kind);
+        extras.push(Extra { character: a.character.clone(), clip, root: actor_root, scene: look, bindings: None });
+    }
+    extras
+}
+
+/// Binds each further actor once its look is loaded, then poses it with its clip in the scene frame.
+fn pose_extras(world: &mut World, running: &mut Running) {
+    let frame = scene_frame(&running.scene);
+    for extra in &mut running.extras {
+        if extra.bindings.is_none() {
+            let ready = world.get::<bevy::scene::SceneInstance>(extra.scene)
+                .is_some_and(|i| world.resource::<SceneSpawner>().instance_is_ready(**i));
+            if !ready {
+                continue;
+            }
+            extra.bindings = crate::trick_guide_scene::bind(world, extra.scene, &extra.clip);
+            if extra.bindings.is_some() {
+                world.entity_mut(extra.scene).insert(Visibility::Inherited);
+                // Its skinned meshes keep the bind pose's bounds at the map origin: no frustum culling, as the living
+                // world's NPC looks (`npc_skaters::present_looks`).
+                let meshes: Vec<Entity> = world.query_filtered::<Entity, With<bevy::mesh::skinning::SkinnedMesh>>().iter(world)
+                    .filter(|&m| {
+                        let mut at = m;
+                        while let Some(parent) = world.get::<ChildOf>(at).map(|c| c.parent()) {
+                            if parent == extra.scene {
+                                return true;
+                            }
+                            at = parent;
+                        }
+                        false
+                    })
+                    .collect();
+                for mesh in meshes {
+                    world.entity_mut(mesh).insert(bevy::camera::visibility::NoFrustumCulling);
+                }
+                info!("NIS actor {} bound", extra.character);
+            }
+        }
+        let Some(bindings) = &extra.bindings else { continue };
+        let Some(globals) = crate::trick_guide_scene::pose(&extra.clip, running.time.min(extra.clip.duration())) else { continue };
+        let matrices: Vec<Mat4> = globals.iter().map(|g| frame * crate::animation::native_matrix(*g)).collect();
+        if trace_tick(running.time, world.resource::<Time>().delta_secs()) {
+            let hips = extra.clip.bone_names.iter().position(|n| n == "HIPS").unwrap_or(0);
+            info!("NIS_TRACE t {:.1} actor {} hips {:?}", running.time, extra.character, matrices.get(hips).map(|m| m.w_axis.truncate()));
+        }
+        for (entity, transform) in bindings.pose_transforms(&matrices) {
+            if let Some(mut node) = world.get_mut::<Transform>(entity) {
+                *node = transform;
+            }
+        }
+    }
+}
+
+/// Every 2 s of scene time (NIS_TRACE lines: where the camera and each actor are).
+fn trace_tick(time: f32, dt: f32) -> bool {
+    (time / 2.0).floor() != ((time - dt) / 2.0).floor()
 }
 
 fn gameplay_camera(world: &mut World) -> Option<Entity> {
@@ -225,7 +338,11 @@ fn camera(world: &mut World, running: &mut Running) {
     let take = skate_data::ice_camera::take_at(&running.cuts, running.time).unwrap_or(0);
     let Some(sample) = running.tracks.get(take).and_then(|t| t.sample(running.time)) else { return };
     let point = |[x, y, z]: [f32; 3]| Vec3::new(y, z, x);
+    // The keys are map space (an offset by the scene frame put 04_ProChallenge_ChrisCole's camera ~30 m up).
     let (eye, look) = (point(sample.eye), point(sample.look));
+    if trace_tick(running.time, world.resource::<Time>().delta_secs()) {
+        info!("NIS_TRACE t {:.1} camera take {take} eye {eye:?} look {look:?}", running.time);
+    }
     let Some(camera) = gameplay_camera(world) else { return };
     if let Some(mut transform) = world.get_mut::<Transform>(camera) {
         *transform = Transform::from_translation(eye).looking_at(look, Vec3::Y);
@@ -243,6 +360,11 @@ fn end(world: &mut World, player: &mut Player, why: &str) {
     let Some(running) = player.running.take() else { return };
     info!("NIS {} {why} at {:.2} s", running.scene.name, running.time);
     PLAYING.store(false, std::sync::atomic::Ordering::Relaxed);
+    for extra in &running.extras {
+        if let Ok(e) = world.get_entity_mut(extra.root) {
+            e.despawn();
+        }
+    }
     // NIS complete (8285F720) pops mode 12.
     if let Some(mut pause) = world.get_resource_mut::<crate::pause_man::ThePauseMan>() {
         pause.pop(skate_core::pause_man::mode::NIS);
@@ -268,6 +390,17 @@ fn end(world: &mut World, player: &mut Player, why: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scene_plays_in_its_frame() {
+        let scene = |floats| Scene { name: "s".into(), hash: 0, kind: 0, floats, actors: Vec::new() };
+        let lesson = scene_frame(&scene([0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 22.3]));
+        assert!(lesson.abs_diff_eq(Mat4::IDENTITY, 1e-6), "the lesson demos are in map space");
+        let pro = scene_frame(&scene([-169.5, 30.5, 271.7, 0.0, 0.0, -1.0, 14.7]));
+        assert!(pro.transform_point3(Vec3::new(-8.7, 0.9, -1.6)).abs_diff_eq(Vec3::new(-178.2, 31.4, 270.1), 1e-3));
+        let turned = scene_frame(&scene([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]));
+        assert!(turned.transform_vector3(Vec3::NEG_Z).abs_diff_eq(Vec3::X, 1e-6), "the facing turns the scene");
+    }
 
     #[test]
     fn skippable_starts_skip_except_the_timed_kinds() {

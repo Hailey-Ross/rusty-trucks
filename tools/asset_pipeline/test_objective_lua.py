@@ -41,6 +41,15 @@ class ObjectiveLua(unittest.TestCase):
         self.assertEqual(p['body'][1]['return']['and'][0]['args'][1], {'lit': 8})
         self.assertEqual(translate('return Lib.EOther.Thing')['body'][0], {'return': {'enum': 'Lib.EOther.Thing'}})
 
+    def test_hall_of_meat_enums_resolve(self):
+        """b1059 / b869: the ObjectiveHOM and Pedestrian enum tables the Hall of Meat rows read."""
+        lit = lambda e: translate(f'return {e}')['body'][0]['return']
+        self.assertEqual(lit('ObjectiveHOM.EBoneIndex.LEFTLEG'), {'lit': 16})
+        self.assertEqual(lit('ObjectiveHOM.EBoneIndex.GROIN'), {'lit': 24})
+        self.assertEqual(lit('ObjectiveHOM.EDamageLevel.BreakPart'), {'lit': 4})
+        self.assertEqual(lit('ObjectiveHOM.EWipeoutBodyTweakIndex.Tweak4'), {'lit': 3})
+        self.assertEqual(lit('Pedestrian.ePedestrianState.KnockDown'), {'lit': 1})
+
     def test_lua_errors_stay_errors(self):
         broken = translate('do return Lib.Done( end')
         self.assertIn('syntax_error', broken)

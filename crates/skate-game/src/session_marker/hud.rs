@@ -24,6 +24,8 @@ struct Texture {
 }
 #[derive(Deserialize)]
 struct Primitive {
+    #[serde(default)]
+    role: String,
     texture: Option<usize>,
     color: [f32; 4],
     vertices: Vec<Vertex>,
@@ -35,6 +37,13 @@ struct Vertex {
 }
 #[derive(Component)]
 struct MarkerHudRoot;
+
+/// Row 2's two faces (hudphonelist text2): Place Photographer while one is armed, else Object Dropper. Overlays
+/// from before the photographer face have only the dropper one, which then always shows.
+#[derive(Component, Clone, Copy)]
+struct RowFace {
+    photographer: bool,
+}
 
 /// The camera of the session marker layer (29): the marker HUD and the teleport effect screen.
 #[derive(Component)]
@@ -154,6 +163,7 @@ fn load(
         return;
     }
     info!("Original session-marker HUD loaded from {}", folder.display());
+    let has_photographer = hud.meshes.iter().any(|m| m.role == "photographer");
     commands
         .spawn((MarkerHudRoot, Transform::default(), Visibility::Hidden))
         .with_children(|parent| {
@@ -180,12 +190,15 @@ fn load(
                     texture: primitive.texture.map(|i| textures[i].clone()),
                     ..default()
                 };
-                parent.spawn((
+                let mut child = parent.spawn((
                     Mesh2d(meshes.add(mesh)),
                     MeshMaterial2d(materials.add(material)),
                     layer.clone(),
                     Transform::from_xyz(0., 0., order as f32 * 0.01),
                 ));
+                if has_photographer && matches!(primitive.role.as_str(), "dropper" | "photographer") {
+                    child.insert(RowFace { photographer: primitive.role == "photographer" });
+                }
             }
         });
 }
@@ -194,7 +207,12 @@ fn present(
     session: Res<super::SessionMarker>,
     window: Single<&Window>,
     mut roots: Query<(&mut Transform, &mut Visibility), With<MarkerHudRoot>>,
+    mut faces: Query<(&RowFace, &mut Visibility), Without<MarkerHudRoot>>,
 ) {
+    for (face, mut visibility) in &mut faces {
+        let shown = face.photographer == session.photographer_row;
+        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+    }
     let scale = (window.width() / 1280.).min(window.height() / 720.);
     for (mut transform, mut visibility) in &mut roots {
         *visibility = if session.visible {

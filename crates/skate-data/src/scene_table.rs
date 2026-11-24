@@ -34,6 +34,12 @@ impl Scene {
     pub fn length(&self) -> f32 {
         self.floats[6]
     }
+
+    /// The scene's place in the map: floats 0..3 the origin, 3..6 its facing ((0, 0, -1) = unturned). The lesson
+    /// demos are authored in map space (origin 0); 04_ProChallenge_ChrisCole sits at (-169.5, 30.6, 271.7).
+    pub fn origin(&self) -> ([f32; 3], [f32; 3]) {
+        ([self.floats[0], self.floats[1], self.floats[2]], [self.floats[3], self.floats[4], self.floats[5]])
+    }
 }
 
 fn u32_at(b: &[u8], o: usize) -> u32 {

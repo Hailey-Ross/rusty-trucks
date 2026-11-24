@@ -100,11 +100,14 @@ def compile_hud(cache_root: Path, output: Path, toolkit="vendor.skate3_ui") -> N
                         for x, y, u, v in corners]
             primitive["triangles"] = [[vertices[i] for i in indices] for indices in ((0,1,2),(0,2,3))]
             primitive["color"] = [1, 1, 1, primitive["color"][3]]
-            if role == "dropper": primitive["color"][3] *= 0.3
-        meshes.append({"texture": index, "role": role, "color": primitive["color"],
-            "vertices": [dict(position=v["position"], uv=v.get("uv", [0, 0]))
-                         for tri in primitive["triangles"] for v in tri],
-            "order": primitive["draw_order"], "source": primitive["path"]})
+        vertices = [dict(position=v["position"], uv=v.get("uv", [0, 0]))
+                    for tri in primitive["triangles"] for v in tri]
+        # Row 2 has two faces (hudphonelist text2): the photographer one at full opacity, the dropper one dimmed.
+        for face in (("dropper", "photographer") if role == "dropper" else (role,)):
+            color = list(primitive["color"])
+            if face == "dropper": color[3] *= 0.3
+            meshes.append({"texture": index, "role": face, "color": color, "vertices": vertices,
+                "order": primitive["draw_order"], "source": primitive["path"]})
     def emit_text(text, value, font, tint, offset, role):
         definition = font["definition"]
         metrics = measure_bitmap_text(definition, value, text["font_height"])
@@ -130,20 +133,23 @@ def compile_hud(cache_root: Path, output: Path, toolkit="vendor.skate3_ui") -> N
             "source": text["path"], "font_pass": "shadow" if offset == 0 else "foreground"})
 
     for text in flat["text"]:
-        value = language.get(text["value"], text["value"])
-        if value.startswith("ID_"): raise ValueError(f"Missing retail text {value}")
         role = ("return" if "/text0/" in text["path"] else
                 "place" if "/text1/" in text["path"] else "dropper")
-        argb = int(text["color_argb"].lstrip("#"), 16)
-        color = [((argb >> n) & 255)/255 for n in (16,8,0)] + [text["alpha"]*((argb>>24)&255)/255]
-        if role == "dropper": color[3] *= 0.3
-        # AllocateString 825D6B68 / SkateAptString::Render 82CA1FD8:
-        # Futura Shadow is black, then futuraheavy in the text color at x+1.
-        passes = [(text["font_asset"], [0, 0, 0, color[3]], 0),
-                  (cache.font_asset("Futura Std Medium"), color, 1)]
-        for font, tint, offset in passes:
-            if font is None: raise ValueError("Missing original futuraheavy font")
-            emit_text(text, value, font, tint, offset, role)
+        faces = [(role, language.get(text["value"], text["value"]))]
+        if role == "dropper":
+            faces.append(("photographer", language["ID_PHONELIST_PLACE_PHOTOGRAPHER"]))
+        for face, value in faces:
+            if value.startswith("ID_"): raise ValueError(f"Missing retail text {value}")
+            argb = int(text["color_argb"].lstrip("#"), 16)
+            color = [((argb >> n) & 255)/255 for n in (16,8,0)] + [text["alpha"]*((argb>>24)&255)/255]
+            if face == "dropper": color[3] *= 0.3
+            # AllocateString 825D6B68 / SkateAptString::Render 82CA1FD8:
+            # Futura Shadow is black, then futuraheavy in the text color at x+1.
+            passes = [(text["font_asset"], [0, 0, 0, color[3]], 0),
+                      (cache.font_asset("Futura Std Medium"), color, 1)]
+            for font, tint, offset in passes:
+                if font is None: raise ValueError("Missing original futuraheavy font")
+                emit_text(text, value, font, tint, offset, face)
 
     # The source manifest names the setup's temp folder: hash it without that folder (reproducible output).
     source = (cache_root/"manifest.json").read_bytes().replace(json.dumps(str(cache_root))[1:-1].encode(), b"")
@@ -152,7 +158,7 @@ def compile_hud(cache_root: Path, output: Path, toolkit="vendor.skate3_ui") -> N
         "source_manifest_sha256": hashlib.sha256(source).hexdigest(),
         "timelines": {"hudintro": [1,14], "hudoutro": [15,30], "maximized": [27,49], "3": [9,18]},
         "presentation": {"panel_opacity": PANEL_OPACITY, "shadow_coverage_gamma": SHADOW_COVERAGE_GAMMA},
-        "notes": "Authored three-row display list; native RenderButton dimensions and dual font passes. Panel opacity and shadow coverage compensate the host compositor against reference screenshots; they are not recovered native constants. Object Dropper is unavailable; its 0.3 opacity is a host presentation choice."}
+        "notes": "Authored three-row display list; native RenderButton dimensions and dual font passes. Panel opacity and shadow coverage compensate the host compositor against reference screenshots; they are not recovered native constants. Object Dropper is unavailable; its 0.3 opacity is a host presentation choice. Row 2 has a second face, role photographer (ID_PHONELIST_PLACE_PHOTOGRAPHER, full opacity), shown while an anywhere photo armed the photographer."}
     (output/"hud.json").write_text(json.dumps(manifest, indent=2)+"\n")
 
 

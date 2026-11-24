@@ -89,6 +89,9 @@ pub struct Params {
     pub reset_ai_on_bail: bool,
     pub reset_ai_on_marker: bool,
     pub use_line_timer: bool,
+    /// IsTrackingUniqueTrick (make_objectives: Objectives.IsTrackedUniqueTrickGroup, 82C60630): the row's
+    /// TrackUniqueTrickGroup resolves to a trick group (b1056).
+    pub track_unique: bool,
     /// Graph constants (b875 / b1006): the FTL window after the leader finishes, the owned banner's wait for a
     /// killed completion, the wipeout and objective-failed re-arm delays, the AI restart delays, the asset poll.
     pub ftl_window: f32,
@@ -132,6 +135,7 @@ impl Params {
             reset_ai_on_bail: true,
             reset_ai_on_marker: true,
             use_line_timer: false,
+            track_unique: false,
             ftl_window: 10.0,
             owned_pending: 0.5,
             wipeout_delay: 1.5,
@@ -277,6 +281,8 @@ pub enum Command {
     /// ObjectiveComplete with the objective's highlight (b933): AddHighlight(the group's tier, its definition, start =
     /// the sequence's first frame, end = now). The host knows which objective and its definition.
     AddHighlight { killed: bool },
+    /// Objectives.AddLastUniqueTrickToList on the completing group (objectivecomplete while tracking, b1056).
+    AddLastUniqueTrick { killed: bool },
     /// The HighlightReel enter before PlayHighlightReel: keep the result's tier, else the first owned objective's
     /// highlight (`highlights::Highlights::reel`).
     PrepareReel { killed: bool },
@@ -691,6 +697,9 @@ impl FilmRun {
             (State::ChallengeRunning, Event::ObjectiveComplete { killed, last }) if !self.locked_out && self.ids.owned_pending.is_none() => {
                 if !last {
                     out.push(Command::Speech(Speech::CompleteAnObjective));
+                }
+                if p.track_unique {
+                    out.push(Command::AddLastUniqueTrick { killed });
                 }
                 // a photo keeps one shot: the newest objective's highlight replaces the reel
                 if p.kind.photo() {

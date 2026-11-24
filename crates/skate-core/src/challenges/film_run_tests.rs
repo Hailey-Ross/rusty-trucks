@@ -159,12 +159,25 @@ fn a_kill_beats_a_pending_owned_and_the_retail_values_are_data() {
     assert_eq!((Params::retail(Kind::Follow).ftl_window, Params::retail(Kind::Follow).competitors), (10.0, 1));
 }
 
+/// b1056: while tracking unique tricks, an accepted objective completion commits the group's candidate; once locked
+/// out (all complete) a later completion commits nothing.
+#[test]
+fn a_tracking_film_commits_the_unique_trick_on_each_accepted_completion() {
+    let mut run = FilmRun::new(Params { boundary: Some(BOUNDARY), track_unique: true, ..Params::retail(Kind::Film) });
+    to_running(&mut run);
+    let out = run.handle(Event::ObjectiveComplete { killed: true, last: false });
+    assert!(out.contains(&Command::AddLastUniqueTrick { killed: true }), "{out:?}");
+    run.handle(Event::AllObjectivesComplete { killed: true });
+    assert!(run.handle(Event::ObjectiveComplete { killed: true, last: false }).is_empty(), "locked out");
+}
+
 #[test]
 fn a_completed_objective_adds_its_highlight_and_the_reel_keeps_the_results_tier() {
     let mut run = film();
     to_running(&mut run);
     let out = run.handle(Event::ObjectiveComplete { killed: false, last: false });
     assert!(out.contains(&Command::AddHighlight { killed: false }), "{out:?}");
+    assert!(!out.iter().any(|c| matches!(c, Command::AddLastUniqueTrick { .. })), "not tracking unique tricks");
     run.handle(Event::AllObjectivesComplete { killed: true });
     let out = tick_until(&mut run, State::HighlightReel, 400);
     let prepare = out.iter().position(|c| *c == Command::PrepareReel { killed: true });

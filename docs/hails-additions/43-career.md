@@ -480,6 +480,21 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   actor clip on disk, ends at once (logged), so no group waits forever.
 - **Mods.** Scenes, actors, clips, cuts and lengths are data (scene table + ICE file); a mod's presentation group
   plays any scene by name through the NIS event, and a mod can override the NIS handler by name (registry).
+- **Scene frame** (2026-11-23) [data]: a scene record's floats 0..3 are its origin in the map and 3..6 its facing
+  ((0, 0, -1) = unturned); float 6 is the length. The lesson demos have origin 0 (map space, so they played in place);
+  the 1-Up intro `04_ProChallenge_ChrisCole` sits at (-169.5, 30.6, 271.7), and its clip (hips near (-8.7, 0.9, -1.6)
+  at t = 0) is relative to that. Ours: `nis_player::scene_frame` places the clip in that frame (test
+  `a_scene_plays_in_its_frame`); before, the pro scene's actor stood near the map origin and the camera showed no
+  one. The ICE camera keys stay in map space: offset by the frame too, the camera hung ~30 m above the brewery
+  (runs nis1 / nis3) [inferred from the shots; the log line `first eye / look ... actor hips in the map` checks it]. That scene has seven actors (current_player, chris_cole, skate_ambassador_prop and
+  ai_skater_05 marquee, three livingworld peds). The first actor with a clip plays on the player rig; every other
+  marquee actor gets its own rig (`nis_player::spawn_extras`: the look the living world's NPC skaters wear,
+  `npc_skaters::look_path`, bound with the scene clip's bones once loaded and posed in the scene frame each frame,
+  despawned at the end). NOT RETAIL YET: the livingworld actors (peds; their rig needs the ped bone basis) are logged
+  and not drawn. Their skinned meshes get `NoFrustumCulling` (the bind pose's bounds sit at the map origin, which
+  culled them). Trace (run nis6, `NIS_TRACE` every 2 s of scene time): take 0 is an over-the-shoulder shot whose eye
+  walks about 1 m behind current_player toward chris_cole, who stands at (-169.9, 30.8, 269.4) the whole scene;
+  the ambassador walks up to him and ai_skater_05 rides past.
 - **NOT RETAIL YET / open.** Skip (cMsgNISSkip / cMsgNISKill exist; the button and prompt are not read); whether
   the end is the scene length or the clip end (equal for the lessons); scenes with several actors (only the first
   plays; the others need their own rigs); the player is not moved; what

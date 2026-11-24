@@ -97,6 +97,14 @@ pub struct SkaterFacts {
     /// (GetFinishedSequenceScore 82C65060 reads +0x6C while the SequenceCompleted flag is set).
     pub sequence_score: i32,
     pub finished_sequence_score: i32,
+    /// AnywherePhoto.HasUserPlacedPhotographer / GetDistanceToPhotographer (82C61C58 / 82C61CC0, b1057): placed, and
+    /// the player's root distance to the spot ([`super::photographer::NOT_PLACED`] when not placed).
+    pub photographer_placed: bool,
+    pub photographer_distance: f32,
+    /// ObjectiveHOM.DidPushOffThisFrame / GetPushOffScore (82C68F60 / 82C68FF0, b1059): a push-off this evaluation
+    /// (pose output +605) and its score (+588, read live).
+    pub push_off: bool,
+    pub push_off_score: f32,
 }
 
 impl Default for SkaterFacts {
@@ -107,7 +115,8 @@ impl Default for SkaterFacts {
             went_off_board: false, went_on_board: false, grinding: false, on_board: false, on_ground: false,
             air_completed: false, time_to_grind: NO_GRIND_TIME, board_adjust: 0, competitor_distances: [None; 4],
             spin_half_turns: 0, fakie: false, bumpers: [false; 2], sticks: [0.0; 2], right_stick_x: 0.0, speed: 0.0,
-            manual_distance: 0.0, sequence_score: 0, finished_sequence_score: 0,
+            manual_distance: 0.0, sequence_score: 0, finished_sequence_score: 0, photographer_placed: false,
+            photographer_distance: super::photographer::NOT_PLACED, push_off: false, push_off_score: 0.0,
         }
     }
 }
@@ -141,7 +150,7 @@ pub enum FlowCommand {
 /// The functions this API answers (last name segment). A group whose programs call anything else does not run:
 /// an unported call errors, and an erroring completion condition defaults to true (retail), so it would complete
 /// at once.
-pub const PORTED: &[&str] = &["GetCurrentDegreesOfSpin", "GetDegreesOfSpin", "IsFakie", "IsLeftBumperHeld", "IsRightBumperHeld", "IsLeftStickHeld", "IsRightStickHeld", "GetRawRightStickXValue", "GetSpeed", "ManualDistance", "GetSequencePoints", "GetFinishedSequenceScore", "AwardSequencePointsImmediately", "print", "GetNumDMOsHit", "IsWipeoutOver", "ResetAllObjectives", "DidSpecificBodyTweakThisFrame", "GetScore", "GetWipeoutDuration", "GetNumVehiclesHit", "GetNumPedestriansHit", "GetNumBonesAtDamageLevel", "GetNumBonesGTOEDamageLevel", "GetDistanceToNearestAISkater", "GetDistanceToSkater", "AddFollowIndicator", "RemoveFollowIndicator","BeganTrick", "BeganTrickGroup", "GetTimeToGrind", "IsDoingSpecificBoardAdjust", "EnteredVolume", "IsInVolume", "IsSequenceNewlyCompletePoints", "GetGroupAccumulatedPoints",
+pub const PORTED: &[&str] = &["GetBoneState", "DidPushOffThisFrame", "GetPushOffScore", "HasUserPlacedPhotographer", "GetDistanceToPhotographer", "NumUniqueTrickDone", "GetCurrentDegreesOfSpin", "GetDegreesOfSpin", "IsFakie", "IsLeftBumperHeld", "IsRightBumperHeld", "IsLeftStickHeld", "IsRightStickHeld", "GetRawRightStickXValue", "GetSpeed", "ManualDistance", "GetSequencePoints", "GetFinishedSequenceScore", "AwardSequencePointsImmediately", "print", "GetNumDMOsHit", "IsWipeoutOver", "ResetAllObjectives", "DidSpecificBodyTweakThisFrame", "GetScore", "GetWipeoutDuration", "GetNumVehiclesHit", "GetNumPedestriansHit", "GetNumBonesAtDamageLevel", "GetNumBonesGTOEDamageLevel", "GetDistanceToNearestAISkater", "GetDistanceToSkater", "AddFollowIndicator", "RemoveFollowIndicator","BeganTrick", "BeganTrickGroup", "GetTimeToGrind", "IsDoingSpecificBoardAdjust", "EnteredVolume", "IsInVolume", "IsSequenceNewlyCompletePoints", "GetGroupAccumulatedPoints",
     "GetGroupPointsRequirement", "GetAccumulatedPoints", "ActivateObjective", "DeactivateObjective", "ResetObjective",
     "GetObjectiveStatus", "GetTotalNumCompletedObjectives", "IsInSequence", "SequenceCompleted", "IsWipingOut",
     "IsOffBoard", "WentOffBoard", "WentOnBoard", "JustUsedSessionMarker", "JustSetSessionMarker", "SetFractionValue",
@@ -201,6 +210,15 @@ impl Api for ObjectiveApi<'_> {
             // 82C652A0: context +8 and +9.
             "IsSequenceNewlyCompletePoints" => Value::Bool(self.ctx.sequence && self.ctx.newly_complete),
             "GetGroupAccumulatedPoints" => num(self.ctx.group_points),
+            // 82C69DE8 (b953): the group's committed unique tricks plus the last clean line's candidate.
+            "NumUniqueTrickDone" => num(self.ctx.unique_tricks),
+            // 82C68560 (b1059): the bone's damage level (-1 none, 0..5 EDamageLevel) of the bail record; ours: the last
+            // closed bail's levels [inferred: retail reads the record live]. An index outside the 25 bones reads -1.
+            "GetBoneState" => num(index(args).ok().and_then(|i| self.skater.bail.levels.get(i)).map_or(-1, |l| i32::from(*l))),
+            "DidPushOffThisFrame" => Value::Bool(self.skater.push_off),
+            "GetPushOffScore" => Value::Num(self.skater.push_off_score),
+            "HasUserPlacedPhotographer" => Value::Bool(self.skater.photographer_placed),
+            "GetDistanceToPhotographer" => Value::Num(if self.skater.photographer_placed { self.skater.photographer_distance } else { super::photographer::NOT_PLACED }),
             "GetGroupPointsRequirement" => num(self.ctx.requirement),
             "GetAccumulatedPoints" => num(self.objective.points),
             // 82C630A0: true for an inactive, armed or active objective (an inactive one activates).
@@ -370,7 +388,7 @@ mod tests {
         let points = Program { locals: 0, body: vec![Stmt::Return(Expr::Cmp(CmpOp::Ge,
             Box::new(Expr::Api { func: 2, args: vec![] }), Box::new(Expr::Api { func: 3, args: vec![] })))] };
         let newly = Program { locals: 0, body: vec![Stmt::Return(Expr::Api { func: 1, args: vec![] })] };
-        let ctx = Context { sequence: true, newly_complete: true, group_points: 1200, requirement: 1000 };
+        let ctx = Context { sequence: true, newly_complete: true, group_points: 1200, requirement: 1000, unique_tricks: 0 };
         let run = |p: &Program, o: &Objective, ctx: Context| {
             condition(p, &mut ObjectiveApi { names: &names, objective: o, ctx, volume: &volume, inside: &[], statuses: &[],
                 flow: &mut Vec::new(), skater: SkaterFacts::default(), tricks_this_frame: &[], tricks_began: &[], trick_groups: &Default::default(),
@@ -458,6 +476,31 @@ mod tests {
         assert_eq!(api.call(7, &[Value::Bool(true)]).unwrap(), Value::Nil);
         assert_eq!(api.call(8, &[Value::Str("debug".into())]).unwrap(), Value::Nil);
         assert_eq!(flow, vec![FlowCommand::AwardImmediately { score: 700 }]);
+        assert!(names.iter().all(|n| ported(n)));
+    }
+
+    /// b1059 / b1057: the bone damage level by EBoneIndex, the push-off pair, the photographer pair.
+    #[test]
+    fn the_bone_push_off_and_photographer_calls_read_their_facts() {
+        let names: Vec<String> = ["ObjectiveHOM.GetBoneState", "ObjectiveHOM.DidPushOffThisFrame", "ObjectiveHOM.GetPushOffScore",
+            "AnywherePhoto.HasUserPlacedPhotographer", "AnywherePhoto.GetDistanceToPhotographer"].iter().map(|n| n.to_string()).collect();
+        let o = spot(&[]);
+        let mut bail = crate::hall_of_meat::BailSummary::default();
+        bail.levels = [-1; crate::hall_of_meat::BONES];
+        bail.levels[16] = 4;
+        let skater = SkaterFacts { bail, push_off: true, push_off_score: 0.55, photographer_placed: true, photographer_distance: 3.5,
+            ..Default::default() };
+        let mut flow = Vec::new();
+        let mut api = ObjectiveApi { names: &names, objective: &o, ctx: Context::default(), volume: &|_: &str| None, inside: &[],
+            statuses: &[], flow: &mut flow, skater, tricks_this_frame: &[], tricks_began: &[], trick_groups: &Default::default(),
+            key: &|_: &str| 0u64 };
+        assert_eq!(api.call(0, &[Value::Num(16.0)]).unwrap(), Value::Num(4.0), "LEFTLEG at BreakPart");
+        assert_eq!(api.call(0, &[Value::Num(0.0)]).unwrap(), Value::Num(-1.0));
+        assert_eq!(api.call(0, &[Value::Num(99.0)]).unwrap(), Value::Num(-1.0), "outside the 25 bones");
+        assert_eq!((api.call(1, &[]).unwrap(), api.call(2, &[]).unwrap()), (Value::Bool(true), Value::Num(0.55)));
+        assert_eq!((api.call(3, &[]).unwrap(), api.call(4, &[]).unwrap()), (Value::Bool(true), Value::Num(3.5)));
+        api.skater.photographer_placed = false;
+        assert_eq!(api.call(4, &[]).unwrap(), Value::Num(crate::challenges::photographer::NOT_PLACED));
         assert!(names.iter().all(|n| ported(n)));
     }
 }

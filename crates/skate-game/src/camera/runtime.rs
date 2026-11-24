@@ -102,6 +102,7 @@ impl CameraRuntime {
             self.manager.state.aspect_ratio = value;
         }
     }
+    pub fn aspect_ratio(&self) -> f32 { self.manager.state.aspect_ratio }
     pub fn selected_shot(&self) -> &str { &self.manager.shots.current().name }
 
     pub fn camera_type(&self) -> u32 { self.camera_type }

@@ -934,6 +934,8 @@ pub enum Command {
         key: String,
     },
     ChallengeAbort {},
+    /// Place the anywhere photo's photographer at the player (the phone's option, b1057).
+    ChallengePlacePhotographer {},
     ChallengeEnable {
         id: String,
         enabled: bool,
@@ -1396,7 +1398,7 @@ impl Command {
                 && events.iter().all(|e| (1..=3).contains(&e.len()) && !e[0].is_empty() && e[0].len() <= 48 && e[0].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
                     && e[1..].iter().all(|a| a.len() <= 256)),
             Self::PresentationStop { key } => crate::schema::valid_id(key),
-            Self::ChallengeAbort {} => true,
+            Self::ChallengeAbort {} | Self::ChallengePlacePhotographer {} => true,
             Self::MusicPlaylist { path, .. } => valid_package_path(path),
             Self::MusicSoundtrack { track } => track.is_none_or(|t| (1..=4096).contains(&t)),
             Self::MusicStop {} | Self::MusicSkip {} | Self::MusicExternal { .. } => true,
@@ -1586,6 +1588,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::PresentationPlay { .. } => "presentation_play",
         Command::PresentationStop { .. } => "presentation_stop",
         Command::ChallengeAbort { .. } => "challenge_abort",
+        Command::ChallengePlacePhotographer { .. } => "challenge_place_photographer",
         Command::ChallengeEnable { .. } => "challenge_enable",
         Command::ChallengeConfigure { .. } => "challenge_configure",
         Command::CareerAddSales { .. } => "career_add_sales",

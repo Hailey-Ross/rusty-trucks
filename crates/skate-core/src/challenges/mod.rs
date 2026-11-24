@@ -14,6 +14,7 @@ pub mod lots;
 pub mod path_filter;
 pub mod objectives;
 pub mod one_up_run;
+pub mod photographer;
 pub mod poster;
 pub mod predicate;
 pub mod race;

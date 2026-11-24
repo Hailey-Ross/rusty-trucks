@@ -100,7 +100,7 @@ fn arm(mut ftl: ResMut<FollowTheLeader>, config: Res<crate::config::Config>, map
     }
     let map_volumes: Vec<(String, u64)> =
         volumes.map.iter().filter_map(|v| Some((v.name.clone(), u64::from_str_radix(&v.id, 16).ok()?))).collect();
-    let Some(groups) = crate::ftl_host::load_groups(&data, map_volumes) else {
+    let Some(groups) = crate::ftl_host::load_groups(&data, map_volumes, crate::challenge_objectives::trick_groups(&config.asset_root)) else {
         warn!("SKATE_HOM {id}: its owned objectives do not load; not started");
         return;
     };

@@ -473,8 +473,6 @@ pub(crate) struct Challenges {
     pub tutorial: Option<crate::tutorial_run::TutorialRun>,
     tutorial_carry: f32,
     verify_tutorial: Option<String>,
-    /// The challenge trick groups (b863), read from the stock collections when the first tutorial starts.
-    trick_groups: Option<crate::challenge_objectives::TrickGroups>,
 }
 
 impl Challenges {
@@ -822,12 +820,7 @@ fn update(
             (Some(c), _) if idle => start_run(&mut challenges, &mut volumes, c),
             (None, Some(t)) if idle => {
                 info!("SKATE_TUTORIAL start {}", t.id);
-                let groups = challenges.trick_groups.get_or_insert_with(|| {
-                    let groups = skate_data::collections::Collections::load(&config.asset_root)
-                        .map(|c| skate_data::objective_program::trick_groups(&c)).unwrap_or_default();
-                    info!("SKATE_TUTORIAL trick groups={}", groups.len());
-                    std::sync::Arc::new(groups)
-                }).clone();
+                let groups = crate::challenge_objectives::trick_groups(&config.asset_root);
                 challenges.tutorial = Some(crate::tutorial_run::TutorialRun::new(t, groups));
             }
             _ => info!("SKATE_CHALLENGE sign-up {id}: no own the spot or tutorial here (another host may start it)"),

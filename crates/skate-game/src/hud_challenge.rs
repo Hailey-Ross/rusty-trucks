@@ -27,11 +27,13 @@ pub(crate) enum Component {
     Tutorial,
     /// Follow the leader's distance to the leader (`hud2/huddistance`, template 45, research b1006 item 8).
     DistanceMeter,
+    /// The 1-Up / S.K.A.T.E letters (`hud2/hudthrowmes`, template 44 ThrowDownMessageHUD, research b1058).
+    ThrowDown,
 }
 
 impl Component {
-    pub const ALL: [Component; 9] = [Component::Timer, Component::Objective, Component::Dpo, Component::OwnedIt, Component::KilledIt,
-        Component::Countdown, Component::Leaderboard, Component::Tutorial, Component::DistanceMeter];
+    pub const ALL: [Component; 10] = [Component::Timer, Component::Objective, Component::Dpo, Component::OwnedIt, Component::KilledIt,
+        Component::Countdown, Component::Leaderboard, Component::Tutorial, Component::DistanceMeter, Component::ThrowDown];
 
     /// The converted movie (`private/hud/runtime/<file>`, tools/prepare_hud.py).
     pub fn file(self) -> &'static str {
@@ -45,6 +47,7 @@ impl Component {
             Component::Leaderboard => "leaderboardhud.json",
             Component::Tutorial => "hudtutorial.json",
             Component::DistanceMeter => "huddistance.json",
+            Component::ThrowDown => "hudthrowmes.json",
         }
     }
 
@@ -53,7 +56,7 @@ impl Component {
     fn refresh_state(self) -> Option<f64> {
         match self {
             Component::Timer | Component::Dpo | Component::Objective | Component::DistanceMeter => Some(3.0),
-            Component::OwnedIt | Component::KilledIt | Component::Countdown | Component::Leaderboard | Component::Tutorial => None,
+            Component::OwnedIt | Component::KilledIt | Component::Countdown | Component::Leaderboard | Component::Tutorial | Component::ThrowDown => None,
         }
     }
 }
@@ -157,6 +160,30 @@ pub(crate) struct ChallengeHudState {
     pub callout: CalloutHud,
     #[serde(default)]
     pub distance: DistanceHud,
+    #[serde(default)]
+    pub throwdown: ThrowDownHud,
+}
+
+/// HUD2.ShowSkateMessage's letters (826692F8, research b1058): each new letter as the movie state the component
+/// sends with its front-end sound, oldest first (at most 8), and the running count sent.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ThrowDownHud {
+    pub letters: Vec<(i32, String)>,
+    pub sent: u32,
+}
+
+impl ThrowDownHud {
+    /// A 1-Up letter (ShowSkateMessage with its skate flag false): SetState(letters + 5) and the letter's sound, the
+    /// local runner's `1up_<1|u|p>_user`, another runner's `1up_<1|u|p>_challenger`; letters outside 1..=3 send the
+    /// state without a sound.
+    pub fn one_up(&mut self, letters: u32, local: bool) {
+        let letter = match letters { 1 => Some("1"), 2 => Some("u"), 3 => Some("p"), _ => None };
+        let sound = letter.map(|l| format!("1up_{l}_{}", if local { "user" } else { "challenger" })).unwrap_or_default();
+        self.letters.push((letters as i32 + 5, sound));
+        let over = self.letters.len().saturating_sub(8);
+        self.letters.drain(..over);
+        self.sent = self.sent.wrapping_add(1);
+    }
 }
 
 /// What `DistanceMeter_GetData` (8265C978) returns: the shown distance as text (meters, or feet under imperial units)
@@ -240,6 +267,9 @@ pub(crate) struct LeaderboardRow {
 
 /// The race layout (`eLeaderBoardHUD_RankNameTime`, set to 4 in leaderboardhud's init).
 pub(crate) const LEADERBOARD_RANK_NAME_TIME: i32 = 4;
+/// 1-Ups (`eLeaderBoardHUD_1up`, the movie's value 1, b882): LeaderboardHUDInit with menu type ThrowDown
+/// [inferred: the C++ map from the menu type to the movie layout is not read; S.K.A.T.E has its own `Skate` 7].
+pub(crate) const LEADERBOARD_ONE_UP: i32 = 1;
 /// Contests with integer scores (`eLeaderBoardHUD_RankNameScore`).
 pub(crate) const LEADERBOARD_RANK_NAME_SCORE: i32 = 3;
 /// Contests with float scores (`eLeaderBoardHUD_RankNameFloatscore`).
@@ -263,7 +293,7 @@ impl ChallengeHudState {
             Component::Timer => format!("{}|{}", self.timer_text, self.timer_flag),
             Component::Dpo => format!("{:?}|{}", self.dpo, self.two_dpos),
             Component::Objective => format!("{:?}", self.objectives),
-            Component::OwnedIt | Component::KilledIt | Component::Tutorial => String::new(),
+            Component::OwnedIt | Component::KilledIt | Component::Tutorial | Component::ThrowDown => String::new(),
             Component::Countdown => self.countdown.to_string(),
             Component::Leaderboard => format!("{:?}", self.leaderboard),
             Component::DistanceMeter => format!("{:?}", self.distance),
@@ -668,6 +698,20 @@ impl Runtime {
             }
             return Ok(());
         }
+        // hudthrowmes: every letter sent since the last sync, its state then its sound (826692F8).
+        if self.component == Component::ThrowDown {
+            let new = state.throwdown.sent.wrapping_sub(self.callout_sent) as usize;
+            self.callout_sent = state.throwdown.sent;
+            let letters = &state.throwdown.letters;
+            for (s, sound) in letters[letters.len().saturating_sub(new)..].to_vec() {
+                self.shown = true;
+                self.set_state(s as f64)?;
+                if !sound.is_empty() {
+                    self.bindings.sounds.push(sound);
+                }
+            }
+            return Ok(());
+        }
         // hudtutorial: the states the callout component sent since the last sync, in order.
         if self.component == Component::Tutorial {
             let new = state.callout.sent.wrapping_sub(self.callout_sent) as usize;
@@ -749,6 +793,22 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// b1058: a 1-Up letter is SetState(letters + 5) with retail's sound ids (826692F8): the local runner's
+    /// 1up_1 / u / p_user, another runner's _challenger.
+    #[test]
+    fn one_up_letters_send_their_state_and_retail_sound() {
+        let mut t = ThrowDownHud::default();
+        t.one_up(1, true);
+        t.one_up(3, false);
+        t.one_up(4, true);
+        assert_eq!(t.letters, [(6, "1up_1_user".to_owned()), (8, "1up_p_challenger".to_owned()), (9, String::new())]);
+        assert_eq!(t.sent, 3);
+        let key = skate_audio::frontend::key;
+        assert_eq!([key("1up_1_user"), key("1up_u_user"), key("1up_p_user")], [0x24A364C3_CB9624A4, 0xDD7432C8_59708C04, 0x5ED3871D_BB725A63]);
+        assert_eq!([key("1up_1_challenger"), key("1up_u_challenger"), key("1up_p_challenger")],
+            [0xFEBF4922_806E8F25, 0x04096B22_A64002B7, 0x5F0AB143_29E6ED21]);
+    }
 
     #[test]
     fn the_timer_rereads_every_fifth_tick_at_any_frame_rate() {
@@ -1065,6 +1125,39 @@ mod tests {
         state.show(Component::DistanceMeter, false);
         hud.sync(&state).unwrap();
         assert!(!hud.shown());
+    }
+
+    /// b1058: the retail hudthrowmes movie takes a 1-Up letter (SetState 6..8) and its sound is queued once.
+    #[test]
+    #[ignore = "requires the converted challenge HUD movies (SKATE_SCORING_HUD_ROOT=<private/hud>)"]
+    fn the_throwdown_movie_takes_one_up_letters() {
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE_SCORING_HUD_ROOT").unwrap());
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("runtime").join(Component::ThrowDown.file())).unwrap()).unwrap();
+        let libraries = crate::hud_imports::HudLibraries::load(&root.join("../menu-movies"), &[&json]);
+        let mut hud = Runtime::load_linked(Component::ThrowDown, &json, &[], &libraries).unwrap();
+        let mut state = ChallengeHudState::default();
+        hud.sync(&state).unwrap();
+        assert!(!hud.shown());
+        for _ in 0..600 {
+            hud.sync(&state).unwrap();
+            hud.update().unwrap();
+        }
+        state.throwdown.one_up(1, true);
+        hud.sync(&state).unwrap();
+        for _ in 0..60 {
+            hud.update().unwrap();
+        }
+        assert!(hud.shown());
+        let mut shapes: crate::apt_scene::Shapes = serde_json::from_value(json["shapes"].clone()).unwrap();
+        shapes.extend(libraries.imported_shapes(&hud.bindings.movie));
+        let draws = crate::apt_scene::draw(&hud.bindings.movie, &hud.vm, &shapes).unwrap();
+        assert!(!draws.is_empty(), "the letter draws");
+        assert_eq!(hud.bindings.sounds.iter().filter(|s| *s == "1up_1_user").count(), 1, "{:?}", hud.bindings.sounds);
+        state.throwdown.one_up(2, false);
+        hud.sync(&state).unwrap();
+        hud.sync(&state).unwrap();
+        assert_eq!(hud.bindings.sounds.iter().filter(|s| *s == "1up_u_challenger").count(), 1, "a sync without a new letter sends nothing");
     }
 
     /// Ask 600: the round timer after its show intro, at 33 s left (not low time): composed alpha of what draws.

@@ -3917,6 +3917,7 @@ AttribRef_GetField52FC1A3F 0x82482728 f
 guess_AudioMgr_ResolveAssetListsA 0x82482780 f
 PostMsg_PlayMenuSound 0x82482B10 f
 PostMsg_StopMenuSound 0x82482BC8 f
+guess_AudioSystem_SetGameMode 0x82482C50 f
 guess_Speech_UpdateDuckUnlessMode5 0x82482C68 f
 guess_MusicSystem_OnNotifyCode11 0x82482CE8 f
 guess_Speech_SetMusicFieldAndTakeLine 0x82482D38 f
@@ -5808,7 +5809,7 @@ guess_SkaterMgr_CopyNodeRecord 0x82530140 f
 guess_SkaterMgr_ClearCameraTargetIf 0x82530208 f
 guess_SkaterMgr_SetCameraTarget 0x82530250 f
 guess_SkaterMgr_FlagActiveCamera 0x825302D8 f
-guess_SkaterMgr_IsField4AF3Zero 0x82530318 f
+guess_CameraSystem_ApplyChallengeCameraOverride 0x82530318 f
 guess_FollowCam_SolveAngles 0x825303B8 f
 guess_FollowCam_BlendTowardTarget 0x82530790 f
 guess_FollowCam_BlendVectors 0x82530810 f
@@ -5944,6 +5945,7 @@ TeamRecord_OnMessage727D3EF3 0x8253B318 f
 guess_CAS_CopyEntryState 0x8253B340 f
 guess_PresSlot_CreateCharacterEntity 0x8253B3A8 f
 guess_CAS_FeedCameraView 0x8253B668 f
+PresCACMan_OnBodyTarget 0x8253B7B0 f
 guess_CAS_SimStatusResetTracks 0x8253B8B8 f
 guess_PresSlot_CreateCharacterEntityB 0x8253BB38 f
 guess_CAS_ClearPreviewRef 0x8253BD58 f
@@ -10112,18 +10114,20 @@ TutorialCalloutHud_ShowText 0x82667B58 f
 guess_HudPin_DeletingDtorB 0x82667C90 f
 guess_Player_IsPinTargetActive 0x82667CF8 f
 guess_HudPin_ClearWhenIdle 0x82667DD0 f
-guess_HudLayout_FindCentral 0x82667EB8 f
+guess_CellphoneUI_Hide 0x82667EB8 f
 guess_HudPin_UpdatePinPrompt 0x82667F90 f
+CellphoneUI_GetHandledOptions 0x826681A0 f
 guess_FE_OnChoicePushScreen19 0x826681B0 f
 guess_FlowMsg_PostPhPrg 0x826681E0 f
-guess_CellphoneUI_Update 0x826682B0 f
-guess_Player_PinClearTarget 0x82668998 f
+CellphoneUI_HandleOption 0x826682B0 f
+CellphoneUI_Close 0x82668998 f
 guess_Player_PinSessionCheck 0x82668A40 f
 guess_Player_NotifyPin 0x82668B68 f
 guess_Player_PinWhenFMVIdle 0x82668BD8 f
 guess_World_CanUseFeatureWhenNotChased 0x82668EB8 f
 guess_HudPhoneList_CanShowPhotographer 0x82669090 f
 guess_Challenge_IsFlagActiveInState 0x826691D0 f
+CellphoneUI_IsOpen 0x82669250 f
 guess_FE_Screen82669268_SignalA 0x82669268 f
 guess_FE_Screen82669268_SignalB 0x826692B0 f
 guess_FE_Screen82669268_HandleButton 0x826692F8 f
@@ -10759,7 +10763,7 @@ guess_Input_PatternRecognizeA 0x82697168 f
 guess_Input_PatternThreshold 0x826972B8 f
 guess_Input_PatternMatchBody 0x826974A8 f
 guess_Vt822FF030_DeletingDtor 0x826976D8 f
-guess_Input_RegisterGameplayActions 0x82697740 f
+Input_RegisterActions 0x82697740 f
 InputHistory_Init 0x826986A8 f
 guess_MemSys_InitThreadContext 0x82698D18 f
 guess_Input_PostControllerChange 0x82698FA8 f
@@ -11864,7 +11868,7 @@ guess_GameSession_RequestQuit 0x826D76E0 f
 guess_GameSession_SetPaused 0x826D7708 f
 guess_GameSession_UpdateTimers 0x826D77E8 f
 GameSession_Update 0x826D78B0 f
-guess_GameSession_UpdateFlowRef 0x826D7A88 f
+GameSession_UpdateInputProxy 0x826D7A88 f
 guess_GameSession_CheckEndTask 0x826D7D30 f
 guess_GameSession_Tick 0x826D7E20 f
 guess_Streamer_ReportStall 0x826D81A8 f
@@ -14235,6 +14239,8 @@ Simulation_PostVisualTransitionComplete 0x827955D0 f
 guess_Vt82310E98_DeletingDtor 0x82795658 f
 guess_Vt82310E98_Dtor 0x827956C0 f
 guess_NISMan_CreateTransition 0x82795720 f
+guess_TransitionFx_IsDone 0x82795988 f
+guess_BloomToWhiteFx_Update 0x82795A70 f
 guess_Crowd_SetRenderTargetPass 0x82795AD8 f
 guess_VectorU32_ResizeZero 0x82795B90 f
 guess_PresGame_FreeBucketArray 0x82795C10 f
@@ -23868,7 +23874,7 @@ LuaBind_RemoveAllHighlights 0x82BCD1C0 f
 LuaBind_GetNumberOfHighlights 0x82BCD1F0 f
 LuaBind_PlayHighlightReel 0x82BCD268 f
 LuaBind_PlayHighlightReelWithSpecifiedOrder 0x82BCD2C0 f
-guess_NIS_SubscribeComplete 0x82BCD438 f
+guess_HighlightReelManager_Ctor 0x82BCD438 f
 guess_Vt82321758_DtorBody 0x82BCD648 f
 HighlightMgr_CreateGroup 0x82BCD758 f
 guess_Vt82321758_RemoveById 0x82BCD8D8 f
@@ -23878,8 +23884,8 @@ guess_Vt82321750_DtorBody 0x82BCDA28 f
 guess_HighlightMgr_AddFromDefinition 0x82BCDAA8 f
 guess_HighlightMgr_RemoveAll 0x82BCDD80 f
 guess_HighlightMgr_PlayReel 0x82BCDDE8 f
-guess_NISComplete_PostFollowup 0x82BCDFC0 f
-guess_NISComplete_FollowupBody 0x82BCE0D8 f
+guess_HighlightGroup_OnNISComplete 0x82BCDFC0 f
+guess_HighlightGroup_PlayClip 0x82BCE0D8 f
 guess_HighlightMgr_PlayReelInOrder 0x82BCE3C8 f
 guess_ActivityManager_AllocDefinitions 0x82BCE588 f
 guess_Vector4_InsertB 0x82BCE798 f
@@ -32929,8 +32935,3 @@ StaticInit_RegisterSGCondition_IsPreviousShot 0x82F93B18 f
 StaticInit_RegisterSGCondition_IsCameraInBadCollision 0x82F93B58 f
 StaticInit_RegisterSGBehaviour_CameraChooseShot 0x82F93B98 f
 guess_SkaterLook_StaticFreeBuffers 0x82F99B20 f
-
-guess_BloomToWhiteFx_Update 0x82795A70 f
-guess_TransitionFx_IsDone 0x82795988 f
-guess_AudioSystem_SetGameMode 0x82482C50 f
-PresCACMan_OnBodyTarget 0x8253B7B0 f

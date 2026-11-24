@@ -66,6 +66,16 @@ pub(super) fn abort(world: &mut World) -> Result<(), String> {
     Ok(())
 }
 
+/// sdk.challenges.place_photographer(): the anywhere photo's photographer at the player, as the phone's option does.
+pub(super) fn place_photographer(world: &mut World) -> Result<(), String> {
+    let mut p = world.get_resource_mut::<crate::ftl_host::AnywherePhotographer>().ok_or("challenges are not ready")?;
+    if !p.state.active {
+        return Err("no anywhere photo is running".into());
+    }
+    p.place_requested = true;
+    Ok(())
+}
+
 pub(super) fn enable(world: &mut World, owner: &str, id: &str, enabled: bool) -> Result<(), String> {
     let mut challenges = world.get_resource_mut::<Challenges>().ok_or("challenges are not ready")?;
     let owners = challenges.mods.disabled.entry(id.to_owned()).or_default();
