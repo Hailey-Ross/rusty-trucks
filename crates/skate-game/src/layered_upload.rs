@@ -18,6 +18,9 @@ struct Pending {
     width: u32,
     height: u32,
     layers: u32,
+    /// The image's whole layer count and the first layer written (0 for a deferred upload; a replaced layer's index).
+    total: u32,
+    first: u32,
     levels: u32,
     next: u32,
     queued: Instant,
@@ -53,7 +56,21 @@ pub(crate) fn defer(id: AssetId<Image>, image: &mut Image) {
     }
     BUSY.store(true, Relaxed);
     QUEUE.lock().unwrap_or_else(|e| e.into_inner())
-        .push(Pending { id, bytes, width, height, layers, levels, next: 0, queued: Instant::now(), started: false });
+        .push(Pending { id, bytes, width, height, layers, total: layers, first: 0, levels, next: 0, queued: Instant::now(),
+            started: false });
+}
+
+/// Replaces one layer (with its mip chain, layer-major) of an already published array image, after any upload of that
+/// image still queued (team brand billboards, research b1068).
+pub(crate) fn replace_layer(id: AssetId<Image>, layer: u32, total: u32, width: u32, height: u32, levels: u32, bytes: Vec<u8>) {
+    if bytes.len() != layer_bytes(width, height, levels) || layer >= total {
+        warn!("replace_layer: {} bytes do not fit a {width}x{height} layer with {levels} levels", bytes.len());
+        return;
+    }
+    BUSY.store(true, Relaxed);
+    QUEUE.lock().unwrap_or_else(|e| e.into_inner())
+        .push(Pending { id, bytes, width, height, layers: 1, total, first: layer, levels, next: 0, queued: Instant::now(),
+            started: false });
 }
 
 fn mip(size: u32, level: u32) -> u32 {
@@ -76,12 +93,21 @@ pub(crate) fn write_layers(images: Res<RenderAssets<GpuImage>>, queue: Res<Rende
     let max = limiter.max_bytes.unwrap_or(usize::MAX);
     let mut left = max.saturating_sub(limiter.bytes_written.load(Relaxed));
     let (mut wrote, mut written) = (false, 0usize);
+    let mut unfinished: Vec<AssetId<Image>> = Vec::new();
     pending.retain_mut(|p| {
+        // A replaced layer waits for the image's own upload queued before it.
+        if unfinished.contains(&p.id) {
+            return true;
+        }
         let Some(gpu) = images.get(p.id) else {
             // Retired after its writes began, or never prepared at all.
-            return !p.started && p.queued.elapsed() < ABANDON;
+            let keep = !p.started && p.queued.elapsed() < ABANDON;
+            if keep {
+                unfinished.push(p.id);
+            }
+            return keep;
         };
-        if gpu.size.depth_or_array_layers != p.layers || gpu.mip_level_count != p.levels {
+        if gpu.size.depth_or_array_layers != p.total || gpu.mip_level_count != p.levels {
             return false;
         }
         p.started = true;
@@ -93,7 +119,7 @@ pub(crate) fn write_layers(images: Res<RenderAssets<GpuImage>>, queue: Res<Rende
                 let len = w as usize * h as usize * 4;
                 queue.write_texture(
                     TexelCopyTextureInfo { texture: &gpu.texture, mip_level: level,
-                        origin: Origin3d { x: 0, y: 0, z: p.next }, aspect: TextureAspect::All },
+                        origin: Origin3d { x: 0, y: 0, z: p.first + p.next }, aspect: TextureAspect::All },
                     &p.bytes[offset..offset + len],
                     TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
                     Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -105,7 +131,11 @@ pub(crate) fn write_layers(images: Res<RenderAssets<GpuImage>>, queue: Res<Rende
             written += per_layer;
             wrote = true;
         }
-        p.next < p.layers
+        let more = p.next < p.layers;
+        if more {
+            unfinished.push(p.id);
+        }
+        more
     });
     if limiter.max_bytes.is_some() {
         limiter.bytes_written.fetch_add(written, Relaxed);

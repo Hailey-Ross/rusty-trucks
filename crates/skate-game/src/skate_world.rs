@@ -81,7 +81,8 @@ fn spawn_static<T: Bundle + Clone>(
     buffers: &mut impl AssetSink<bevy::render::storage::ShaderStorageBuffer>,
     tag: T,
 ) -> (SceneStats, [usize; RenderClass::ALL.len()]) {
-    let table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
+    let mut table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
+    crate::team_brand::spawn_layers(commands, &mut table, tag.clone());
     for screen in video_screens(map, &table.screens) {
         info!("VIDEO_SCREEN id={} min={:.1} max={:.1}", screen.id, screen.min, screen.max);
         commands.spawn((screen, tag.clone()));
@@ -550,6 +551,7 @@ pub(crate) fn spawn_instances(
 ) -> usize {
     let _span = info_span!("spawn_prop_instances").entered();
     let mut table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
+    crate::team_brand::spawn_layers(commands, &mut table, ());
     let mut templates: HashMap<(u32, u32), Vec<PropPart>> = HashMap::new();
     let mut draws = 0;
     for object in objects {

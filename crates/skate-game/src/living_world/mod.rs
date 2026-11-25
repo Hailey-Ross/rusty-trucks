@@ -462,6 +462,9 @@ pub(crate) struct PopulationState {
     /// The running contest's riders: at a line end each rides on to a line it has not done yet and never walks back
     /// (ours, the user's spec for contests; retail's chain would walk it to a far start, b1017).
     pub contest_riders: Vec<LivingWorldId>,
+    /// Pinned riders that step off their board once at rest for the given ticks (a 1-Up's waiting pro: the user's
+    /// account of retail, the code that does it is not found, research b1061 / b1066).
+    pub wait_step_off: Vec<(LivingWorldId, u32)>,
 }
 
 impl Default for PopulationState {
@@ -491,6 +494,7 @@ impl Default for PopulationState {
             pending: Vec::new(),
             scripted_lines: None,
             contest_riders: Vec::new(),
+            wait_step_off: Vec::new(),
         }
     }
 }

@@ -168,6 +168,8 @@ pub(crate) struct NpcSim {
     /// A racer was pinned at its start slot last tick; ticks left of its standing start after GO (no launch, no speed
     /// pull: it pushes off; the user's account of retail, 2026-11-09).
     was_pinned: bool,
+    /// Ticks at rest on the board while pinned (the waiting pro's step-off, `PopulationState::wait_step_off`).
+    rest_ticks: u32,
     start_ticks: u32,
     /// Ticks of the current pumping stretch, and pumping ticks in the speed log's window (ours).
     pump_cycle: u32,
@@ -590,7 +592,7 @@ fn spawn_sim(
     // Logs must diagnose: where a promotion's game-thread time goes (a hitch report).
     info!("NPC_SIM_SPAWN_COST pooled={pooled} left={} wait_load_ms={:.1} body_ms={:.1}", pool.bodies.len(), waited.as_secs_f64() * 1000.0,
         (started.elapsed() - waited).as_secs_f64() * 1000.0);
-    let mut sim = NpcSim { context, body, respawn_in: None, bail_ticks: 0, bail_alpha: 1.0, last_node: None, pushing: false, own_speed: false, speed_cap: None, was_pinned: false, start_ticks: 0, braking: false, pump_cycle: 0, pump_ticks: 0, approach: Default::default(), push_ticks: 0, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, chain_trace: 0, takeoff_trace: 0, takeoff_logged: false, takeoff_launch: f32::NAN, lane_flags: (false, false), handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, previous_camera: None, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), air_half_turns: 0, sequence_active: false, board_yaw: Default::default(), ground_error: None, since_landing: 7200, last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
+    let mut sim = NpcSim { context, body, respawn_in: None, bail_ticks: 0, bail_alpha: 1.0, last_node: None, pushing: false, own_speed: false, speed_cap: None, was_pinned: false, rest_ticks: 0, start_ticks: 0, braking: false, pump_cycle: 0, pump_ticks: 0, approach: Default::default(), push_ticks: 0, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, chain_trace: 0, takeoff_trace: 0, takeoff_logged: false, takeoff_launch: f32::NAN, lane_flags: (false, false), handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, previous_camera: None, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), air_half_turns: 0, sequence_active: false, board_yaw: Default::default(), ground_error: None, since_landing: 7200, last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
     let v = place(&mut sim, target, true, hold_ticks)?;
     if fit_to_ground {
         sim.body.runtime.fit_next_arrival();
@@ -1710,6 +1712,7 @@ pub(crate) fn simulate(
                     events.write(super::npc_skaters::NpcSkaterEvent::SequenceBegin { id: npc.id });
                 }
                 sim.sequence_active = sequence_active;
+                let step_off_delay = state.wait_step_off.iter().find(|(id, _)| *id == npc.id).map(|x| x.1);
                 let state = sim.body.runtime.player_state.current();
                 let mut intents = intents;
                 intents.extend(walk_intents);
@@ -2158,6 +2161,23 @@ pub(crate) fn simulate(
                 let pinned = race.is_some_and(|c| !c.moving);
                 if pinned {
                     intents.clear();
+                    // SPEC, not ported code (the user's account of retail; no step-off code found, b1066): a 1-Up's
+                    // waiting pro steps off his board once he has stood at rest on it for the host's ticks. Unpinned,
+                    // the toggle's mode 2 puts him back on (retail's path tick).
+                    if let Some(delay) = step_off_delay {
+                        let p = &sim.body.runtime.player_input.processed;
+                        let (off, toggling) = (p.flags_2484 & 0x0800_0000 != 0, p.flags_2480 & 0x4 != 0);
+                        let w = GamePhysics::context_deck_velocity(&sim.context);
+                        let at_rest = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt() < 0.2;
+                        sim.rest_ticks = if !off && !toggling && at_rest { sim.rest_ticks.saturating_add(1) } else { 0 };
+                        if sim.rest_ticks == delay.max(1) {
+                            info!("NPC_SKATER_SIM #{} {} steps off while it waits (spec)", npc.id.serial, npc.character);
+                            intents.push(("NewToggleOffBoardState".into(), 1.0));
+                            intents.push(("ToggleOffBoardState".into(), 1.0));
+                        }
+                    }
+                } else {
+                    sim.rest_ticks = 0;
                 }
                 // The step itself runs after the loop, with the other NPCs' steps (in parallel).
                 jobs.push(Job { entity: e, serial: npc.id.serial, character: npc.character.clone(), intents, pinned });

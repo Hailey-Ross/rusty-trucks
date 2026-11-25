@@ -212,6 +212,8 @@ pub struct FrontEnd<'a> {
     pub reward_summary: crate::reward_summary_host::RewardSummaryHost,
     /// The end dialog's natives while it shows (`None`: not open).
     pub end_dialog: Option<crate::end_dialog_host::EndDialogHost>,
+    /// The photo shot picker's movie while it shows (photo_picker::natives).
+    pub photo_select: Option<crate::photo_picker::PhotoScreen>,
     /// The sign-up poster while it shows (FE 0x1B page 0).
     pub poster: Option<crate::poster_host::PosterHost>,
     /// The Extras screen (extras_host).
@@ -270,6 +272,7 @@ impl<'a> FrontEnd<'a> {
             offline_profile: Default::default(),
             reward_summary: Default::default(),
             end_dialog: None,
+            photo_select: None,
             poster: None,
             extras: Default::default(),
             tos: Default::default(),
@@ -335,6 +338,9 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
             if let Some(value) = host.call(vm, self.language, object, method, &args)? {
                 return Ok(value);
             }
+        }
+        if let Some(value) = self.photo_select.as_ref().and_then(|s| crate::photo_picker::natives(s, object, method)) {
+            return Ok(value);
         }
         if let Some(value) = self.challenge_map.call(vm, self.registry, self.context, self.language, object, method, &args)? {
             return Ok(value);

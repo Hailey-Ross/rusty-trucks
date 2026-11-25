@@ -201,7 +201,7 @@ fn update(
         Commands,
     ),
     mut presenter: Option<ResMut<crate::presentation_run::Presenter>>,
-    mut watch: ResMut<crate::camera::CameraWatch>,
+    (mut watch, tuning): (ResMut<crate::camera::CameraWatch>, Option<Res<crate::ftl_host::ChallengeTuning>>),
 ) {
     let npc_list: Vec<crate::living_world::npc_skaters::NpcSkaterEvent> = npc_events.read().cloned().collect();
     let Some(state) = ftl.one_up.as_mut() else {
@@ -319,6 +319,12 @@ fn update(
                     if let Some(ai) = state.ai.as_mut() {
                         if on { ai.stop() } else { ai.go() }
                     }
+                    // Released for his run: no step-off any more (the toggle's mode 2 puts him back on).
+                    if !on {
+                        if let Some(pop) = population.as_deref_mut() {
+                            pop.wait_step_off.clear();
+                        }
+                    }
                 }
             }
             // setup_run FadeOutDelay: the runner to the round's start spot, everyone else to its wait spot.
@@ -340,6 +346,13 @@ fn update(
                         ai.place(&at, &[], &Default::default(), pop);
                         ai.stop();
                     }
+                }
+                // SPEC (the user's account of retail, research b1066): the pro waiting at the wait spot steps off his
+                // board once at rest; when he is the runner he stays on.
+                if let (Some(pop), Some(ai)) = (population.as_deref_mut(), state.ai.as_ref()) {
+                    let seconds = tuning.as_ref().map_or(1.0, |t| t.wait_step_off_seconds);
+                    let ticks = (seconds * 60.0).round().max(1.0) as u32;
+                    pop.wait_step_off = if runner == 0 { ai.riders.iter().filter_map(|r| r.npc).map(|id| (id, ticks)).collect() } else { Vec::new() };
                 }
                 queue.extend(state.run.handle(Event::Placed));
             }

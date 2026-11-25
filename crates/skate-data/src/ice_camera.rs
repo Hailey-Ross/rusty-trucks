@@ -178,6 +178,148 @@ pub fn take_at(cuts: &[(f32, usize)], t: f32) -> Option<usize> {
     cuts.iter().rev().find(|c| c.0 <= t).or(cuts.first()).map(|c| c.1)
 }
 
+/// FREEZE_CMD value of a photo shot: NISMan_GetPhotoNISCount (8285F220) counts a take's points with it (research
+/// b1061; the `_seq` photo scenes use 5, which it does not count).
+pub const PHOTO_FREEZE: u32 = 4;
+
+/// A take's screen color lanes (the ICE environment block the NIS writes: IceEnv_SetBrightness 82678F88, contrast
+/// 82679D70, saturation 8267A250; research b1063 / b1064). Each is Some only when its override switch is on; values
+/// are the lane's first key [the photo and reel takes hold one value; key interpolation not ported].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TakeColour {
+    /// BRIGHTNESS (near, far): added to each band's rgb.
+    pub brightness: Option<[f32; 2]>,
+    /// CONTRAST (near, far) and CONTRAST_*_MIDPOINT (near, far).
+    pub contrast: Option<([f32; 2], [f32; 2])>,
+    /// SATURATE_NEAR (retail neutral 0; the renderer uses the near value for both bands, b380).
+    pub saturation: Option<f32>,
+}
+
+/// (min, max) of the color elements as `sub_82903840` registers them through `guess_IceLiteElementDesc_InitFloat`
+/// 82C8E7C0 (args default, min, max): BRIGHTNESS 0 in -1..1 (8 bits), CONTRAST 1 in 0..50 (16), MIDPOINT 0.5 in 0..1
+/// (8), SATURATE 0 in -1..10 (8). The disc's photo takes hold 127 / 1311 / 23 raw: 0, 1.0 and 0 (research b1064).
+const COLOUR_RANGES: [(&str, f32, f32); 4] = [("BRIGHTNESS", -1.0, 1.0), ("CONTRAST", 0.0, 50.0), ("MIDPOINT", 0.0, 1.0), ("SATURATE", -1.0, 10.0)];
+
+fn dequantise(raw: u32, bits: u32, min: f32, max: f32) -> f32 {
+    min + raw as f32 * (max - min) / (1u64 << bits) as f32
+}
+
+/// Per take of a scene block, its color lanes ([`TakeColour`]).
+pub fn take_colours(b: &[u8], scene_hash: u32) -> Result<Vec<TakeColour>, String> {
+    let lane = |name: &str| raw_element(b, scene_hash, name);
+    let first = |name: &str, range: usize| -> Result<Vec<Option<f32>>, String> {
+        let bits = ELEMENTS.iter().find(|e| e.0 == name).map_or(8, |e| e.3);
+        let (_, min, max) = COLOUR_RANGES[range];
+        Ok(lane(name)?.into_iter().map(|(_, _, v)| v.first().map(|&r| dequantise(r, bits, min, max))).collect())
+    };
+    let on = |name: &str| -> Result<Vec<bool>, String> { Ok(lane(name)?.into_iter().map(|(_, _, v)| v.first() == Some(&1)).collect()) };
+    let (b_on, c_on, s_on) = (on("BRIGHTNESS_OVERRIDE")?, on("CONTRAST_OVERRIDE")?, on("SATURATE_OVERRIDE")?);
+    let (bn, bf) = (first("BRIGHTNESS_NEAR", 0)?, first("BRIGHTNESS_FAR", 0)?);
+    let (cn, cf) = (first("CONTRAST_NEAR", 1)?, first("CONTRAST_FAR", 1)?);
+    let (mn, mf) = (first("CONTRAST_NEAR_MIDPOINT", 2)?, first("CONTRAST_FAR_MIDPOINT", 2)?);
+    let sn = first("SATURATE_NEAR", 3)?;
+    Ok((0..b_on.len()).map(|t| {
+        let pair = |a: &[Option<f32>], b: &[Option<f32>], d: f32| [a.get(t).copied().flatten().unwrap_or(d), b.get(t).copied().flatten().unwrap_or(d)];
+        TakeColour {
+            brightness: b_on[t].then(|| pair(&bn, &bf, 0.0)),
+            contrast: c_on.get(t).copied().unwrap_or(false).then(|| (pair(&cn, &cf, 1.0), pair(&mn, &mf, 0.5))),
+            saturation: s_on.get(t).copied().unwrap_or(false).then(|| sn.get(t).copied().flatten().unwrap_or(0.0)),
+        }
+    }).collect())
+}
+
+/// A take's depth of field (research b1071): the ICE take listener 826765C0 applies it only while RAWFOCUS_OVERRIDE is
+/// on. Values are the lanes' first key, as for [`TakeColour`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TakeFocus {
+    /// NEAR_FOCUS / FAR_FOCUS, 0..10000 (16 bits): the in-focus band.
+    pub near: f32,
+    pub far: f32,
+    /// BLUR_FALLOFF / BLUR_INTENSITY, 0..1 (7 bits).
+    pub falloff: f32,
+    pub intensity: f32,
+    /// RAWFOCUS_RELATIVE: the focus is a projected point instead of the band's middle.
+    pub relative: bool,
+}
+
+/// (min, max) of the focus elements as `sub_82903840` registers them (research b1071).
+const FOCUS_RANGES: [(&str, f32, f32); 2] = [("FOCUS", 0.0, 10000.0), ("BLUR", 0.0, 1.0)];
+
+/// Per take of a scene block, its depth of field when RAWFOCUS_OVERRIDE is on.
+pub fn take_focus(b: &[u8], scene_hash: u32) -> Result<Vec<Option<TakeFocus>>, String> {
+    let lane = |name: &str| raw_element(b, scene_hash, name);
+    let first = |name: &str, range: usize| -> Result<Vec<f32>, String> {
+        let bits = ELEMENTS.iter().find(|e| e.0 == name).map_or(8, |e| e.3);
+        let (_, min, max) = FOCUS_RANGES[range];
+        Ok(lane(name)?.into_iter().map(|(_, _, v)| v.first().map_or(min, |&r| dequantise(r, bits, min, max))).collect())
+    };
+    let on = |name: &str| -> Result<Vec<bool>, String> { Ok(lane(name)?.into_iter().map(|(_, _, v)| v.first() == Some(&1)).collect()) };
+    let (enabled, relative) = (on("RAWFOCUS_OVERRIDE")?, on("RAWFOCUS_RELATIVE")?);
+    let (near, far) = (first("NEAR_FOCUS", 0)?, first("FAR_FOCUS", 0)?);
+    let (falloff, intensity) = (first("BLUR_FALLOFF", 1)?, first("BLUR_INTENSITY", 1)?);
+    Ok((0..enabled.len()).map(|t| enabled[t].then(|| TakeFocus {
+        near: near.get(t).copied().unwrap_or(0.0), far: far.get(t).copied().unwrap_or(0.0),
+        falloff: falloff.get(t).copied().unwrap_or(0.0), intensity: intensity.get(t).copied().unwrap_or(0.0),
+        relative: relative.get(t).copied().unwrap_or(false),
+    })).collect())
+}
+
+/// The camera's DOF inputs from a take (826765C0, recomp skate3_recomp.25.cpp:35017): focus = (near + far) * 0.5,
+/// range = far - near, falloff * 2, clamp(intensity + photo edit, 0, 1) * 3. The scales are retail's constants.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraFocus {
+    pub focus: f32,
+    pub range: f32,
+    pub falloff: f32,
+    pub blur: f32,
+}
+
+impl TakeFocus {
+    pub fn camera(&self, photo_edit: f32) -> CameraFocus {
+        CameraFocus { focus: (self.near + self.far) * 0.5, range: self.far - self.near, falloff: self.falloff * 2.0,
+            blur: (self.intensity + photo_edit).clamp(0.0, 1.0) * 3.0 }
+    }
+}
+
+/// One FREEZE_CMD point of a take (research b1061): `NIS_ApplyFreezeCmd` (8267F168) holds the NIS clock `frames` / 30 s
+/// for commands 1, 3 and 4 (4 = a photo shot, which also tells the front end), stops it for 2.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FreezePoint {
+    /// Normalized take time, 0..1.
+    pub at: f32,
+    pub command: u32,
+    /// FREEZE_TIME, in 30ths of a second (float 8232BA4C).
+    pub frames: u32,
+}
+
+impl FreezePoint {
+    /// Seconds the NIS clock holds at this point (None: no hold).
+    pub fn hold_seconds(&self) -> Option<f32> {
+        matches!(self.command, 1 | 3 | PHOTO_FREEZE).then(|| self.frames as f32 / 30.0).filter(|s| *s > 0.0)
+    }
+}
+
+/// Per take of a scene block, its FREEZE_CMD points with a command (0 = none). Point 0 is the take's start, the last
+/// its end, the rest the group's interior times [inferred from the layout: one value per point, interior times /
+/// 65535 like the camera keys].
+pub fn freeze_points(b: &[u8], scene_hash: u32) -> Result<Vec<Vec<FreezePoint>>, String> {
+    let frames = raw_element(b, scene_hash, "FREEZE_TIME")?;
+    Ok(raw_element(b, scene_hash, "FREEZE_CMD")?.into_iter().zip(frames).map(|(((points, _), times, values), (_, _, time))| {
+        values.iter().enumerate().filter(|&(_, &v)| v != 0).map(|(i, &command)| {
+            let at = if i == 0 { 0.0 } else if i + 1 >= points { 1.0 } else { f32::from(times.get(i - 1).copied().unwrap_or(0)) / 65535.0 };
+            FreezePoint { at, command, frames: time.get(i).copied().unwrap_or(0) }
+        }).collect()
+    }).collect())
+}
+
+/// Per take, the times (seconds of a `length`-second scene) of its photo shots: the points NISMan_GetPhotoNISCount
+/// counts ([`PHOTO_FREEZE`]).
+pub fn photo_shots(b: &[u8], scene_hash: u32, length: f32) -> Result<Vec<Vec<f32>>, String> {
+    Ok(freeze_points(b, scene_hash)?.into_iter()
+        .map(|take| take.iter().filter(|p| p.command == PHOTO_FREEZE).map(|p| p.at * length).collect())
+        .collect())
+}
+
 /// Raw values of one element per track of a scene block (research aid): per track the element's group
 /// (segments, keys) pair, the group's interior time words (u16) and the element's raw bit values.
 pub fn raw_element(b: &[u8], scene_hash: u32, name: &str) -> Result<Vec<((usize, usize), Vec<u16>, Vec<u32>)>, String> {

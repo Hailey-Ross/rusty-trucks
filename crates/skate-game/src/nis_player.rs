@@ -49,6 +49,10 @@ struct Extra {
     root: Entity,
     scene: Entity,
     bindings: Option<AnimationStatus>,
+    /// A `livingworld` actor (a ped look): posed in its GLB's joint frames with this bone basis once bound.
+    ped: Option<Mat4>,
+    /// Where its hips were last posed (the `SKATE_NIS_LOOK_AT` test aid).
+    hips: Option<Vec3>,
 }
 
 /// Record kinds whose skip also waits for a minimum clip time (82820068: 0x0C, 0x0F, 0x12; research b1028).
@@ -244,16 +248,18 @@ fn drive(world: &mut World, mut player: Local<Player>) {
 }
 
 /// The scene's other marquee actors (82824610 queues a load of each marquee character): their look as the living
-/// world's NPC skaters wear it (`npc_skaters::look_path`). NOT RETAIL YET: `livingworld` actors (peds, another rig).
+/// world's NPC skaters wear it (`npc_skaters::look_path`); `livingworld` actors as the ped look of that recipe
+/// (`peds::glb_path`; the `zprop_` world props are livingworld models on the same skeleton). NOT RETAIL YET: the ped tint.
 fn spawn_extras(world: &mut World, root: &std::path::Path, scene: &Scene, first: usize) -> Vec<Extra> {
     let mut extras = Vec::new();
     for (i, a) in scene.actors.iter().enumerate() {
-        if i == first || a.character == "current_player" || a.kind != "marquee" {
-            if i != first && a.kind != "marquee" {
-                info!("NIS {} actor {} ({}): NOT RETAIL YET, not drawn", scene.name, a.character, a.kind);
-            }
+        if i == first || a.character == "current_player" {
             continue;
         }
+        let Some(ped) = extra_look(a) else {
+            info!("NIS {} actor {} ({}): NOT RETAIL YET, not drawn", scene.name, a.character, a.kind);
+            continue;
+        };
         let Some(file) = a.clip.rsplit('/').next() else { continue };
         let clip = match std::fs::read(root.join("anim").join(file)).map_err(|e| e.to_string()).and_then(SceneClip::parse) {
             Ok(c) => Arc::new(c),
@@ -262,17 +268,33 @@ fn spawn_extras(world: &mut World, root: &std::path::Path, scene: &Scene, first:
                 continue;
             }
         };
-        let path = match (world.get_resource::<crate::living_world::npc_skaters::NpcSkaterLooks>(), world.get_resource::<crate::custom_models::CustomModels>()) {
-            (Some(looks), Some(models)) => crate::living_world::npc_skaters::look_path(looks, models, &a.character),
-            _ => "private/skater.glb".to_owned(),
+        let path = if ped {
+            match world.get_resource::<crate::living_world::peds::PedLooks>() {
+                Some(looks) => crate::living_world::peds::glb_path(looks, &a.character),
+                None => crate::living_world::peds::glb_path(&Default::default(), &a.character),
+            }
+        } else {
+            match (world.get_resource::<crate::living_world::npc_skaters::NpcSkaterLooks>(), world.get_resource::<crate::custom_models::CustomModels>()) {
+                (Some(looks), Some(models)) => crate::living_world::npc_skaters::look_path(looks, models, &a.character),
+                _ => "private/skater.glb".to_owned(),
+            }
         };
         let handle = world.resource::<AssetServer>().load(bevy::gltf::GltfAssetLabel::Scene(0).from_asset(path.clone()));
         let actor_root = world.spawn((Transform::default(), Visibility::Visible, Name::new(format!("NIS actor {}", a.character)))).id();
         let look = world.spawn((SceneRoot(handle), Transform::default(), Visibility::Hidden, ChildOf(actor_root))).id();
         info!("NIS {} actor {} ({}): look {path}", scene.name, a.character, a.kind);
-        extras.push(Extra { character: a.character.clone(), clip, root: actor_root, scene: look, bindings: None });
+        extras.push(Extra { character: a.character.clone(), clip, root: actor_root, scene: look, bindings: None, ped: ped.then_some(Mat4::IDENTITY), hips: None });
     }
     extras
+}
+
+/// How a further actor is drawn: `Some(false)` a skater look, `Some(true)` a ped look, `None` not drawn.
+fn extra_look(a: &skate_data::scene_table::SceneActor) -> Option<bool> {
+    match a.kind.as_str() {
+        "marquee" => Some(false),
+        "livingworld" => Some(true),
+        _ => None,
+    }
 }
 
 /// Binds each further actor once its look is loaded, then poses it with its clip in the scene frame.
@@ -305,15 +327,30 @@ fn pose_extras(world: &mut World, running: &mut Running) {
                 for mesh in meshes {
                     world.entity_mut(mesh).insert(bevy::camera::visibility::NoFrustumCulling);
                 }
-                info!("NIS actor {} bound", extra.character);
+                if extra.ped.is_some() {
+                    extra.ped = Some(crate::living_world::peds::look_basis(world, extra.scene));
+                    // 82784DD0 (research b1065): the record's first palette entries, no rand; the living world's tint
+                    // system bakes them like an ambient ped's pair.
+                    let (tint_a, tint_b) = world.get_resource::<crate::living_world::peds::PedData>()
+                        .map(|d| skate_core::living_world::peds::choice::presentation_tints(&d.catalog, &extra.character))
+                        .unwrap_or((skate_core::living_world::peds::choice::PRESENTATION_DEFAULT_TINT, skate_core::living_world::peds::choice::PRESENTATION_DEFAULT_TINT));
+                    info!("NIS actor {} tints {tint_a:?} / {tint_b:?}", extra.character);
+                    world.entity_mut(extra.root).insert(crate::living_world::peds::NisPedTint {
+                        scene: extra.scene, recipe: extra.character.clone(), tint_a, tint_b });
+                }
+                info!("NIS actor {} bound{}", extra.character, if extra.ped.is_some() { " (ped look)" } else { "" });
             }
         }
         let Some(bindings) = &extra.bindings else { continue };
         let Some(globals) = crate::trick_guide_scene::pose(&extra.clip, running.time.min(extra.clip.duration())) else { continue };
-        let matrices: Vec<Mat4> = globals.iter().map(|g| frame * crate::animation::native_matrix(*g)).collect();
+        let mut matrices: Vec<Mat4> = globals.iter().map(|g| frame * crate::animation::native_matrix(*g)).collect();
+        if let Some(basis) = extra.ped {
+            matrices = crate::living_world::peds::ped_joint_globals(&matrices, basis);
+        }
+        let hips = extra.clip.bone_names.iter().position(|n| n == "HIPS").unwrap_or(0);
+        extra.hips = matrices.get(hips).map(|m| m.w_axis.truncate());
         if trace_tick(running.time, world.resource::<Time>().delta_secs()) {
-            let hips = extra.clip.bone_names.iter().position(|n| n == "HIPS").unwrap_or(0);
-            info!("NIS_TRACE t {:.1} actor {} hips {:?}", running.time, extra.character, matrices.get(hips).map(|m| m.w_axis.truncate()));
+            info!("NIS_TRACE t {:.1} actor {} hips {:?}", running.time, extra.character, extra.hips);
         }
         for (entity, transform) in bindings.pose_transforms(&matrices) {
             if let Some(mut node) = world.get_mut::<Transform>(entity) {
@@ -339,7 +376,12 @@ fn camera(world: &mut World, running: &mut Running) {
     let Some(sample) = running.tracks.get(take).and_then(|t| t.sample(running.time)) else { return };
     let point = |[x, y, z]: [f32; 3]| Vec3::new(y, z, x);
     // The keys are map space (an offset by the scene frame put 04_ProChallenge_ChrisCole's camera ~30 m up).
-    let (eye, look) = (point(sample.eye), point(sample.look));
+    let (mut eye, mut look) = (point(sample.eye), point(sample.look));
+    // Test aid: SKATE_NIS_LOOK_AT=<actor> frames that actor from 3 m (a shot of each look up close).
+    if let Some(at) = std::env::var("SKATE_NIS_LOOK_AT").ok().and_then(|n| running.extras.iter().find(|x| x.character == n)?.hips) {
+        let back = (eye - at).with_y(0.0).normalize_or(Vec3::X);
+        (eye, look) = (at + back * 3.0 + Vec3::Y * 0.4, at);
+    }
     if trace_tick(running.time, world.resource::<Time>().delta_secs()) {
         info!("NIS_TRACE t {:.1} camera take {take} eye {eye:?} look {look:?}", running.time);
     }
@@ -390,6 +432,17 @@ fn end(world: &mut World, player: &mut Player, why: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marquee_actors_get_skater_looks_and_livingworld_peds_ped_looks() {
+        let actor = |character: &str, kind: &str| skate_data::scene_table::SceneActor { character: character.into(), kind: kind.into(), clip: String::new() };
+        assert_eq!(extra_look(&actor("chris_cole", "marquee")), Some(false));
+        assert_eq!(extra_look(&actor("male_adult_2", "livingworld")), Some(true));
+        assert_eq!(extra_look(&actor("zprop_ghettoBlaster", "livingworld")), Some(true), "a world prop: a livingworld model on the ped skeleton");
+        assert_eq!(extra_look(&actor("x", "other")), None);
+        // The ped look follows the recipe key (a mod's override first).
+        assert_eq!(crate::living_world::peds::glb_path(&Default::default(), "female_adult_1"), "private/living_world/models/female_adult_1.glb");
+    }
 
     #[test]
     fn a_scene_plays_in_its_frame() {

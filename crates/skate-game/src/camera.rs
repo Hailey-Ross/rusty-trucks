@@ -92,10 +92,13 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
         if replay.active {
             // A highlight reel clip shows its NIS scene's camera around the recorded skater (research b1050).
             let root = crate::presentation::blend(previous.root, current.root, alpha);
-            if let Some((pose, fov)) = replay.reel_shot.as_ref().and_then(|s| s.camera(replay.cursor(), &root)) {
+            let turn = if replay.reel_still { replay.photo_avatar_degrees } else { [0.0; 2] };
+            if let Some((pose, fov)) = replay.reel_shot.as_ref().and_then(|s| s.camera_turned(replay.cursor(), &root, turn)) {
                 *transform = pose;
                 if let Projection::Perspective(p) = &mut *projection {
-                    p.fov = fov;
+                    // The shot picker's lens on a held photo NIS (82676D48: degrees added to the take's view angle).
+                    let lens = if replay.reel_still { replay.photo_lens_degrees.to_radians() } else { 0.0 };
+                    p.fov = (fov + lens).max(0.01);
                 }
                 *guard = Default::default();
             } else if let Some(free) = replay.free_camera {

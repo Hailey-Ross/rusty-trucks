@@ -9,6 +9,8 @@ pub struct TierRow {
     pub bit: u32,
     pub kind: u32,
     pub default_unlocked: bool,
+    /// Kind 2 (challenge photo): the referenced challenge row's key hash (field `Challenge`, read by 827CA698).
+    pub challenge: Option<u64>,
 }
 
 /// A new team's values (team reset 827CACF8, research b980): retail's strings as data, so a mod can replace them.

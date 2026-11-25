@@ -6,7 +6,7 @@ from pathlib import Path
 
 from tools.asset_pipeline.challenges import (AUTO_HIGHLIGHT, CHALLENGE, DEFINITION, ENTERED, GROUP, KILLED_TIME, OBJECTIVES,
                                              OUT_OF_BOUNDS_TIME, OWNED_TIME, POINTS, RETURN_MESSAGE, chain,
-                                             group_points, highlight_definition, objective_programs, parameters,
+                                             group_points, highlight_definition, objective_programs, parameters, photo_edits, photo_layout, photo_layout_two_page, photo_layout_kind,
                                              teleport_locators)
 from tools.asset_pipeline.retained import carry
 from tools.asset_pipeline.vlt import hash64
@@ -60,6 +60,38 @@ class ChallengeData(unittest.TestCase):
         self.assertEqual(got['owned'], {'scene': 'highlight_film', 'located': True, 'position': [1.0, 2.0, 3.0], 'direction': [0.0, 0.0, 1.0]})
         self.assertEqual((got['killed']['scene'], got['killed']['located']), ('highlight_film_killed', False))
         self.assertIsNone(highlight_definition(b'\0' * 0x20, binary))
+
+    def test_photo_edits_read_the_four_float_tables(self):
+        floats = lambda *v: {'array': {'items': [struct.pack('>f', x).hex().upper() for x in v]}}
+        own = {'Hash_43FA37C2C8D671C4': floats(-0.05, 0.0, 0.05), 'Hash_CE69A39D6B442E64': floats(0.0, 1.0),
+               'Hash_B5CDB584810D2AF9': floats(-1.0, 0.0), 'Hash_F35B9698B1AD85CB': floats(0.0, 0.2)}
+        rows = {('Hash_5CFA2765DFA23B43', 'hash_5cfa2765dfa23b43'): ('', own)}
+        got = photo_edits(rows)
+        self.assertEqual(got['brightness'][2], struct.unpack('>f', struct.pack('>f', 0.05))[0])
+        self.assertEqual((got['contrast'], got['saturation']), ([0.0, 1.0], [-1.0, 0.0]))
+        self.assertEqual(len(got['depth_of_field']), 2)
+        self.assertIsNone(photo_edits({}))
+
+    def test_photo_layout_follows_the_magazine_family(self):
+        cls = 'Hash_60510D20032AEBE9'
+        row = lambda key, parent: ((cls, hash64(key)), {'key': key, 'parent': parent, 'fields': {}})
+        rows = dict([row('default', ''), row('magazine', 'default'), row('billboard', 'default'),
+                     row('magazine_twopage', 'magazine'), row('magazine_twopage_sbm', 'magazine_twopage'),
+                     row('magazine_singlepage_fullpage', 'magazine'), row('magazine_singlepage_fullpage_ads', 'magazine_singlepage_fullpage'),
+                     row('photo_dwtn_01', 'magazine_twopage_sbm'), row('photo_univ_08', 'magazine_singlepage_fullpage_ads'),
+                     row('board_shot', 'billboard')])
+        ref = lambda key: {'data': '60510D20032AEBE9%016X0000000000000000' % hash64(key)}
+        self.assertEqual(photo_layout(rows, ref('photo_dwtn_01')), 'photo_dwtn_01')
+        self.assertTrue(photo_layout_two_page(rows, ref('photo_dwtn_01')))
+        self.assertEqual(photo_layout(rows, ref('photo_univ_08')), 'photo_univ_08')
+        self.assertFalse(photo_layout_two_page(rows, ref('photo_univ_08')))
+        self.assertEqual((photo_layout_kind(rows, ref('photo_dwtn_01')), photo_layout_kind(rows, ref('photo_univ_08'))), (3, 0))
+        self.assertEqual(photo_layout_kind(rows, ref('board_shot')), 5)
+        self.assertIsNone(photo_layout_kind(rows, ref('default')))
+        self.assertIsNone(photo_layout(rows, ref('default')), "8264EB48: 'default' is no magazine")
+        self.assertIsNone(photo_layout(rows, ref('board_shot')), 'a billboard layout is no magazine')
+        self.assertIsNone(photo_layout(rows, ref('nothing')))
+        self.assertIsNone(photo_layout(rows, None))
 
     def test_chain_stops_on_a_parent_loop(self):
         rows = {(CHALLENGE, 'a'): ('b', {}), (CHALLENGE, 'b'): ('a', {})}

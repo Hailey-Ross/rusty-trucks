@@ -197,6 +197,8 @@ pub(crate) fn build(
     .add_plugins(crate::frame_timing::FrameTimingPlugin)
     .add_plugins(crate::system_timing::SystemTimingPlugin)
     .add_plugins(crate::retail_backdrop::BackdropPlugin)
+    .add_plugins(crate::cursor_autohide::CursorAutoHidePlugin)
+    .add_plugins(crate::team_brand::TeamBrandPlugin)
     .add_plugins((
         crate::retail_render::RetailRenderPlugin,
         input::InputPlugin,

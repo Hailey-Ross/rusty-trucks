@@ -26,7 +26,7 @@ SOURCES = {
                     'asset_pipeline/sky_overrides.json'),
     # post_maps also writes challenges.json and progression.json: their exporters belong here so a Refresh redoes them.
     'maps': PARSERS + ('asset_pipeline/optional_content.py', 'asset_pipeline/map*.py', 'asset_pipeline/teleporters.py',
-             'asset_pipeline/challenges.py', 'asset_pipeline/objective_lua.py', 'asset_pipeline/progression.py',
+             'asset_pipeline/challenges.py', 'asset_pipeline/objective_lua.py', 'asset_pipeline/progression.py', 'asset_pipeline/team_brand.py',
              'asset_pipeline/progression_lua.py', 'asset_pipeline/visual_indicators.py', 'asset_pipeline/park_layout.py', 'asset_pipeline/dynamic_props.py', 'asset_pipeline/hand_props.py',
              'asset_pipeline/environment.py', 'asset_pipeline/irradiance.py',
              'asset_pipeline/retail_material.py', 'asset_pipeline/backdrop.py', 'asset_pipeline/sky.py'),

@@ -391,6 +391,17 @@ def convert_map(archive,work,maps,stage,game_exe,log,report,district=None,label=
         triggers.unlink(missing_ok=True)
         note(stage/'assets/private/map-status'/(label+'-triggers-availability.json'),label+' trigger volumes',error,report=report)
     finished('triggers')
+    # TeamBrand texture bindings (0x00EB0028; billboards showing career photos, team photos and logos).
+    from .team_brand import export as write_team_brand
+    team_brand=final.with_suffix('.teambrand')
+    try:
+        bindings=write_team_brand(stream,team_brand,label)
+        (stage/'assets/private/map-status'/(label+'-teambrand-availability.json')).unlink(missing_ok=True)
+        report(f'{label}: {len(bindings)} team brand bindings')
+    except CONTENT_ERRORS as error:
+        team_brand.unlink(missing_ok=True)
+        note(stage/'assets/private/map-status'/(label+'-teambrand-availability.json'),label+' team brand bindings',error,report=report)
+    finished('teambrand')
     props=stage/'assets/private/native-props'/(label+'.skate')
     def movable_props():
         try:

@@ -182,13 +182,25 @@ fn photo_path() -> std::path::PathBuf {
     dir.join(format!("photo-{stamp}.png"))
 }
 
-/// Saves the world image (no UI: `graphics_menu::SceneTarget`) once a photo was confirmed.
+/// Saves the world image (no UI: `graphics_menu::SceneTarget`) once a photo was confirmed, and a photo challenge's
+/// career photo (`career_capture`, research b952: the picked shot of the held photo NIS).
 fn take_photo(
     mut commands: Commands,
     mut replay: ResMut<Replay>,
     target: Option<Res<crate::graphics_menu::SceneTarget>>,
     mut popups: ResMut<crate::popup_host::PopupMods>,
 ) {
+    if let Some(path) = replay.career_capture.take() {
+        match target.as_ref() {
+            Some(target) => {
+                info!("SKATE_PHOTO career photo saving {} at {:.2}s", path.display(), replay.cursor);
+                commands
+                    .spawn(bevy::render::view::screenshot::Screenshot::image(target.0.clone()))
+                    .observe(bevy::render::view::screenshot::save_to_disk(path));
+            }
+            None => warn!("SKATE_PHOTO career photo NOT saved: no scene target"),
+        }
+    }
     if replay.photo != Photo::Capture {
         return;
     }
@@ -341,19 +353,102 @@ pub(crate) struct ReelShot {
     pub end: f64,
     /// The highlight definition's world position and direction (`located` scenes).
     pub located: Option<(Vec3, Vec3)>,
+    /// The take's FREEZE_CMD points (research b1061): the clip holds at each (NIS_ApplyFreezeCmd).
+    pub freezes: Vec<skate_data::ice_camera::FreezePoint>,
+    /// The take's screen color lanes (applied to the grade while the clip plays, research b1064).
+    pub colour: skate_data::ice_camera::TakeColour,
+}
+
+/// A reel clip's NIS scene take: its camera, the highlight's located place, its freeze points.
+#[derive(Clone, Debug)]
+pub(crate) struct ReelTake {
+    pub track: skate_core::camera_track::CameraTrack,
+    pub located: Option<(Vec3, Vec3)>,
+    pub freezes: Vec<skate_data::ice_camera::FreezePoint>,
+    pub colour: skate_data::ice_camera::TakeColour,
+}
+
+/// One reel step of `dt` seconds from `cursor` toward `end`: a running hold counts down first; reaching a freeze point
+/// stops the cursor there and starts its hold. Returns the new cursor and the photo shots reached.
+pub(crate) fn step_reel_cursor(cursor: f64, end: f64, dt: f64, holds: &mut VecDeque<(f64, f32, bool)>, hold: &mut f32) -> (f64, u32) {
+    let mut left = dt;
+    let mut cursor = cursor;
+    let mut shots = 0;
+    loop {
+        if *hold > 0.0 {
+            let used = left.min(f64::from(*hold));
+            *hold -= used as f32;
+            left -= used;
+            if *hold <= 1e-6 {
+                *hold = 0.0;
+            }
+            if *hold > 0.0 || left <= 0.0 {
+                return (cursor, shots);
+            }
+        }
+        match holds.front().copied() {
+            Some((at, seconds, photo)) if at <= (cursor + left).min(end) => {
+                left -= (at - cursor).max(0.0);
+                cursor = at.max(cursor);
+                holds.pop_front();
+                *hold = seconds;
+                shots += u32::from(photo);
+            }
+            _ => return (((cursor + left).min(end)), shots),
+        }
+    }
+}
+
+/// Where a reel clip's freeze points stop the cursor: (replay time, hold seconds, photo shot), in order.
+pub(crate) fn freeze_holds(shot: &ReelShot) -> Vec<(f64, f32, bool)> {
+    let span = shot.end - shot.start;
+    shot.freezes.iter().filter_map(|p| Some((shot.start + f64::from(p.at.clamp(0.0, 1.0)) * span, p.hold_seconds()?,
+        p.command == skate_data::ice_camera::PHOTO_FREEZE))).collect()
 }
 
 impl ReelShot {
-    /// The camera at replay time `cursor` for the skater's recorded `root`, and its field of view.
+    /// The camera at replay time `cursor` for the skater's recorded `root`, and its field of view (tests; the game
+    /// uses [`Self::camera_turned`]).
+    #[cfg(test)]
     pub(crate) fn camera(&self, cursor: f64, root: &Transform) -> Option<(Transform, f32)> {
+        self.camera_turned(cursor, root, [0.0; 2])
+    }
+
+    /// [`Self::camera`] with the photo picker's avatar move (`guess_NIS_GetSkaterAttachXformTuned` 82673560, research
+    /// b1063 / b1064): only AVATAR 6 (that function's default branch, the local player with the photo turn) turns, about
+    /// the take's eye, by `yaw` degrees about up and `pitch` degrees about the axis across the eye-to-skater line;
+    /// AVATAR 0 (the plain player position) does not. photo_anywhere places its eye from AVATAR 0 and looks at
+    /// AVATAR 6, so the camera turns in place.
+    pub(crate) fn camera_turned(&self, cursor: f64, root: &Transform, [yaw, pitch]: [f32; 2]) -> Option<(Transform, f32)> {
         let span = (self.end - self.start).max(1e-3);
         let time = (((cursor - self.start) / span).clamp(0.0, 1.0) as f32) * self.track.length;
         let sample = self.track.sample(time)?;
-        let place = |[x, y, z]: [f32; 3], space: skate_core::camera_track::CameraSpace| {
+        let base = |[x, y, z]: [f32; 3], space: skate_core::camera_track::CameraSpace, at: Vec3| {
             let point = Vec3::new(y, z, x);
             match space.mode {
-                2 => root.translation + point,
-                0 => root.translation + root.rotation * point,
+                2 => at + point,
+                0 => at + root.rotation * point,
+                // photo_anywhere_located: the eye at the placed photographer.
+                3 => match self.located {
+                    Some((spot, dir)) => spot + Quat::from_rotation_arc(Vec3::Z, dir.normalize_or(Vec3::Z)) * point,
+                    None => at + root.rotation * point,
+                },
+                _ => point,
+            }
+        };
+        let mut tuned = root.translation;
+        if yaw != 0.0 || pitch != 0.0 {
+            let pivot = base(sample.eye, sample.eye_space, root.translation);
+            let v = tuned - pivot;
+            let across = v.normalize_or(Vec3::X).cross(Vec3::Y).normalize_or(Vec3::X);
+            tuned = pivot + Quat::from_axis_angle(Vec3::Y, yaw.to_radians()) * (Quat::from_axis_angle(across, pitch.to_radians()) * v);
+        }
+        let place = |[x, y, z]: [f32; 3], space: skate_core::camera_track::CameraSpace| {
+            let point = Vec3::new(y, z, x);
+            let avatar = if space.avatar == 6 { tuned } else { root.translation };
+            match space.mode {
+                2 => avatar + point,
+                0 => avatar + root.rotation * point,
                 3 => match self.located {
                     Some((at, dir)) => at + Quat::from_rotation_arc(Vec3::Z, dir.normalize_or(Vec3::Z)) * point,
                     None => root.translation + root.rotation * point,
@@ -384,8 +479,26 @@ pub(crate) struct Replay {
     pub reel_transition_seconds: Option<f32>,
     /// The clip's visual transition (REPLAYNISLOADSCREEN), None when it is over.
     pub reel_transition: Option<ReelPhase>,
-    /// The clip waiting for its transition's white: (start, end, camera take, located place).
-    reel_pending: Option<(f64, f64, Option<(skate_core::camera_track::CameraTrack, Option<(Vec3, Vec3)>)>)>,
+    /// The clip waiting for its transition's white: (start, end, camera take, located place, freeze points).
+    reel_pending: Option<(f64, f64, Option<ReelTake>)>,
+    /// The playing clip's freeze points not reached yet (`freeze_holds`) and the hold left at the current one.
+    reel_holds: VecDeque<(f64, f32, bool)>,
+    reel_hold: f32,
+    /// Photo shots the playing clip has passed (each posts cMsgNISFEEvent 11 in retail).
+    pub reel_photo_shots: u32,
+    /// The next clip is a photo NIS: at its end the replay stays on screen (the NIS waits for the shot picker,
+    /// photo_skate2 display_photo) instead of closing.
+    pub reel_keep_still: bool,
+    /// A photo NIS held for the shot picker: no time runs, no replay input; `show_photo_shot` moves it.
+    pub reel_still: bool,
+    /// The shot picker's [brightness, contrast, saturation] on the held photo NIS (`colour_matrix::with_photo_edits`).
+    pub photo_look: Option<[f32; 3]>,
+    /// The shot picker's lens: degrees added to the held photo NIS's field of view (82676D48, research b1063).
+    pub photo_lens_degrees: f32,
+    /// The shot picker's avatar move (yaw, pitch degrees): `ReelShot::camera_turned` on the held photo NIS.
+    pub photo_avatar_degrees: [f32; 2],
+    /// A career photo to capture from the world image (`take_photo`), then taken.
+    pub career_capture: Option<std::path::PathBuf>,
     pub free_camera: Option<Transform>,
     /// The panel is hidden (retail L3: kHideEditor / kShowEditor), the help screen is open (retail Start: FE 13) and
     /// how many help page turns were asked (A); all reset when the replay opens.
@@ -706,6 +819,10 @@ impl Replay {
         }
         self.active = false;
         self.reel_shot = None;
+        self.reel_still = false;
+        self.photo_look = None;
+        self.photo_lens_degrees = 0.0;
+        self.photo_avatar_degrees = [0.0; 2];
         if matches!(self.reel_transition, Some(ReelPhase::In(_))) {
             self.reel_transition = None;
         }
@@ -736,12 +853,7 @@ impl Replay {
     /// One highlight reel clip (82BCE0D8: an NIS replay scene over the window): the transition blooms the current
     /// view to white, then the recording plays from `start` to `end` (clamped to what is kept) under the camera take
     /// while the white clears. Nothing recorded: done at once.
-    pub(crate) fn play_reel_clip(
-        &mut self,
-        start: f64,
-        end: f64,
-        take: Option<(skate_core::camera_track::CameraTrack, Option<(Vec3, Vec3)>)>,
-    ) {
+    pub(crate) fn play_reel_clip(&mut self, start: f64, end: f64, take: Option<ReelTake>) {
         if self.frames.is_empty() {
             self.reel_done = true;
             return;
@@ -755,6 +867,24 @@ impl Replay {
         self.reel_done = false;
         self.reel_transition = Some(ReelPhase::In(0.0));
         self.reel_pending = Some((start, end, take));
+    }
+
+    /// cMsgNISPhotoSelect(n) on a held photo NIS (82829C70 guess_NISMan_SeekPhotoShot): the picture moves to the
+    /// key time of the take's n-th photo shot (FREEZE_CMD 4 point). False when no clip is held or it has no such shot.
+    pub(crate) fn show_photo_shot(&mut self, n: u32) -> bool {
+        let Some(shot) = self.reel_shot.as_ref().filter(|_| self.reel_still) else { return false };
+        let Some(&(at, _, _)) = freeze_holds(shot).iter().filter(|h| h.2).nth(n as usize) else { return false };
+        self.cursor = at;
+        info!("REPLAY_REEL photo shot {n} shown at {at:.2} s");
+        true
+    }
+
+    /// The shot picker finished (82618428 posts cMsgNISComplete): the held photo NIS closes.
+    pub(crate) fn end_still(&mut self) {
+        if self.reel_still {
+            self.reel_still = false;
+            self.exit();
+        }
     }
 
     /// The clip starts at the transition's full white (NIS load state 7, 8281EF88: playback and the reverse
@@ -771,7 +901,10 @@ impl Replay {
         self.seek(start);
         let end = end.clamp(first, last).max(self.cursor);
         self.reel_end = Some(end);
-        self.reel_shot = take.map(|(track, located)| ReelShot { track, start: self.cursor, end, located });
+        self.reel_shot = take.map(|t| ReelShot { track: t.track, start: self.cursor, end, located: t.located, freezes: t.freezes, colour: t.colour });
+        self.reel_holds = self.reel_shot.as_ref().map(freeze_holds).unwrap_or_default().into();
+        self.reel_hold = 0.0;
+        self.reel_photo_shots = 0;
         self.playing = true;
         info!("REPLAY_REEL clip {:.2}..{:.2} s", self.cursor, end);
     }
@@ -1298,6 +1431,11 @@ pub(crate) fn controls(
         if replay.active {replay.exit();}
         return;
     }
+    if replay.reel_still {
+        // The shot picker owns the pad (ftl_host); the replay neither runs nor reads input.
+        input.discard_gameplay();
+        return;
+    }
     if let Some(end) = replay.reel_end {
         // A skips (the NIS skip, 825EFF98: A on the first press); a skipped scene ends the whole reel (82BCDFC0 posts
         // cMsgHighlightReelComplete when cMsgNISComplete says skipped).
@@ -1311,6 +1449,8 @@ pub(crate) fn controls(
             info!("REPLAY_REEL skipped at {:.2} s", replay.cursor);
             replay.reel_skipped = true;
             replay.cursor = end;
+            replay.reel_holds.clear();
+            replay.reel_hold = 0.0;
         }
         input.discard_gameplay();
         // REPLAYNISLOADSCREEN (8285EC08 kind 6 -> BloomToWhite, 82795A70, 1.0 s each way): the NIS load waits for
@@ -1326,11 +1466,25 @@ pub(crate) fn controls(
             return;
         }
         let end = replay.reel_end.unwrap_or(end);
-        replay.cursor = (replay.cursor + time.delta_secs_f64()).min(end);
-        if replay.cursor >= end || !replay.active {
+        // NISTake_SendPointEvents -> NIS_ApplyFreezeCmd (8267ECC0 / 8267F168, research b1061): the clock holds at each
+        // freeze point; a photo shot (command 4) also tells the front end (cMsgNISFEEvent 11; NOT RETAIL YET: logged).
+        let r = &mut *replay;
+        let (cursor, shots) = step_reel_cursor(r.cursor, end, time.delta_secs_f64(), &mut r.reel_holds, &mut r.reel_hold);
+        r.cursor = cursor;
+        for _ in 0..shots {
+            r.reel_photo_shots += 1;
+            info!("REPLAY_REEL photo shot {} at {:.2} s (held {:.2} s)", r.reel_photo_shots, r.cursor, r.reel_hold);
+        }
+        if (replay.cursor >= end && replay.reel_hold <= 0.0) || !replay.active {
             replay.reel_end = None;
             replay.reel_done = true;
-            replay.exit();
+            if replay.active && std::mem::take(&mut replay.reel_keep_still) && !replay.reel_skipped {
+                replay.reel_still = true;
+                replay.playing = false;
+                info!("REPLAY_REEL photo NIS held for the shot picker at {:.2} s", replay.cursor);
+            } else {
+                replay.exit();
+            }
         }
         return;
     }
@@ -1725,7 +1879,8 @@ fn publish_feed(replay: Res<Replay>, mut feed: ResMut<ReplayFeed>) {
         }
     };
     let next = crate::replay_menu_host::ReplayScreenFeed {
-        active: replay.active && replay.reel_end.is_none(),
+        // No replay screen over a reel clip or the held photo NIS (the shot picker shows its own movie).
+        active: replay.active && replay.reel_end.is_none() && !replay.reel_still,
         instant: replay.active && replay.editor.is_none(),
         position: if end > start { (replay.cursor - start) / (end - start) } else { 1.0 },
         playing: replay.playing,
@@ -1765,7 +1920,8 @@ fn update_ui(
     *waited = if replay.active && retail.1 { *waited + time.delta_secs() } else { 0.0 };
     let loading = retail.1 && *waited < RETAIL_UI_WAIT_S;
     for mut node in &mut roots {
-        node.display = if replay.active && !retail.0 && !loading && !replay.panel_hidden {
+        // Never over a reel clip or the held photo NIS (retail shows no replay screen there).
+        node.display = if replay.active && !retail.0 && !loading && !replay.panel_hidden && replay.reel_end.is_none() && !replay.reel_still {
             Display::Flex
         } else {
             Display::None

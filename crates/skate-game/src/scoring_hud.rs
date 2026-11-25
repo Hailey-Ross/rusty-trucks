@@ -1385,6 +1385,7 @@ mod draw_tests {
             landing: Default::default(),
             teleported: false,
             reverting: false,
+            pump_acceleration: 0.,
         }
     }
     fn pct(sorted: &[f64], p: f64) -> f64 {

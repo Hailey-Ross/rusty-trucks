@@ -136,6 +136,51 @@ mod tests {
         assert_eq!(generic.iter().map(space).collect::<Vec<_>>(), [(2, 4), (0, 1), (0, 1)], "three takes, two in the player's frame");
         assert_eq!(space(&takes("Replay_Film_Generic_Med")[0]).0, 3, "a located scene");
     }
+    /// The photo NIS's shots (82849738 / 8285F220 count the take's FREEZE_CMD == 4 segments). Data-gated.
+    #[test]
+    fn the_photo_scenes_freeze_on_their_shots() {
+        let Some(dir) = std::env::var_os("SKATE3_SCENE_DIR").map(std::path::PathBuf::from) else { return };
+        let scenes = parse(&std::fs::read(dir.join("scene_000.bin")).unwrap()).unwrap();
+        let ice = std::fs::read(dir.join("ice_000.bin")).unwrap();
+        let shots = |name: &str| {
+            let s = scenes.iter().find(|s| s.name == name).unwrap();
+            crate::ice_camera::photo_shots(&ice, s.hash, s.length()).unwrap()
+        };
+        let mid = shots("photo_generic_mid");
+        assert_eq!(mid.iter().map(Vec::len).collect::<Vec<_>>(), [8], "one take, eight shots");
+        assert!((mid[0][0] - 1.34).abs() < 0.01 && (mid[0][7] - 5.0).abs() < 1e-4, "{mid:?}");
+        assert!(mid[0].windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(shots("photo_generic_wide")[0].len(), 8);
+        assert_eq!(shots("photo_anywhere")[0].len(), 7);
+        assert_eq!(shots("photo_generic_seq_mid")[0].len(), 0, "the sequence scenes freeze with command 5");
+        assert!(shots("photo_dwtn_05").iter().all(Vec::is_empty), "a photo intro has no shots");
+        let s = scenes.iter().find(|s| s.name == "photo_generic_mid").unwrap();
+        let points = crate::ice_camera::freeze_points(&ice, s.hash).unwrap();
+        assert!(points[0].iter().all(|p| p.command == 4 && p.frames == 10 && p.hold_seconds() == Some(1.0 / 3.0)), "{points:?}");
+        let colour = crate::ice_camera::take_colours(&ice, s.hash).unwrap();
+        let c = colour[0];
+        assert!(c.brightness.is_some_and(|[n, f]| n.abs() < 0.01 && f.abs() < 0.01), "{c:?}");
+        assert!(c.contrast.is_some_and(|([n, _], _)| (n - 1.0).abs() < 0.01), "{c:?}");
+        assert!(c.saturation.is_some_and(|s| s.abs() < 0.02), "the photo takes are neutral (within half a step of 11 / 256): {c:?}");
+        if std::env::var_os("SKATE3_SCENE_DUMP").is_some() {
+            for name in ["photo_generic_mid", "photo_anywhere", "photo_anywhere_located"] {
+                let s = scenes.iter().find(|s| s.name == name).unwrap();
+                for (i, t) in crate::ice_camera::scene_tracks(&ice, s.hash).unwrap().iter().enumerate() {
+                    eprintln!("{name} take {i}: length {:.2}, spaces {:?}", t.length,
+                        t.segments.iter().map(|g| (g.eye_space.mode, g.eye_space.avatar, g.look_space.mode, g.look_space.avatar)).collect::<Vec<_>>());
+                    for k in t.keys.iter().step_by(4) {
+                        eprintln!("   t {:.2} eye {:?} look {:?} lens {:.1}", k.time, k.eye, k.look, k.lens_mm);
+                    }
+                }
+                for e in ["AVOID_STATIC_OBJECTS", "AVOID_DYNAMIC_OBJECTS", "PLAYER_SPACE_LOCK_TO_RENDER_OBJECT", "AVATAR_ORBIT", "BRIGHTNESS_OVERRIDE", "CONTRAST_OVERRIDE", "SATURATE_OVERRIDE", "RAWFOCUS_OVERRIDE", "LENS_OVERRIDE",
+                    "BRIGHTNESS_NEAR", "CONTRAST_NEAR", "SATURATE_NEAR", "BLUR_INTENSITY"] {
+                    let v = crate::ice_camera::raw_element(&ice, s.hash, e).unwrap();
+                    eprintln!("{name} {e}: {:?}", v.iter().map(|t| &t.2).collect::<Vec<_>>());
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_disc_table_parses() {
         let Some(dir) = std::env::var_os("SKATE3_SCENE_DIR").map(std::path::PathBuf::from) else { return };

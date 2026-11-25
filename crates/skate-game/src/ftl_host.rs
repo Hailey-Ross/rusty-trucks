@@ -146,6 +146,20 @@ pub(crate) struct FtlData {
     /// C.HighlightDefinition (the Hall of Meat's best bail clip, b1005); exports before 2026-11-21 lack it.
     #[serde(default)]
     pub highlight: Option<crate::challenge_objectives::HighlightJson>,
+    /// Photos: the magazine layout the taken photo goes on (MagazinePromo), None when the row's layout reference does
+    /// not resolve (research b1060 §4).
+    #[serde(default)]
+    pub photo_layout: Option<String>,
+    /// Photos: the magazine layout kind (Mission_GetPhotoLayoutKind without the display flag: 0..2 single page, 3 two
+    /// pages, 5 billboard), MagazinePromo's state.
+    #[serde(default)]
+    pub photo_layout_kind: Option<u8>,
+    /// Photos: the layout is a two-page spread (the picker movie's layout label).
+    #[serde(default)]
+    pub photo_layout_two_page: bool,
+    /// Photos: the career photo slot (bank field A4473FA9B19FAEC9); 0 = the photo is not saved.
+    #[serde(default)]
+    pub photo_slot: u32,
     /// The row's central texts (C.CentralMessageHALID* / ModifiedCentralMessageHALID*): return_to_area,
     /// challenge_failed, line_timer_expired, out_of_bounds, scored_low, time_up.
     #[serde(default)]
@@ -298,6 +312,24 @@ pub(crate) struct FtlState {
     area_checked: bool,
     /// The highlights and the highlight reel (research b1050).
     reel: ReelState,
+    /// The photo shot picker while it is open (FE 2 PhotoSelect, `photo_picker`).
+    pub(crate) photo: Option<skate_core::challenges::photo_select::PhotoSelect>,
+}
+
+impl FtlState {
+    /// The picker finished (82618428 posts cMsgNISComplete): the run's niscomplete runs on the next update; a finish
+    /// mode from MagazinePromo answers the end options at once (cMsgHUDContinue / cMsgHUDRetry, research b1067).
+    pub(crate) fn photo_finished(&mut self, mode: skate_core::challenges::photo_select::FinishMode) {
+        use skate_core::challenges::photo_select::FinishMode;
+        self.photo = None;
+        let mut commands = self.run.handle(Event::NisComplete);
+        match mode {
+            FinishMode::Normal => {}
+            FinishMode::Continue => commands.extend(self.run.handle(Event::Continue)),
+            FinishMode::Retry => commands.extend(self.run.handle(Event::Retry)),
+        }
+        self.queued.extend(commands);
+    }
 }
 
 #[derive(Resource, Default)]
@@ -419,7 +451,7 @@ fn start(ftl: &mut FollowTheLeader, wanted: &str, config: &crate::config::Config
     let commands = run.start();
     info!("SKATE_FTL {wanted}: {} objective groups (killed it: {})", groups.len(), groups.iter().any(|g| g.killed));
     let mut state = FtlState { data, run, groups, evaluating: false, leader, awaiting_teleport: false, band: Some(FollowerBand::default()),
-        carry: 0.0, eval_carry: 0.0, leader_last: None, leader_speed: 0.0, leader_path: Vec::new(), last_state: 0, failure_text: None, dialog_open: false, dialog_seconds: 0.0, leaders_in_end: Vec::new(), follow_indicators: Vec::new(), meter: None, queued: Vec::new(), feed: Default::default(), area_checked: false, reel: Default::default(), intro_group: None };
+        carry: 0.0, eval_carry: 0.0, leader_last: None, leader_speed: 0.0, leader_path: Vec::new(), last_state: 0, failure_text: None, dialog_open: false, dialog_seconds: 0.0, leaders_in_end: Vec::new(), follow_indicators: Vec::new(), meter: None, queued: Vec::new(), feed: Default::default(), area_checked: false, reel: Default::default(), intro_group: None, photo: None };
     // The first commands run on the next update with the frame's resources.
     state.pending(commands);
     ftl.run = Some(state);
@@ -454,22 +486,50 @@ pub(crate) struct ReelState {
     playing: bool,
     /// The clips played so far this reel (the take a scene with several and no cut list uses).
     played: usize,
-    /// The NIS scenes' camera takes by scene name (scene_000.bin + ice_000.bin), loaded on the first reel.
-    scenes: Option<std::collections::HashMap<String, Vec<skate_core::camera_track::CameraTrack>>>,
+    /// The NIS scenes' camera takes and their freeze points by scene name (scene_000.bin + ice_000.bin), loaded on
+    /// the first reel.
+    scenes: Option<std::collections::HashMap<String, Vec<SceneTake>>>,
+    /// The scene and take of the last clip started (the current NIS NIS.GetPhotoNISCount reads).
+    last_scene: Option<(String, usize)>,
+    /// The placed anywhere photographer (position, facing): while one is placed every clip plays
+    /// `photo_anywhere_located` from that spot (82BCE0D8 asks the photographer's locator interface, 822FFAD4).
+    pub(crate) photographer: Option<(Vec3, Vec3)>,
+}
+
+/// The scene a clip plays while a photographer is placed (string 820D4860, 82BCE0D8).
+const PHOTOGRAPHER_SCENE: &str = "photo_anywhere_located";
+
+/// One take of an NIS scene as the reel uses it: the camera, its FREEZE_CMD points and its screen color lanes.
+#[derive(Clone)]
+pub(crate) struct SceneTake {
+    track: skate_core::camera_track::CameraTrack,
+    freezes: Vec<skate_data::ice_camera::FreezePoint>,
+    colour: skate_data::ice_camera::TakeColour,
 }
 
 /// Every NIS scene's ICE camera takes by name (lower case), from the install's scene table.
-fn scene_cameras(asset_root: &std::path::Path) -> std::collections::HashMap<String, Vec<skate_core::camera_track::CameraTrack>> {
+fn scene_cameras(asset_root: &std::path::Path) -> std::collections::HashMap<String, Vec<SceneTake>> {
     let dir = asset_root.join("private/hud/scene");
     let (Ok(table), Ok(ice)) = (std::fs::read(dir.join("scene_000.bin")), std::fs::read(dir.join("ice_000.bin"))) else { return Default::default() };
     let Ok(scenes) = skate_data::scene_table::parse(&table) else { return Default::default() };
     scenes.iter().filter_map(|s| {
         let tracks = skate_data::ice_camera::scene_tracks(&ice, s.hash).ok().filter(|t| !t.is_empty())?;
-        Some((s.name.to_ascii_lowercase(), tracks))
+        let mut freezes = skate_data::ice_camera::freeze_points(&ice, s.hash).unwrap_or_default().into_iter();
+        let mut colours = skate_data::ice_camera::take_colours(&ice, s.hash).unwrap_or_default().into_iter();
+        Some((s.name.to_ascii_lowercase(), tracks.into_iter().map(|track| SceneTake {
+            track, freezes: freezes.next().unwrap_or_default(), colour: colours.next().unwrap_or_default(),
+        }).collect()))
     }).collect()
 }
 
 impl ReelState {
+    /// NIS.GetPhotoNISCount (8285F220): the photo shots (FREEZE_CMD 4 points) of the last clip's take (research b1061).
+    pub(crate) fn photo_shots(&self) -> usize {
+        let Some((scene, take)) = &self.last_scene else { return 0 };
+        self.scenes.as_ref().and_then(|s| s.get(&scene.to_ascii_lowercase())).and_then(|takes| takes.get(*take))
+            .map_or(0, |t| t.freezes.iter().filter(|p| p.command == skate_data::ice_camera::PHOTO_FREEZE).count())
+    }
+
     /// SequenceBegin (b933): the replay time a line began.
     pub(crate) fn track_sequence(&mut self, in_sequence: bool, replay: Option<&crate::replay::Replay>) {
         if in_sequence && !self.in_sequence {
@@ -570,12 +630,19 @@ impl ReelState {
         let fps = f64::from(self.highlights.rules.frames_per_second);
         let (start, end) = (f64::from(clip.start) / fps, f64::from(clip.end) / fps);
         let scenes = self.scenes.get_or_insert_with(|| scene_cameras(asset_root));
-        let track = scenes.get(&clip.scene.scene.to_ascii_lowercase())
-            .and_then(|takes| takes.get(self.played % takes.len().max(1))).cloned();
-        let located = clip.scene.located.then(|| (Vec3::from_array(clip.scene.position), Vec3::from_array(clip.scene.direction)));
-        info!("SKATE_FTL highlight clip {} frames {}..{} camera {}", clip.scene.scene, clip.start, clip.end,
-            if track.is_some() { "scene take" } else { "game camera (no scene take)" });
-        replay.play_reel_clip(start, end, track.map(|track| (track, located)));
+        // A placed photographer replaces the definition's scene and place (82BCE0D8): photo_anywhere_located at its
+        // spot and facing.
+        let (scene, located) = match self.photographer {
+            Some(at) => (PHOTOGRAPHER_SCENE.to_owned(), Some(at)),
+            None => (clip.scene.scene.clone(), clip.scene.located.then(|| (Vec3::from_array(clip.scene.position), Vec3::from_array(clip.scene.direction)))),
+        };
+        let take = scenes.get(&scene.to_ascii_lowercase()).map_or(0, |takes| self.played % takes.len().max(1));
+        let track = scenes.get(&scene.to_ascii_lowercase()).and_then(|takes| takes.get(take)).cloned();
+        self.last_scene = Some((scene.clone(), take));
+        info!("SKATE_FTL highlight clip {scene} frames {}..{} camera {}{}", clip.start, clip.end,
+            if track.is_some() { "scene take" } else { "game camera (no scene take)" },
+            if self.photographer.is_some() { " from the placed photographer" } else { "" });
+        replay.play_reel_clip(start, end, track.map(|t| crate::replay::ReelTake { track: t.track, located, freezes: t.freezes, colour: t.colour }));
         self.played += 1;
         self.playing = true;
         true
@@ -836,7 +903,7 @@ fn update(
     let banked: Vec<(i32, bool)> = shared.map(|c| c.banked_this_frame.iter().map(|s| (s.score, s.wiped_out)).collect()).unwrap_or_default();
     let raw = pad.as_ref().map(|p| p.raw_input()).unwrap_or_default();
     let feed_input = crate::challenge_objectives::FeedInput {
-        entered: &entered, exited: &exited, banked: &banked, ticks, state_id, in_sequence: skater.scoring.sequence_active(),
+        entered: &entered, exited: &exited, banked: &banked, ticks, state_id, in_sequence: skater.scoring.sequence_active() || crate::challenge_objectives::force_line(),
         markers: shared.map_or(&[][..], |c| &c.markers_this_frame), tricks: shared.map_or(&[][..], |c| &c.tricks_done_this_frame),
         began: shared.map_or(&[][..], |c| &c.tricks_began_this_frame), right_stick_y: raw.right[1], triggers: raw.triggers,
         manual: skater.scoring.manual(), pushes: shared.map_or(0, |c| c.pushes_this_frame),
@@ -864,6 +931,9 @@ fn update(
     let fed = state.feed.step(&mut groups, &feed_input, state.evaluating);
     // SequenceBegin (b933): the replay time a line began, the start of the highlight its objective adds.
     state.reel.track_sequence(skater.scoring.sequence_active(), replay.as_deref());
+    // The highlight manager reads the photographer's locator interface for each clip (82BCE0D8).
+    state.reel.photographer = photographer.state.placed
+        .then(|| (Vec3::from_array(photographer.state.position), Vec3::from_array(photographer.state.direction)));
     // A reel clip played out: the next one, after the last the reel is complete.
     if state.reel.step(replay.as_deref_mut(), pause.as_deref_mut(), &asset_root) {
         info!("SKATE_FTL {id} highlight reel complete");
@@ -1064,15 +1134,29 @@ fn update(
                     info!("SKATE_FTL {id} highlight reel: {} clips", state.reel.clips.len());
                 }
                 Command::PlayHighlightReel => {
+                    // photo_skate2: the photo NIS stays up at its end until the shot picker finishes.
+                    if let Some(r) = replay.as_deref_mut() {
+                        r.reel_keep_still = state.run.state() == State::DisplayPhoto;
+                    }
                     if !state.reel.play_prepared(replay.as_deref_mut(), pause.as_deref_mut(), &asset_root, tuning.as_deref()) {
                         queue.extend(reel_done(&mut state.run));
                     }
                 }
-                // FrontEnd.OpenPhotoSelection (photo_skate2 display_photo): NOT RETAIL YET, no shot picker
-                // (challenge/photoselect); the photo NIS's shot is taken as picked and the NIS ends.
+                // FrontEnd.OpenPhotoSelection(NIS.GetPhotoNISCount) (photo_skate2 display_photo): the shot picker
+                // (`photo_picker`) over the held photo NIS; without a held NIS the shot is taken as it is.
                 Command::OpenPhotoSelection => {
-                    info!("SKATE_FTL {id} photo selection NOT RETAIL YET: the shot is taken as picked");
-                    queue.extend(state.run.handle(Event::NisComplete));
+                    let shots = state.reel.photo_shots() as u32;
+                    let held = replay.as_deref().is_some_and(|r| r.reel_still);
+                    info!("SKATE_FTL {id} photo selection over {shots} shots ({:?}), NIS held {held}", state.reel.last_scene);
+                    if held {
+                        let tables = crate::photo_picker::edit_tables(&asset_root);
+                        let (picker, out) = skate_core::challenges::photo_select::PhotoSelect::open(shots, tables, Default::default(),
+                            false, state.data.photo_layout.is_some());
+                        state.photo = Some(picker);
+                        crate::photo_picker::carry_out(&id, out, replay.as_deref_mut(), None, None);
+                    } else {
+                        queue.extend(state.run.handle(Event::NisComplete));
+                    }
                 }
                 Command::SetSessionMarkerHere => info!("SKATE_FTL {id} session marker at the start spot {:?}", &state.data.start.matrix[3][..3]),
                 Command::TeleportToSessionMarker => {
@@ -1203,6 +1287,8 @@ pub(crate) struct ChallengeTuning {
     pub reel_enabled: bool,
     pub reel_slots: usize,
     pub reel_transition_seconds: f32,
+    /// A 1-Up's waiting pro steps off after this many seconds at rest (SPEC: the user's account; retail code not found).
+    pub wait_step_off_seconds: f32,
 }
 
 impl Default for ChallengeTuning {
@@ -1213,6 +1299,7 @@ impl Default for ChallengeTuning {
             reel_enabled: true,
             reel_slots: rules.slots,
             reel_transition_seconds: crate::replay::REEL_TRANSITION_SECONDS,
+            wait_step_off_seconds: 1.0,
         }
     }
 }
@@ -1230,13 +1317,38 @@ pub(crate) fn register(app: &mut App) {
         .init_resource::<AnywherePhotographer>()
         .init_resource::<ChallengeTuning>()
         .add_systems(PreUpdate, arm.after(crate::map_transition::MapTransitionSet).run_if(crate::challenges::opted_in))
-        .add_systems(Update, update.after(crate::challenges::CareerResultSet).run_if(crate::challenges::opted_in));
+        .add_systems(Update, update.after(crate::challenges::CareerResultSet).run_if(crate::challenges::opted_in))
+        .init_resource::<crate::photo_picker::PhotoScreen>()
+        .init_resource::<crate::photo_picker::MagazineScreen>()
+        .add_systems(Update, crate::photo_picker::photo_picker.after(update).run_if(crate::challenges::opted_in));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use skate_core::challenges::objectives::Message as GroupMessage;
+
+    #[test]
+    fn a_placed_photographer_plays_the_clip_as_photo_anywhere_located_from_its_spot() {
+        let take = SceneTake { track: skate_core::camera_track::CameraTrack { length: 3.33, keys: Vec::new(), segments: Vec::new() },
+            freezes: Vec::new(), colour: Default::default() };
+        let mut reel = ReelState::default();
+        reel.scenes = Some([("photo_anywhere".to_owned(), vec![take.clone()]), (PHOTOGRAPHER_SCENE.to_owned(), vec![take])].into_iter().collect());
+        let clip = skate_core::challenges::highlights::Highlight { killed: false, start: 60, end: 240,
+            scene: skate_core::challenges::highlights::SceneDef { scene: "photo_anywhere".into(), ..Default::default() } };
+        let mut replay = crate::replay::Replay::default();
+        for i in 0..300 {
+            replay.record(crate::presentation::Snapshot { root: Transform::from_xyz(i as f32 * 0.1, 0.0, 0.0), bones: Vec::new(),
+                camera: Transform::IDENTITY, fov: 1.0 }, 1.0 / 60.0, false);
+        }
+        reel.clips = [clip.clone()].into();
+        reel.next_clip(Some(&mut replay), std::path::Path::new("."));
+        assert_eq!(reel.last_scene.as_ref().map(|s| s.0.as_str()), Some("photo_anywhere"), "no photographer: the definition's scene");
+        reel.photographer = Some((Vec3::new(1.0, 0.0, 2.0), Vec3::Z));
+        reel.clips = [clip].into();
+        reel.next_clip(Some(&mut replay), std::path::Path::new("."));
+        assert_eq!(reel.last_scene.as_ref().map(|s| s.0.as_str()), Some(PHOTOGRAPHER_SCENE), "82BCE0D8: the placed photographer's scene");
+    }
 
     #[test]
     fn the_autopilot_keeps_a_gap_and_never_passes_the_leader() {

@@ -1049,6 +1049,8 @@ pub struct ChallengesPatch {
     pub reel_slots: Option<u32>,
     /// Seconds of each reel clip's bloom to white, each way (0..=5, retail 1.0).
     pub reel_transition_seconds: Option<f32>,
+    /// Seconds a 1-Up's waiting pro stands at rest on his board before he steps off (0..30; the spec default 1.0).
+    pub wait_step_off_seconds: Option<f32>,
 }
 
 impl ChallengesPatch {
@@ -1057,6 +1059,7 @@ impl ChallengesPatch {
             && self.meter_refresh_ticks.is_none_or(|v| (1..=60).contains(&v))
             && self.reel_slots.is_none_or(|v| (1..=16).contains(&v))
             && self.reel_transition_seconds.is_none_or(|v| v.is_finite() && (0.0..=5.0).contains(&v))
+            && self.wait_step_off_seconds.is_none_or(|v| v.is_finite() && (0.0..=30.0).contains(&v))
     }
 }
 
@@ -1372,7 +1375,7 @@ impl Merge for BackdropPatch {
 
 impl Merge for ChallengesPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; meter_red_fraction, meter_refresh_ticks, reel_enabled, reel_slots, reel_transition_seconds);
+        merge_opts!(self, b; meter_red_fraction, meter_refresh_ticks, reel_enabled, reel_slots, reel_transition_seconds, wait_step_off_seconds);
     }
 }
 

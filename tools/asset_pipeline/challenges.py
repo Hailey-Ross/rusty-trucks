@@ -534,6 +534,70 @@ def map_items(rows, origin, global_locators, text):
     return items
 
 
+PHOTO_EDITS = 'Hash_5CFA2765DFA23B43'
+PHOTO_EDIT_FIELDS = {'brightness': 'Hash_43FA37C2C8D671C4', 'contrast': 'Hash_CE69A39D6B442E64',
+                     'saturation': 'Hash_B5CDB584810D2AF9', 'depth_of_field': 'Hash_F35B9698B1AD85CB'}
+
+
+PHOTO_LAYOUT = 'Hash_52FC1A3F4D7EF1D8'
+PHOTO_SLOT = 'Hash_A4473FA9B19FAEC9'
+LAYOUT_CLASS = 'Hash_60510D20032AEBE9'
+
+
+def layout_ancestry(rows_by_hash, value):
+    """The layout row a photo row references (local param 52FC1A3F4D7EF1D8, a RefSpec into the skatercollections
+    layout class 60510D20032AEBE9) and its parents' names, nearest first; [] when it does not resolve."""
+    raw = bytes.fromhex(((value or {}).get('data') or '')[:32] or '00' * 16)
+    if len(raw) < 16:
+        return []
+    cls_hash, key = struct.unpack_from('>QQ', raw, 0)
+    cls = 'Hash_%016X' % cls_hash
+    row, chain = rows_by_hash.get((cls, key)), []
+    while row and row['key'] not in chain and len(chain) < 16:
+        chain.append(row['key'])
+        parent = row.get('parent') or ''
+        row = rows_by_hash.get((cls, hash64(parent))) if parent else None
+    return chain
+
+
+def photo_layout(rows_by_hash, value):
+    """A photo row's magazine layout: the layout row's key when it descends from `magazine` (guess_Mission_HasPhotoLayout
+    8264EB48 tests the collection 1E000CCE7B09B435 = `magazine`; then 82617FE8 opens MagazinePromo), else None
+    (`default`, `billboard`: the picker stores the photo at once). Research b1064."""
+    chain = layout_ancestry(rows_by_hash, value)
+    return chain[0] if 'magazine' in chain[1:] or chain[:1] == ['magazine'] else None
+
+
+LAYOUT_KINDS = (('magazine_singlepage_fullpage', 0), ('magazine_singlepage_thrasher', 1), ('magazine_singlepage_sbm', 2),
+                ('magazine_twopage', 3), ('billboard', 5))
+
+
+def photo_layout_kind(rows_by_hash, value):
+    """Mission_GetPhotoLayoutKind 8264ECE8 without its display flag: 0 fullpage, 1 thrasher, 2 sbm (single pages),
+    3 two pages, 5 billboard (the game adds 1 to 3 / 5 for a widescreen display); None outside those families. The
+    MagazinePromo movie takes it as its state (research b1067)."""
+    chain = layout_ancestry(rows_by_hash, value)
+    return next((kind for family, kind in LAYOUT_KINDS if family in chain), None)
+
+
+def photo_layout_two_page(rows_by_hash, value):
+    """Whether the magazine layout is a two-page spread: guess_Mission_IsPhotoLayoutKind 8264ECE8 answers kinds 3 / 4 for
+    the `magazine_twopage` family (the photo movie's layout label then + 2, else + 1 for the single-page families
+    magazine_singlepage_fullpage / _thrasher / _sbm). Research b1064."""
+    return 'magazine_twopage' in layout_ancestry(rows_by_hash, value)
+
+
+def photo_edits(rows):
+    """The photo shot picker's edit tables (skatercollections, class and key 5CFA2765DFA23B43, read by 82617458 /
+    82617BD8; research b1061): one float list per edit, or None when the row is missing."""
+    found = next((own for (cls, _), (_, own) in rows.items() if cls.casefold() == PHOTO_EDITS.casefold()), None)
+    if found is None:
+        return None
+    floats = lambda f: [struct.unpack('>f', bytes.fromhex(i[:8]))[0]
+                        for i in (((found.get(f) or {}).get('array') or {}).get('items') or [])]
+    return {name: floats(field) for name, field in PHOTO_EDIT_FIELDS.items()}
+
+
 def lua_text(binary, field):
     """A tCompiledLua / tObjectiveDefinition field's text: its first u32 is the offset of the source in the bank .bin."""
     if not field or not field.get('data'):
@@ -1089,6 +1153,10 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
             competitors=competitors,
             objective_volumes=sorted(volumes.values(), key=lambda v: v['name']),
             highlight=highlight,
+            photo_layout=photo_layout(rows_by_hash, p.get(PHOTO_LAYOUT)),
+            photo_layout_two_page=photo_layout_two_page(rows_by_hash, p.get(PHOTO_LAYOUT)),
+            photo_layout_kind=photo_layout_kind(rows_by_hash, p.get(PHOTO_LAYOUT)),
+            photo_slot=_u32(fields.get(PHOTO_SLOT)) or 0,
             central_messages={k: v for k, v in ((k, ((p.get(f) or fields.get(f)) or {}).get('data')) for k, f in CENTRAL_MESSAGES.items()) if v},
             objectives=objectives)
 
@@ -1324,7 +1392,8 @@ def export(game_root, dlc_vaults, dlc_bigs, work, output, text=None, report=prin
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps({'format': FORMAT, 'version': VERSION, 'challenges': result, 'tutorials': tutorials,
                                   'own_the_lots': lots, 'races': races, 'contests': contests, 'follow_the_leaders': follows,
-                                  'films': films, 'hall_of_meats': homs, 'photos': photos, 'one_ups': one_ups, 'map_items': items},
+                                  'films': films, 'hall_of_meats': homs, 'photos': photos, 'one_ups': one_ups, 'map_items': items,
+                                  'photo_edits': photo_edits(rows)},
                                  indent=1), encoding='utf-8')
     report(f'Challenges: {len(result)} ({", ".join(FAMILIES)}) on {len({c["map"] for c in result})} maps, '
            f'{len(tutorials)} tutorials, {len(lots)} own the lots, {len(races)} races, {len(follows)} follow the leader, '

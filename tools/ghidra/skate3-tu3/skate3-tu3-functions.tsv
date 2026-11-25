@@ -6534,10 +6534,13 @@
 82567E10	PostMsg_SkaterDestroyed	Small function (180 bytes) that builds and posts cMsgSkaterDestroyed (0xE43ED4D9) through MsgBus_Post.
 82567EC8	PostMsg_LocalSkaterChanged	Small function (196 bytes) that builds and posts cMsgLocalSkaterChanged (0x7D7699B8) through MsgBus_Post.
 82567F90	guess_SkaterActor_QueryPathObject	Guess: queries the path object at +0x370 through +0x378.
+82568048	Photographer_HasUserPlaced	Photographer locator / controller slot +4: returns the placed byte (M+0x11)
 82568060	guess_Vt822FFA70_DeletingDtor	Guess: deleting dtor slot 0 of the vtable at 822FFA70; also called from 82577294 / 825772B4
 825680D8	guess_Vt822FFA70_ReadFieldsA	Guess: reads Attrib fields into +0x10 / +0x11 / +0x14 / +0x20 / +0x30; slot at 822FFA88
 825681F8	guess_Vt822FFA70_ReadFieldsB	Guess: same field set as 825680D8; slot at 822FFA98
 82568300	guess_SkaterActor_ComputeSpeedScalar	Guess: vector math on +0x14 returning a float
+82568410	Photographer_GetPosition	Photographer locator interface slot +8: returns the placed position M+0x20
+82568418	Photographer_GetDirection	Photographer locator interface slot +0xC: returns the placed direction M+0x30
 82568420	guess_CareerStorage_RunLockedOp	Guess: starts a career storage op, resolves the handler and character handle under the lock 830B7F90, finishes the op; slot at 822FF878
 82568660	guess_CareerStorage_ReadAttribC	Guess: reads an Attrib field of +0xC; slot at 822FF848
 825686F8	guess_CareerStorage_SlotStub	Guess: small slot at 822FF84C
@@ -7306,7 +7309,7 @@
 8259CFB0	guess_SkaterValue_GetOwnFloat10	Guess: Value getter: returns the float +0x10 of the value object itself
 8259CFB8	guess_SkaterValue_LoadRumbleB	Guess: Forwards to SkaterMgr_LoadRumbleFieldsB with record +0x10
 8259D040	guess_SkaterValue_GetScaledSpeed	Guess: Value getter: float +0x14 of the record owner +4 +0x24 times the constant 8216DEE0, clamped at zero
-8259D070	guess_SkaterValue_GetRecord20Float10C	Guess: Value getter: returns the float +0x10C of the record owner +4 +0x20
+8259D070	guess_SkaterValue_GetPumpingAcceleration	value getter: Ground +0x10C, the pump acceleration (Pumping +0x30 copied by 82DB6EC0)
 8259D080	guess_SkaterValue_ReadTuning	Guess: reads Attrib field B43F2EA4E2F2550F
 8259D128	guess_SkaterValue_GetLeanFromVelocity	Guess: Value getter: compares the absolute X / Y components of the record owner +4 +0x48 and scales them by constants
 8259D340	guess_SkaterValue_GetRecord28Float10	Guess: Value getter: returns the float +0x10 of the record owner +4 +0x28
@@ -8018,7 +8021,7 @@
 825C0020	Mission_HasUnlockedEnoughTeammatesForChallenge	retail Lua binding Mission.HasUnlockedEnoughTeammatesForChallenge
 825C0178	FeNative_Mission_SetKilledItShakeActivation	Front end script native 'SetKilledItShakeActivation' registered by 825BAD80 (group label Mission is ours).
 825C01C0	guess_SignUp_ObjectivesEnabledForChallenge	Finds the challenge by 64 bit id, reads field 0x858D73CD6085C8EC and objective settings and returns an Apt bool
-825C0338	Mission_GetChallengePhotoLayout	retail Lua binding Mission.GetChallengePhotoLayout
+825C0338	Mission_GetChallengePhotoLayout_825C0338	retail Lua binding Mission.GetChallengePhotoLayout
 825C0360	FeNative_Mission_GetPlayersChoiceName	Front end script native 'GetPlayersChoiceName' registered by 825BAD80 (group label Mission is ours).
 825C0390	FeNative_Mission_GetOwnerName	Front end script native 'GetOwnerName' registered by 825BAD80 (group label Mission is ours).
 825C03D8	FeNative_Mission_GetWinningTeamInfo	Front end script native 'GetWinningTeamInfo' registered by 825BAD80 (group label Mission is ours).
@@ -9000,15 +9003,15 @@
 82616E20	guess_FE_PhotoSelectScreen_DeletingDtor	Guess: slot +0 of FE 2 PhotoSelect vtable 0x82303830 (fe-id-templates.md row 2; run-52 vt.txt)
 82616E90	guess_FE_Screen82303830_Slot27	Guess: Slot 27 of 82303830: when +0x75 is set, registers the button id +0x54.
 82616EC0	FE_PhotoSelectScreen_Init	decompile: run-59/d7.txt 82616EC0; FE 2 init opens template 0x59 = 89 through vt+0x38; template table 8302F1A8 entry 89 names PhotoSelect (run-59/t3.txt, t4.txt)
-82617100	guess_NISPhoto_MoveAvatarOrLens	Name from the messages it posts (cMsgNISPhotoAvatarMove, cMsgNISPhotoAdjustLens; 2 MsgBus_Post calls, 716 bytes); the rest of the body not read.
+82617100	PhotoSelect_Update	PhotoSelect per update: online pick timer, sticks past 0.2 post AvatarMove (x -0.4) / AdjustLens (x -0.2), store countdown
 826173D0	guess_FE_PhotoSelectScreen_OnExit	Guess: slot +24 close of FE 2 PhotoSelect vtable 0x82303830 (fe-id-templates.md row 2; run-52 vt.txt)
-82617458	guess_NISPhoto_AdjustDOF	Name from the messages it posts (cMsgNISPhotoAdjustDOFIntensity, cMsgNISPhotoSelect; 3 MsgBus_Post calls, 1916 bytes); the rest of the body not read.
-82617BD8	guess_FEOptions_FindDefaultIndices	Guess: posts 0xD4F703ED, then finds the index of the zero value in several fields of class 0x5CFA2765DFA23B43.
+82617458	PhotoSelect_OnAction	PhotoSelect FE actions: 7 / 10 step shots (wrap), 0x10..0x13 brightness / contrast, 6 / 9 saturation, 5 DOF (wraps), 4 reset, 2 take
+82617BD8	PhotoSelect_ResetEdits	Posts cMsgNISPhotoReset, then puts each photo edit index on its 0.0 entry (class 5CFA2765DFA23B43)
 82617FE8	guess_NISPhoto_CycleLayout	Guess: plays an FE sound and switches photo layout by fields 0x52FC1A3F4D7EF1D8 and 0xA4473FA9B19FAEC9.
 826181C8	guess_NISPhoto_EnterSelect	Unless the mode is 2 calls the player slot 0x34 with 0xC, then sets +0x220 and unit values
 82618290	guess_NISPhoto_StoreToMemcard	Guess: reads field 0xA4473FA9B19FAEC9 and queues a memcard record op 2.
 82618428	guess_PostChallenge_HandleChoice	Name from the messages it posts (cMsgHUDContinue, cMsgHUDRetry, cMsgNISComplete, cMsgPresTeamBrandRefresh; 2 MsgBus_Post calls, 684 bytes); the rest of the body not read.
-826186D8	guess_Mission_GetPhotoLayoutField	Finds the mission and reads field 0x52FC1A3F4D7EF1D8 of its collection
+826186D8	Mission_GetChallengePhotoLayout_826186D8	The picker movie's layout label: base 0 (display flag set) or 3, + 1 single-page / + 2 two-page magazine layout, base alone without one
 826187E8	guess_Menu_TrickList_InitCollection	Guess: Binds an Attrib ref to the collection 0x8BD17173D2F48577 (empty default when missing).
 82618850	AttribRef_InitClass187447EFFFDF8563	Structural: binds an AttribRef to the collection of Attrib class 0x187447EFFFDF8563 whose key is argument 2 with the shared default 830D0850
 826188B8	guess_Menu_TrickItem_ResolveCollection	Guess: Resolves the trick item collection of the class 0x7CCE51F922C0591D once and adds a reference.
@@ -9757,9 +9760,9 @@
 8264E778	FE_MagazinePromo_Update	research/fe-id-templates.md:93 (FE 69 MagazinePromo vtable 0x82305558 slot +16 update, only this vtable in run-52 vt.txt)
 8264E9E8	guess_FE_MagazinePromo_CheckScreen2	Guess: class tag: OnEnter 8264E568 hashes the screen name FrontEndState_MagazinePromo [%d] (821F8FC4, b9 / d10)
 8264EA88	FE_MagazinePromo_HandleButton	research/fe-id-templates.md:93 (FE 69 MagazinePromo vtable 0x82305558 slot +40 input, only this vtable in run-52 vt.txt)
-8264EB48	guess_Mission_HasPhotoLayout	Guess: binds Attrib class 0x60510D20032AEBE9 by the key and tests key 0x1E000CCE7B09B435.
+8264EB48	Mission_HasPhotoLayout	True when the layout key is a row of class 60510D20032AEBE9 that descends from 'magazine' (collection 1E000CCE7B09B435); default / billboard layouts are not
 8264EC18	guess_NISPhoto_LayoutMatchesD932	Guess: binds class 0x60510D20032AEBE9 and checks a key against collection 0x0D93227FAE49ABED.
-8264ECE8	guess_Mission_IsPhotoLayoutKind	Guess: tests the key against two layout classes 0x9FBA0F5F24A70D59 and 0x1190A862BCE9097B.
+8264ECE8	Mission_GetPhotoLayoutKind	Layout kind by family: 0 magazine_singlepage_fullpage, 1 _thrasher, 2 _sbm, 3 / 4 magazine_twopage, 5 / 6 billboard (+1 with the display flag [83083C60]+0x12040)
 8264EE50	guess_Mission_KeyInClass60510D20	Guess: checks a key against class 0x60510D20032AEBE9.
 8264EED0	guess_NISPhoto_FormatFileName	Guess: formats a photo file name and hashes it.
 8264F070	guess_FE_MagazinePromo_FormatPhotoName	Guess: class tag: OnEnter 8264E568 hashes the screen name FrontEndState_MagazinePromo [%d] (821F8FC4, b9 / d10)
@@ -10336,14 +10339,14 @@
 826762C8	guess_IceWidget_RFocus_Ctor	Guess: IceWidget constructor: sets vtable 823066B8 and its label or format strings (first: RFocus), allocates the 0x268 byte widget info block; the body uses the string ICEWidgetInfoList
 826763F0	guess_IceWidget_RFocusDeletingDtor	Guess: runs 82676480 then frees
 82676480	guess_IceWidget_RFocusDtor	Guess: ICE widget dtor: vtable 823066B8 (after guess_IceWidget_RFocus_Ctor)
-826765C0	guess_IceTake_ApplyCamTarget	Guess: reads take params 0x69, 0x12, 0x14, 0x15 for the camera 83035504 and 830CFE44
+826765C0	guess_IceTake_ApplyCameraDof	Guess (b1063): camera DOF from take 0x12..0x15 / 0x69 / 0x6A; blur = clamp(take 0x15 + photo DOF, 0, 1) x 3
 82676778	guess_IceTake_ProjectPointToCamSpace	Guess: transforms a point into camera space (83035504) and stores rounded coordinates (+0x174 / +0x178)
 82676900	guess_IceWidget_LabelIfParam69	Guess: returns a label string when take int param 0x69 is set
 82676998	guess_IceWidget_DrawParam13	Guess: reads take param 0x13 and draws it as debug lines
 82676A48	guess_IceWidget_Lens_Ctor	Guess: IceWidget constructor: sets vtable 82306700 and its label or format strings (first: Lens Nmm), allocates the 0x268 byte widget info block; the body uses the string ICEWidgetInfoList
 82676B70	guess_IceWidget_LensDeletingDtor	Guess: runs 82676C00 then frees
 82676C00	guess_IceWidget_LensDtor	Guess: ICE widget dtor: vtable 82306700 (after guess_IceWidget_Lens_Ctor)
-82676D48	guess_IceTake_ApplyMixerAngle	Guess: reads take params 0x66 / 0x65 / 0xE and the replay mixer values, stores an atan2 angle as a 16 bit angle
+82676D48	guess_IceTake_ApplyCameraFov	Guess (b1063): camera view angle = take angle (params 9 / 10) + photo lens degrees
 82676EF8	guess_IceWidget_LabelIfParam65	Guess: returns a label string when take int param 0x65 is set
 82676F90	guess_IceWidget_DrawParamE	Guess: reads take param 0xE and draws it as debug lines
 82677090	guess_IceWidget_Fade_Ctor	Guess: IceWidget constructor: sets vtable 82306748 and its label or format strings (first: Fade N), allocates the 0x268 byte widget info block; the body uses the string ICEWidgetInfoList
@@ -10382,7 +10385,7 @@
 82678D40	guess_IceWidget_Bright_Ctor	Guess: IceWidget constructor: sets vtable 82306940 and its label or format strings (first: Bright), allocates the 0x268 byte widget info block; the body uses the string ICEWidgetInfoList
 82678E68	guess_IceWidget_BrightDeletingDtor	Guess: runs the dtor 82678EF8 then frees (follows the widget ctor)
 82678EF8	guess_IceWidget_BrightDtor	Guess: ICE widget dtor, called by the deleting dtor 82678E68
-82678F88	guess_IceEnv_SetBrightness	Guess: ICE env handler params 0x34 / 0x33: brightness near / far at E+0x7C00 / +0x7C40 (b560).
+82678F88	IceEnv_SetBrightness	ICE env params 0x34 / 0x33: near / far add = take brightness + the photo customizer's (when the override lane is on)
 826790B0	guess_IceWidget_LabelIfParam77	Guess: returns a label string when take int param 0x77 is set
 82679148	guess_IceWidget_DrawParam34	Guess: reads take param 0x34 and draws it as debug lines
 826791E0	guess_IceWidget_FishEye_Ctor	Guess: IceWidget constructor: sets vtable 82306988 and its label or format strings (first: FishEye), allocates the 0x268 byte widget info block; the body uses the string ICEWidgetInfoList
@@ -10488,11 +10491,11 @@
 8267EA78	guess_IceWidget_Freeze_Ctor	Guess: IceWidget constructor: sets vtable 82306E98 and its label or format strings (first: Freeze), allocates the 0x268 byte widget info block; the body uses the string ICEWidgetInfoList
 8267EBA0	guess_IceWidget_FreezeDeletingDtor	Guess: runs the dtor 8267EC30 then frees (follows the widget ctor)
 8267EC30	guess_IceWidget_FreezeDtor	Guess: ICE widget dtor, called by the deleting dtor 8267EBA0
-8267ECC0	guess_IceWidget_LabelIfParam8F_8267ECC0	Guess: returns a label string when take int param 0x8F is set
+8267ECC0	NISTake_SendPointEvents	As an ICE take plays: for every point passed since the last call (+0x484 current point) sends its FREEZE_CMD (0x8F) and FREEZE_TIME (0x90) to NIS_ApplyFreezeCmd
 8267EED8	guess_IceWidget_LabelIfParam8F_8267EED8	Guess: returns a label string when take int param 0x8F is set
 8267EFE0	guess_IceTake_GetPropertyText	Guess: returns the display text for take property 0x8F / 0x90
 8267F0A0	guess_IceTake_DebugPrintMode	Guess: prints the take mode name from table 83025C20 and value 0x90 to the debug log
-8267F168	guess_NIS_SendFEEvent	Name from the messages it posts (cMsgNISFEEvent, cMsgNISChallengeNotify; 2 MsgBus_Post calls, 1552 bytes); the rest of the body not read.
+8267F168	NIS_ApplyFreezeCmd	One ICE FREEZE_CMD point: 1 / 3 hold the NIS clock (+0x28 vt BC 0.0, vt C0 time x 1/30 s), 2 stop it, 4 (photo shot) hold time / 30 s and post cMsgNISFEEvent 11, 5 (sequence shot) post cMsgNISFEEvent 0x2F after a skater check
 8267F778	guess_NIS_FEFadeStepA	When the fade timer (83083C38 +0x7CC8) is negative copies +0x7C00 to +0x7CB4 and steps
 8267F860	guess_NIS_FEFadeStepB	Twin of guess_NIS_FEFadeStepA
 8267F950	guess_MsgQueue_PostLocked	Under the timed mutex +0x10 posts a message (MsgBus_Post, 6) to the queue +4 and decrements the pending count +0x30.
@@ -14098,9 +14101,9 @@
 82784AB0	guess_LWVehicleActor_SpawnModelCopy	Guess: copies a record and its 16 byte element array.
 82784B88	guess_PresSkaterLook_SetPartFloat	Guess: Stores a float into the 16 byte part table entry (index + 0x9C)
 82784C70	guess_PresSkaterLook_InitPartNameIds	Guess: creates the string ids of the part names (globals 830E9904..830E9914)
-82784DD0	guess_PresSkaterLook_LoadLooks	Guess: lists Attrib class collections, compares names and reads look fields into +0x288 / +0x28C
+82784DD0	PresLWCharacter_Ctor	NIS livingworld / vehicle character entity (0xA40, vtable 82310D28): gray default pair, then secondary_colours[0] / chassis_colours[0] of the livingworld_models record with its model name into +0xA20 / +0xA30 (was guess_PresSkaterLook_LoadLooks)
 827851F0	guess_PresSkaterLook_DeletingDtor82310D28	Guess: Sets vtable 82310D28, runs FUN_82781758 and frees
-82785260	guess_PresSkaterLook_LoadLookHash	Guess: Reads look entries (+0x10, +0xA20 / +0xA30) keyed by hash B005EA6C.
+82785260	PresLWCharacter_BindColorize	binds i_colorize_red (0xB005EA6C) to +0xA20 and i_colorize_blue (0x576C94F7) to +0xA30 on every material of the entity's models (was guess_PresSkaterLook_LoadLookHash)
 827853B0	guess_PresSkaterLook_DeletingDtor5468	Guess: Runs FUN_82785468 and frees
 82785418	guess_PresSkaterLook_SmallGetter	Guess: Small getter (no calls).
 82785468	guess_PresSkaterLook_ReleaseCollections	Guess: Releases its attrib collections.
@@ -14713,7 +14716,7 @@
 827C22F0	guess_PresSkaterLook_DtorBody22F0	Guess: sets vtable 823110F8, frees the store blocks at +0x4B0.. and releases the collection
 827C2350	guess_PresView_AllocBuffer	Guess: lazily inits the memory system and allocates a buffer for view +0x270 / +0x560 (tag 821AA66C)
 827C2448	guess_TerrainPres_CopyBounds	Guess: copies the bound fields +0x264..+0x4B4
-827C25D8	guess_Vt823111F8_CtorBody	Guess: ctor body (no named callees).
+827C25D8	guess_LWModelPres_BindColorize	world model binder (vtables 82311140 / 82311240): i_colorize_red / blue from +0x490 / +0x4A0 and hash 0x040E4D1E (9 rows) from +0x4D0 (was guess_Vt823111F8_CtorBody)
 827C2848	guess_MemStoreOwner_DeletingDtorB	Guess: frees the mem store then frees self when flag bit 0
 827C28D0	guess_PresView_SetTargetAndRefresh	Guess: stores +0x10 then calls slots 0x48 and 0x64
 827C2920	guess_Vt823111F8_Init	Guess: runs the Vt823111F8 ctor body and binds the global 830BD5E0
@@ -14811,9 +14814,9 @@
 827C9358	guess_TeamBrand_ImageRecordCtor	Guess: constructor with an inline buffer at +0x14 and a 0x40 byte name.
 827C9418	TeamBrandPresentation_Ctor	Constructor of class 'TeamBrandPresentation': called on the new block right after guess_Mem_AllocNamed with that tag (in 8279C9A8).
 827C9948	guess_PresGame_DtorBodyTree38	Guess: Unsubscribes and frees the tree +0x38
-827C9A30	guess_TeamBrand_ForEachBoundAssetB	Guess: walks the bound team brand assets
-827C9B08	guess_TeamBrand_ForEachBoundAsset	Guess: Walks the map tree and copies the 16 byte key of every node whose collection binds
-827C9BE8	guess_TeamBrand_ForEachBoundAsset_Helper827C9BE8	Guess: Callee of guess_TeamBrand_ForEachBoundAsset (only or first caller; role not read in detail)
+827C9A30	TeamBrandPresentation_BindRecords	walks a cMsgAssetPresRegCollection record array (stride 0x20, section 0x00EB0028) and binds each
+827C9B08	TeamBrandPresentation_RebindAll	presentation tick: releases entries whose tier no longer binds, rebinds the rest
+827C9BE8	TeamBrandPresentation_BindAsset	per binding record {a, b, texture asset id, tier key}: tier unlocked check, kind switch (2 = challenge career photo), image load
 827C9F00	guess_TeamBrand_LoadTeammatePhoto	Guess: Loads the TeamBrandTextureManager TeammatePhoto %d image for the field 0x03892E2C3BDAEA39
 827CA008	guess_TeamBrand_LoadTeamPoster	Guess: Loads the TeamBrandTextureManager TeamPoster %d image for the field 0x93E37058C47BFF0F
 827CA110	guess_TeamBrand_ReleaseAssetRefs	Guess: releases the presentation asset ref map +0x20
@@ -14979,6 +14982,7 @@
 827D41C0	guess_Sk8ProfileSchemaLoader_FindUserSchemas	Guess: For state 3 reads the user name and finds the schema for each of the 5 user slots
 827D4330	guess_Sk8ProfileSchemaLoader_ApplyToPlayerSlot	Guess: Copies +0x2044..+0x204C into the player slot record (0xA8 bytes at 83067068) and checks online challenge entries 6 / 0x10
 827D4530	guess_Sk8ProfileSchemaLoader_DeletingDtorB	Guess: Frees the inline vector +0x3C, waits for the loader and frees on bit 1
+827D45A0	LWLoader_Run	run slot of the LWLoader job: queues the presentation morph handle for its name and kind (1 -> priority word 0x17, 2 -> 0x18)
 827D4648	Sk8ProfileSchemaLoader_Ctor	Constructor of class 'Sk8ProfileSchemaLoader': called on the new block right after guess_Mem_AllocNamed with that tag (in 824607A8, 8257D280).
 827D47B0	guess_Sk8ProfileSchemaLoader_DtorBody	Guess: dtor body (four interface vtables), unregisters the update entry at +0x38 and waits for the loader.
 827D4880	guess_Sk8ProfileSchemaLoader_OnRequestDone	Guess: For a kind 0x1F reply creates the show request and loads the look, else restarts the request
@@ -15284,7 +15288,7 @@
 827F0B78	guess_Exposure_MeterA	Guess: Exposure meter (with 827F0D00).
 827F0D00	guess_Exposure_MeterB	Guess: Exposure meter (with 827F0B78).
 827F0EF0	guess_Exposure_MeterPassC	Guess: sets the viewport for the view, samplers and clears; reads +0x9B4 / +0x9C4 and the bytes +0xD44 / +0xD45 (next to guess_Exposure_MeterB)
-827F1158	guess_Math_BuildOrthoMatrix	Guess: builds an orthographic projection (1 / (r - l), -1 / (t - b), ...) into the matrix at +0x480
+827F1158	guess_PostFx_SetFocalPlanes	(mgr, nearBlur, focalNear, focalFar, farBlur): f_focalConstantsNear = (1/(focalNear-nearBlur), focalNear), Far = (-1/(farBlur-focalFar), focalFar)
 827F12B8	guess_Math_LerpVec4Triple	Guess: writes three vectors lerp(a, b, t) with t = f1 (VMX); used by the fade draw (b904)
 827F13D8	PostFx_BuildColorMatrix	crates/skate-core/src/colour_matrix.rs:1 (//! Retail post FX color matrices (post_fx records, b100), built like 827F13D8.)
 827F1650	guess_PostFx_CopyColorMatrixRows	Guess: copies three vectors +0x10 / +0x20 / +0x30 (color matrix rows)
@@ -15750,10 +15754,11 @@
 82827428	guess_ScenePlayer_ShowSceneCamera	Guess: ScenePlayer vtable 82312778 slot 41: resolves the scene handle; state +8 0 or 1 -> 2 with guess_NISMan_UpdateFeCamera; result 0, or 3 when the handle is bad
 828274C8	guess_ScenePlayer_HideSceneCamera	Guess: ScenePlayer slot 44: resolves the scene handle; state +8 1 or 2 -> 0 (sends the FE event from state 2); result 0, or 3 when the handle is bad
 82827558	guess_ScenePlayer_SetSceneFlagD	Guess: ScenePlayer slot 45: resolves the scene handle and sets byte +0xD; result 0, or 3 when the handle is bad
-828275C0	guess_ScenePlayer_NotifySceneListeners	Guess: ScenePlayer slot 46: resolves the scene handle and passes it to guess_ListenerVec_SetFloatAndNotify
+828275C0	guess_ScenePlayer_SetSceneTime	Guess (b1063): ScenePlayer slot +0x48, sets the scene time through its listeners
 82827610	guess_ScenePlayer_GetSceneFloat10	Guess: ScenePlayer slot 47: scene float +0x10 by handle, 0.0 when the handle is bad
 82827678	guess_ScenePlayer_GetSceneFloat14	Guess: ScenePlayer slot 48: scene float +0x14 by handle, 0.0 when the handle is bad
 828276E0	guess_ScenePlayer_GetSceneFloat18	Guess: ScenePlayer slot 49: scene float +0x18 by handle, 0.0 when the handle is bad
+82827748	guess_ScenePlayer_GetActiveSceneHandle	Guess (b1063): ScenePlayer slot +0x58, handle of active scene list entry n
 82827778	SceneMgr_GetEntryField20	Scene manager slot 0: resolves a handle and returns entry +0x20.
 828277D8	SceneMgr_GetEntryField24	Scene manager vtable 82312848 slot 1: resolves a handle and returns entry +0x24 (the only reader the trick guide notes found).
 82827838	SceneMgr_GetEntryListCount	Scene manager slot 5: resolves a handle and returns the count of the pointer list +0xAC..+0xB0.
@@ -15773,11 +15778,13 @@
 82829668	guess_IceScene_LoadAll	Guess: Calls the ICE file loader and scene counters (b561: only caller of the loader 82827EB0).
 828296C8	guess_NISState_ExitReleaseScenes	Guess: slot 5 of vtable 823128C4, clears +4 and releases the NIS scene entries
 82829700	NISMan_SampleCameraPreset	research/b606-replay-playback-frame.md:38 (82829700, a camera preset sampler from the group list 0x830BC100 via 828F5768; code)
-82829AB0	guess_NISMan_PlaySceneTakeC	Guess: scene take start that releases the previous player
-82829C70	guess_NISMan_PlaySceneTakeB	Guess: scene take start reading int params and evaluating a 16 bit curve
+82829AB0	NISMan_GetPhotoSequenceCount	Counts the current scene take's points whose ICE FREEZE_CMD (0x8F) is 5 (the photo_generic_seq_* scenes), the twin of NISMan_GetPhotoNISCount (4)
+82829C70	guess_NISMan_SeekPhotoShot	Guess: finds the n-th point (param 3) of the current scene take whose ICE FREEZE_CMD (0x8F) is 4 and takes its key time (IceLiteChannel_KeyTime); the picker's show-shot-n
 82829E78	guess_NISMan_StopSceneTake	Guess: resets the ICE take tracks and frees the take data and photo list
 82829FD8	guess_NISMan_FindSceneEntryNode	Guess: finds the scene definition entry and walks its node lists
 8282A1E8	guess_SceneDefs_GetEntryValue	Guess: looks up the scene def entry of the key and returns its +0x10 value when scenes are loaded
+8282A250	guess_ScenePhotoCustomizer_AddAvatarOffset	Guess (b1063): adds avatar yaw / pitch deltas, clamped -30..30 (cMsgNISPhotoAvatarMove)
+8282A2B8	ScenePhotoCustomizer_SetLens	Sets the lens degrees at +0xC, clamped -10..10 (821A0314 / 821963E4)
 8282A2E8	guess_BasicCamera_GetField0C	slot 19: returns float +0x0C (written by slot 9, run-4 guessed fov; with +0x14 as fov this is more likely the near clip)
 8282A2F0	guess_BasicCamera_SetNearClip	slot 10: stores a float at +0x10
 8282A2F8	guess_PresHandler_SetSimRate	Guess: rusty-trucks/crates/skate-game/src/presentation_run.rs:410 (SetSimRate (47, 8282A2F8 via the handler): timestep 1 / atof(arg1))
@@ -15821,7 +15828,7 @@
 8282C9A0	guess_SceneManagerImpl_LoadCharacter	Guess: compares the slot name with "current_player", allocates the "SceneManagerImpl" records, reads the character load key and the morph schema value
 8282CEE8	guess_SceneManagerImpl_AddAnimDbKey	Guess: allocates a "SceneManagerImpl" record (+0xA0) and inserts the anim DB key into a sorted vector
 8282D080	guess_NISMan_ReleaseSkaterLooks	Guess: waits for the look worker, releases the refs and resets the active index
-8282D1F0	guess_NISMan_LoadSkaterLooks	Guess: allocates the skater look set, loads the looks and sets the active model index (+0x18, +0x120)
+8282D1F0	SceneManagerImpl_CreateCharacterEntity	finds the loaded show by key; show kind 1 / 2 -> PresLWCharacter_Ctor, else a plain 0xA20 entity (kind 0x822, technique 0x1E7BA14D) (was guess_NISMan_LoadSkaterLooks)
 8282D3D0	guess_SceneCharacterManager_ReleaseSlot	Guess: sets the manager index 0x2EA8FB98 and clears the ref of slot n.
 8282D4E8	SceneCharacterAnim_Create	allocates the "SceneCharacterAnim" object and fills it from the character name
 8282D868	guess_SceneCharacterManager_SlotDeletingDtor	Guess: frees the scene character slot then frees when the flag bit is set
@@ -15964,7 +15971,10 @@
 828374A8	guess_ReplayMixer_ResetLevels	Guess: run-42\b26.txt: clears byte +0x18, sets two levels (slots 0x94 / 0x98) to the constant 8231A844 and slot 0x9C to 0 on (830CFE4C +4)+0x14
 82837540	guess_IceLiteScene_UpdateTakes	Guess: run-35 b19: calls guess_SndMixer_UpdateChildren 82C8CC20 (IceLiteTake_UpdateChildren in the run-35 rows) and the scene state reset; no audio mixer
 82837670	guess_IceLiteScene_UpdateFromSession	Guess: run-35 b2: IceLiteTake_UpdateChildren per session value
-82837780	guess_NisSceneItem_Reset	Guess: Clears +0x14..+0x38.
+82837780	ScenePhotoCustomizer_Reset	Zeroes the photo edit values (avatar, lens, DOF, saturation, brightness, contrast) through its own setters
+82837848	guess_ScenePhotoCustomizer_SetAvatarOffset	Guess (b1063): sets the avatar yaw / pitch degrees, clamped -30..30
+828378A0	guess_ScenePhotoCustomizer_GetAvatarOffset	Guess (b1063): returns the avatar yaw / pitch through two out pointers
+828378B8	ScenePhotoCustomizer_AddLens	Adds a lens delta to +0xC, clamped -10..10 (cMsgNISPhotoAdjustLens)
 828378F0	guess_ScenePlayer_AllocSceneSlot	Guess: finds an empty slot in the word vector at +8.
 828379D0	guess_SceneAssetLoaderManager_ClearBuckets	Guess: walks every bucket chain and frees the nodes.
 82837AA0	guess_ReplayEditor_IterInit	Guess: sets up an iterator from a list.
@@ -16538,7 +16548,7 @@
 8285F060	PostMsg_NISReleaseCameraHold	Small function (132 bytes) that builds and posts cMsgNISReleaseCameraHold (0xC7C08F45) through MsgBus_Post.
 8285F0E8	PostMsg_NISSkip	Small function (176 bytes) that builds and posts cMsgNISSkip (0x72DAE530) through MsgBus_Post.
 8285F198	NISMan_PostNISKill	Posts cMsgNISKill (0xF0653C9C, record size 0x10) under the lock of 83083C38 +0x18; used by LuaBind_KillNIS.
-8285F220	guess_NISMan_GetPhotoNISCount	Gets the current NIS (830CFE44 +4 +0x10 slots 3 / 13) and counts entries in two lists (+0x20, +0x14) of its definition.
+8285F220	NISMan_GetPhotoNISCount	Photo NIS shot count: the current take's segments whose ICE element 0x8F FREEZE_CMD is 4 at time 0 (photo_generic_mid 8, photo_anywhere 7, the _seq scenes 0)
 8285F400	PostMsg_NISPhotoAdjustSaturation	Small function (136 bytes) that builds and posts cMsgNISPhotoAdjustSaturation (0xE7B1D55C) through MsgBus_Post.
 8285F488	PostMsg_NISPhotoAdjustBrightness	Small function (136 bytes) that builds and posts cMsgNISPhotoAdjustBrightness (0x2B7A3F8D) through MsgBus_Post.
 8285F510	PostMsg_NISPhotoAdjustContrast	Small function (136 bytes) that builds and posts cMsgNISPhotoAdjustContrast (0x55BE7F0B) through MsgBus_Post.
@@ -18014,7 +18024,7 @@
 828F1F48	guess_IceTake_SyncCurveSegment	Guess: ICE take channel code: only caller is 828F1C90, which reads take values through IceTake_GetFloat / IceTake_GetValue (b11.txt); not NIS manager code
 828F2018	guess_IceTake_ReloadPrint	Guess: ICE take channel code: only caller is 828F1C90, which reads take values through IceTake_GetFloat / IceTake_GetValue (b11.txt); not NIS manager code
 828F2410	guess_IceTake_ApplyRoundedSetting	Guess: ICE take channel code: only caller is 828F1C90, which reads take values through IceTake_GetFloat / IceTake_GetValue (b11.txt); not NIS manager code
-828F2B58	guess_IceTake_ApplySetting5E5F	Guess: ICE take channel code: only caller is 828F1C90, which reads take values through IceTake_GetFloat / IceTake_GetValue (b11.txt); not NIS manager code
+828F2B58	guess_IceTake_ApplyAvoidObjects	Guess (b1064): take switches 0x5F AVOID_STATIC -> [830840F8] vt+0x10 (camera), 0x5E AVOID_DYNAMIC -> vt+0x14 (camera, eye, look); in TU3 that vtable (823065C0) avoids nothing
 828F2C38	guess_IceTake_ReadChannelValue	Guess: b11.txt: IceTake_GetFloat / IceTake_GetValue / Float_RoundToInt; ICE take channel code: only caller is 828F1C90, which reads take values through IceTake_GetFloat / IceTake_GetValue (b11.txt); not NIS manager code
 828F3088	guess_IceCam_FloatMath	Guess: no calls
 828F3248	guess_IceTake_ReadOwnerFloat	Guess: ICE take channel code: only caller is 828F1C90, which reads take values through IceTake_GetFloat / IceTake_GetValue (b11.txt); not NIS manager code
@@ -23875,7 +23885,7 @@
 82BCD1F0	LuaBind_GetNumberOfHighlights	Lua binding GetNumberOfHighlights
 82BCD268	LuaBind_PlayHighlightReel	Lua binding PlayHighlightReel
 82BCD2C0	LuaBind_PlayHighlightReelWithSpecifiedOrder	Lua binding PlayHighlightReelWithSpecifiedOrder; calls Mem_GetDefaultAllocator, PtrVector_InsertShiftC
-82BCD438	guess_HighlightReelManager_Ctor	Guess: constructor of Sk8ChallengeSystem::HighlightReelManager (tag 82237B54, vtable 82321758, 0x1E8 bytes, built by PresMgr_BuildHandlers): stores replay data, message queue, NIS manager ((830CFD94)+200) and a presentation object at +0x1D4..+0x1E0 and subscribes cMsgNISComplete (was guess_NIS_SubscribeComplete)
+82BCD438	HighlightMgr_Ctor	Highlight manager ctor (PresMgr +0x174): stores the photographer locator interface (PresMgr +0x204 + 8) and subscribes cMsgNISComplete
 82BCD648	guess_Vt82321758_DtorBody	Guess: Destructor body (vtable 82321758): deletes every object held in its tree map, frees the map nodes to the fixed pool and unsubscribes its message
 82BCD758	HighlightMgr_CreateGroup	b9 + gs1: finds the id in map +8 or allocates 0x170 bytes tagged Challenge::cHighlightGroup (820D4644, vtable 82321750) and inserts it; only caller LuaBind_CreateHighlightGroup
 82BCD8D8	guess_Vt82321758_RemoveById	Guess: Finds an id in the tree map at +8, deletes its object, erases the node and returns it to the fixed pool (+0x20)
@@ -23886,7 +23896,7 @@
 82BCDD80	guess_HighlightMgr_RemoveAll	Guess: Clears all highlights; only caller LuaBind_RemoveAllHighlights
 82BCDDE8	guess_HighlightMgr_PlayReel	Guess: Builds the highlight list and posts the play message on the bus; only caller LuaBind_PlayHighlightReel
 82BCDFC0	guess_HighlightGroup_OnNISComplete	Guess: on cMsgNISComplete in reel state 2 plays the next highlight, after the last posts cMsgHighlightReelComplete (62730BA6) and cMsgNISOnlineReady and resets the group (was guess_NISComplete_PostFollowup)
-82BCE0D8	guess_HighlightGroup_PlayClip	Guess: starts highlight N of the reel: finds its replay tracker range (start / end frames), reads the scene definition (name word, located byte +6, vector +0x20) and calls the NIS manager vt+0x14 (enter replay NIS) with name, start, end, more-clips flag (was guess_NISComplete_FollowupBody)
+82BCE0D8	Highlight_PlayClip	Plays one highlight as an NIS replay scene; asks the photographer locator (+0x148, vt+4 placed): placed -> scene photo_anywhere_located (820D4860) at its position (vt+8) / direction (vt+0xC), else the definition's scene and located place
 82BCE3C8	guess_HighlightMgr_PlayReelInOrder	Guess: Same as the reel player but keeps the given order; only caller LuaBind_PlayHighlightReelWithSpecifiedOrder
 82BCE588	guess_ActivityManager_AllocDefinitions	Guess: Allocates with guess_Mem_AllocTagged9B48 and the default allocator.
 82BCE798	guess_Vector4_InsertB	Guess: inserts one 4 byte element into an inline vector, growing on the heap.
@@ -26070,7 +26080,7 @@
 82C8E680	IceLiteElementDesc_Register	Stores a descriptor at 830C1424[index], counts it in 830C1418 and in 830C141C or 830C1420 by its +0x14 flag
 82C8E6D8	guess_IceLiteCam_FindPreset	Guess: run-35 gs1: ICELITE block
 82C8E730	guess_IceLiteTake_ApplyValueToTracks	Guess: run-35 gs1: ICELITE block
-82C8E7C0	guess_IceLiteElementDesc_InitFloat	Guess: descriptor init: id +8, label +0xC, kind +0x10..+0x1C, six float range values; used for every float element
+82C8E7C0	IceElementDesc_InitFloat	ICE float element descriptor init: f1 default, f2 min, f3 max (+0x20 / +0x24 / +0x28), name, label, group, flag, type 3, bits (b1064: color lanes decode neutral with this order)
 82C8E860	guess_IceLiteElementDesc_ResetByKind	Guess: clears +0x2C..+0x38 then sets defaults by kind +0x18 (0..4)
 82C8E950	guess_IceChannel_ReadPackedBits	Guess: b12.txt: reads element N of a bit packed array with width +0x1C, MSB first; only caller 82C8EA70, which serves IceTake / IceLiteTake value reads
 82C8E9E8	IceLiteTake_WriteBits	research/b593-replay-editor-camera-parity.md:25 (82C8E9E8, a bit-packed field write at index keyIndex into the takes per-key element storage [code]. keyIndex =)
@@ -28777,7 +28787,7 @@
 82DA46D0	guess_ScoreRecord_AddPoints	record +0xB0 += count +4 times +0xAC, scaled by a global multiplier when +0xBE is set
 82DA4728	Score_Sequence_Ctor	Constructor of class 'Score::Sequence': called on the new block right after guess_Mem_AllocNamed with that tag (in 82DA5B98).
 82DA4838	Score_Sequence_Reset	called by Score_Sequence_Ctor and Score_ScoreHolder_Reset: clears three 0x28-byte flag groups from +0x24, the bytes +0x78..+0x7A, counts +0x80..+0x90 and +0x3B8, the flags +0x6E4.. and the top three bits of +0x728
-82DA48B8	guess_TrickState_PublishRecordA	copies three flag bytes +0x78..+0x7A into trick state +0x1684.., count +0x80 into +0x54 and more fields; caller not read
+82DA48B8	guess_Score_Sequence_Finish	publishes the finished sequence records, resets the sequence (82DA4838), sets Sequence +0x728 bit 30 (SequenceCompleted)
 82DA4A48	guess_TrickState_PublishRecordB	copies flag bytes into trick state +0x1687.., bits 30 / 29 / 31 of +0x728 into +0x3922 / +0x3924 / +0x3925 and 0x328 bytes from +0x3B8 into +0x10A8
 82DA4BA8	Score_LineTimerMomentumBase_Ctor	Sets vtable 82328264 (Score_LineTimerMomentumBase), binds the Attrib collection at +4 (Attrib_BindCollection349215E2), stores the owner at +0x14, clears +0x1C and sets +0x18 to the float 82165A10.
 82DA4C10	Score_LineTimer_Reset	slot 1 of Score::LineTimer (vtable 82328244, also the base 82328264): flag +0x1C = 0, time +0x18 = 0.0
@@ -28832,7 +28842,7 @@
 82DA9218	guess_Score_AirCollector_CommitTrickRecord	commits the open air trick record +0x248 and passes time +0x2F8 to 82DA6260, then 82DA91C0
 82DA92B8	guess_Score_AirCollector_ScorePartRecord248	Guess: fills the part record at +0x248 with rate +0x94C, finalizes it on the holder and, unless +0x95D, adds a value from 82DA5D18 for the trick id +0x254.
 82DA93D8	guess_Score_AirCollector_TrackCurrentTrick	compares the skater trick id +0x34 (table 820862B8 kind 5 treated as none) with the open record id +0x254 and commits / restarts the record when it changes
-82DA98C8	guess_Score_AirCollector_CanCommit	slot 5: true when forced, when count +0x930 is above 5, or when flag +0x68 bit 0 is set
+82DA98C8	guess_Score_AirCollector_IsSequenceActive	vtable slot 5: was, or air ticks +0x930 > 5, or flag +0x68 bit 24
 82DA9900	guess_Score_AirCollector_GetTuning668	slot 7: returns skater tuning float +0x668; Ground's slot 7 reads +0x610
 82DA9910	guess_Score_AirCollector_GetTuning664	slot 8: returns skater tuning float +0x664; Ground's slot 8 reads +0x60C
 82DA9920	guess_ScoreCollector_ReportAirStats	sends air stats 4..14 (+0x328, count +0x930, +0x318, +0x31C, +0x320, part sums) through 82DAC710 unless +0x95E is set; called by guess_TrickState_SetValidLaunchTrick
@@ -28855,7 +28865,7 @@
 82DAAC10	guess_Score_GroundCollector_ScorePartB	second part scorer summed by Score_GroundCollector_SumScoreParts
 82DAAE60	guess_Score_GroundCollector_ScorePartRecord210	Guess: fills the part record at +0x210 (guess_ScoreCollector_FillPartRecord, rate 1.0) and tries to finalize it on the holder (+0xC).
 82DAAEC8	guess_Score_GroundCollector_ScorePartC	third part scorer summed by Score_GroundCollector_SumScoreParts
-82DAB2A8	guess_Score_GroundCollector_CanCommit	slot 5 (same slot as the air collector's): returns 1 unless the line is still open (score +0x74, pending flags +0x3B0 / +0x3B1, trick ids +0x21C / +0x8C in 0..0x14B, counters +0x3A0 / +0x3A4)
+82DAB2A8	guess_Score_GroundCollector_IsSequenceActive	vtable slot 5: starts on ground score, bit 24, trick records; holds on revert flags, pump > 0.1, deck up y < 0.65, first 3 frames, wheels < 3
 82DAB528	guess_Score_GroundCollector_GetTuning610	slot 7: tuning float +0x610 when score +0x74 is positive, else 1.0
 82DAB558	guess_Score_GroundCollector_GetTuning60C	slot 8: tuning float +0x60C when score +0x74 is positive, else 1.0
 82DAB588	guess_Score_GroundCollector_ReportStats	sends stats 0 and 2 (max of trick state +0x3C / +0x4C and +0x44 / +0x50) through 82DAC710; called by guess_TrickState_LatchOnGround
@@ -28876,7 +28886,7 @@
 82DABE48	Score_OffboardCollector_UpdateScore	slot 1 of Score_OffboardCollector (the per-frame slot, like Score_GroundCollector_SumScoreParts): +0x74 = score from 82DABFB0, frame count +0x78 += 1
 82DABE98	guess_Score_OtherCollector_ScorePartRecord80	Guess: fills the part record at +0x80 (guess_ScoreCollector_FillPartRecord) and tries to finalize it on the holder (+0xC).
 82DABFB0	guess_Score_OffboardCollector_CalcScore	offboard score: special cases trick id 0xEA and skater state 0x1F7, else 82DABE98; stores +0x148 into trick state +0xD4
-82DAC1F8	guess_Score_OffboardCollector_CanCommit	slot 5 (the can-commit slot of the other collectors): true when the trick record is valid (+0xFC, id +0x8C in 0..0x14B) and +0x13C is set
+82DAC1F8	guess_Score_OffboardCollector_IsSequenceActive	vtable slot 5: valid trick record and +0x13C
 82DAC248	guess_Score_OffboardCollector_GetTuning610or5F8	slot 7 of Score_OffboardCollector: float +0x610 when a valid trick record (+0xFC, id +0x8C in 0..0x14B) and +0x13C are set, else +0x5F8
 82DAC2B0	guess_Score_OffboardCollector_GetTuning60Cor5F4	slot 8 of Score_OffboardCollector: float +0x60C under the same test as slot 7, else +0x5F4
 82DAC318	Score_OffboardCollector_SetActiveLatch	slot 9 of Score_OffboardCollector: sets trick state latch +0x392F = 1 and trick state +0xC0 = frame count +0x78 times the float at 820849C8

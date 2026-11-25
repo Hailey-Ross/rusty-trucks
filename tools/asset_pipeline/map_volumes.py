@@ -153,16 +153,16 @@ def arena_volumes(raw, strict=True):
     return result
 
 
-def stream_arenas(stream_directory):
-    """(stream file, asset id, decoded arena) for each simulation arena once."""
+def stream_arenas(stream_directory, table='Sim', prefix='cSim_'):
+    """(stream file, asset id, decoded arena) for each arena of one stream (default the simulation stream) once."""
     from skate3_streams import read_atoc, _decode_section
     stream_directory = Path(stream_directory)
-    tables = sorted(stream_directory.glob('*_Sim.xst'))
+    tables = sorted(stream_directory.glob(f'*_{table}.xst'))
     if len(tables) != 1:
-        raise ValueError('Expected one simulation table in ' + str(stream_directory))
+        raise ValueError(f'Expected one {table} table in ' + str(stream_directory))
     records = {r.asset_id: r for r in read_atoc(tables[0])}
     seen = set()
-    for path in sorted(stream_directory.glob('cSim_*.xsf'), key=lambda p: p.name.casefold()):
+    for path in sorted(stream_directory.glob(prefix + '*.xsf'), key=lambda p: p.name.casefold()):
         source = path.read_bytes()
         if source[:4] != b'SFIL':
             raise ValueError(f'{path.name} is not a stream file')

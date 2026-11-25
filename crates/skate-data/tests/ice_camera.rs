@@ -52,3 +52,22 @@ fn view_scene_has_the_21_trick_guide_tracks() {
         }
     }
 }
+
+#[test]
+fn a_takes_focus_band_becomes_the_cameras_dof_inputs() {
+    // 826765C0: focus = (near + far) * 0.5, range = far - near, falloff * 2, clamp(intensity + photo edit, 0, 1) * 3.
+    let take = skate_data::ice_camera::TakeFocus { near: 2.0, far: 6.0, falloff: 0.25, intensity: 0.5, relative: false };
+    let c = take.camera(0.0);
+    assert_eq!((c.focus, c.range, c.falloff, c.blur), (4.0, 4.0, 0.5, 1.5));
+    assert_eq!(take.camera(0.8).blur, 3.0, "the photo edit adds before the clamp");
+    assert_eq!(take.camera(-1.0).blur, 0.0);
+}
+
+#[test]
+#[ignore = "needs the disc's ice_000.bin (SKATE3_ICE)"]
+fn the_trick_guide_takes_read_their_focus_lanes() {
+    let Some(bytes) = ice() else { panic!("set SKATE3_ICE") };
+    let focus = skate_data::ice_camera::take_focus(&bytes, VIEW_SCENE).unwrap();
+    assert_eq!(focus.len(), 21);
+    println!("takes with RAWFOCUS_OVERRIDE: {:?}", focus.iter().enumerate().filter_map(|(i, f)| f.map(|f| (i, f))).collect::<Vec<_>>());
+}

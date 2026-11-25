@@ -934,3 +934,17 @@ fn a_strafing_ped_steps_turns_and_leaves_without_a_stand_clip() {
     step(&mut p, None, 2, &mut states);
     assert_eq!(states, vec![Locomotion::Idle, Locomotion::StrafeInto, Locomotion::StrafeIdle, Locomotion::StrafeMove, Locomotion::StrafeTurnRight, Locomotion::StrafeIdle, Locomotion::Idle]);
 }
+
+#[test]
+fn a_cutscene_actor_takes_the_first_palette_entries_of_its_record_or_gray() {
+    use super::choice::{presentation_tints, PRESENTATION_DEFAULT_TINT};
+    let mut c = PedCatalog::default();
+    c.models.insert("male_adult_2".into(), model(None, "male_adult_2", 3));
+    c.models.insert("child".into(), PedModel { parent: Some("male_adult_2".into()), ..Default::default() });
+    let (a, b) = presentation_tints(&c, "Male_Adult_2");
+    assert_eq!((a, b), ([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]), "82784DD0: entry 0 of each palette, no rand");
+    assert_eq!(presentation_tints(&c, "child").1, [0.0, 0.0, 1.0, 1.0], "a parent's palettes [inferred]");
+    c.models.insert("jock02".into(), model(None, "male_jock_2", 2));
+    assert_eq!(presentation_tints(&c, "male_jock_2").0, [0.0, 0.0, 0.0, 1.0], "matched by the model's recipe name");
+    assert_eq!(presentation_tints(&c, "nobody"), (PRESENTATION_DEFAULT_TINT, PRESENTATION_DEFAULT_TINT), "no record: the 0.5 gray");
+}

@@ -49,6 +49,22 @@ pub(crate) struct Frame {
     pub landing: skate_core::animation::landing_quality::Output,
     pub teleported: bool,
     pub reverting: bool,
+    /// Pumping +0x30 (pump acceleration), copied to Ground +0x10C by 82DB6EC0.
+    pub pump_acceleration: f32,
+}
+
+/// The Ground collector's hold thresholds (82DAB2A8, research b1070), retail values as defaults.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SequenceHolds {
+    /// A running ground sequence holds while the pump acceleration is above this (0x820641A8).
+    pub pump: f32,
+    /// ... or while the deck's up axis has a world y below this (0x820BB0EC; a steep transition or wall).
+    pub deck_up_y: f32,
+}
+impl Default for SequenceHolds {
+    fn default() -> Self {
+        Self { pump: 0.1, deck_up_y: 0.65 }
+    }
 }
 /// What the career stats read (`career_stats_host`, doc 31 "Career stats"), drained every fixed step.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -110,6 +126,7 @@ pub(crate) struct Runtime {
     manual_revert_ticks: u32,
     revert_id: Option<usize>,
     sequence_active: bool,
+    pub(crate) holds: SequenceHolds,
     sequence_score: f32,
     banked: Vec<BankedSequence>,
     /// Keys (hash of the scoring_trick row) of the tricks announced since the last take (retail's began list, research
@@ -187,6 +204,7 @@ impl Runtime {
             manual_revert_ticks: 0,
             revert_id: None,
             sequence_active: false,
+            holds: SequenceHolds::default(),
             sequence_score: 0.,
             banked: Vec::new(),
             announced: Vec::new(),
@@ -768,11 +786,24 @@ impl Runtime {
             // Stance remains live when riding, instead of retaining the last trick forever.
             self.stance = [f.switch, f.fakie, true, false];
         }
-        // Ground IsSequenceActive82DAB3FC preserves the sequence while
-        // ScoringTrick bit24 is set, including the manual-to-pop animation.
+        // The collectors' slot 5 (82DA37B0 calls it every frame, research b1069 / b1070): Grind is always on; Ground
+        // (82DAB2A8) starts a sequence on ScoringTrick bit 24 (the takeoff animation) even when none runs, and holds a
+        // running one while a revert flag (bits 28 / 29) is up, while pumping, or while the deck is steep. The wheel
+        // count hold and its gates are not ported yet; idle_ticks stands in.
+        let ground = self.collector == Collector::Ground;
+        let ground_start = ground && f.flags & 0x0100_0000 != 0;
+        let ground_hold = ground
+            && self.sequence_active
+            && (f.flags & 0x3000_0000 != 0
+                || f.pump_acceleration > self.holds.pump
+                || f.board_basis[1][1] < self.holds.deck_up_y);
+        if ground_start || self.collector == Collector::Grind {
+            self.sequence_active = true;
+        }
         let active = self.carriers.iter().any(Option::is_some)
-            || self.collector == Collector::Air
-            || self.collector == Collector::Ground && f.flags & 0x0100_0000 != 0;
+            || matches!(self.collector, Collector::Air | Collector::Grind)
+            || ground_start
+            || ground_hold;
         self.idle_ticks = if active {
             0
         } else {

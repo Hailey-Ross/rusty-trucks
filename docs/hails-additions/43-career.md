@@ -490,8 +490,22 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   ai_skater_05 marquee, three livingworld peds). The first actor with a clip plays on the player rig; every other
   marquee actor gets its own rig (`nis_player::spawn_extras`: the look the living world's NPC skaters wear,
   `npc_skaters::look_path`, bound with the scene clip's bones once loaded and posed in the scene frame each frame,
-  despawned at the end). NOT RETAIL YET: the livingworld actors (peds; their rig needs the ped bone basis) are logged
-  and not drawn. Their skinned meshes get `NoFrustumCulling` (the bind pose's bounds sit at the map origin, which
+  despawned at the end). A livingworld actor (about 40 scenes, ped recipe keys such as male_adult_2 /
+  female_adult_1) gets the ped look of that recipe (`peds::glb_path`, so a mod's ped look override applies), bound
+  the same way and posed in the GLB's joint frames (`peds::ped_joint_globals` with `peds::look_basis`, the bone basis
+  the living world's peds use). Retail loads every livingworld actor the same way [code 2026-11-24: NISMan_QueueMarqueeLoad
+  82824610 looks the kind up in the table 82FCB000 (marquee 0, livingworld 1, vehicle 2, ...); marquee goes to the
+  marquee loader, livingworld / vehicle to an LWLoader job (827D55F8) that makes a presentation morph handle by the
+  lower-cased name (82C2A3A0)], so the `zprop_` world props (04_Meet_Photographers' dumpster, garbage can, picnic
+  table and rail; 15_ProChallenge_Navarette's ghetto blaster) take the same path: they are exported as
+  `living_world/models/zprop_*.glb`, skinned on the ped skeleton's Hips / Spine chain. The tint (2026-11-24, research b1065):
+  the NIS scene manager builds a livingworld / vehicle actor as a presentation character (`SceneManagerImpl_CreateCharacterEntity`
+  8282D1F0 -> `PresLWCharacter_Ctor` 82784DD0), which starts from the 0.5 gray (data 8232FAD0) and takes element 0 of
+  `secondary_colours` and `chassis_colours` of the `livingworld_models` record named like the actor (no rand, unlike the
+  ambient crowd's `guess_Crowd_PickTints` 827B4170); `PresLWCharacter_BindColorize` 82785260 binds them as
+  i_colorize_red / blue on every material [code; a parent's palettes for a record without its own are inferred].
+  Ours: `peds::choice::presentation_tints`, the actor root gets `peds::NisPedTint` and the living world's tint pass
+  bakes it like an ambient pair (test `a_cutscene_actor_takes_the_first_palette_entries_of_its_record_or_gray`). Their skinned meshes get `NoFrustumCulling` (the bind pose's bounds sit at the map origin, which
   culled them). Trace (run nis6, `NIS_TRACE` every 2 s of scene time): take 0 is an over-the-shoulder shot whose eye
   walks about 1 m behind current_player toward chris_cole, who stands at (-169.9, 30.8, 269.4) the whole scene;
   the ambassador walks up to him and ai_skater_05 rides past.
@@ -778,9 +792,9 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
   - Change: `cas_host` fills `heads` from the parts library (`head_looks`), `build_style_list` on entering menu 21 /
     24, `step_style` on Left / Right (puts the material on; facial hair also sets the look's `beard`, which
     `customiser_parts::resolve` matches the head material to), `style_text` for CAC_GetStringValue. Test
-    `the_facial_hair_and_eyebrow_selectors_step_head_looks_that_keep_the_other_fields`. NOT RETAIL YET: the Left /
-    Right sounds (0xAD8BF9A0B4997B49 / 0xD8EE38A61C45EA28), the hair style (65, its filter's stored index is open),
-    skin tone (63) and the Edit Style rows.
+    `the_facial_hair_and_eyebrow_selectors_step_head_looks_that_keep_the_other_fields`. Since ported (2026-11-19):
+    the Left / Right sounds ("Sounds" below), the hair style (65) and the Edit Style rows (below); skin tone (63) is
+    dead UI in TU3 (no menu lists it).
 - **Color rows** (2026-11-19; research b991, b1038 (main verified the vault side), b1040 (TU3 shaders)):
   - Rows and zones [code, 82603E98]: Skin Color 62 -> skin zone (COLORIZED_SLOT 2), Hair Color 66 -> hair (1),
     Facial Hair Color 68 -> facial hair (8; in no TU3 menu), Eye Color 76 -> eye (6). Each `cac_colour_zone` (class

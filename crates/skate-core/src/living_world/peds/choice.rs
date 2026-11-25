@@ -96,6 +96,34 @@ pub fn entity_index(draw: u32, count: usize) -> Option<usize> {
     Some((n % count as u32) as usize)
 }
 
+/// A cutscene actor's default tint pair (data 8232FAD0: 0.5 gray), kept when no model record matches its name.
+pub const PRESENTATION_DEFAULT_TINT: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
+
+/// The tint pair of a `livingworld` NIS actor (82784DD0, research b1065): no rand, the first entry of each palette of
+/// the `livingworld_models` record named like the actor (a parent's palettes when the record has none [inferred]),
+/// else the 0.5 gray.
+pub fn presentation_tints(catalog: &PedCatalog, name: &str) -> ([f32; 4], [f32; 4]) {
+    // The record named like the actor: our catalog keys records by their key, the NIS names the model (its recipe /
+    // GLB name, e.g. male_adult_2), so either matches.
+    let start = catalog.models.keys().find(|k| k.eq_ignore_ascii_case(name))
+        .or_else(|| catalog.models.iter().find(|(_, m)| m.recipe.eq_ignore_ascii_case(name)).map(|(k, _)| k))
+        .cloned();
+    let lookup = |pick: fn(&PedModel) -> &Vec<[f32; 4]>| {
+        let mut key = start.clone();
+        let mut seen = 0;
+        while let (Some(k), true) = (key.take(), seen < 16) {
+            seen += 1;
+            let Some(model) = catalog.models.get(&k) else { break };
+            if let Some(first) = pick(model).first() {
+                return *first;
+            }
+            key = model.parent.clone();
+        }
+        PRESENTATION_DEFAULT_TINT
+    };
+    (lookup(|m| &m.tints_a), lookup(|m| &m.tints_b))
+}
+
 /// `sub_827B4170`: both tints from one rand.
 pub fn tints(model: &PedModel, r: u32) -> ([f32; 4], [f32; 4]) {
     let pick = |v: &[[f32; 4]]| if v.is_empty() { DEFAULT_TINT } else { v[(r % v.len() as u32) as usize] };

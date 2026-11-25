@@ -2067,6 +2067,59 @@ traces (last 40): {:?}", game.calls, &traces[traces.len().saturating_sub(40)..])
         assert!(draws.len() > before + 4, "the poster adds no draws ({before} -> {})", draws.len());
     }
 
+    /// The photo shot picker's movie (FE 2 PhotoSelect, research b1062) opened like retail_menu_stage does it over eight
+    /// shots: it asks our natives and draws its select bar. Data-gated; `SKATE3_DUMP_DRAWS=1` prints the calls.
+    #[test]
+    fn retail_photo_select_draws() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/challenge/photoselect") {
+            eprintln!("skipped: menu set without photoselect (Refresh Game Files)");
+            return;
+        }
+        let assets = crate::apt_imports::main_checkout().join("assets");
+        let (data, loaded) = crate::retail_menus::read(&assets);
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        game.photo_select = Some(crate::photo_picker::PhotoScreen { open: true, shots: 8, layout: 0, states: Vec::new() });
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        let before = stage.draw(|key, movie| set.scene(key, movie)).unwrap().len();
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("PhotoSelect".into())], &mut game).unwrap();
+        let args = ["source/screens/challenge/photoselect.swf", "screen", "0", "PhotoSelect"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", args, &mut game).unwrap();
+        let mut shown = false;
+        for frame in 0..120 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+            let loaded = game.calls.iter().any(|c| c == "Game.OnScreenLoaded(600)");
+            if !shown && (loaded || frame > 30) {
+                shown = true;
+                stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text("600".into()), Value::Text("true".into())], &mut game).unwrap();
+                for s in ["0", "-1", "1"] {
+                    stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text(s.into())], &mut game).unwrap();
+                }
+            }
+        }
+        let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
+        if std::env::var_os("SKATE3_DUMP_DRAWS").is_some() {
+            eprintln!("calls: {:?}\nunhandled: {:?}", game.calls, stage.unhandled());
+        }
+        eprintln!("draws before {before}, with the picker {}", draws.len());
+        assert!(draws.len() > before + 4, "the picker adds no draws ({before} -> {})", draws.len());
+    }
+
     /// The reward summary card (FE 64, template RewardSummary; doc 43) opened like retail_menu_stage does it, with one
     /// big reward: it must draw (desktop run 2026-11-14: shown in the log, blank on screen). Data-gated;
     /// `SKATE3_DUMP_DRAWS=1` prints.
