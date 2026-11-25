@@ -81,7 +81,7 @@ fn a_reel_clip_blooms_to_white_starts_at_the_peak_plays_under_the_clear_and_a_sk
         app.world_mut().run_schedule(Update);
     };
     let take = skate_core::camera_track::CameraTrack { length: 2.0, keys: Vec::new(), segments: Vec::new() };
-    app.world_mut().resource_mut::<Replay>().play_reel_clip(2.0, 6.0, Some(super::ReelTake { track: take, located: None, freezes: Vec::new(), colour: Default::default() }));
+    app.world_mut().resource_mut::<Replay>().play_reel_clip(2.0, 6.0, Some(super::ReelTake { track: take, located: None, freezes: Vec::new(), colour: Default::default(), focus: None }));
     for _ in 0..30 {
         tick(&mut app, 0);
     }
@@ -158,7 +158,7 @@ fn a_reel_shot_places_its_take_around_the_replayed_skater() {
     let track = |mode: u8| CameraTrack { length: 2.0, keys: vec![key(0.0, [2.0, 0.0, 1.0]), key(2.0, [2.0, 0.0, 1.0])],
         segments: vec![CameraSegment { eye_space: CameraSpace { mode, avatar: 4 }, look_space: CameraSpace { mode, avatar: 4 }, ..Default::default() }] };
     let root = Transform::from_xyz(10.0, 0.0, 5.0).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
-    let shot = |mode: u8, located| ReelShot { track: track(mode), start: 1.0, end: 4.0, located, freezes: Vec::new(), colour: Default::default() };
+    let shot = |mode: u8, located| ReelShot { track: track(mode), start: 1.0, end: 4.0, located, freezes: Vec::new(), colour: Default::default(), focus: None };
     let eye = |s: &ReelShot| s.camera(2.0, &root).unwrap().0.translation;
     assert!(eye(&shot(2, None)).distance(Vec3::new(10.0, 1.0, 7.0)) < 1e-4, "SPACE 2: the skater's position, no rotation");
     assert!(eye(&shot(0, None)).distance(Vec3::new(12.0, 1.0, 5.0)) < 1e-4, "SPACE 0: the skater's frame");
@@ -1142,7 +1142,7 @@ fn a_reel_clip_holds_at_each_freeze_point_and_counts_its_photo_shots() {
             skate_data::ice_camera::FreezePoint { at: 0.25, command: 4, frames: 10 },
             skate_data::ice_camera::FreezePoint { at: 0.5, command: 2, frames: 10 },
             skate_data::ice_camera::FreezePoint { at: 1.0, command: 1, frames: 3 },
-        ], colour: Default::default() };
+        ], colour: Default::default(), focus: None };
     let h = freeze_holds(&shot);
     assert_eq!(h.len(), 2, "command 2 stops the clock with no timed hold");
     assert_eq!((h[0].0, h[0].2), (11.0, true));
@@ -1172,7 +1172,7 @@ fn a_photo_nis_stays_up_at_its_end_and_shows_the_picked_shot() {
     };
     let point = |at: f32| skate_data::ice_camera::FreezePoint { at, command: 4, frames: 3 };
     let take = super::ReelTake { track: skate_core::camera_track::CameraTrack { length: 2.0, keys: Vec::new(), segments: Vec::new() },
-        located: None, freezes: vec![point(0.25), point(0.5), point(1.0)], colour: Default::default() };
+        located: None, freezes: vec![point(0.25), point(0.5), point(1.0)], colour: Default::default(), focus: None };
     {
         let mut r = app.world_mut().resource_mut::<Replay>();
         r.reel_keep_still = true;
@@ -1205,7 +1205,7 @@ fn the_photo_avatar_move_turns_the_camera_in_place_like_photo_anywhere() {
     let (eye_space, look_space) = (CameraSpace { mode: 2, avatar: 0 }, CameraSpace { mode: 2, avatar: 6 });
     let track = CameraTrack { length: 2.0, keys: vec![key(0.0, [-3.0, 0.0, 1.0], [0.0; 3]), key(2.0, [-3.0, 0.0, 1.0], [0.0; 3])],
         segments: vec![CameraSegment { eye_space, look_space, ..Default::default() }] };
-    let shot = ReelShot { track, start: 0.0, end: 2.0, located: None, freezes: Vec::new(), colour: Default::default() };
+    let shot = ReelShot { track, start: 0.0, end: 2.0, located: None, freezes: Vec::new(), colour: Default::default(), focus: None };
     let root = Transform::from_xyz(5.0, 0.0, 0.0);
     let plain = shot.camera(1.0, &root).unwrap().0;
     assert_eq!(shot.camera_turned(1.0, &root, [0.0; 2]).unwrap().0, plain, "no move: the take's camera");

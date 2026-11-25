@@ -178,7 +178,13 @@ pub(crate) fn carry_out(id: &str, outs: Vec<Out>, mut replay: Option<&mut crate:
                 }
             }
             Out::Brightness(_) | Out::Contrast(_) | Out::Saturation(_) => info!("SKATE_PHOTO {id} edit {out:?}"),
-            Out::DepthOfField(v) => info!("SKATE_PHOTO {id} depth of field {v} (NOT RETAIL YET: no NIS blur)"),
+            Out::DepthOfField(v) => {
+                // 826765C0 adds the edit to the held take's blur intensity (nis_dof.rs).
+                info!("SKATE_PHOTO {id} depth of field {v}");
+                if let Some(r) = replay.as_deref_mut() {
+                    r.photo_dof = v;
+                }
+            }
             Out::Reset => info!("SKATE_PHOTO {id} edits reset"),
             Out::OpenMagazinePromo => {
                 info!("SKATE_PHOTO {id} MagazinePromo opens");

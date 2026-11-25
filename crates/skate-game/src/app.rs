@@ -199,6 +199,7 @@ pub(crate) fn build(
     .add_plugins(crate::retail_backdrop::BackdropPlugin)
     .add_plugins(crate::cursor_autohide::CursorAutoHidePlugin)
     .add_plugins(crate::team_brand::TeamBrandPlugin)
+    .add_plugins(crate::nis_dof::NisDofPlugin)
     .add_plugins((
         crate::retail_render::RetailRenderPlugin,
         input::InputPlugin,

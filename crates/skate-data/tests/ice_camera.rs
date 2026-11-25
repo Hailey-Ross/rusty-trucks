@@ -71,3 +71,26 @@ fn the_trick_guide_takes_read_their_focus_lanes() {
     assert_eq!(focus.len(), 21);
     println!("takes with RAWFOCUS_OVERRIDE: {:?}", focus.iter().enumerate().filter_map(|(i, f)| f.map(|f| (i, f))).collect::<Vec<_>>());
 }
+
+#[test]
+#[ignore = "needs the disc's scene_000.bin and ice_000.bin (SKATE3_ICE beside the scene table)"]
+fn scenes_with_depth_of_field_takes() {
+    let Some(bytes) = ice() else { panic!("set SKATE3_ICE") };
+    let ice_path = PathBuf::from(std::env::var_os("SKATE3_ICE").unwrap());
+    let table = std::fs::read(ice_path.with_file_name("scene_000.bin")).expect("scene_000.bin beside ice_000.bin");
+    let scenes = skate_data::scene_table::parse(&table).unwrap();
+    let mut with = Vec::new();
+    for s in &scenes {
+        let Ok(focus) = skate_data::ice_camera::take_focus(&bytes, s.hash) else { continue };
+        let on: Vec<_> = focus.iter().enumerate().filter_map(|(i, f)| f.map(|f| (i, f))).collect();
+        if !on.is_empty() {
+            with.push((s.name.clone(), on));
+        }
+    }
+    println!("{} of {} scenes have DOF takes", with.len(), scenes.len());
+    println!("names: {:?}", with.iter().map(|w| w.0.as_str()).collect::<Vec<_>>());
+    for (name, takes) in with.iter().take(40) {
+        println!("{name}: {:?}", takes.iter().map(|(i, f)| (*i, f.near, f.far, f.falloff, f.intensity, f.relative)).collect::<Vec<_>>());
+    }
+    assert!(!with.is_empty());
+}

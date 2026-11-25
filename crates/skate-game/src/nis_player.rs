@@ -33,6 +33,8 @@ struct Running {
     /// The scene's ICE camera takes and its cut list (scene time, take).
     tracks: Vec<skate_core::camera_track::CameraTrack>,
     cuts: Vec<(f32, usize)>,
+    /// Per take, its depth of field (nis_dof.rs).
+    focus: Vec<Option<skate_data::ice_camera::TakeFocus>>,
     /// The gameplay camera's field of view before the scene.
     fov: Option<f32>,
     /// The scene's other marquee actors, each on its own rig (despawned at the end).
@@ -77,12 +79,15 @@ fn scene_frame(scene: &Scene) -> Mat4 {
 }
 
 /// The scene's camera takes and cuts from `ice_000.bin` (none: the gameplay camera stays).
-fn cameras(root: &std::path::Path, scene: &Scene) -> (Vec<skate_core::camera_track::CameraTrack>, Vec<(f32, usize)>) {
+type Takes = (Vec<skate_core::camera_track::CameraTrack>, Vec<(f32, usize)>, Vec<Option<skate_data::ice_camera::TakeFocus>>);
+
+fn cameras(root: &std::path::Path, scene: &Scene) -> Takes {
     let Ok(ice) = std::fs::read(root.join("ice_000.bin")) else { return Default::default() };
     let tracks = skate_data::ice_camera::scene_tracks(&ice, scene.hash)
         .inspect_err(|e| warn!("NIS {} camera: {e}", scene.name)).unwrap_or_default();
     let cuts = skate_data::ice_camera::scene_cuts(&ice, scene.hash).unwrap_or_default();
-    (tracks, cuts)
+    let focus = skate_data::ice_camera::take_focus(&ice, scene.hash).unwrap_or_default();
+    (tracks, cuts, focus)
 }
 
 pub(crate) struct NisPlayerPlugin;
@@ -167,12 +172,12 @@ fn drive(world: &mut World, mut player: Local<Player>) {
                 info!("NIS play {name}: {:.2} s, actor {character} ({}), clip {} frames at {} fps, hips at {at:?}, player at {:?}",
                     scene.length(), scene.actors[actor].kind, clip.frames.len(), clip.fps,
                     world.get::<GlobalTransform>(rig).map(|t| t.translation()));
-                let (tracks, cuts) = cameras(&root, scene);
+                let (tracks, cuts, focus) = cameras(&root, scene);
                 let first = tracks.first().and_then(|t| t.sample(0.0)).map(|s| ([s.eye[1], s.eye[2], s.eye[0]], [s.look[1], s.look[2], s.look[0]]));
                 info!("NIS {name} camera: {} takes, cuts {cuts:?}, first eye / look {first:?}, actor hips in the map {:?}",
                     tracks.len(), at.map(|p| scene_frame(scene).transform_point3(p)));
                 let mut running = Running { scene: scene.clone(), clip, time: 0.0, saved: None, swapped: false, bindings: None,
-                    skins: 0, tracks, cuts, fov: None, skippable: true, extras: Vec::new() };
+                    skins: 0, tracks, cuts, focus, fov: None, skippable: true, extras: Vec::new() };
                 running.extras = spawn_extras(world, &root, scene, actor);
                 // `current_player` keeps the player's own character.
                 if character != "current_player" {
@@ -373,6 +378,12 @@ fn gameplay_camera(world: &mut World) -> Option<Entity> {
 /// a point fixed in the scene's frame (828F36B0 has no case for it); NOT RETAIL YET: that frame is taken as the map's.
 fn camera(world: &mut World, running: &mut Running) {
     let take = skate_data::ice_camera::take_at(&running.cuts, running.time).unwrap_or(0);
+    let focus = running.focus.get(take).copied().flatten();
+    if let Some(mut f) = world.get_resource_mut::<crate::nis_dof::NisTakeFocus>() {
+        if f.0 != focus {
+            f.0 = focus;
+        }
+    }
     let Some(sample) = running.tracks.get(take).and_then(|t| t.sample(running.time)) else { return };
     let point = |[x, y, z]: [f32; 3]| Vec3::new(y, z, x);
     // The keys are map space (an offset by the scene frame put 04_ProChallenge_ChrisCole's camera ~30 m up).
@@ -402,6 +413,9 @@ fn end(world: &mut World, player: &mut Player, why: &str) {
     let Some(running) = player.running.take() else { return };
     info!("NIS {} {why} at {:.2} s", running.scene.name, running.time);
     PLAYING.store(false, std::sync::atomic::Ordering::Relaxed);
+    if let Some(mut f) = world.get_resource_mut::<crate::nis_dof::NisTakeFocus>() {
+        f.0 = None;
+    }
     for extra in &running.extras {
         if let Ok(e) = world.get_entity_mut(extra.root) {
             e.despawn();

@@ -136,6 +136,7 @@ mod ftl_host;
 mod photo_picker;
 mod cursor_autohide;
 mod team_brand;
+mod nis_dof;
 mod one_up_host;
 mod hom_host;
 mod visual_indicators;

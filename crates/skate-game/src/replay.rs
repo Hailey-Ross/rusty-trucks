@@ -357,6 +357,8 @@ pub(crate) struct ReelShot {
     pub freezes: Vec<skate_data::ice_camera::FreezePoint>,
     /// The take's screen color lanes (applied to the grade while the clip plays, research b1064).
     pub colour: skate_data::ice_camera::TakeColour,
+    /// The take's depth of field (nis_dof.rs, research b1071).
+    pub focus: Option<skate_data::ice_camera::TakeFocus>,
 }
 
 /// A reel clip's NIS scene take: its camera, the highlight's located place, its freeze points.
@@ -366,6 +368,7 @@ pub(crate) struct ReelTake {
     pub located: Option<(Vec3, Vec3)>,
     pub freezes: Vec<skate_data::ice_camera::FreezePoint>,
     pub colour: skate_data::ice_camera::TakeColour,
+    pub focus: Option<skate_data::ice_camera::TakeFocus>,
 }
 
 /// One reel step of `dt` seconds from `cursor` toward `end`: a running hold counts down first; reaching a freeze point
@@ -495,6 +498,8 @@ pub(crate) struct Replay {
     pub photo_look: Option<[f32; 3]>,
     /// The shot picker's lens: degrees added to the held photo NIS's field of view (82676D48, research b1063).
     pub photo_lens_degrees: f32,
+    /// The shot picker's depth of field edit, added to the held photo NIS take's blur (826765C0, nis_dof.rs).
+    pub photo_dof: f32,
     /// The shot picker's avatar move (yaw, pitch degrees): `ReelShot::camera_turned` on the held photo NIS.
     pub photo_avatar_degrees: [f32; 2],
     /// A career photo to capture from the world image (`take_photo`), then taken.
@@ -822,6 +827,7 @@ impl Replay {
         self.reel_still = false;
         self.photo_look = None;
         self.photo_lens_degrees = 0.0;
+        self.photo_dof = 0.0;
         self.photo_avatar_degrees = [0.0; 2];
         if matches!(self.reel_transition, Some(ReelPhase::In(_))) {
             self.reel_transition = None;
@@ -901,7 +907,7 @@ impl Replay {
         self.seek(start);
         let end = end.clamp(first, last).max(self.cursor);
         self.reel_end = Some(end);
-        self.reel_shot = take.map(|t| ReelShot { track: t.track, start: self.cursor, end, located: t.located, freezes: t.freezes, colour: t.colour });
+        self.reel_shot = take.map(|t| ReelShot { track: t.track, start: self.cursor, end, located: t.located, freezes: t.freezes, colour: t.colour, focus: t.focus });
         self.reel_holds = self.reel_shot.as_ref().map(freeze_holds).unwrap_or_default().into();
         self.reel_hold = 0.0;
         self.reel_photo_shots = 0;

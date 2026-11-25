@@ -548,6 +548,29 @@ Vibration (ours off by the user's decision) and units (retail Imperial, Metric o
 - **Open.** Whether Start opens the pause menu during a scene (825EB998 not followed); the scene table's "can skip"
   field (vt+0x14); what input mode 12 does to the skater (not frozen in ours); the skip key as a mod setting.
 
+<a id="nis-depth-of-field"></a>
+
+## Change: depth of field in NIS scenes and photo shots (2026-11-24; research b1071, b1073)
+
+**Retail [code + data].**
+- A take's DOF is ICE elements 18..21 (NEAR_FOCUS, FAR_FOCUS 0..10000 in 16 bits; BLUR_FALLOFF, BLUR_INTENSITY 0..1 in 7 bits) and the switch RAWFOCUS_OVERRIDE (105). 233 of the disc's 503 scenes have a take with it on: the pro challenge intros, the Skate School lessons, the photo shoots.
+- The take listener 826765C0 hands the camera focus = (near + far) * 0.5, range = far - near, falloff * 2 and clamp(intensity + the photo picker's DOF edit, 0, 1) * 3 (checked in the recomp).
+- PostFx_Update 827F3D20 turns these into the planes guess_PostFx_SetFocalPlanes 827F1158 uploads:
+  - focalFar = focus + range / 2 and farBlur = focalFar + falloff; a range under 0.01 takes 100 / 200 m;
+  - maxCoC = blur * 5.0 (0x821F1790);
+  - the near planes are the constants -1000 / -500 (0x822272E0 / 0x822F8EA0): behind the camera, so only the far side blurs.
+- The disc shaders: `bloom_dof_dof_downsamplePS` writes CoC = saturate((plane.y - z) * plane.x) from the linearized depth, `bloom_dof_tap9dofPS` takes nine taps at radius max(CoC * maxCoC, 0.1) weighted by their own CoC, `postfx_uberPS` blends by it.
+- A typical intro take: sharp to about 75 m, full blur right behind it (falloff 0), radius about 1.3 texels; a soft background, not a strong blur.
+
+**Change.**
+- `skate_data::ice_camera::take_focus` (per take, the first key of each lane like the color lanes) and `TakeFocus::camera` (826765C0's four values).
+- `nis_dof.rs`: `NisDof` from the take on screen (a reel clip's, else the NIS player's `NisTakeFocus`), with the photo picker's DOF edit (`Replay::photo_dof`); `DofTuning` holds every scale and fixed plane with retail's values as defaults; a render node before tone mapping (`retail_dof.wgsl`) computes the CoC from the view depth with the same planes and blends nine CoC-weighted taps by it. Log `NIS_DOF on / off`.
+- NOT RETAIL YET / inferred: retail blurs a downsampled DOF target and its tap offsets (`f_sampleOffsets4x4_1`) were not read; ours samples the full-size frame on a 3 x 3 grid with the radius in half-size texels (`pixels_per_unit` 2). RAWFOCUS_RELATIVE (focus on a projected point) is read but not applied. Who resets the camera values after a take (82676510 / 82676C90 zero them) is matched by switching off with the take.
+
+**Verification.**
+- Tests `a_takes_focus_band_becomes_the_cameras_dof_inputs` (skate-data), `a_take_blurs_only_beyond_its_far_focus_and_falls_back_on_a_tiny_range` (skate-game), data-gated `scenes_with_depth_of_field_takes` (233 scenes).
+- Desktop runs (muted, background window, settings restored and hash-checked): tut_sksc_01 on SkateSchool and the 1up_dwtn_05 intro (04_ProChallenge_ChrisCole) on DownTown switch the DOF on with the scene (focal far 79 / 75.5 m, max CoC 1.29) and off with its last DOF take; the frames render without artifacts. The captured shots had nothing beyond the focal plane, so the blur itself was not seen yet.
+
 <a id="create-a-skater"></a>
 
 ## Change: the retail Create-a-Skater (FE 15), step 1 (2026-11-18, ask 697)
