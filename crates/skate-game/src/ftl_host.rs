@@ -505,6 +505,7 @@ pub(crate) struct SceneTake {
     track: skate_core::camera_track::CameraTrack,
     freezes: Vec<skate_data::ice_camera::FreezePoint>,
     colour: skate_data::ice_camera::TakeColour,
+    focus: Option<skate_data::ice_camera::TakeFocus>,
 }
 
 /// Every NIS scene's ICE camera takes by name (lower case), from the install's scene table.
@@ -516,8 +517,9 @@ fn scene_cameras(asset_root: &std::path::Path) -> std::collections::HashMap<Stri
         let tracks = skate_data::ice_camera::scene_tracks(&ice, s.hash).ok().filter(|t| !t.is_empty())?;
         let mut freezes = skate_data::ice_camera::freeze_points(&ice, s.hash).unwrap_or_default().into_iter();
         let mut colours = skate_data::ice_camera::take_colours(&ice, s.hash).unwrap_or_default().into_iter();
+        let mut focus = skate_data::ice_camera::take_focus(&ice, s.hash).unwrap_or_default().into_iter();
         Some((s.name.to_ascii_lowercase(), tracks.into_iter().map(|track| SceneTake {
-            track, freezes: freezes.next().unwrap_or_default(), colour: colours.next().unwrap_or_default(),
+            track, freezes: freezes.next().unwrap_or_default(), colour: colours.next().unwrap_or_default(), focus: focus.next().flatten(),
         }).collect()))
     }).collect()
 }
@@ -642,7 +644,7 @@ impl ReelState {
         info!("SKATE_FTL highlight clip {scene} frames {}..{} camera {}{}", clip.start, clip.end,
             if track.is_some() { "scene take" } else { "game camera (no scene take)" },
             if self.photographer.is_some() { " from the placed photographer" } else { "" });
-        replay.play_reel_clip(start, end, track.map(|t| crate::replay::ReelTake { track: t.track, located, freezes: t.freezes, colour: t.colour }));
+        replay.play_reel_clip(start, end, track.map(|t| crate::replay::ReelTake { track: t.track, located, freezes: t.freezes, colour: t.colour, focus: t.focus }));
         self.played += 1;
         self.playing = true;
         true
@@ -1331,7 +1333,7 @@ mod tests {
     #[test]
     fn a_placed_photographer_plays_the_clip_as_photo_anywhere_located_from_its_spot() {
         let take = SceneTake { track: skate_core::camera_track::CameraTrack { length: 3.33, keys: Vec::new(), segments: Vec::new() },
-            freezes: Vec::new(), colour: Default::default() };
+            freezes: Vec::new(), colour: Default::default(), focus: None };
         let mut reel = ReelState::default();
         reel.scenes = Some([("photo_anywhere".to_owned(), vec![take.clone()]), (PHOTOGRAPHER_SCENE.to_owned(), vec![take])].into_iter().collect());
         let clip = skate_core::challenges::highlights::Highlight { killed: false, start: 60, end: 240,
