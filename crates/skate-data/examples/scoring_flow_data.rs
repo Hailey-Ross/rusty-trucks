@@ -60,7 +60,7 @@ fn frame(
         fakie: false,
         regular: true,
         player_basis: Default::default(),
-        board_basis: Default::default(),
+        board_basis: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
         reckoning_up: [0., 1., 0.],
         body_flip: false,
         front_flip: false,
@@ -68,6 +68,7 @@ fn frame(
         landing: Default::default(),
         teleported: false,
         reverting: false,
+        pump_acceleration: 0.,
     }
 }
 fn publish_hud(

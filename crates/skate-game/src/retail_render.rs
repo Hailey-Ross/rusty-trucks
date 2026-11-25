@@ -1118,7 +1118,7 @@ pub(crate) fn mip_chain(rgba: &[u8], width: u32, height: u32, layers: u32) -> (V
 }
 
 /// Area-average resample, used only for textures whose size did not earn a page.
-fn resample(rgba: &[u8], width: u32, height: u32, target_w: u32, target_h: u32) -> Vec<u8> {
+pub(crate) fn resample(rgba: &[u8], width: u32, height: u32, target_w: u32, target_h: u32) -> Vec<u8> {
     let (w, h) = (width as usize, height as usize);
     let (tw, th) = (target_w as usize, target_h as usize);
     let mut out = vec![0u8; tw * th * 4];
@@ -1168,6 +1168,20 @@ pub(crate) struct MaterialTable {
     slabs: u16,
     /// Source indices of the `incandescent.videoscreen` materials.
     pub(crate) screens: Vec<usize>,
+    /// Where each retail texture (by its asset id, the map's `0x...` texture name) sits in the pages, for the team
+    /// brand swaps (team_brand.rs).
+    pub(crate) texture_layers: HashMap<u64, Vec<TextureLayer>>,
+}
+
+/// One placement of a texture in a page: the page image, its layer and the page's shape.
+#[derive(Clone, Debug)]
+pub(crate) struct TextureLayer {
+    pub page: Handle<Image>,
+    pub layer: u32,
+    pub layers: u32,
+    pub width: u32,
+    pub height: u32,
+    pub mips: bool,
 }
 
 impl MaterialTable {
@@ -1345,6 +1359,7 @@ impl MaterialTable {
             tinted: HashMap::new(),
             slabs: 0,
             screens,
+            texture_layers: HashMap::new(),
         };
         let mut slab = Slab::new(&page_sizes);
         for (source, request) in requests.iter().enumerate() {
@@ -1395,7 +1410,14 @@ impl MaterialTable {
             RenderAssetUsages::RENDER_WORLD,
         ));
 
-        let pages = std::array::from_fn(|class| slab.upload_page(class, map, images));
+        let pages: [Handle<Image>; PAGE_CLASSES] = std::array::from_fn(|class| slab.upload_page(class, map, images));
+        for (&id, &(class, layer)) in &slab.placed {
+            let Some(asset) = map.textures.get(id as usize - 1)
+                .and_then(|t| u64::from_str_radix(t.name.strip_prefix("0x")?, 16).ok()) else { continue };
+            let page = &slab.pages[class];
+            self.texture_layers.entry(asset).or_default().push(TextureLayer { page: pages[class].clone(),
+                layer: layer as u32, layers: page.layers.len() as u32, width: page.width, height: page.height, mips: page.mips });
+        }
         let cubes = slab.upload_cubes(map, images);
         for class in RenderClass::ALL {
             let value = WorldMaterial::with_pages(params.clone(), slots.clone(), &pages, cubes.clone(), class);

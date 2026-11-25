@@ -133,3 +133,10 @@ The device curve: a motor level (0..1) as a 16-bit motor speed. `wireless` = ret
 ### Rumble on pads
 
 Controller rumble on the pads: the TU3 rumble controller (`skate_core::rumble`) ticked at retail's 60 Hz whatever the frame rate, gated by Game Settings > Control > Vibration (settings +163), sent through the pad backend (`input::platform::set_rumble`). Who starts a rumble: switching Vibration on plays retail's test rumble (0.5 / 0.5, rate 5.0, `sub_8260DF40`) on the active pad; mods start and stop channels (`sdk.input.rumble` / `sdk.input.stop_rumble`, capability `input_rumble`). NOT PORTED YET: retail's gameplay rumble (the posters `sub_82BB8CF0` 0.5 / 0.5 / 1.2 and the per-item channels of `sub_8259E3D0`, events not identified; a local research note).
+
+## Mouse cursor hides by itself (2026-11-24, upstream issue 69)
+
+- Problem: the mouse cursor stayed on top of the game window while playing with a pad or keyboard (upstream issue [#69](https://github.com/SK8-ENGINE/skate-3-rust-engine/issues/69)).
+- Change: `crates/skate-game/src/cursor_autohide.rs` (`CursorAutoHidePlugin`, added in `app.rs`). The cursor hides over the focused game window after 2 seconds without mouse movement, clicks or wheel, and shows again on the next mouse input, so the graphics menu's mouse hover still works. An unfocused window leaves the cursor alone. It uses Bevy's window `CursorOptions`, so it behaves the same on every OS.
+- Setting: `SKATE_CURSOR_HIDE_SECONDS` (seconds, `0` keeps the cursor shown). Ours, not retail: retail is a console game with no cursor.
+- Verification: unit test `cursor_autohide::tests::the_cursor_hides_after_the_idle_seconds_and_shows_on_mouse_input`.

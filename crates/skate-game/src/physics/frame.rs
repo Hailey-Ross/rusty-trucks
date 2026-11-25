@@ -393,6 +393,7 @@ pub(super) fn advance(
         landing:skater.landing_quality,teleported,
         // Revert Fill publishes its active lifetime in State66. State70 is unset.
         reverting:skater.player_input.physical.state.flag_66 != 0,
+        pump_acceleration:skater.ground.pumping.pump_acceleration,
     });
     crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_SCORING, scoring_started);
     scoring?;

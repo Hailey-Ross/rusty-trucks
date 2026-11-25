@@ -28,6 +28,7 @@ fn frame(tick: u32, category: FilteredCategory, descriptor: Option<AttributeName
         landing: Default::default(),
         teleported: false,
         reverting: false,
+        pump_acceleration: 0.,
     }
 }
 
@@ -495,6 +496,49 @@ fn manual_pop_keeps_previous_tricks_during_ground_takeoff() {
         }
         for tick in 165..225 { r.advance(frame(tick, FilteredCategory::Air, Some(name))).unwrap(); }
         assert!(r.sequence_score > prior, "manual chain lost earlier rewards: {prior} -> {}", r.sequence_score);
+    }
+}
+
+#[test]
+#[ignore = "requires private authored scoring data via SKATE3_ASSET_ROOT"]
+fn takeoff_on_the_ground_starts_a_sequence_and_plain_rolling_does_not() {
+    // 82DAB2A8: ScoringTrick bit 24 starts a ground sequence with none running; rolling alone does not.
+    let data = authored();
+    let mut r = Runtime::load(&data).unwrap();
+    for tick in 0..30 {
+        r.advance(frame(tick, FilteredCategory::Ground, None)).unwrap();
+        assert!(!r.sequence_active(), "plain rolling started a sequence at tick {tick}");
+    }
+    let mut f = frame(30, FilteredCategory::Ground, None);
+    f.flags = 0x0100_0000;
+    r.advance(f).unwrap();
+    assert!(r.sequence_active(), "the takeoff animation did not start a sequence");
+    for tick in 31..40 {
+        r.advance(frame(tick, FilteredCategory::Air, None)).unwrap();
+        assert!(r.sequence_active(), "the sequence dropped between takeoff and air at tick {tick}");
+    }
+    for tick in 40..50 {
+        r.advance(frame(tick, FilteredCategory::Ground, None)).unwrap();
+    }
+    assert!(!r.sequence_active(), "the sequence did not bank after the landing");
+    assert_eq!(r.take_banked().len(), 1);
+    // A running ground sequence holds while pumping or on a steep deck, and banks once neither is true.
+    for (pump, up_y) in [(0.5, 1.0), (0.0, 0.5)] {
+        let mut f = frame(50, FilteredCategory::Ground, None);
+        f.flags = 0x0100_0000;
+        r.advance(f).unwrap();
+        for tick in 51..80 {
+            let mut f = frame(tick, FilteredCategory::Ground, None);
+            f.pump_acceleration = pump;
+            f.board_basis[1][1] = up_y;
+            r.advance(f).unwrap();
+            assert!(r.sequence_active(), "hold (pump {pump}, up y {up_y}) dropped at tick {tick}");
+        }
+        for tick in 80..90 {
+            r.advance(frame(tick, FilteredCategory::Ground, None)).unwrap();
+        }
+        assert!(!r.sequence_active(), "the sequence outlived the hold (pump {pump}, up y {up_y})");
+        assert_eq!(r.take_banked().len(), 1);
     }
 }
 

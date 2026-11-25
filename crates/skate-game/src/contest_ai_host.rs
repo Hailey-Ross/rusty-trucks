@@ -119,6 +119,7 @@ impl ContestAi {
         crate::living_world::merge_npc_lines(population, &self.lines, false);
         population.scripted_lines = None;
         population.contest_riders.clear();
+        population.wait_step_off.clear();
     }
 
     /// One update: a pinned rider's clock is held for the world ticks since the last update, a released one runs.

@@ -276,6 +276,13 @@ impl Eval<'_> {
     }
 }
 
+/// Test aid (scripted runs only): SKATE_FILM_FORCE_LINE=1 keeps IsInSequence true, so the autopilot rolling into a
+/// line's first volume counts as being in a line; the row's own volumes and its clean line end still decide.
+pub(crate) fn force_line() -> bool {
+    static FORCE_LINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCE_LINE.get_or_init(|| std::env::var("SKATE_FILM_FORCE_LINE").is_ok_and(|v| v == "1"))
+}
+
 impl Conditions for Eval<'_> {
     fn completion(&mut self, i: usize, o: &Objective, ctx: Context) -> bool {
         let programs = self.programs;
@@ -564,6 +571,8 @@ pub(crate) struct LiveFacts {
     pub speed: f32,
     pub sequence_score: i32,
     pub push_off: PushOff,
+    /// A gesture plays (its publication to MotionGraph +0xCE4, 8258FB30): Gesture.IsGesturing.
+    pub gesturing: bool,
 }
 
 /// XInput bumper bits in `RawInput::buttons` (input/platform.rs left_shoulder / right_shoulder).
@@ -583,6 +592,7 @@ pub(crate) fn live_facts(skater: &crate::physics::SkaterRuntime, raw: &crate::in
         sequence_score: skater.scoring.sequence_score() as i32,
         push_off: PushOff { flag: skater.player_input.physical.skeleton.response_changed_605 != 0,
             score: skater.player_input.physical.skeleton.response_change_588 },
+        gesturing: skater.animation.motion.gesture_publication.is_some(),
     }
 }
 
@@ -671,6 +681,7 @@ impl ObjectiveFeed {
             photographer_distance: input.photographer.unwrap_or(skate_core::challenges::photographer::NOT_PLACED),
             push_off: input.live.push_off.flag && self.last_push_off != Some(input.live.push_off.score),
             push_off_score: input.live.push_off.score,
+            gesturing: input.live.gesturing,
         };
         if input.live.push_off.flag && input.ticks > 0 {
             self.last_push_off = Some(input.live.push_off.score);

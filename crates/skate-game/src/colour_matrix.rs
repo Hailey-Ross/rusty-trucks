@@ -79,7 +79,16 @@ pub(crate) fn update_grade(
     // During a replay the editor's look lanes replace their terms of the world record (b380 / b408: retail's override
     // copy of the color block, built into the same matrices).
     let look = replay.as_ref().and_then(|r| r.look(world));
-    let record = look.as_ref().map_or(world, |l| &l.record);
+    let mut record = *look.as_ref().map_or(world, |l| &l.record);
+    // A reel clip's NIS take writes its color lanes into the environment block while it plays (b1064), and the
+    // photo shot picker's edits add to them on the held photo NIS (b1063: the ScenePhotoCustomizer values).
+    if let Some(colour) = replay.as_ref().filter(|r| r.active).and_then(|r| r.reel_shot.as_ref()).map(|s| s.colour) {
+        record = with_take_colour(&record, &colour);
+    }
+    if let Some(edits) = replay.as_ref().filter(|r| r.reel_still).and_then(|r| r.photo_look) {
+        record = with_photo_edits(&record, edits);
+    }
+    let record = &record;
     let near = cameras
         .iter()
         .find_map(|p| match p {
@@ -103,6 +112,42 @@ pub(crate) fn update_grade(
     if *grade != next {
         *grade = next;
     }
+}
+
+/// An NIS take's color lanes over a record (IceEnv_SetBrightness 82678F88 and its contrast / saturation twins write
+/// the environment block from the take when the lane's override is on, research b1064): brightness is each band's
+/// add, contrast and midpoint replace the band's, saturation (retail neutral 0) is the near value for both bands
+/// (b380) as 1 + s in our band [inferred: our identity band saturation is 1].
+pub(crate) fn with_take_colour(record: &ColourMatrixRecord, c: &skate_data::ice_camera::TakeColour) -> ColourMatrixRecord {
+    let mut r = *record;
+    if let Some([near, far]) = c.brightness {
+        r.near.add = [near; 3];
+        r.far.add = [far; 3];
+    }
+    if let Some(([near, far], [mid_near, mid_far])) = c.contrast {
+        (r.near.contrast, r.far.contrast) = (near, far);
+        (r.near.contrast_midpoint, r.far.contrast_midpoint) = (mid_near, mid_far);
+    }
+    if let Some(s) = c.saturation {
+        r.near.saturation = 1.0 + s;
+        r.far.saturation = 1.0 + s;
+    }
+    r
+}
+
+/// The photo picker's [brightness, contrast, saturation] over a record (research b1063): IceEnv brightness (82678F88)
+/// adds b to both bands' add rgb, contrast (82679D70) adds c to both bands' contrast, saturation (8267A250) adds s to
+/// the near value the renderer uses for both bands (b380), all on top of the photo take's own lanes
+/// ([`with_take_colour`]).
+pub(crate) fn with_photo_edits(record: &ColourMatrixRecord, [b, c, s]: [f32; 3]) -> ColourMatrixRecord {
+    let mut r = *record;
+    let saturation = r.near.saturation + s;
+    for band in [&mut r.near, &mut r.far] {
+        band.add = band.add.map(|a| a + b);
+        band.contrast += c;
+        band.saturation = saturation;
+    }
+    r
 }
 
 pub(crate) const CLASS: &str = "post_fx";
@@ -149,6 +194,32 @@ pub(crate) fn load(c: &Collections, record: &str) -> Result<ColourMatrixRecord, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn photo_edits_offset_both_bands_and_saturation_follows_the_near_band() {
+        let mut base = ColourMatrixRecord::default();
+        base.far.saturation = 0.5;
+        let r = with_photo_edits(&base, [0.1, -0.25, 0.75]);
+        assert_eq!((r.near.add, r.far.add), ([0.1; 3], [0.1; 3]));
+        assert_eq!((r.near.contrast, r.far.contrast), (0.75, 0.75));
+        assert_eq!((r.near.saturation, r.far.saturation), (1.75, 1.75), "the far band takes the near value");
+        assert_eq!(with_photo_edits(&ColourMatrixRecord::default(), [0.0; 3]), ColourMatrixRecord::default());
+    }
+
+    #[test]
+    fn a_take_colour_writes_only_its_switched_on_lanes() {
+        use skate_data::ice_camera::TakeColour;
+        let base = ColourMatrixRecord::default();
+        assert_eq!(with_take_colour(&base, &TakeColour::default()), base, "all lanes off: the world grade");
+        let take = TakeColour { brightness: Some([0.1, -0.1]), contrast: Some(([1.2, 0.8], [0.4, 0.6])), saturation: Some(-0.5) };
+        let r = with_take_colour(&base, &take);
+        assert_eq!((r.near.add, r.far.add), ([0.1; 3], [-0.1; 3]));
+        assert_eq!((r.near.contrast, r.far.contrast, r.near.contrast_midpoint, r.far.contrast_midpoint), (1.2, 0.8, 0.4, 0.6));
+        assert_eq!((r.near.saturation, r.far.saturation), (0.5, 0.5));
+        // A neutral photo take (the disc's 0 / 1 / 0) leaves the grade as it was, so the picker's edits are the only change.
+        let neutral = TakeColour { brightness: Some([0.0; 2]), contrast: Some(([1.0; 2], [0.5; 2])), saturation: Some(0.0) };
+        assert_eq!(with_photo_edits(&with_take_colour(&base, &neutral), [0.05, 0.25, -0.5]).near.saturation, 0.5);
+    }
 
     /// The grade the tone pass gets: the near / far weights are linear in view depth between the record's distances
     /// (full near up to 50 m, full far from 100 m, summing to 1); the base record leaves every color unchanged.

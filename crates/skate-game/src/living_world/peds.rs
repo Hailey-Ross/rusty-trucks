@@ -1637,9 +1637,21 @@ pub(crate) struct PedLitMaterials(BTreeMap<(AssetId<StandardMaterial>, [u32; 8])
 /// program get the retail ped material (`ped_material`, research b614) when the retail lighting runs and the part has
 /// its `m_params` rows; the rest keep their glTF material.
 #[allow(clippy::too_many_arguments)]
+/// A cutscene's `livingworld` actor (nis_player): its loaded look and the tint pair it draws with
+/// (`skate_core::living_world::peds::choice::presentation_tints`, research b1065).
+#[derive(Component, Clone, Debug)]
+pub(crate) struct NisPedTint {
+    pub scene: Entity,
+    pub recipe: String,
+    pub tint_a: [f32; 4],
+    pub tint_b: [f32; 4],
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn present_ped_tints(
     mut commands: Commands,
     peds: Query<(Entity, &Pedestrian, &PedPuppet), Without<PedTinted>>,
+    nis_peds: Query<(Entity, &NisPedTint), Without<PedTinted>>,
     children: Query<&Children>,
     meshes: Query<(&MeshMaterial3d<StandardMaterial>, Option<&bevy::gltf::GltfMaterialName>, Option<&bevy::gltf::GltfMaterialExtras>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -1656,10 +1668,18 @@ pub(crate) fn present_ped_tints(
     if let Some(lit) = lit_materials.as_ref() {
         lit_cache.0.retain(|_, id| lit.contains(*id));
     }
-    for (e, ped, puppet) in &peds {
-        let (Some(scene), true) = (puppet.scene, puppet.bindings.is_some()) else { continue };
+    // The living world's peds and the cutscene ped actors take the same rule (82785260 binds the pair on every
+    // material of a presentation character too).
+    let mut targets: Vec<(Entity, Entity, [f32; 4], [f32; 4], String)> = peds.iter()
+        .filter_map(|(e, ped, puppet)| match (puppet.scene, puppet.bindings.is_some()) {
+            (Some(scene), true) => Some((e, scene, ped.tint_a, ped.tint_b, ped.recipe.clone())),
+            _ => None,
+        })
+        .collect();
+    targets.extend(nis_peds.iter().map(|(e, t)| (e, t.scene, t.tint_a, t.tint_b, t.recipe.clone())));
+    for (e, scene, tint_a, tint_b, recipe) in targets {
         let bits = |c: [f32; 4]| c.map(f32::to_bits);
-        let (a, b) = (bits(ped.tint_a), bits(ped.tint_b));
+        let (a, b) = (bits(tint_a), bits(tint_b));
         let pair = [a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]];
         let mut pending = false;
         for ent in children.iter_descendants(scene) {
@@ -1703,9 +1723,9 @@ pub(crate) fn present_ped_tints(
                 let mut tinted = image.clone();
                 match tinted.data.as_mut() {
                     Some(px) if tinted.texture_descriptor.format.block_copy_size(None) == Some(4) => {
-                        skate_core::living_world::peds::colorize::colorize_rgba8(px, ped.tint_a, ped.tint_b)
+                        skate_core::living_world::peds::colorize::colorize_rgba8(px, tint_a, tint_b)
                     }
-                    _ => warn!("LIVING_WORLD peds: {} base texture is not RGBA8; drawn untinted", ped.recipe),
+                    _ => warn!("LIVING_WORLD peds: {recipe} base texture is not RGBA8; drawn untinted"),
                 }
                 images.add(tinted)
             } else {
@@ -1772,6 +1792,33 @@ pub(crate) fn ped_bone_basis(reference: &[Mat4], glb_bind: &BTreeMap<usize, Mat4
     };
     let score = |basis: Mat4| -> f32 { glb_bind.iter().filter_map(|(&i, b)| Some(angle(*reference.get(i)? * basis, *b))).sum() };
     [Mat4::IDENTITY, render_basis()].into_iter().map(|b| (score(b), b)).fold((f32::INFINITY, Mat4::IDENTITY), |best, x| if x.0 < best.0 { x } else { best }).1
+}
+
+/// The bone basis of a loaded ped look outside the living world (a cutscene actor): [`ped_bone_basis`] from its skins'
+/// inverse binds, identity without the ped rig.
+pub(crate) fn look_basis(world: &mut World, scene: Entity) -> Mat4 {
+    let Some(rig) = world.get_resource::<PedData>().map(|d| d.rig.clone()) else { return Mat4::IDENTITY };
+    let mut state: bevy::ecs::system::SystemState<(
+        Query<(Entity, &bevy::mesh::skinning::SkinnedMesh)>,
+        Query<&Name>,
+        Query<&ChildOf>,
+        Res<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
+    )> = bevy::ecs::system::SystemState::new(world);
+    let (skins, names, parents, bindposes) = state.get(world);
+    let mut glb_bind: BTreeMap<usize, Mat4> = BTreeMap::new();
+    for (mesh, skin) in &skins {
+        if !parents.iter_ancestors(mesh).any(|p| p == scene) {
+            continue;
+        }
+        let Some(ibms) = bindposes.get(&skin.inverse_bindposes) else { continue };
+        for (joint, ibm) in skin.joints.iter().zip(ibms.iter()) {
+            let Ok(name) = names.get(*joint) else { continue };
+            if let Some(i) = rig.names.iter().position(|n| n.eq_ignore_ascii_case(name.as_str())) {
+                glb_bind.insert(i, ibm.inverse());
+            }
+        }
+    }
+    ped_bone_basis(&reference_globals(&rig), &glb_bind)
 }
 
 /// Joint globals for [`AnimationStatus::pose_transforms`](crate::animation::AnimationStatus)

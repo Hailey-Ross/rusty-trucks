@@ -119,6 +119,7 @@ const TIER_CLASS: &str = "Hash_939D7B12889CCF21";
 const TIER_BIT: &str = "Hash_4632B6D0D476D3AB";
 const TIER_KIND: &str = "Hash_5F64C810E0CBABD3";
 const TIER_DEFAULT: &str = "Hash_F256F51F547BECD6";
+const TIER_CHALLENGE: &str = "Challenge";
 const ACHIEVEMENT_CLASS: &str = "Hash_9CB9012080F727B9";
 const ACHIEVEMENT_ID: &str = "Hash_4042D2F96C4E4B8C";
 const ACHIEVEMENT_ENABLED: &str = "Hash_CE07C47E53576879";
@@ -142,6 +143,9 @@ pub fn tier_rows(c: &Collections, names: &[String]) -> BTreeMap<String, skate_co
         bit: c.integer(TIER_CLASS, key, TIER_BIT).unwrap_or(0),
         kind: c.field(TIER_CLASS, key, TIER_KIND).ok().and_then(|f| u32::from_str_radix(f.data.get(0..8)?, 16).ok()).unwrap_or(0),
         default_unlocked: c.boolean(TIER_CLASS, key, TIER_DEFAULT).unwrap_or(false),
+        // RefSpec = class hash then row key hash (16 hex digits each).
+        challenge: c.field(TIER_CLASS, key, TIER_CHALLENGE).ok()
+            .and_then(|f| u64::from_str_radix(f.data.get(16..32)?, 16).ok()).filter(|&k| k != 0),
     })
 }
 

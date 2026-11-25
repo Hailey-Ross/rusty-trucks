@@ -163,6 +163,10 @@ const END_DIALOGS: [(&str, &str, &str); 3] = [
 ];
 /// The sign-up poster (FE 0x1B page 0, template 23; research b932, b935): movie key, path, template.
 const POSTER: (&str, &str, &str) = ("source/screens/challenge/challenge_signup", "challenge/challenge_signup.swf", "SignUp_Poster");
+/// The photo shot picker (FE 2 PhotoSelect; research b1060 / b1062).
+const PHOTO_SELECT: (&str, &str, &str) = ("source/screens/challenge/photoselect", "challenge/photoselect.swf", "PhotoSelect");
+/// The photo's magazine page (FE 69 MagazinePromo, template 115; research b1067).
+const MAGAZINE: (&str, &str, &str) = ("source/screens/mags_promo/mags_promo", "mags_promo/mags_promo.swf", "MagazinePromo");
 /// FE 9 WelcomeFlow, the new career's difficulty / camera screen (template 9, fedynamic only; research b1007).
 const WELCOME: (&str, &str, &str) = ("source/screens/bootflow/welcomescreen", "bootflow/welcomescreen.swf", "WelcomeFlow");
 /// FE 11 Coach Frank's question (template 10, fedynamic only; research b1010).
@@ -286,6 +290,16 @@ pub(crate) struct MenuStage {
     poster_open: bool,
     poster_shown: bool,
     poster_frames: u32,
+    /// The photo shot picker's movie (FE 2 PhotoSelect, `photo_picker`).
+    photo_id: Option<i32>,
+    photo_open: bool,
+    photo_shown: bool,
+    photo_frames: u32,
+    /// The magazine page (FE 69 MagazinePromo, `photo_picker::MagazineScreen`).
+    magazine_id: Option<i32>,
+    magazine_open: bool,
+    magazine_shown: bool,
+    magazine_frames: u32,
     /// FE 9 WelcomeFlow's AS id, whether it is open / shown, and updates since it opened.
     welcome_id: Option<i32>,
     welcome_open: bool,
@@ -569,7 +583,7 @@ fn save_tag(stage: &mut Stage, on: bool, fe: &mut FrontEnd) {
 }
 
 /// The Apt keys: names from the menu tables' key table, expressions from the install's stock input.cfg.
-fn apt_keys(assets: &std::path::Path) -> Vec<AptKey> {
+pub(crate) fn apt_keys(assets: &std::path::Path) -> Vec<AptKey> {
     let names: Vec<String> = std::fs::read_to_string(assets.join(crate::retail_menus::TABLES))
         .ok()
         .and_then(|t| skate_data::menu_tables::MenuTables::from_json(&t).ok())
@@ -853,6 +867,14 @@ fn setup(
                 poster_open: false,
                 poster_shown: false,
                 poster_frames: 0,
+                photo_id: templates.iter().position(|n| n == PHOTO_SELECT.2).filter(|_| movies.movies.contains_key(PHOTO_SELECT.0)).map(|i| 600 + i as i32),
+                photo_open: false,
+                photo_shown: false,
+                photo_frames: 0,
+                magazine_id: templates.iter().position(|n| n == MAGAZINE.2).filter(|_| movies.movies.contains_key(MAGAZINE.0)).map(|i| 600 + i as i32),
+                magazine_open: false,
+                magazine_shown: false,
+                magazine_frames: 0,
                 welcome_id: templates.iter().position(|n| n == WELCOME.2).filter(|_| movies.movies.contains_key(WELCOME.0)).map(|i| 600 + i as i32),
                 welcome_open: false,
                 welcome_shown: false,
@@ -1004,7 +1026,7 @@ fn update(
     mut warned: Local<bool>,
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     // Mods' Trick Guide and Skate Profile layers (one parameter: the system is at Bevy's 16).
-    (guide_mods, profile_mods, credits_mods, config, mut loading_mods, career, career_profile, mut reward_screens, mut end_screen, mut poster_screen): (
+    (guide_mods, profile_mods, credits_mods, config, mut loading_mods, career, career_profile, mut reward_screens, mut end_screen, mut poster_screen, (mut photo_screen, mut magazine_screen)): (
         Res<crate::trick_guide_host::TrickGuideMods>,
         Res<crate::offline_profile_host::ProfileMods>,
         Res<crate::extras_host::CreditsMods>,
@@ -1015,6 +1037,7 @@ fn update(
         Option<ResMut<crate::career::RewardScreens>>,
         Option<ResMut<crate::end_dialog_host::EndDialogScreen>>,
         Option<ResMut<crate::poster_host::PosterScreen>>,
+        (Option<ResMut<crate::photo_picker::PhotoScreen>>, Option<ResMut<crate::photo_picker::MagazineScreen>>),
     ),
     // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
     (mut demo, mut text_entry, mut marquee): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>, ResMut<crate::marquee_preview::MarqueeView>),
@@ -1165,6 +1188,7 @@ fn update(
         }
         fe.end_dialog = e.open.then(|| crate::end_dialog_host::EndDialogHost { dialog: e.dialog.clone(), title: e.title.clone(), results: e.results.clone() });
     }
+    fe.photo_select = photo_screen.as_ref().filter(|p| p.open).map(|p| crate::photo_picker::PhotoScreen { states: Vec::new(), ..(**p).clone() });
     if let Some(p) = poster_screen.as_mut() {
         let available = poster_switch() && ms.poster_id.is_some();
         if p.available != available {
@@ -1292,6 +1316,45 @@ fn update(
             ms.end_open = wanted_end;
             ms.end_shown = false;
             ms.end_frames = 0;
+        }
+        // MagazinePromo: opened once the photo is captured (retail waits for its photo render), the photo under the
+        // asset name Game.GetPhotoMemcardAsset answers (the movie's LoadAsset).
+        let magazine_image = magazine_screen.as_ref().filter(|m| m.open).and_then(|m| m.image.clone());
+        if let Some(handle) = magazine_image.as_ref() {
+            for prefix in [crate::image_renderer_host::ASSET_TEXTURE_PREFIX, crate::retail_menu_movies::NAMED_IMAGE_PREFIX] {
+                ms.textures.insert(format!("{prefix}{}", crate::photo_picker::MAGAZINE_PHOTO_ASSET), handle.clone());
+            }
+        }
+        let wanted_magazine = magazine_image.is_some();
+        if let Some(id) = ms.magazine_id.filter(|_| wanted_magazine != ms.magazine_open) {
+            if wanted_magazine {
+                info!("RETAIL_MENUS open {} (FE 69)", MAGAZINE.2);
+                open_screen(&mut ms.stage, MAGAZINE.1, MAGAZINE.2, &mut fe)?;
+            } else {
+                close(&mut ms.stage, id, &mut fe)?;
+            }
+            ms.magazine_open = wanted_magazine;
+            ms.magazine_shown = false;
+            ms.magazine_frames = 0;
+        }
+        if wanted_magazine && ms.magazine_id.is_none() {
+            warn!("RETAIL_MENUS MagazinePromo not in this install (Refresh Game Files adds it): the photo continues");
+            if let Some(m) = magazine_screen.as_mut() {
+                m.choice = Some(skate_core::challenges::photo_select::MagazineChoice::Continue);
+            }
+        }
+        // The photo shot picker's movie: open while the picker is (photo_picker), the picker owns the pad.
+        let wanted_photo = photo_screen.as_ref().is_some_and(|p| p.open);
+        if let Some(id) = ms.photo_id.filter(|_| wanted_photo != ms.photo_open) {
+            if wanted_photo {
+                info!("RETAIL_MENUS open {} (FE 2)", PHOTO_SELECT.2);
+                open_screen(&mut ms.stage, PHOTO_SELECT.1, PHOTO_SELECT.2, &mut fe)?;
+            } else {
+                close(&mut ms.stage, id, &mut fe)?;
+            }
+            ms.photo_open = wanted_photo;
+            ms.photo_shown = false;
+            ms.photo_frames = 0;
         }
         // The sign-up poster: opened while the sign-up waits on it, closed on its A / B.
         let wanted_poster = poster_screen.as_ref().is_some_and(|p| p.poster.is_some());
@@ -1523,6 +1586,24 @@ fn update(
         for (key, controller) in fired {
             // Session log: every key the menus took, by retail's Apt key name (the user's play tests).
             info!("RETAIL_MENUS key {} pad {controller} screen {:?}", ms.apt_keys.get(key as usize).map_or("?", |k| k.name.as_str()), ms.stack.input_target().and_then(|t| backdrop.id(t)));
+            // MagazinePromo (8264EA88): A continues, Y goes back to the picker, B asks to retry (popup 0xD9).
+            if let (true, true, Some(id)) = (ms.magazine_open, ms.magazine_shown, ms.magazine_id) {
+                use skate_core::challenges::photo_select::MagazineChoice;
+                let choice = match key {
+                    2 => Some(MagazineChoice::Continue),
+                    4 => Some(MagazineChoice::Edit),
+                    _ => None,
+                };
+                if let Some(choice) = choice {
+                    set_state(&mut ms.stage, id, 7, &mut fe)?;
+                    if let Some(m) = magazine_screen.as_mut() {
+                        m.choice = Some(choice);
+                    }
+                } else if key == 3 {
+                    popup_mods.engine_requests.push(crate::photo_picker::magazine_retry_popup());
+                }
+                continue;
+            }
             // A / B / X / Y on the shown end dialog pick its slot's option (825F12E8).
             if let (Some(_), Some(slot)) = (ms.end_open, END_DIALOG_KEYS.iter().find(|(k, _)| *k == key).map(|(_, s)| *s)) {
                 if ms.end_shown {
@@ -2461,6 +2542,38 @@ fn update(
                 ms.stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text(id.to_string()), Value::Text("true".into())], &mut fe)?;
             }
         }
+        if let Some(id) = ms.magazine_id.filter(|_| ms.magazine_open) {
+            ms.magazine_frames += 1;
+            let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
+            let intro = take_call(&mut fe, &format!("Game.OnScreenIntroComplete({id})"));
+            if !ms.magazine_shown && (loaded || intro || ms.magazine_frames > SHOW_FALLBACK_FRAMES) {
+                let state = magazine_screen.as_ref().map_or(0, |m| m.state);
+                info!("RETAIL_MENUS show magazine {id} state {state} (loaded {loaded}, intro {intro}, frames {})", ms.magazine_frames);
+                ms.magazine_shown = true;
+                ms.stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text(id.to_string()), Value::Text("true".into())], &mut fe)?;
+                // 8264E778 state 2: the layout kind as the movie state, and the page's sound.
+                set_state(&mut ms.stage, id, state, &mut fe)?;
+                sounds.write(FrontendSound { key: 0xC5D4_8094_93A3_05B8 });
+            }
+        }
+        if let Some(id) = ms.photo_id.filter(|_| ms.photo_open) {
+            ms.photo_frames += 1;
+            let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
+            let intro = take_call(&mut fe, &format!("Game.OnScreenIntroComplete({id})"));
+            if !ms.photo_shown && (loaded || intro || ms.photo_frames > SHOW_FALLBACK_FRAMES) {
+                info!("RETAIL_MENUS show photo select {id} (loaded {loaded}, intro {intro}, frames {})", ms.photo_frames);
+                ms.photo_shown = true;
+                ms.stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text(id.to_string()), Value::Text("true".into())], &mut fe)?;
+                // 82616EC0 posts the first shot; the movie's select bar shows it (state = index).
+                set_state(&mut ms.stage, id, 0, &mut fe)?;
+            }
+            if ms.photo_shown {
+                let states = photo_screen.as_mut().map(|p| std::mem::take(&mut p.states)).unwrap_or_default();
+                for s in states {
+                    set_state(&mut ms.stage, id, s, &mut fe)?;
+                }
+            }
+        }
         if let Some(id) = ms.poster_id.filter(|_| ms.poster_open) {
             ms.poster_frames += 1;
             let loaded = take_call(&mut fe, &format!("Game.OnScreenLoaded({id})"));
@@ -2559,6 +2672,21 @@ fn update(
                         ..Default::default()
                     });
                     ms.popup_dirty = true;
+                }
+            }
+        }
+        // MagazinePromo's retry confirmation (8264F1B0): Yes (1) retries the challenge.
+        {
+            let (ours, others) = std::mem::take(&mut popup_mods.engine_choices).into_iter()
+                .partition::<Vec<_>, _>(|(callback, _)| callback == crate::photo_picker::MAGAZINE_RETRY_POPUP);
+            popup_mods.engine_choices = others;
+            for (_, choice) in ours {
+                info!("RETAIL_MENUS magazine retry answer {choice}");
+                if let (1, Some(id)) = (choice, ms.magazine_id.filter(|_| ms.magazine_open)) {
+                    set_state(&mut ms.stage, id, 7, &mut fe)?;
+                    if let Some(m) = magazine_screen.as_mut() {
+                        m.choice = Some(skate_core::challenges::photo_select::MagazineChoice::Retry);
+                    }
                 }
             }
         }

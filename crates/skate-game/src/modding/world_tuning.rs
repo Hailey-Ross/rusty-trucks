@@ -237,6 +237,9 @@ fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
             if let Some(v) = p.reel_slots {
                 s.reel_slots = v as usize;
             }
+            if let Some(v) = p.wait_step_off_seconds {
+                s.wait_step_off_seconds = v;
+            }
             if let Some(v) = p.reel_transition_seconds {
                 s.reel_transition_seconds = v;
             }
@@ -870,7 +873,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
         "respawn" => world.get_resource::<RespawnSettings>().map_or(Value::Null, |s| json!({"air_timeout_ticks": s.air_timeout_ticks})),
         "challenges" => world.get_resource::<crate::ftl_host::ChallengeTuning>().map_or(Value::Null, |s| json!({
             "meter_red_fraction": s.meter.red_fraction, "meter_refresh_ticks": s.meter.refresh_ticks, "reel_enabled": s.reel_enabled,
-            "reel_slots": s.reel_slots, "reel_transition_seconds": s.reel_transition_seconds})),
+            "reel_slots": s.reel_slots, "reel_transition_seconds": s.reel_transition_seconds, "wait_step_off_seconds": s.wait_step_off_seconds})),
         "exposure" => world.get_resource::<ExposureMeter>().map_or(Value::Null, |s| json!({"meter_weights": s.weights.to_array(), "meter_scale": s.scale})),
         "decals" => world.get_resource::<DecalSettings>().map_or(Value::Null, |s| json!({"opacity": s.opacity})),
         "prop_sounds" => world.get_resource::<crate::game_audio::prop_sounds::PropSoundSettings>().map_or(Value::Null, |s| json!({

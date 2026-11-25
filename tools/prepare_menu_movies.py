@@ -95,6 +95,10 @@ MENU_ROOTS = (
     'source/screens/hudcomponents/challengefailed_small',
     # The sign-up poster and lot list (FE 0x1B, template 23; research b932, b935).
     'source/screens/challenge/challenge_signup',
+    # The photo challenges' shot picker (FE 2 PhotoSelect, template 89; research b1060 / b1062).
+    'source/screens/challenge/photoselect',
+    # The magazine page a photo challenge's picked shot goes on (FE 69 MagazinePromo, template 115; research b1060).
+    'source/screens/mags_promo/mags_promo',
     # The pause menu's Options > Music Player (template 31 MusicPlayer, host object MusicPlayer; research b1015). Optional for
     # the engine like the action overlay: a set without it keeps the row grayed, so the set version stays.
     'source/screens/musicplayer/musicplayertest',

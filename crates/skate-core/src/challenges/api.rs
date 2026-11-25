@@ -105,6 +105,8 @@ pub struct SkaterFacts {
     /// (pose output +605) and its score (+588, read live).
     pub push_off: bool,
     pub push_off_score: f32,
+    /// Gesture.IsGesturing (hom_indu_03): the skater record's gesture index (+0xBC) is not 37, "none" (doc 42).
+    pub gesturing: bool,
 }
 
 impl Default for SkaterFacts {
@@ -117,6 +119,7 @@ impl Default for SkaterFacts {
             spin_half_turns: 0, fakie: false, bumpers: [false; 2], sticks: [0.0; 2], right_stick_x: 0.0, speed: 0.0,
             manual_distance: 0.0, sequence_score: 0, finished_sequence_score: 0, photographer_placed: false,
             photographer_distance: super::photographer::NOT_PLACED, push_off: false, push_off_score: 0.0,
+            gesturing: false,
         }
     }
 }
@@ -150,7 +153,7 @@ pub enum FlowCommand {
 /// The functions this API answers (last name segment). A group whose programs call anything else does not run:
 /// an unported call errors, and an erroring completion condition defaults to true (retail), so it would complete
 /// at once.
-pub const PORTED: &[&str] = &["GetBoneState", "DidPushOffThisFrame", "GetPushOffScore", "HasUserPlacedPhotographer", "GetDistanceToPhotographer", "NumUniqueTrickDone", "GetCurrentDegreesOfSpin", "GetDegreesOfSpin", "IsFakie", "IsLeftBumperHeld", "IsRightBumperHeld", "IsLeftStickHeld", "IsRightStickHeld", "GetRawRightStickXValue", "GetSpeed", "ManualDistance", "GetSequencePoints", "GetFinishedSequenceScore", "AwardSequencePointsImmediately", "print", "GetNumDMOsHit", "IsWipeoutOver", "ResetAllObjectives", "DidSpecificBodyTweakThisFrame", "GetScore", "GetWipeoutDuration", "GetNumVehiclesHit", "GetNumPedestriansHit", "GetNumBonesAtDamageLevel", "GetNumBonesGTOEDamageLevel", "GetDistanceToNearestAISkater", "GetDistanceToSkater", "AddFollowIndicator", "RemoveFollowIndicator","BeganTrick", "BeganTrickGroup", "GetTimeToGrind", "IsDoingSpecificBoardAdjust", "EnteredVolume", "IsInVolume", "IsSequenceNewlyCompletePoints", "GetGroupAccumulatedPoints",
+pub const PORTED: &[&str] = &["IsGesturing", "GetBoneState", "DidPushOffThisFrame", "GetPushOffScore", "HasUserPlacedPhotographer", "GetDistanceToPhotographer", "NumUniqueTrickDone", "GetCurrentDegreesOfSpin", "GetDegreesOfSpin", "IsFakie", "IsLeftBumperHeld", "IsRightBumperHeld", "IsLeftStickHeld", "IsRightStickHeld", "GetRawRightStickXValue", "GetSpeed", "ManualDistance", "GetSequencePoints", "GetFinishedSequenceScore", "AwardSequencePointsImmediately", "print", "GetNumDMOsHit", "IsWipeoutOver", "ResetAllObjectives", "DidSpecificBodyTweakThisFrame", "GetScore", "GetWipeoutDuration", "GetNumVehiclesHit", "GetNumPedestriansHit", "GetNumBonesAtDamageLevel", "GetNumBonesGTOEDamageLevel", "GetDistanceToNearestAISkater", "GetDistanceToSkater", "AddFollowIndicator", "RemoveFollowIndicator","BeganTrick", "BeganTrickGroup", "GetTimeToGrind", "IsDoingSpecificBoardAdjust", "EnteredVolume", "IsInVolume", "IsSequenceNewlyCompletePoints", "GetGroupAccumulatedPoints",
     "GetGroupPointsRequirement", "GetAccumulatedPoints", "ActivateObjective", "DeactivateObjective", "ResetObjective",
     "GetObjectiveStatus", "GetTotalNumCompletedObjectives", "IsInSequence", "SequenceCompleted", "IsWipingOut",
     "IsOffBoard", "WentOffBoard", "WentOnBoard", "JustUsedSessionMarker", "JustSetSessionMarker", "SetFractionValue",
@@ -216,6 +219,7 @@ impl Api for ObjectiveApi<'_> {
             // closed bail's levels [inferred: retail reads the record live]. An index outside the 25 bones reads -1.
             "GetBoneState" => num(index(args).ok().and_then(|i| self.skater.bail.levels.get(i)).map_or(-1, |l| i32::from(*l))),
             "DidPushOffThisFrame" => Value::Bool(self.skater.push_off),
+            "IsGesturing" => Value::Bool(self.skater.gesturing),
             "GetPushOffScore" => Value::Num(self.skater.push_off_score),
             "HasUserPlacedPhotographer" => Value::Bool(self.skater.photographer_placed),
             "GetDistanceToPhotographer" => Value::Num(if self.skater.photographer_placed { self.skater.photographer_distance } else { super::photographer::NOT_PLACED }),
@@ -502,5 +506,20 @@ mod tests {
         api.skater.photographer_placed = false;
         assert_eq!(api.call(4, &[]).unwrap(), Value::Num(crate::challenges::photographer::NOT_PLACED));
         assert!(names.iter().all(|n| ported(n)));
+    }
+
+    /// hom_indu_03: Gesture.IsGesturing reads whether a gesture plays (record +0xBC != 37).
+    #[test]
+    fn is_gesturing_reads_the_skaters_gesture() {
+        let names = vec!["Gesture.IsGesturing".to_string()];
+        let o = spot(&[]);
+        let mut flow = Vec::new();
+        let mut api = ObjectiveApi { names: &names, objective: &o, ctx: Context::default(), volume: &|_: &str| None, inside: &[],
+            statuses: &[], flow: &mut flow, skater: SkaterFacts::default(), tricks_this_frame: &[], tricks_began: &[],
+            trick_groups: &Default::default(), key: &|_: &str| 0u64 };
+        assert_eq!(api.call(0, &[]).unwrap(), Value::Bool(false));
+        api.skater.gesturing = true;
+        assert_eq!(api.call(0, &[]).unwrap(), Value::Bool(true));
+        assert!(ported("Gesture.IsGesturing"));
     }
 }

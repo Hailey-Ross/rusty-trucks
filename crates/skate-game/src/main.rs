@@ -132,6 +132,9 @@ mod race_host;
 mod contest_ai_host;
 mod contest_host;
 mod ftl_host;
+mod photo_picker;
+mod cursor_autohide;
+mod team_brand;
 mod one_up_host;
 mod hom_host;
 mod visual_indicators;
@@ -276,6 +279,18 @@ fn main() -> bevy::app::AppExit {
         let mut spawn = physics.board.part_transforms()[skate_core::physics::board::BodyId::Deck.index()];
         spawn.translation.x += config.multiplayer.spawn_offset;
         physics.board.set_transform(spawn);
+    }
+    // Test aid for screenshot runs: SKATE_SPAWN_AT=x,y,z[,heading degrees] starts the board there.
+    if let Some(at) = std::env::var("SKATE_SPAWN_AT").ok()
+        .map(|v| v.split(',').filter_map(|n| n.trim().parse::<f32>().ok()).collect::<Vec<_>>()).filter(|v| v.len() >= 3) {
+        let mut spawn = physics.board.part_transforms()[skate_core::physics::board::BodyId::Deck.index()];
+        (spawn.translation.x, spawn.translation.y, spawn.translation.z) = (at[0], at[1], at[2]);
+        if let Some(&heading) = at.get(3) {
+            let (sin, cos) = heading.to_radians().sin_cos();
+            spawn.basis.columns = [[cos, 0.0, -sin], [0.0, 1.0, 0.0], [sin, 0.0, cos]];
+        }
+        physics.board.set_transform(spawn);
+        eprintln!("SKATE_SPAWN_AT {at:?}");
     }
     startup_loading::stage_meta("skater_initialization");
     splash::stage("Loading the skater");
